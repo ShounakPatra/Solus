@@ -1,0 +1,54 @@
+[versions]
+agp = "8.13.2"
+kotlin = "2.1.10"
+coreKtx = "1.13.1"
+junit = "4.13.2"
+junitVersion = "1.2.1"
+espressoCore = "3.6.1"
+lifecycleRuntimeKtx = "2.8.6"
+lifecycleViewmodelCompose = "2.8.6"
+activityCompose = "1.9.3"
+coreSplashscreen = "1.0.1"
+composeBom = "2026.05.00"
+mediapipeGenai = "0.10.35"
+navigationCompose = "2.8.3"
+tensorflowLite = "2.17.0"
+tensorflowLiteMetadata = "0.5.0"
+mediapipeTasksCore = "0.10.26.1"
+litertLm = "0.8.0"
+haze = "1.5.1"
+pdfboxAndroid = "2.0.27.0"
+
+[libraries]
+haze = { group = "dev.chrisbanes.haze", name = "haze", version.ref = "haze" }
+haze-materials = { group = "dev.chrisbanes.haze", name = "haze-materials", version.ref = "haze" }
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+androidx-lifecycle-runtimeKtx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
+androidx-lifecycle-viewmodelCompose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycleViewmodelCompose" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "coreSplashscreen" }
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
+androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
+androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
+material = { group = "com.google.android.material", name = "material", version = "1.12.0" }
+mediapipe-tasks-genai = { group = "com.google.mediapipe", name = "tasks-genai", version.ref = "mediapipeGenai" }
+mediapipe-tasks-core = { group = "com.google.mediapipe", name = "tasks-core", version.ref = "mediapipeTasksCore" }
+litert-lm = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version.ref = "litertLm" }
+tensorflow-lite = { group = "org.tensorflow", name = "tensorflow-lite", version.ref = "tensorflowLite" }
+tensorflow-lite-metadata = { group = "org.tensorflow", name = "tensorflow-lite-metadata", version.ref = "tensorflowLiteMetadata" }
+pdfbox-android = { group = "com.tom-roush", name = "pdfbox-android", version.ref = "pdfboxAndroid" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
