@@ -722,7 +722,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 )
             }
         }.onFailure {
-            historyPrefs.edit().remove(KEY_SESSIONS).commit()
+            historyPrefs.edit().remove(KEY_SESSIONS).apply()
         }
     }
 
@@ -738,7 +738,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     .put("updatedAt", session.updatedAt)
             )
         }
-        historyPrefs.edit().putString(KEY_SESSIONS, array.toString()).commit()
+        // Chat history does not require crash-guard-style synchronous durability.
+        // Avoid blocking the UI thread while the JSON is written to disk.
+        historyPrefs.edit().putString(KEY_SESSIONS, array.toString()).apply()
     }
 
     private fun VisionChatSession.isPersistable(): Boolean {

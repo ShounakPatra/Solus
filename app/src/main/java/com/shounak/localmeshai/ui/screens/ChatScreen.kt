@@ -14,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -38,6 +39,7 @@ import com.shounak.localmeshai.utils.ModelOutputSanitizer
 import com.shounak.localmeshai.utils.ThinkingTextUtils
 import com.shounak.localmeshai.utils.animatedGlassHalo
 import com.shounak.localmeshai.utils.fluidReveal
+import com.shounak.localmeshai.utils.jellyOnTouch
 import dev.chrisbanes.haze.HazeState
 import androidx.compose.ui.draw.rotate
 import androidx.compose.foundation.horizontalScroll
@@ -158,7 +160,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.shounak.localmeshai.models.ModelInfo
 import com.shounak.localmeshai.models.ModelStatus
 import com.shounak.localmeshai.models.ModelType
-import com.shounak.localmeshai.ui.theme.GaramondFontFamily
+import androidx.compose.ui.text.font.FontFamily
 import com.shounak.localmeshai.ui.viewmodels.ChatMessage
 import com.shounak.localmeshai.ui.viewmodels.ChatSession
 import com.shounak.localmeshai.ui.viewmodels.ChatViewModel
@@ -416,9 +418,9 @@ fun ChatScreen(
     var selectedAudioBytes by remember { mutableStateOf<ByteArray?>(null) }
     var isRecordingAudio by remember { mutableStateOf(false) }
     var recordingJob by remember { mutableStateOf<Job?>(null) }
-    var recordingInputLevel by remember { mutableStateOf(0f) }
-    var recordingSpeechActivity by remember { mutableStateOf(0f) }
-    var recordingElapsedMs by remember { mutableStateOf(0L) }
+    var recordingInputLevel by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    var recordingSpeechActivity by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    var recordingElapsedMs by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
     var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
     var showHistory by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
@@ -769,9 +771,20 @@ fun ChatScreen(
         )
     }
 
+    val chatBackground = Brush.verticalGradient(
+        colors = listOf(
+            MaterialTheme.colorScheme.background,
+            MaterialTheme.colorScheme.surfaceContainerLowest,
+            MaterialTheme.colorScheme.surfaceContainerLow
+        )
+    )
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // Chat owns an opaque, full-size background from its first frame.
+            // This prevents window/pager surfaces from showing through while its
+            // model and reveal animations initialise.
+            .background(chatBackground)
             .imePadding(),
         verticalArrangement = Arrangement.Top
     ) {
@@ -781,6 +794,13 @@ fun ChatScreen(
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp)
                 .padding(top = 6.dp)
+                .fluidReveal(
+                    delayMillis = 35,
+                    initialScale = 0.985f,
+                    initialYOffset = 5.dp,
+                    initialXOffset = (-18).dp,
+                    initialRotationZ = -0.65f
+                )
         ) {
             ChatControlRow(
                 models = downloadedChatModels,
@@ -841,7 +861,20 @@ fun ChatScreen(
                     .padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                activeError?.let { ErrorCard(it) }
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = activeError != null,
+                    enter = androidx.compose.animation.fadeIn(tween(180)) +
+                        androidx.compose.animation.slideInHorizontally(
+                            initialOffsetX = { -it / 3 },
+                            animationSpec = spring(dampingRatio = 0.82f, stiffness = 480f)
+                        ),
+                    exit = androidx.compose.animation.fadeOut(tween(120)) +
+                        androidx.compose.animation.shrinkVertically(
+                            animationSpec = spring(dampingRatio = 0.92f, stiffness = 620f)
+                        )
+                ) {
+                    activeError?.let { ErrorCard(it) }
+                }
 
                 Box(
                     modifier = Modifier.weight(1f),
@@ -895,7 +928,10 @@ fun ChatScreen(
                                     if (selectedSupportsAttachments) {
                                         itemsIndexed(
                                             visionMessages,
-                                            key = { _, message -> message.id }
+                                            key = { _, message -> message.id },
+                                            contentType = { _, message ->
+                                                if (message.isUser) "vision_user" else "vision_assistant"
+                                            }
                                         ) { index, message ->
                                             VisionChatBubble(
                                                 text = message.text,
@@ -903,21 +939,24 @@ fun ChatScreen(
                                                 bitmap = message.bitmap,
                                                 hazeState = hazeState,
                                                 isStreaming = !message.isUser && isVisionAnalyzing && index == visionMessages.lastIndex,
-                                                entryDelayMs = (index * 25).coerceAtMost(300),
+                                                entryDelayMs = if (index == visionMessages.lastIndex) 25 else 0,
                                                 onFullscreenClick = { fullscreenVisionMessageIndex = index }
                                             )
                                         }
                                     } else {
                                         itemsIndexed(
                                             textMessages,
-                                            key = { _, message -> message.id }
+                                            key = { _, message -> message.id },
+                                            contentType = { _, message ->
+                                                if (message.isUser) "text_user" else "text_assistant"
+                                            }
                                         ) { index, message ->
                                             ChatBubble(
                                                 text = message.text,
                                                 isUser = message.isUser,
                                                 hazeState = hazeState,
                                                 isStreaming = !message.isUser && isGenerating && index == textMessages.lastIndex,
-                                                entryDelayMs = (index * 25).coerceAtMost(300),
+                                                entryDelayMs = if (index == textMessages.lastIndex) 25 else 0,
                                                 onFullscreenClick = { fullscreenMessageIndex = index }
                                             )
                                         }
@@ -975,11 +1014,24 @@ fun ChatScreen(
                     }
 
                     // Initialising / Generating overlay
-                    if (isCurrentModelBusy) {
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = isCurrentModelBusy,
+                        enter = androidx.compose.animation.fadeIn(tween(180)) +
+                            androidx.compose.animation.slideInVertically(
+                                initialOffsetY = { -it },
+                                animationSpec = spring(dampingRatio = 0.82f, stiffness = 460f)
+                            ),
+                        exit = androidx.compose.animation.fadeOut(tween(130)) +
+                            androidx.compose.animation.slideOutVertically(
+                                targetOffsetY = { -it / 2 },
+                                animationSpec = spring(dampingRatio = 0.92f, stiffness = 620f)
+                            ),
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                    ) {
                         Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .align(Alignment.TopCenter),
+                            modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -1007,14 +1059,28 @@ fun ChatScreen(
                 // IME padding is applied to the composer surface only. When the
                 // keyboard is open the decorative bottom gap is removed so the
                 // text field sits directly above the keyboard.
-                val composerCorner = if (isKeyboardOpen) 28.dp else 30.dp
-                val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-                val composerTint = if (isDark) Color.White.copy(alpha = 0.11f) else Color.White.copy(alpha = 0.58f)
+                val composerCorner by animateDpAsState(
+                    targetValue = if (isKeyboardOpen) 28.dp else 30.dp,
+                    animationSpec = spring(dampingRatio = 0.88f, stiffness = 520f),
+                    label = "chat_composer_corner"
+                )
+                val composerMaxHeight by animateDpAsState(
+                    targetValue = if (hasVisionAttachment) 380.dp else 280.dp,
+                    animationSpec = spring(dampingRatio = 0.86f, stiffness = 420f),
+                    label = "chat_composer_max_height"
+                )
+                val composerTint = MaterialTheme.colorScheme.surfaceContainerHigh
                 GlassDispersionCard(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = if (hasVisionAttachment) 380.dp else 280.dp)
-                        .fluidReveal(delayMillis = 90, initialYOffset = 12.dp)
+                        .heightIn(max = composerMaxHeight)
+                        .fluidReveal(
+                            delayMillis = 90,
+                            initialScale = 0.94f,
+                            initialYOffset = 18.dp,
+                            initialXOffset = 8.dp,
+                            initialRotationZ = 0.55f
+                        )
                         .animatedGlassHalo(alpha = 0.045f, durationMillis = 4_800)
                         .padding(bottom = 0.dp),
                     hazeState = hazeState,
@@ -1082,7 +1148,7 @@ fun ChatScreen(
                                         hazeState = hazeState,
                                         shape = RoundedCornerShape(16.dp),
                                         blurRadius = 14.dp,
-                                        tintColor = Color.White.copy(alpha = 0.08f),
+                                        tintColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                                         borderAlpha = 0.28f
                                     )
                                     .padding(horizontal = 12.dp, vertical = 8.dp)
@@ -1279,24 +1345,24 @@ fun ChatScreen(
                                     } else {
                                         "Ask something…"
                                     },
-                                    color = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White.copy(alpha = 0.6f) else Color.Black.copy(alpha = 0.6f)
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             },
                             enabled = canEditDraft,
                             minLines = 2,
                             maxLines = 6,
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(12.dp),
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
                             textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                color = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White else Color.Black
+                                color = MaterialTheme.colorScheme.onSurface
                             ),
                             colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                                 unfocusedBorderColor = androidx.compose.ui.graphics.Color.Transparent,
                                 focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
                                 unfocusedContainerColor = Color.Transparent,
                                 focusedContainerColor = Color.Transparent,
-                                focusedTextColor = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White else Color.Black,
-                                unfocusedTextColor = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White else Color.Black
+                                focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                unfocusedTextColor = MaterialTheme.colorScheme.onSurface
                             ),
                             supportingText = if (charCount > 0) ({
                                 Text(
@@ -1566,8 +1632,7 @@ private fun StarterPrompts(hazeState: HazeState, onPromptSelected: (String) -> U
         "📊 Compare Python and Kotlin for mobile development",
         "🌍 What causes the Northern Lights?"
     )
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val chipTint = if (isDark) Color.White.copy(alpha = 0.06f) else Color.White.copy(alpha = 0.45f)
+    val chipTint = MaterialTheme.colorScheme.surfaceContainer
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1598,8 +1663,11 @@ private fun StarterPrompts(hazeState: HazeState, onPromptSelected: (String) -> U
                         .fluidReveal(
                             delayMillis = index * 45,
                             initialScale = 0.88f,
-                            initialYOffset = 10.dp
+                            initialYOffset = 10.dp,
+                            initialXOffset = if (index % 2 == 0) (-18).dp else 18.dp,
+                            initialRotationZ = if (index % 2 == 0) -1.1f else 1.1f
                         )
+                        .jellyOnTouch(sensitivity = 1.8f)
                         .clickable { onPromptSelected(prompt.substringAfter(" ")) }
                         .glassEffect(
                             hazeState = hazeState, 
@@ -1650,6 +1718,10 @@ private fun ChatComposerActions(
     onStop: () -> Unit
 ) {
     var attachmentMenuExpanded by remember { mutableStateOf(false) }
+    val sendAnimationScope = rememberCoroutineScope()
+    val rocketFlight = remember { Animatable(0f) }
+    var isRocketFlying by remember { mutableStateOf(false) }
+    val sendAnimationDensity = LocalDensity.current
     val attachmentMenuOpen = attachmentMenuExpanded && !isRecordingAudio
     LaunchedEffect(supportsAttachments, isRecordingAudio) {
         if (!supportsAttachments || isRecordingAudio) {
@@ -1740,7 +1812,7 @@ private fun ChatComposerActions(
                     tintColor = when {
                         isRecordingAudio -> MaterialTheme.colorScheme.error.copy(alpha = 0.24f)
                         hasAttachment || attachmentMenuOpen -> MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
-                        else -> Color.White.copy(alpha = 0.055f)
+                        else -> MaterialTheme.colorScheme.surfaceContainerHighest
                     },
                     contentPadding = PaddingValues(0.dp)
                 ) {
@@ -1794,7 +1866,7 @@ private fun ChatComposerActions(
                 tintColor = if (canRecordAudio) {
                     MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
                 } else {
-                    Color.White.copy(alpha = 0.035f)
+                    MaterialTheme.colorScheme.surfaceContainerHighest
                 },
                 contentPadding = PaddingValues(0.dp)
             ) {
@@ -1816,8 +1888,8 @@ private fun ChatComposerActions(
                 shape = RoundedCornerShape(topStart = 14.dp, topEnd = 24.dp, bottomStart = 24.dp, bottomEnd = 14.dp),
                 tintColor = when {
                     thinkActive -> MaterialTheme.colorScheme.primary.copy(alpha = 0.32f)
-                    canThink -> Color.White.copy(alpha = 0.055f)
-                    else -> Color.White.copy(alpha = 0.025f)
+                    canThink -> MaterialTheme.colorScheme.surfaceContainerHighest
+                    else -> MaterialTheme.colorScheme.surfaceContainerLow
                 },
                 contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp)
             ) {
@@ -1838,23 +1910,64 @@ private fun ChatComposerActions(
             Spacer(modifier = Modifier.weight(1f))
         }
         LiquidGlassButton(
-            onClick = if (isGenerating) onStop else onSend,
+            onClick = {
+                when {
+                    isRocketFlying -> Unit
+                    isGenerating -> onStop()
+                    canSend -> sendAnimationScope.launch {
+                        isRocketFlying = true
+                        rocketFlight.snapTo(0f)
+                        rocketFlight.animateTo(
+                            targetValue = 1f,
+                            animationSpec = tween(durationMillis = 190)
+                        )
+                        onSend()
+                        rocketFlight.animateTo(
+                            targetValue = 0f,
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioLowBouncy,
+                                stiffness = Spring.StiffnessMediumLow
+                            )
+                        )
+                        isRocketFlying = false
+                    }
+                }
+            },
             hazeState = hazeState,
-            enabled = isGenerating || canSend,
-            modifier = Modifier.size(48.dp),
+            enabled = isRocketFlying || isGenerating || canSend,
+            modifier = Modifier
+                .size(48.dp)
+                .graphicsLayer {
+                    val flight = rocketFlight.value
+                    translationX = with(sendAnimationDensity) { (flight * 8f).dp.toPx() }
+                    translationY = with(sendAnimationDensity) { (-flight * 36f).dp.toPx() }
+                    rotationZ = flight * 12f
+                    scaleX = 1f - flight * 0.16f
+                    scaleY = 1f - flight * 0.16f
+                },
             shape = RoundedCornerShape(topStart = 26.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 26.dp),
             tintColor = MaterialTheme.colorScheme.primary.copy(alpha = if (isGenerating || canSend) 0.34f else 0.10f),
             contentPadding = PaddingValues(0.dp)
         ) {
             androidx.compose.animation.Crossfade(
-                targetState = isGenerating,
+                targetState = isGenerating && !isRocketFlying,
                 animationSpec = tween(180),
                 label = "chat_send_stop_icon"
             ) { generating ->
                 if (generating) {
                     Icon(Icons.Default.Stop, contentDescription = "Stop responding", modifier = Modifier.size(20.dp))
                 } else {
-                    Icon(Icons.Default.RocketLaunch, contentDescription = "Send", modifier = Modifier.size(21.dp))
+                    Icon(
+                        Icons.Default.RocketLaunch,
+                        contentDescription = "Send",
+                        modifier = Modifier
+                            .size(21.dp)
+                            .graphicsLayer {
+                                val flight = rocketFlight.value
+                                translationY = with(sendAnimationDensity) { (-flight * 8f).dp.toPx() }
+                                rotationZ = flight * 10f
+                            }
+                    )
                 }
             }
         }
@@ -1876,9 +1989,9 @@ private fun AttachmentInlineMenu(
             .fluidReveal(initialScale = 0.90f, initialYOffset = 8.dp)
             .glassEffect(
                 hazeState = hazeState,
-                shape = RoundedCornerShape(24.dp),
+                shape = RoundedCornerShape(14.dp),
                 blurRadius = 24.dp,
-                tintColor = Color.White.copy(alpha = 0.12f),
+                tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                 borderAlpha = 0.42f
             )
             .padding(8.dp),
@@ -2081,7 +2194,7 @@ private fun AudioLevelMeter(
                 .fillMaxWidth()
                 .height(4.dp)
                 .clip(RoundedCornerShape(99.dp))
-                .background(Color.White.copy(alpha = 0.11f))
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest)
         ) {
             Box(
                 modifier = Modifier
@@ -2161,8 +2274,7 @@ private fun ChatModelPicker(
     var expanded by remember { mutableStateOf(false) }
     val selected = models.firstOrNull { it.localPath == selectedPath }
     val selectedName = selected?.let { "${it.name} · ${it.type.label}" } ?: "Choose model"
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val pickerTint = if (isDark) Color.White.copy(alpha = 0.08f) else Color.White.copy(alpha = 0.5f)
+    val pickerTint = MaterialTheme.colorScheme.surfaceContainerHigh
     val arrowRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = spring(
@@ -2233,8 +2345,7 @@ private fun MetricRow(modelName: String, lastDuration: Long, tokensPerSecond: Fl
 
 @Composable
 private fun EmptyState(title: String, subtitle: String, hazeState: HazeState) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val cardTint = if (isDark) Color.White.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.4f)
+    val cardTint = MaterialTheme.colorScheme.surfaceContainer
     GlassDispersionCard(
         hazeState = hazeState,
         modifier = Modifier
@@ -2257,8 +2368,8 @@ private fun EmptyState(title: String, subtitle: String, hazeState: HazeState) {
             Box(
                 modifier = Modifier
                     .size(56.dp)
-                    .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(28.dp))
-                    .border(0.5.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(28.dp)),
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(16.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -2273,13 +2384,13 @@ private fun EmptyState(title: String, subtitle: String, hazeState: HazeState) {
                 title,
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
                 textAlign = TextAlign.Center,
-                color = if (isDark) Color.White else Color.Black
+                color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 subtitle,
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (isDark) Color.White.copy(alpha = 0.6f) else Color.Black.copy(alpha = 0.6f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
         }
@@ -2313,12 +2424,7 @@ private fun ThinkingProcessCard(
         }
     }
     
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val cardColor = if (isDark) {
-        Color.White.copy(alpha = 0.03f)
-    } else {
-        Color.Black.copy(alpha = 0.03f)
-    }
+    val cardColor = MaterialTheme.colorScheme.surfaceContainerHighest
     val arrowRotation by animateFloatAsState(
         targetValue = if (isExpanded) 180f else 0f,
         animationSpec = spring(
@@ -2334,7 +2440,7 @@ private fun ThinkingProcessCard(
             .background(cardColor, RoundedCornerShape(12.dp))
             .border(
                 width = 0.5.dp,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f),
+                color = MaterialTheme.colorScheme.outlineVariant,
                 shape = RoundedCornerShape(12.dp)
             )
             .padding(10.dp),
@@ -2480,14 +2586,19 @@ private fun ChatBubble(
     onFullscreenClick: () -> Unit
 ) {
     val context = LocalContext.current
-    val entryProgress = remember { Animatable(0f) }
+    val entryProgress = remember { Animatable(if (entryDelayMs > 0) 0f else 1f) }
     LaunchedEffect(entryDelayMs) {
+        if (entryDelayMs <= 0) {
+            entryProgress.snapTo(1f)
+            return@LaunchedEffect
+        }
         if (entryDelayMs > 0) kotlinx.coroutines.delay(entryDelayMs.toLong())
         entryProgress.animateTo(
             targetValue = 1f,
             animationSpec = spring(
-                dampingRatio = if (isUser) Spring.DampingRatioLowBouncy else 0.82f,
-                stiffness = Spring.StiffnessMedium
+                dampingRatio = if (isUser) 0.64f else 0.72f,
+                stiffness = if (isUser) 470f else 410f,
+                visibilityThreshold = 0.001f
             )
         )
     }
@@ -2516,22 +2627,15 @@ private fun ChatBubble(
                 translationX = (1f - entryValue) * if (isUser) 18f else -10f
                 scaleX = 0.97f + entryValue * 0.03f
                 scaleY = 0.97f + entryValue * 0.03f
+                rotationZ = (1f - entryValue) * if (isUser) 0.65f else -0.42f
             },
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
     ) {
         val userShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
-        val userColor = if (androidx.compose.foundation.isSystemInDarkTheme()) {
-            Color(0xFF007AFF).copy(alpha = 0.35f)
-        } else {
-            Color(0xFF007AFF).copy(alpha = 0.15f)
-        }
+        val userColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
 
         val aiShape = RoundedCornerShape(topStart = 6.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 20.dp)
-        val aiColor = if (androidx.compose.foundation.isSystemInDarkTheme()) {
-            Color.White.copy(alpha = 0.07f)
-        } else {
-            Color.White.copy(alpha = 0.45f)
-        }
+        val aiColor = MaterialTheme.colorScheme.surfaceContainerHigh
 
         Box(
             modifier = Modifier
@@ -2564,7 +2668,7 @@ private fun ChatBubble(
 
                 if (showStreamingDots) {
                     StreamingDotsIndicator(
-                        color = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White else Color.Black
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 } else {
                     segments.forEach { segment ->
@@ -2574,7 +2678,7 @@ private fun ChatBubble(
                                     val visibleText = segment.text.trim('\n')
                                     AdaptiveMessageText(
                                         text = visibleText,
-                                        color = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White else Color.Black
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                 }
                             }
@@ -2609,7 +2713,7 @@ private fun ChatBubble(
                     icon = Icons.Default.ContentCopy,
                     contentDescription = "Copy message",
                     hazeState = hazeState,
-                    tintColor = Color(0xFF8BE9FF),
+                    tintColor = MaterialTheme.colorScheme.primary,
                     onClick = {
                         val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                             as android.content.ClipboardManager
@@ -2644,8 +2748,7 @@ private fun CodeBlock(
         }
     }
 
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val codeTint = if (isDark) Color.Black.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.4f)
+    val codeTint = MaterialTheme.colorScheme.surfaceContainerLowest
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -2657,7 +2760,7 @@ private fun CodeBlock(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.4f))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
                     .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -2676,8 +2779,8 @@ private fun CodeBlock(
                     },
                     hazeState = hazeState,
                     modifier = Modifier.height(34.dp),
-                    shape = RoundedCornerShape(17.dp),
-                    tintColor = Color(0xFF8BE9FF).copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(10.dp),
+                    tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
                 ) {
                     if (copied) {
@@ -2691,7 +2794,7 @@ private fun CodeBlock(
                             Icons.Default.ContentCopy,
                             contentDescription = "Copy code",
                             modifier = Modifier.size(14.dp),
-                            tint = Color(0xFF8BE9FF)
+                            tint = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
@@ -2708,7 +2811,7 @@ private fun CodeBlock(
             ) {
                 Text(
                     text = code,
-                    fontFamily = GaramondFontFamily,
+                    fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontSize = androidx.compose.ui.unit.TextUnit(
                             11.5f, androidx.compose.ui.unit.TextUnitType.Sp
@@ -2717,7 +2820,7 @@ private fun CodeBlock(
                             18f, androidx.compose.ui.unit.TextUnitType.Sp
                         )
                     ),
-                    color = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White else Color.Black,
+                    color = MaterialTheme.colorScheme.onSurface,
                     softWrap = false
                 )
             }
@@ -2744,11 +2847,11 @@ private fun ChatHistoryDialog(
                 .wrapContentHeight()
                 .fluidReveal(initialScale = 0.94f, initialYOffset = 18.dp)
                 .animatedGlassHalo(alpha = 0.06f, durationMillis = 4_200),
-            cornerRadius = 30.dp,
+            cornerRadius = 20.dp,
             blurRadius = 34.dp,
             refractionStrength = 0.16f,
             dispersionAmount = 0.030f,
-            tintColor = Color.White.copy(alpha = 0.12f),
+            tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             borderAlpha = 0.52f,
             contentPadding = PaddingValues(16.dp),
             animatedCaustics = true
@@ -2785,8 +2888,10 @@ private fun ChatHistoryDialog(
                                     .fillMaxWidth()
                                     .fluidReveal(
                                         delayMillis = (index * 35).coerceAtMost(280),
-                                        initialScale = 0.94f,
-                                        initialYOffset = 10.dp
+                                        initialScale = 0.90f,
+                                        initialYOffset = 14.dp,
+                                        initialXOffset = if (index % 2 == 0) (-22).dp else 22.dp,
+                                        initialRotationZ = if (index % 2 == 0) -1.2f else 1.2f
                                     )
                                     .clickable { onSelect(session.id) }
                                     .glassEffect(
@@ -2796,7 +2901,7 @@ private fun ChatHistoryDialog(
                                         tintColor = if (selected) {
                                             MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
                                         } else {
-                                            Color.White.copy(alpha = 0.07f)
+                                            MaterialTheme.colorScheme.surfaceContainer
                                         },
                                         borderAlpha = if (selected) 0.48f else 0.26f
                                     )
@@ -2872,7 +2977,6 @@ private fun FullscreenAnswerPanel(
     hazeState: HazeState
 ) {
     val message = messageProvider() ?: return
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
     val title = if (message.isUser) "Your question" else "Model response"
     val parsedContent = remember(message.text) {
         ThinkingTextUtils.parse(message.text, allowActiveThinking = false)
@@ -2898,23 +3002,8 @@ private fun FullscreenAnswerPanel(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(if (isDark) Color.Black.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.18f))
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.58f))
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .drawBehind {
-                    val glowColor = if (isDark) Color(0xFF007AFF).copy(alpha = 0.2f) else Color(0xFF007AFF).copy(alpha = 0.12f)
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(glowColor, Color.Transparent),
-                            center = Offset(size.width / 2f, size.height / 3f),
-                            radius = size.width * 0.8f
-                        )
-                    )
-                }
-        )
-
         GlassDispersionCard(
             hazeState = hazeState,
             modifier = Modifier
@@ -2922,11 +3011,11 @@ private fun FullscreenAnswerPanel(
                 .offset(y = panelOffsetY)
                 .graphicsLayer { alpha = panelAlpha }
                 .padding(horizontal = 12.dp, vertical = 8.dp),
-            cornerRadius = 28.dp,
+            cornerRadius = 20.dp,
             blurRadius = 38.dp,
             refractionStrength = 0.17f,
             dispersionAmount = 0.032f,
-            tintColor = if (isDark) Color.White.copy(alpha = 0.11f) else Color.White.copy(alpha = 0.68f),
+            tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             borderAlpha = 0.56f,
             contentPadding = PaddingValues(16.dp)
         ) {
@@ -2939,7 +3028,7 @@ private fun FullscreenAnswerPanel(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(title, style = MaterialTheme.typography.titleMedium, color = if (isDark) Color.White else Color.Black)
+                    Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                     LiquidGlassButton(
                         onClick = onClose,
                         hazeState = hazeState,
@@ -2969,7 +3058,7 @@ private fun FullscreenAnswerPanel(
                         Text(
                             text = visibleText.toAsteriskEmphasisText(),
                             modifier = Modifier.fillMaxWidth(),
-                            color = if (isDark) Color.White else Color.Black
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }

@@ -15,6 +15,30 @@ class ModelResponseQualityTest {
         )
         assertTrue(ModelResponseQuality.isGenericNonAnswer("Okay, I understand.", "what can you do"))
         assertTrue(ModelResponseQuality.isGenericNonAnswer("The answer is the final answer.", "what is it?"))
+        assertTrue(
+            ModelResponseQuality.isGenericNonAnswer(
+                "I could not generate a response. Try asking again with a little more detail.",
+                "explain gravity"
+            )
+        )
+        assertTrue(
+            ModelResponseQuality.isGenericNonAnswer(
+                "This model returned a generic non-answer. Try a larger model.",
+                "explain gravity"
+            )
+        )
+        assertTrue(
+            ModelResponseQuality.isGenericNonAnswer(
+                "Okay, I understand. I will wait for your request and provide the final answer.",
+                "hi"
+            )
+        )
+        assertTrue(
+            ModelResponseQuality.isGenericNonAnswer(
+                "I am unable to provide information on the topic of what can you do.",
+                "what can you do"
+            )
+        )
     }
 
     @Test
@@ -27,5 +51,12 @@ class ModelResponseQualityTest {
                 "write a Java program"
             )
         )
+    }
+
+    @Test
+    fun suppressesKnownAcknowledgementAndRefusalPrefixesWhileStreaming() {
+        assertTrue(ModelResponseQuality.shouldSuppressLivePartial("Okay, I under"))
+        assertTrue(ModelResponseQuality.shouldSuppressLivePartial("I am unable to provide"))
+        assertFalse(ModelResponseQuality.shouldSuppressLivePartial("Quantum computing uses qubits"))
     }
 }

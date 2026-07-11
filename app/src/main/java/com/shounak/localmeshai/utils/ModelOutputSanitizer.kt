@@ -12,7 +12,15 @@ object ModelOutputSanitizer {
     private const val SENTENCEPIECE_SPACE = '\u2581'
 
     private val specialTokenRegex = Regex(
-        pattern = """<\|(?:im_start|im_end|begin_of_text|end_of_text|endoftext)\|>|<\s*/?s\s*>""",
+        pattern = """<\|(?:im_start|im_end|begin_of_text|end_of_text|endoftext)\|>|<(?:bos|eos|start_of_turn|end_of_turn)>|<\s*/?s\s*>""",
+        option = RegexOption.IGNORE_CASE
+    )
+    private val assistantRoleLineRegex = Regex(
+        pattern = """^(?:assistant|model)\s*:?\s*$""",
+        option = RegexOption.IGNORE_CASE
+    )
+    private val userRolePrefixRegex = Regex(
+        pattern = """^user\s*:\s*""",
         option = RegexOption.IGNORE_CASE
     )
     private val byteLevelClusterAfterPunctuationRegex =
@@ -27,6 +35,33 @@ object ModelOutputSanitizer {
         val decoded = decodeByteLevelArtifacts(withoutSpecialTokens)
         val withoutReplacementChars = decoded.replace("\uFFFD", "")
         return stripDanglingArtifacts(withoutReplacementChars).trimEnd()
+    }
+
+    /**
+     * Removes chat-template material that a small completion model may echo before
+     * its actual answer. It only removes the latest user text when that text is a
+     * complete leading line and more generated content follows, so a legitimate
+     * one-line greeting such as "Hi!" remains untouched.
+     */
+    fun cleanAssistantText(text: String, latestUserText: String): String {
+        var lines = clean(text).lines().toMutableList()
+        fun dropLeadingBlankLines() {
+            while (lines.firstOrNull()?.isBlank() == true) lines.removeAt(0)
+        }
+
+        dropLeadingBlankLines()
+        if (lines.size > 1 && latestUserText.isNotBlank()) {
+            val leadingContent = userRolePrefixRegex.replace(lines.first().trim(), "")
+            if (leadingContent.equals(latestUserText.trim(), ignoreCase = true)) {
+                lines.removeAt(0)
+                dropLeadingBlankLines()
+            }
+        }
+        while (lines.size > 1 && assistantRoleLineRegex.matches(lines.first().trim())) {
+            lines.removeAt(0)
+            dropLeadingBlankLines()
+        }
+        return lines.joinToString("\n").trim()
     }
 
     private fun decodeByteLevelArtifacts(input: String): String {

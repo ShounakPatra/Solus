@@ -2,12 +2,10 @@ package com.shounak.localmeshai.ui.screens
 
 import android.content.Intent
 import android.net.Uri
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -101,6 +99,27 @@ enum class SizeTier(val display: String) {
     }
 }
 
+@Composable
+private fun ModelSectionTitle(
+    title: String,
+    delayMillis: Int,
+    enterFromEnd: Boolean = false
+) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier
+            .padding(top = 4.dp)
+            .fluidReveal(
+                delayMillis = delayMillis,
+                initialScale = 0.98f,
+                initialYOffset = 4.dp,
+                initialXOffset = if (enterFromEnd) 22.dp else (-22).dp,
+                initialRotationZ = if (enterFromEnd) 0.65f else -0.65f
+            )
+    )
+}
+
 /**
  * Best-effort parameter count in billions. Tries the model name first
  * (e.g. "Qwen 3.5 0.8B", "Gemma 4 E2B", "InternLM3-8B", "Qwen3-30B-A3B"),
@@ -133,6 +152,7 @@ private fun ModelInfo.isMixtureOfExperts(): Boolean {
 private fun ModelInfo.isPinnedDownloadCard(): Boolean {
     return when (status) {
         ModelStatus.Downloading, ModelStatus.Paused -> true
+        ModelStatus.Failed -> downloadedBytes > 0L
         ModelStatus.Available -> true
         ModelStatus.Blocked -> isDownloadedBlockedLiteRtLm()
         else -> false
@@ -150,9 +170,10 @@ private fun ModelInfo.downloadedSectionSortRank(): Int {
     return when (status) {
         ModelStatus.Downloading -> 0
         ModelStatus.Paused -> 1
-        ModelStatus.Available -> 2
-        ModelStatus.Blocked -> 3
-        else -> 4
+        ModelStatus.Failed -> 2
+        ModelStatus.Available -> 3
+        ModelStatus.Blocked -> 4
+        else -> 5
     }
 }
 
@@ -193,7 +214,7 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
 
     // Active downloads and local files are pinned to the top so progress/status
     // does not jump around between catalog sections.
-    val downloadedModels = (textModels + visionModels)
+    val downloadedModels = (allTextModels + allVisionModels)
         .filter { it.isPinnedDownloadCard() }
         .sortedBy { it.downloadedSectionSortRank() }
     val downloadedIds = downloadedModels.map { it.id }.toSet()
@@ -301,13 +322,13 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
 
         if (downloadedModels.isNotEmpty()) {
             item {
-                Text(
-                    "Downloaded models",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
+                ModelSectionTitle("Downloaded models", delayMillis = 40)
             }
-            itemsIndexed(downloadedModels, key = { _, model -> model.id }) { index, model ->
+            itemsIndexed(
+                downloadedModels,
+                key = { _, model -> model.id },
+                contentType = { _, _ -> "model_card" }
+            ) { _, model ->
                 val isSelected = model.localPath != null && when (model.type) {
                     ModelType.Text -> selectedTextModel == model.localPath
                     ModelType.Vision -> selectedVisionModel == model.localPath
@@ -331,7 +352,6 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     onUnsafeDownload = { mainViewModel.startDownloadAnyway(model.id) },
                     onUnsafeTry = { mainViewModel.tryModelAnyway(model.id) },
-                    entryDelayMs = (index * 30).coerceAtMost(250),
                     hazeState = hazeState
                 )
             }
@@ -339,14 +359,14 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
 
         if (recommendedTextModels.isNotEmpty()) {
             item {
-                Text(
-                    "Recommended downloads",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
+                ModelSectionTitle("Recommended downloads", delayMillis = 65, enterFromEnd = true)
             }
 
-            itemsIndexed(recommendedTextModels, key = { _, model -> model.id }) { index, model ->
+            itemsIndexed(
+                recommendedTextModels,
+                key = { _, model -> model.id },
+                contentType = { _, _ -> "model_card" }
+            ) { _, model ->
                 val isSelected = (model.localPath != null) &&
                     selectedTextModel == model.localPath
 
@@ -370,7 +390,6 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
-                    entryDelayMs = (index * 30).coerceAtMost(250),
                     hazeState = hazeState
                 )
             }
@@ -378,14 +397,14 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
 
         if (standardTextModels.isNotEmpty()) {
             item {
-                Text(
-                    "Text models",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
+                ModelSectionTitle("Text models", delayMillis = 80)
             }
 
-            itemsIndexed(standardTextModels, key = { _, model -> model.id }) { index, model ->
+            itemsIndexed(
+                standardTextModels,
+                key = { _, model -> model.id },
+                contentType = { _, _ -> "model_card" }
+            ) { _, model ->
                 val isSelected = (model.localPath != null) &&
                     selectedTextModel == model.localPath
 
@@ -409,7 +428,6 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
-                    entryDelayMs = (index * 30).coerceAtMost(250),
                     hazeState = hazeState
                 )
             }
@@ -417,13 +435,13 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
 
         if (readyVisionModels.isNotEmpty()) {
             item {
-                Text(
-                    "Image and audio models",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
+                ModelSectionTitle("Image and audio models", delayMillis = 95, enterFromEnd = true)
             }
-            itemsIndexed(readyVisionModels, key = { _, model -> model.id }) { index, model ->
+            itemsIndexed(
+                readyVisionModels,
+                key = { _, model -> model.id },
+                contentType = { _, _ -> "model_card" }
+            ) { _, model ->
                 val isSelected = model.localPath != null && selectedVisionModel == model.localPath
 
                 ModelItem(
@@ -442,7 +460,6 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
-                    entryDelayMs = (index * 30).coerceAtMost(250),
                     hazeState = hazeState
                 )
             }
@@ -450,13 +467,13 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
 
         if (gatedTextModels.isNotEmpty() || gatedVisionModels.isNotEmpty()) {
             item {
-                Text(
-                    "Requires license or Hugging Face token",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
+                ModelSectionTitle("Requires license or Hugging Face token", delayMillis = 110)
             }
-            itemsIndexed(gatedTextModels + gatedVisionModels, key = { _, model -> model.id }) { index, model ->
+            itemsIndexed(
+                gatedTextModels + gatedVisionModels,
+                key = { _, model -> model.id },
+                contentType = { _, _ -> "model_card" }
+            ) { _, model ->
                 val isSelected = model.localPath != null && when (model.type) {
                     ModelType.Text -> selectedTextModel == model.localPath
                     ModelType.Vision -> selectedVisionModel == model.localPath
@@ -481,7 +498,6 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
-                    entryDelayMs = (index * 30).coerceAtMost(250),
                     hazeState = hazeState
                 )
             }
@@ -489,13 +505,13 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
 
         if (blockedTextModels.isNotEmpty() || blockedVisionModels.isNotEmpty()) {
             item {
-                Text(
-                    "Blocked by device safety profile",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
+                ModelSectionTitle("Blocked by device safety profile", delayMillis = 125, enterFromEnd = true)
             }
-            itemsIndexed(blockedTextModels + blockedVisionModels, key = { _, model -> model.id }) { index, model ->
+            itemsIndexed(
+                blockedTextModels + blockedVisionModels,
+                key = { _, model -> model.id },
+                contentType = { _, _ -> "model_card" }
+            ) { _, model ->
                 ModelItem(
                     model = model,
                     isSelected = false,
@@ -506,7 +522,6 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     onUnsafeDownload = { mainViewModel.startDownloadAnyway(model.id) },
                     onUnsafeTry = { mainViewModel.tryModelAnyway(model.id) },
-                    entryDelayMs = (index * 30).coerceAtMost(250),
                     hazeState = hazeState
                 )
             }
@@ -514,13 +529,13 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
 
         if (futureDenseTextModels.isNotEmpty() || futureDenseVisionModels.isNotEmpty()) {
             item {
-                Text(
-                    "Future Android builds",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
+                ModelSectionTitle("Future Android builds", delayMillis = 140)
             }
-            itemsIndexed(futureDenseTextModels + futureDenseVisionModels, key = { _, model -> model.id }) { index, model ->
+            itemsIndexed(
+                futureDenseTextModels + futureDenseVisionModels,
+                key = { _, model -> model.id },
+                contentType = { _, _ -> "model_card" }
+            ) { _, model ->
                 ModelItem(
                     model = model,
                     isSelected = false,
@@ -529,7 +544,6 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = null,
-                    entryDelayMs = (index * 30).coerceAtMost(250),
                     hazeState = hazeState
                 )
             }
@@ -537,13 +551,13 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
 
         if (futureMoeTextModels.isNotEmpty() || futureMoeVisionModels.isNotEmpty()) {
             item {
-                Text(
-                    "MoE future builds",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
+                ModelSectionTitle("MoE future builds", delayMillis = 155, enterFromEnd = true)
             }
-            itemsIndexed(futureMoeTextModels + futureMoeVisionModels, key = { _, model -> model.id }) { index, model ->
+            itemsIndexed(
+                futureMoeTextModels + futureMoeVisionModels,
+                key = { _, model -> model.id },
+                contentType = { _, _ -> "model_card" }
+            ) { _, model ->
                 ModelItem(
                     model = model,
                     isSelected = false,
@@ -552,7 +566,6 @@ fun ModelManagerScreen(mainViewModel: MainViewModel = viewModel(), hazeState: Ha
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = null,
-                    entryDelayMs = (index * 30).coerceAtMost(250),
                     hazeState = hazeState
                 )
             }
@@ -577,16 +590,20 @@ private fun SearchAndFilterRow(
     onTierChange: (SizeTier) -> Unit,
     hazeState: HazeState
 ) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val searchShape = RoundedCornerShape(24.dp)
-    val searchTint = if (isDark) Color.White.copy(alpha = 0.055f) else Color.White.copy(alpha = 0.52f)
+    val searchShape = RoundedCornerShape(14.dp)
+    val searchTint = MaterialTheme.colorScheme.surfaceContainerHigh
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
             value = searchQuery,
             onValueChange = onSearchChange,
             modifier = Modifier
                 .fillMaxWidth()
-                .fluidReveal(delayMillis = 80, initialYOffset = 10.dp)
+                .fluidReveal(
+                    delayMillis = 80,
+                    initialYOffset = 10.dp,
+                    initialXOffset = (-16).dp,
+                    initialRotationZ = -0.45f
+                )
                 .animatedGlassHalo(alpha = 0.035f, durationMillis = 4_800)
                 .glassEffect(
                     hazeState = hazeState,
@@ -633,8 +650,9 @@ private fun SearchAndFilterRow(
                 val chipScale by animateFloatAsState(
                     targetValue = if (selected) 1.06f else 1f,
                     animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioLowBouncy,
-                        stiffness = Spring.StiffnessMedium
+                        dampingRatio = 0.78f,
+                        stiffness = 470f,
+                        visibilityThreshold = 0.001f
                     ),
                     label = "model_filter_chip_scale"
                 )
@@ -642,23 +660,23 @@ private fun SearchAndFilterRow(
                     onClick = { onTierChange(tier) },
                     hazeState = hazeState,
                     modifier = Modifier
-                        .height(42.dp)
+                        .height(36.dp)
                         .graphicsLayer {
                             scaleX = chipScale
                             scaleY = chipScale
                         },
-                    shape = RoundedCornerShape(18.dp),
+                    shape = RoundedCornerShape(10.dp),
                     tintColor = if (selected) {
                         MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
                     } else {
-                        Color.White.copy(alpha = if (isDark) 0.045f else 0.34f)
+                        MaterialTheme.colorScheme.surfaceContainer
                     },
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                 ) {
                     Text(
                         tier.display,
                         color = if (selected) {
-                            Color.White
+                            MaterialTheme.colorScheme.primary
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
@@ -677,12 +695,16 @@ private fun NoModelsMatchCard(
     onClear: () -> Unit,
     hazeState: HazeState
 ) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val tintColor = if (isDark) Color.White.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.45f)
+    val tintColor = MaterialTheme.colorScheme.surfaceContainer
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .fluidReveal(delayMillis = 90, initialYOffset = 12.dp)
+            .fluidReveal(
+                delayMillis = 90,
+                initialScale = 0.91f,
+                initialYOffset = 12.dp,
+                initialRotationZ = 0.8f
+            )
             .glassEffect(hazeState = hazeState, shape = MaterialTheme.shapes.medium, blurRadius = 16.dp, tintColor = tintColor),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         shape = MaterialTheme.shapes.medium
@@ -729,12 +751,16 @@ private fun StorageSummaryCard(downloadedModels: List<ModelInfo>, hazeState: Haz
             }
         }
     }
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val cardTint = if (isDark) Color.White.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.45f)
+    val cardTint = MaterialTheme.colorScheme.surfaceContainer
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .fluidReveal(delayMillis = 60, initialYOffset = 20.dp)
+            .fluidReveal(
+                delayMillis = 60,
+                initialYOffset = 20.dp,
+                initialXOffset = (-18).dp,
+                initialRotationZ = -0.6f
+            )
             .animatedGlassHalo(enabled = downloadedModels.isNotEmpty(), alpha = 0.04f, durationMillis = 5_000)
             .glassEffect(hazeState = hazeState, shape = MaterialTheme.shapes.medium, blurRadius = 16.dp, tintColor = cardTint),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
@@ -785,17 +811,21 @@ private fun StorageSummaryCard(downloadedModels: List<ModelInfo>, hazeState: Haz
 
 @Composable
 private fun DeviceCard(isCompatible: Boolean, message: String, hazeState: HazeState) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
     val tintColor = if (isCompatible) {
-        if (isDark) Color(0xFF0A84FF).copy(alpha = 0.15f) else Color(0xFF007AFF).copy(alpha = 0.15f)
+        MaterialTheme.colorScheme.primaryContainer
     } else {
-        if (isDark) Color(0xFFFF453A).copy(alpha = 0.15f) else Color(0xFFFF3B30).copy(alpha = 0.15f)
+        MaterialTheme.colorScheme.errorContainer
     }
     val borderAlpha = if (isCompatible) 0.35f else 0.45f
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .fluidReveal(delayMillis = 100, initialYOffset = 20.dp)
+            .fluidReveal(
+                delayMillis = 100,
+                initialYOffset = 20.dp,
+                initialXOffset = 18.dp,
+                initialRotationZ = 0.6f
+            )
             .animatedGlassHalo(alpha = if (isCompatible) 0.045f else 0.03f, durationMillis = 4_600)
             .glassEffect(hazeState = hazeState, shape = MaterialTheme.shapes.medium, blurRadius = 20.dp, tintColor = tintColor, borderAlpha = borderAlpha),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
@@ -808,7 +838,8 @@ private fun DeviceCard(isCompatible: Boolean, message: String, hazeState: HazeSt
             Icon(
                 imageVector = if (isCompatible) Icons.Default.CheckCircle else Icons.Default.Info,
                 contentDescription = null,
-                modifier = Modifier.size(24.dp)
+                modifier = Modifier.size(24.dp),
+                tint = if (isCompatible) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
             )
             Spacer(modifier = Modifier.width(16.dp))
             Text(
@@ -822,12 +853,16 @@ private fun DeviceCard(isCompatible: Boolean, message: String, hazeState: HazeSt
 
 @Composable
 private fun PrivacyCard(hazeState: HazeState) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val cardTint = if (isDark) Color.White.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.45f)
+    val cardTint = MaterialTheme.colorScheme.surfaceContainerLow
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .fluidReveal(delayMillis = 140, initialYOffset = 20.dp)
+            .fluidReveal(
+                delayMillis = 140,
+                initialYOffset = 20.dp,
+                initialXOffset = (-18).dp,
+                initialRotationZ = -0.55f
+            )
             .glassEffect(hazeState = hazeState, shape = MaterialTheme.shapes.medium, blurRadius = 16.dp, tintColor = cardTint),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         shape = MaterialTheme.shapes.medium
@@ -858,13 +893,17 @@ private fun AccessCard(
     hazeState: HazeState
 ) {
     var tokenDraft by rememberSaveable(token) { mutableStateOf(token) }
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val cardTint = if (isDark) Color.White.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.45f)
+    val cardTint = MaterialTheme.colorScheme.surfaceContainerHigh
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .fluidReveal(delayMillis = 180, initialYOffset = 20.dp)
+            .fluidReveal(
+                delayMillis = 180,
+                initialYOffset = 20.dp,
+                initialXOffset = 18.dp,
+                initialRotationZ = 0.55f
+            )
             .animatedGlassHalo(alpha = 0.035f, durationMillis = 5_200)
             .glassEffect(hazeState = hazeState, shape = MaterialTheme.shapes.medium, blurRadius = 16.dp, tintColor = cardTint),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
@@ -883,12 +922,12 @@ private fun AccessCard(
                 label = { Text("Hugging Face read token") },
                 leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
                 visualTransformation = PasswordVisualTransformation(),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedContainerColor = Color.Transparent
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
                 )
             )
             Row(
@@ -906,9 +945,10 @@ private fun AccessCard(
                     onClick = { onTokenSave(tokenDraft) },
                     enabled = tokenDraft.trim() != token,
                     hazeState = hazeState,
-                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier.height(44.dp),
+                    shape = RoundedCornerShape(12.dp),
                     tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f),
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp)
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp)
                 ) {
                     Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
@@ -927,13 +967,17 @@ private fun CustomModelCard(onAddModel: (String, String, ModelType) -> Unit, haz
     var imageSelected by rememberSaveable { mutableStateOf(false) }
     val hasTypeSelection = textSelected || imageSelected
     val selectedTypeCount = (if (textSelected) 1 else 0) + (if (imageSelected) 1 else 0)
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val cardTint = if (isDark) Color.White.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.45f)
+    val cardTint = MaterialTheme.colorScheme.surfaceContainerLow
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .fluidReveal(delayMillis = 220, initialYOffset = 20.dp)
+            .fluidReveal(
+                delayMillis = 220,
+                initialScale = 0.94f,
+                initialYOffset = 20.dp,
+                initialRotationZ = -0.75f
+            )
             .glassEffect(hazeState = hazeState, shape = MaterialTheme.shapes.medium, blurRadius = 16.dp, tintColor = cardTint),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         shape = MaterialTheme.shapes.medium
@@ -948,14 +992,12 @@ private fun CustomModelCard(onAddModel: (String, String, ModelType) -> Unit, haz
                 CustomModelTypeButton(
                     label = "Text",
                     selected = textSelected,
-                    isDark = isDark,
                     hazeState = hazeState,
                     onClick = { textSelected = !textSelected }
                 )
                 CustomModelTypeButton(
                     label = "Image",
                     selected = imageSelected,
-                    isDark = isDark,
                     hazeState = hazeState,
                     onClick = { imageSelected = !imageSelected }
                 )
@@ -967,12 +1009,12 @@ private fun CustomModelCard(onAddModel: (String, String, ModelType) -> Unit, haz
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 label = { Text("Name") },
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedContainerColor = Color.Transparent
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
                 )
             )
             OutlinedTextField(
@@ -983,12 +1025,12 @@ private fun CustomModelCard(onAddModel: (String, String, ModelType) -> Unit, haz
                 leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
                 minLines = 1,
                 maxLines = 3,
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
-                    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedContainerColor = Color.Transparent
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
                 )
             )
             LiquidGlassButton(
@@ -1005,11 +1047,11 @@ private fun CustomModelCard(onAddModel: (String, String, ModelType) -> Unit, haz
                     imageSelected = false
                 },
                 enabled = modelUrl.isNotBlank() && hasTypeSelection,
-                modifier = Modifier.align(Alignment.End),
+                modifier = Modifier.align(Alignment.End).height(44.dp),
                 hazeState = hazeState,
-                shape = RoundedCornerShape(20.dp),
+                shape = RoundedCornerShape(12.dp),
                 tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f),
-                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp)
+                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp)
             ) {
                 Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
@@ -1029,23 +1071,22 @@ private fun CustomModelCard(onAddModel: (String, String, ModelType) -> Unit, haz
 private fun CustomModelTypeButton(
     label: String,
     selected: Boolean,
-    isDark: Boolean,
     hazeState: HazeState,
     onClick: () -> Unit
 ) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(12.dp)
     val accent = MaterialTheme.colorScheme.primary
     LiquidGlassButton(
         onClick = onClick,
         hazeState = hazeState,
         modifier = Modifier
-            .height(42.dp)
+            .height(40.dp)
             .border(
                 width = if (selected) 1.4.dp else 0.7.dp,
                 color = if (selected) {
                     accent.copy(alpha = 0.86f)
                 } else {
-                    Color.White.copy(alpha = if (isDark) 0.12f else 0.24f)
+                    MaterialTheme.colorScheme.outlineVariant
                 },
                 shape = shape
             ),
@@ -1053,9 +1094,9 @@ private fun CustomModelTypeButton(
         tintColor = if (selected) {
             accent.copy(alpha = 0.40f)
         } else {
-            Color.White.copy(alpha = if (isDark) 0.035f else 0.18f)
+            MaterialTheme.colorScheme.surfaceContainerHighest
         },
-        contentPadding = PaddingValues(horizontal = if (selected) 14.dp else 18.dp, vertical = 0.dp)
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
     ) {
         if (selected) {
             Icon(
@@ -1074,7 +1115,7 @@ private fun CustomModelTypeButton(
             color = if (selected) {
                 accent
             } else {
-                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f)
+                MaterialTheme.colorScheme.onSurfaceVariant
             }
         )
     }
@@ -1083,22 +1124,19 @@ private fun CustomModelTypeButton(
 @Composable
 private fun GlassLabelChip(
     label: String,
-    hazeState: HazeState,
     accentColor: Color
 ) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(10.dp)
     Row(
         modifier = Modifier
-            .height(36.dp)
-            .glassEffect(
-                hazeState = hazeState,
-                shape = shape,
-                blurRadius = 20.dp,
-                tintColor = if (isDark) Color.White.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.58f),
-                borderAlpha = 0.48f
+            .height(30.dp)
+            .background(accentColor.copy(alpha = 0.12f), shape)
+            .border(
+                width = 1.dp,
+                color = accentColor.copy(alpha = 0.32f),
+                shape = shape
             )
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -1109,102 +1147,45 @@ private fun GlassLabelChip(
         Spacer(modifier = Modifier.width(7.dp))
         Text(
             label,
-            style = MaterialTheme.typography.labelMedium,
-            color = if (isDark) Color.White.copy(alpha = 0.86f) else MaterialTheme.colorScheme.onSurface
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface
         )
     }
 }
 
 @Composable
 private fun LiquidProgressBar(
-    progress: Float,
-    hazeState: HazeState
+    progress: Float
 ) {
-    val shape = RoundedCornerShape(999.dp)
+    val shape = RoundedCornerShape(6.dp)
     val targetProgress = progress.coerceIn(0f, 1f)
     val animatedProgress by animateFloatAsState(
         targetValue = targetProgress,
-        animationSpec = tween(durationMillis = 420),
+        animationSpec = spring(dampingRatio = 0.82f, stiffness = 360f),
         label = "liquid_download_progress"
     )
-    val waveTransition = rememberInfiniteTransition(label = "liquid_download_wave")
-    val waveShift by waveTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(animation = tween(1_450), repeatMode = RepeatMode.Restart),
-        label = "liquid_download_wave_shift"
-    )
-    val completionPulse by animateFloatAsState(
-        targetValue = if (targetProgress >= 0.999f) 1f else 0f,
-        animationSpec = tween(durationMillis = 420),
-        label = "liquid_download_complete_pulse"
-    )
-    val liquidPrimary = MaterialTheme.colorScheme.primary
+    val colors = MaterialTheme.colorScheme
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(18.dp)
-            .graphicsLayer {
-                scaleX = 1f + completionPulse * 0.06f
-                scaleY = 1f + completionPulse * 0.04f
-            }
-            .glassEffect(
-                hazeState = hazeState,
-                shape = shape,
-                blurRadius = 12.dp,
-                tintColor = Color.White.copy(alpha = 0.08f),
-                borderAlpha = 0.22f
+            .height(10.dp)
+            .clip(shape)
+            .background(colors.surfaceContainerHighest)
+            .border(
+                width = 1.dp,
+                color = colors.outlineVariant.copy(alpha = 0.85f),
+                shape = shape
             )
-            .padding(2.dp)
     ) {
-        Canvas(
-            modifier = Modifier
-                .clip(shape)
-                .matchParentSize()
-        ) {
-            val fillTop = size.height * (1f - animatedProgress)
-            val amplitude = size.height * 0.24f * (1f - animatedProgress).coerceIn(0f, 1f)
-            val waveLength = size.width / 1.35f
-            val path = Path().apply {
-                moveTo(0f, size.height)
-                lineTo(0f, fillTop)
-                var x = 0f
-                while (x <= size.width + 8f) {
-                    val phase = ((x / waveLength) + waveShift) * 2f * PI.toFloat()
-                    val y = fillTop + sin(phase) * amplitude
-                    lineTo(x, y)
-                    x += 8f
-                }
-                lineTo(size.width, size.height)
-                close()
-            }
-            drawPath(
-                path = path,
-                brush = Brush.horizontalGradient(
-                    listOf(
-                        Color(0xFF8BE9FF),
-                        liquidPrimary,
-                        Color(0xFFFF7CE8)
-                    )
-                )
-            )
-            if (completionPulse > 0f) {
-                drawCircle(
-                    color = Color.White.copy(alpha = 0.22f * (1f - completionPulse)),
-                    radius = size.maxDimension * completionPulse,
-                    center = center
-                )
-            }
-        }
         Box(
             modifier = Modifier
-                .matchParentSize()
+                .fillMaxHeight()
+                .fillMaxWidth(animatedProgress.coerceIn(0f, 1f))
                 .background(
-                    Brush.verticalGradient(
+                    Brush.horizontalGradient(
                         listOf(
-                            Color.White.copy(alpha = 0.20f),
-                            Color.Transparent,
-                            Color.Black.copy(alpha = 0.10f)
+                            colors.primary.copy(alpha = 0.82f),
+                            colors.primary
                         )
                     )
                 )
@@ -1224,7 +1205,6 @@ fun ModelItem(
     onDelete: (() -> Unit)? = null,
     onUnsafeDownload: (() -> Unit)? = null,
     onUnsafeTry: (() -> Unit)? = null,
-    entryDelayMs: Int = 0,
     hazeState: HazeState
 ) {
     val isFuturePlaceholder = model.isFuturePlaceholder
@@ -1238,9 +1218,9 @@ fun ModelItem(
         model.localPath != null &&
         !isCrashBlocked &&
         onUnsafeTry != null
-    val statusColor = when (model.status) {
-        ModelStatus.Available -> MaterialTheme.colorScheme.primary
-        ModelStatus.Downloading -> MaterialTheme.colorScheme.tertiary
+    val targetStatusColor = when (model.status) {
+        ModelStatus.Available -> MaterialTheme.colorScheme.tertiary
+        ModelStatus.Downloading -> MaterialTheme.colorScheme.primary
         ModelStatus.Paused -> MaterialTheme.colorScheme.secondary
         ModelStatus.Failed -> MaterialTheme.colorScheme.error
         ModelStatus.Blocked -> MaterialTheme.colorScheme.error
@@ -1248,20 +1228,59 @@ fun ModelItem(
         ModelStatus.ComingSoon -> MaterialTheme.colorScheme.outline
         ModelStatus.NotDownloaded -> MaterialTheme.colorScheme.onSurfaceVariant
     }
+    val statusColor by animateColorAsState(
+        targetValue = targetStatusColor,
+        animationSpec = tween(240),
+        label = "model_status_color"
+    )
 
-    val itemShape = RoundedCornerShape(28.dp)
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val itemShape = MaterialTheme.shapes.large
     val context = LocalContext.current
-    val tintColor = if (isSelected) {
-        if (isDark) Color(0xFF0A84FF).copy(alpha = 0.12f) else Color(0xFF007AFF).copy(alpha = 0.12f)
+    val targetTintColor = if (isSelected) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
     } else {
-        if (isDark) Color.White.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.45f)
+        MaterialTheme.colorScheme.surfaceContainer
     }
-    val borderAlpha = if (isSelected) 0.6f else 0.25f
+    val tintColor by animateColorAsState(
+        targetValue = targetTintColor,
+        animationSpec = tween(260),
+        label = "model_card_tint"
+    )
+    val borderAlpha by animateFloatAsState(
+        targetValue = if (isSelected) 0.6f else 0.25f,
+        animationSpec = spring(dampingRatio = 0.86f, stiffness = 430f),
+        label = "model_card_border"
+    )
+    val selectionMotion by animateFloatAsState(
+        targetValue = if (isSelected) 1f else 0f,
+        animationSpec = spring(
+            dampingRatio = 0.74f,
+            stiffness = 400f,
+            visibilityThreshold = 0.001f
+        ),
+        label = "model_card_selection_motion"
+    )
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .fluidReveal(delayMillis = entryDelayMs, initialYOffset = 12.dp)
+            .fluidReveal(
+                initialScale = 0.94f,
+                initialYOffset = 18.dp,
+                initialXOffset = if ((model.id.hashCode() and 1) == 0) (-16).dp else 16.dp,
+                initialRotationZ = if ((model.id.hashCode() and 1) == 0) -0.8f else 0.8f
+            )
+            .animateContentSize(
+                animationSpec = spring(
+                    dampingRatio = 0.68f,
+                    stiffness = 430f
+                )
+            )
+            .graphicsLayer {
+                scaleX = 1f + selectionMotion * 0.012f
+                scaleY = 1f + selectionMotion * 0.012f
+                translationY = -selectionMotion * 2.5f * density
+                rotationZ = selectionMotion * -0.18f
+            }
             .animatedGlassHalo(enabled = isSelected, alpha = 0.055f, durationMillis = 4_400)
             .jellyOnTouch(sensitivity = 1.45f)
             .glassEffect(hazeState = hazeState, shape = itemShape, blurRadius = 16.dp, tintColor = tintColor, borderAlpha = borderAlpha),
@@ -1273,16 +1292,28 @@ fun ModelItem(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(verticalAlignment = Alignment.Top) {
-                Icon(
-                    imageVector = when (model.status) {
-                        ModelStatus.Available -> Icons.Default.CheckCircle
-                        ModelStatus.Blocked -> Icons.Default.Info
-                        else -> Icons.Default.Download
-                    },
-                    contentDescription = null,
-                    modifier = Modifier.size(28.dp),
-                    tint = statusColor
-                )
+                androidx.compose.animation.Crossfade(
+                    targetState = model.status,
+                    animationSpec = tween(210),
+                    label = "model_status_icon"
+                ) { visibleStatus ->
+                    Icon(
+                        imageVector = when (visibleStatus) {
+                            ModelStatus.Available -> Icons.Default.CheckCircle
+                            ModelStatus.Blocked -> Icons.Default.Info
+                            else -> Icons.Default.Download
+                        },
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(28.dp)
+                            .graphicsLayer {
+                                scaleX = 1f + selectionMotion * 0.12f
+                                scaleY = 1f + selectionMotion * 0.12f
+                                rotationZ = selectionMotion * 8f
+                            },
+                        tint = statusColor
+                    )
+                }
                 Spacer(modifier = Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -1292,7 +1323,7 @@ fun ModelItem(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        "${model.type.label} | ${model.displaySize} | ${model.backend}",
+                        "${model.type.label}  •  ${model.displaySize}  •  ${model.backend}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1311,25 +1342,21 @@ fun ModelItem(
             ) {
                 GlassLabelChip(
                     label = if (isSelected) "Selected" else model.status.label,
-                    hazeState = hazeState,
                     accentColor = statusColor
                 )
                 GlassLabelChip(
                     label = model.contextLengthLabel,
-                    hazeState = hazeState,
-                    accentColor = MaterialTheme.colorScheme.primary
+                    accentColor = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (model.isRecommended) {
                     GlassLabelChip(
                         label = "Recommended",
-                        hazeState = hazeState,
                         accentColor = MaterialTheme.colorScheme.tertiary
                     )
                 }
                 if (model.requiresHuggingFaceToken) {
                     GlassLabelChip(
                         label = "Token needed",
-                        hazeState = hazeState,
                         accentColor = MaterialTheme.colorScheme.secondary
                     )
                 }
@@ -1341,19 +1368,33 @@ fun ModelItem(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            if (model.status == ModelStatus.Downloading) {
+            if (
+                model.status == ModelStatus.Downloading ||
+                ((model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) && model.downloadedBytes > 0L)
+            ) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    LiquidProgressBar(progress = model.progress, hazeState = hazeState)
-                    val progressText = if (model.totalBytes > 0L) {
-                        "${(model.progress * 100).toInt()}%  |  ${formatBytes(model.downloadedBytes)} / ${formatBytes(model.totalBytes)}  |  ${formatBytes(model.bytesPerSecond)}/s"
-                    } else {
-                        "${formatBytes(model.downloadedBytes)} downloaded  |  ${formatBytes(model.bytesPerSecond)}/s"
+                    LiquidProgressBar(progress = model.progress)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            if (model.totalBytes > 0L) {
+                                "${(model.progress * 100).toInt()}%  •  ${formatBytes(model.downloadedBytes)} / ${formatBytes(model.totalBytes)}"
+                            } else {
+                                "${formatBytes(model.downloadedBytes)} downloaded"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (model.status == ModelStatus.Downloading) {
+                            Text(
+                                "${formatBytes(model.bytesPerSecond)}/s",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
-                    Text(
-                        progressText,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
             }
 
@@ -1394,9 +1435,10 @@ fun ModelItem(
                     LiquidGlassButton(
                         onClick = { showDeleteConfirm = true },
                         hazeState = hazeState,
-                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier.height(40.dp),
+                        shape = RoundedCornerShape(12.dp),
                         tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.22f),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 9.dp)
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                     ) {
                         Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
@@ -1408,9 +1450,10 @@ fun ModelItem(
                     LiquidGlassButton(
                         onClick = onOpenPage,
                         hazeState = hazeState,
-                        shape = RoundedCornerShape(20.dp),
-                        tintColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.20f),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 9.dp)
+                        modifier = Modifier.height(40.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        tintColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                     ) {
                         Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
@@ -1418,13 +1461,18 @@ fun ModelItem(
                     }
                 }
 
-                if (model.status in listOf(ModelStatus.Downloading, ModelStatus.Paused) && onCancel != null) {
+                if (
+                    (model.status in listOf(ModelStatus.Downloading, ModelStatus.Paused) ||
+                        (model.status == ModelStatus.Failed && model.downloadedBytes > 0L)) &&
+                    onCancel != null
+                ) {
                     LiquidGlassButton(
                         onClick = onCancel,
                         hazeState = hazeState,
-                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier.height(40.dp),
+                        shape = RoundedCornerShape(12.dp),
                         tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.22f),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 9.dp)
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                     ) {
                         Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
@@ -1474,13 +1522,14 @@ fun ModelItem(
                         !isFuturePlaceholder &&
                         (model.status != ModelStatus.Blocked || canDownloadAnyway || canTryAnyway),
                     hazeState = hazeState,
-                    shape = RoundedCornerShape(22.dp),
+                    modifier = Modifier.height(44.dp),
+                    shape = RoundedCornerShape(12.dp),
                     tintColor = if (isSelected) {
-                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.30f)
+                        MaterialTheme.colorScheme.primaryContainer
                     } else {
                         MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
                     },
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp)
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp)
                 ) {
                     Icon(
                         imageVector = when (model.status) {
@@ -1570,7 +1619,6 @@ private fun DeleteModelGlassDialog(
     onDismissRequest: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
     Dialog(onDismissRequest = onDismissRequest) {
         Box(
             modifier = Modifier
@@ -1586,11 +1634,11 @@ private fun DeleteModelGlassDialog(
                     .fluidReveal(initialScale = 0.88f, initialYOffset = 16.dp)
                     .animatedGlassHalo(alpha = 0.06f, durationMillis = 4_800),
                 hazeState = hazeState,
-                cornerRadius = 32.dp,
+                cornerRadius = 20.dp,
                 blurRadius = 34.dp,
                 refractionStrength = 0.18f,
                 dispersionAmount = 0.034f,
-                tintColor = if (isDark) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.70f),
+                tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                 borderAlpha = 0.50f,
                 contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 14.dp),
                 animatedCaustics = true
@@ -1614,9 +1662,10 @@ private fun DeleteModelGlassDialog(
                         LiquidGlassButton(
                             onClick = onDismissRequest,
                             hazeState = hazeState,
-                            shape = RoundedCornerShape(20.dp),
-                            tintColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 9.dp)
+                            modifier = Modifier.height(40.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            tintColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
                         ) {
                             Text("Cancel")
                         }
@@ -1624,9 +1673,10 @@ private fun DeleteModelGlassDialog(
                         LiquidGlassButton(
                             onClick = onConfirm,
                             hazeState = hazeState,
-                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier.height(40.dp),
+                            shape = RoundedCornerShape(12.dp),
                             tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.30f),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 9.dp)
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
@@ -1649,7 +1699,6 @@ private fun RiskyModelActionDialog(
     onDismissRequest: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
     Dialog(onDismissRequest = onDismissRequest) {
         Box(
             modifier = Modifier
@@ -1665,11 +1714,11 @@ private fun RiskyModelActionDialog(
                     .fluidReveal(initialScale = 0.88f, initialYOffset = 16.dp)
                     .animatedGlassHalo(alpha = 0.07f, durationMillis = 4_800),
                 hazeState = hazeState,
-                cornerRadius = 32.dp,
+                cornerRadius = 20.dp,
                 blurRadius = 34.dp,
                 refractionStrength = 0.18f,
                 dispersionAmount = 0.034f,
-                tintColor = if (isDark) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.70f),
+                tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                 borderAlpha = 0.50f,
                 contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 14.dp),
                 animatedCaustics = true
@@ -1698,18 +1747,20 @@ private fun RiskyModelActionDialog(
                         LiquidGlassButton(
                             onClick = onDismissRequest,
                             hazeState = hazeState,
-                            shape = RoundedCornerShape(20.dp),
-                            tintColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 9.dp)
+                            modifier = Modifier.height(40.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            tintColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
                         ) {
                             Text("Cancel")
                         }
                         LiquidGlassButton(
                             onClick = onConfirm,
                             hazeState = hazeState,
-                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier.height(40.dp),
+                            shape = RoundedCornerShape(12.dp),
                             tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.30f),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 9.dp)
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
                         ) {
                             Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))

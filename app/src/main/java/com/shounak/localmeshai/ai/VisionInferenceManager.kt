@@ -248,9 +248,9 @@ class VisionInferenceManager(private val context: Context) {
         var engine: Engine? = null
         try {
             val backend = when (inferenceBackend) {
-                InferenceBackend.LITERT_GPU -> Backend.GPU
+                InferenceBackend.LITERT_GPU -> Backend.GPU()
                 InferenceBackend.LITERT_CPU,
-                InferenceBackend.MEDIAPIPE -> Backend.CPU
+                InferenceBackend.MEDIAPIPE -> Backend.CPU()
             }
             val runtimeCacheDir = LiteRtRuntimeCache.prepare(context, modelId, inferenceBackend)
             liteRtCacheDir = runtimeCacheDir

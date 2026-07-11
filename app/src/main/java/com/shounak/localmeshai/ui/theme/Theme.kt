@@ -6,53 +6,88 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Color(0xFF0A84FF),
-    secondary = Color(0xFF5E5CE6),
-    tertiary = Color(0xFF30D158),
-    primaryContainer = Color(0xFF003066),
-    secondaryContainer = Color(0xFF23216F),
-    tertiaryContainer = Color(0xFF0F501E),
-    background = Color(0xFF0A0718),
-    surface = Color(0xFF16122C),
-    surfaceVariant = Color(0xFF221B40),
-    outline = Color(0xFFFFFFFF).copy(alpha = 0.2f),
-    onBackground = Color(0xFFFFFFFF),
-    onSurface = Color(0xFFFFFFFF),
-    onSurfaceVariant = Color(0xFFEBEBF5).copy(alpha = 0.6f)
+    primary = AccentBlue,
+    onPrimary = Color(0xFF002B3B),
+    primaryContainer = Color(0xFF123E52),
+    onPrimaryContainer = Color(0xFFCDEFFF),
+    secondary = StatusAmber,
+    onSecondary = Color(0xFF3F2600),
+    secondaryContainer = Color(0xFF49351F),
+    onSecondaryContainer = Color(0xFFFFDDB5),
+    tertiary = StatusGreen,
+    onTertiary = Color(0xFF00391E),
+    tertiaryContainer = Color(0xFF163D2A),
+    onTertiaryContainer = Color(0xFFB7F3CE),
+    error = StatusRed,
+    errorContainer = Color(0xFF4A2027),
+    onErrorContainer = Color(0xFFFFDADD),
+    background = Slate925,
+    onBackground = Slate100,
+    surface = Slate850,
+    onSurface = Slate100,
+    surfaceVariant = Slate750,
+    onSurfaceVariant = Slate300,
+    outline = Slate500,
+    outlineVariant = Color(0xFF2D3B47),
+    surfaceBright = Slate650,
+    surfaceContainerLowest = Slate950,
+    surfaceContainerLow = Slate900,
+    surfaceContainer = Slate800,
+    surfaceContainerHigh = Slate750,
+    surfaceContainerHighest = Slate700,
+    surfaceDim = Slate925,
+    surfaceTint = AccentBlue
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Color(0xFF007AFF),
-    secondary = Color(0xFF5856D6),
-    tertiary = Color(0xFF34C759),
-    primaryContainer = Color(0xFFD1E7FF),
-    secondaryContainer = Color(0xFFE5D9F2),
-    tertiaryContainer = Color(0xFFD6F5D6),
-    background = Color(0xFFF0F3F9),
-    surface = Color(0xFFFFFFFF),
-    surfaceVariant = Color(0xFFE5E5EA),
-    outline = Color(0xFF3C3C43).copy(alpha = 0.3f),
-    onBackground = Color(0xFF000000),
-    onSurface = Color(0xFF000000),
-    onSurfaceVariant = Color(0xFF3C3C43).copy(alpha = 0.6f)
+    primary = AccentBlueDark,
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFC6EDFF),
+    onPrimaryContainer = Color(0xFF003548),
+    secondary = Color(0xFFA45B00),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFFFDDB5),
+    onSecondaryContainer = Color(0xFF3A2200),
+    tertiary = Color(0xFF167A46),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFB7F3CE),
+    onTertiaryContainer = Color(0xFF00391E),
+    error = Color(0xFFBA4050),
+    errorContainer = Color(0xFFFFDADD),
+    onErrorContainer = Color(0xFF40000A),
+    background = Color(0xFFF4F7F9),
+    onBackground = Color(0xFF111820),
+    surface = Color.White,
+    onSurface = Color(0xFF111820),
+    surfaceVariant = Color(0xFFDDE5EB),
+    onSurfaceVariant = Color(0xFF465664),
+    outline = Color(0xFF71818E),
+    outlineVariant = Color(0xFFC5D0D8),
+    surfaceBright = Color.White,
+    surfaceContainerLowest = Color.White,
+    surfaceContainerLow = Color(0xFFF7F9FA),
+    surfaceContainer = Color(0xFFEEF2F5),
+    surfaceContainerHigh = Color(0xFFE6ECEF),
+    surfaceContainerHighest = Color(0xFFDDE5EA),
+    surfaceDim = Color(0xFFD8E0E6),
+    surfaceTint = AccentBlueDark
 )
 
-// M3 Expressive – larger, friendlier corner radii
+// A compact, consistent radius scale shared by cards, controls, and dialogs.
 private val ExpressiveShapes = Shapes(
     extraSmall = RoundedCornerShape(8.dp),
-    small = RoundedCornerShape(12.dp),
-    medium = RoundedCornerShape(20.dp),
-    large = RoundedCornerShape(28.dp),
-    extraLarge = RoundedCornerShape(32.dp)
+    small = RoundedCornerShape(10.dp),
+    medium = RoundedCornerShape(14.dp),
+    large = RoundedCornerShape(20.dp),
+    extraLarge = RoundedCornerShape(28.dp)
 )
 
 @Composable
@@ -71,14 +106,16 @@ fun LocalMeshAITheme(
     }
     val view = LocalView.current
     if (!view.isInEditMode) {
-        SideEffect {
+        // Only update status/nav bar icon appearance when dark-theme state
+        // actually changes.  enableEdgeToEdge() in MainActivity already sets
+        // the bar colours to transparent once; repeating that in a SideEffect
+        // on every recomposition can cause some GPUs to briefly invalidate the
+        // window surface, flashing the underlying windowBackground colour.
+        LaunchedEffect(darkTheme) {
             val window = (view.context as Activity).window
-            @Suppress("DEPRECATION")
-            window.statusBarColor = Color.Transparent.toArgb()
-            @Suppress("DEPRECATION")
-            window.navigationBarColor = Color.Transparent.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
-            WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = !darkTheme
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            insetsController.isAppearanceLightStatusBars = !darkTheme
+            insetsController.isAppearanceLightNavigationBars = !darkTheme
         }
     }
 

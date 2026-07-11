@@ -8,11 +8,14 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.Message
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
 import com.google.mediapipe.tasks.genai.llminference.ProgressListener
 import com.shounak.localmeshai.utils.DeviceUtils
+import com.shounak.localmeshai.utils.ChatPromptPolicy
+import com.shounak.localmeshai.utils.ChatRuntimePolicy
 import com.shounak.localmeshai.utils.InferenceBackend
 import com.shounak.localmeshai.utils.InitCrashGuard
 import com.shounak.localmeshai.utils.LiteRtRuntimeCache
@@ -20,6 +23,7 @@ import com.shounak.localmeshai.utils.ModelOutputSanitizer
 import com.shounak.localmeshai.utils.ModelResponseQuality
 import com.shounak.localmeshai.utils.ModelDownloader
 import com.shounak.localmeshai.utils.NoThinkingPromptUtils
+import com.shounak.localmeshai.utils.ThinkingModeConfig
 import com.shounak.localmeshai.utils.ThinkingTextUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -41,12 +45,17 @@ class ChatInferenceManager(private val context: Context) {
     @Volatile private var stopRequested = false
     @Volatile private var isBeingClosed = false
     @Volatile private var isDefaultThinkingModel = false
-    @Volatile private var useDirectMediaPipePrompt = false
+    @Volatile private var supportsTextNoThinkingSwitch = false
+    @Volatile private var useNativeGemmaTaskTemplate = false
+    @Volatile private var mediaPipeTemperature = DEFAULT_TEMPERATURE
     @Volatile private var liteRtConversationMode = LiteRtConversationMode.Default
 
     companion object {
         private const val TAG = "ChatInferenceManager"
         private const val MAX_RESPONSE_TOKENS = 1024
+        private const val DEFAULT_TEMPERATURE = 0.7f
+        private const val TINY_MODEL_TEMPERATURE = 0.35f
+        private const val RETRY_TEMPERATURE = 0.2f
 
         private val THINK_BLOCK_REGEX =
             Regex("""<think>[\s\S]*?</think>""", RegexOption.IGNORE_CASE)
@@ -57,7 +66,10 @@ class ChatInferenceManager(private val context: Context) {
     /**
      * Initializes the inference engine.
      *
-     * For .litertlm files: uses LiteRT-LM Engine with GPU backend.
+     * Uses LiteRT-LM Conversation for .litertlm files and Gemma chat task bundles.
+     * Current LiteRT-LM accepts both containers and applies their native chat
+     * template; the older stateless MediaPipe completion path does not preserve
+     * the Gemma conversation contract reliably.
      * WARNING: Engine.initialize() can call native abort() which kills the process.
      * We use InitCrashGuard to detect this and block the model on next launch.
      *
@@ -84,11 +96,28 @@ class ChatInferenceManager(private val context: Context) {
         isDefaultThinkingModel = listOf("qwen3", "deepseek", "reasoning", "mimo", "exaone").any {
             searchString.contains(it)
         }
-        useDirectMediaPipePrompt = false
+        supportsTextNoThinkingSwitch = searchString.contains("qwen3")
+        val isTinyGemmaMediaPipeModel = listOf(
+            "gemma3_270m",
+            "gemma3-270m",
+            "gemma-3-270m",
+            "gemma 3 270m"
+        ).any(searchString::contains)
+        useNativeGemmaTaskTemplate = file.extension.equals("task", ignoreCase = true) &&
+            searchString.contains("gemma")
+        mediaPipeTemperature = if (isTinyGemmaMediaPipeModel) {
+            TINY_MODEL_TEMPERATURE
+        } else {
+            DEFAULT_TEMPERATURE
+        }
         stopRequested = false
         isBeingClosed = false
 
-        if (file.extension.equals("litertlm", ignoreCase = true)) {
+        val shouldUseLiteRtLmConversation = ChatRuntimePolicy.shouldUseLiteRtLmConversation(
+            fileName = file.name,
+            modelIdentity = searchString
+        )
+        if (shouldUseLiteRtLmConversation) {
             val inferenceBackend = if (allowUnsafeOverride) {
                 InferenceBackend.LITERT_GPU
             } else {
@@ -145,9 +174,9 @@ class ChatInferenceManager(private val context: Context) {
         var engine: Engine? = null
         try {
             val backend = when (inferenceBackend) {
-                InferenceBackend.LITERT_GPU -> Backend.GPU
+                InferenceBackend.LITERT_GPU -> Backend.GPU()
                 InferenceBackend.LITERT_CPU,
-                InferenceBackend.MEDIAPIPE -> Backend.CPU
+                InferenceBackend.MEDIAPIPE -> Backend.CPU()
             }
             val runtimeCacheDir = LiteRtRuntimeCache.prepare(context, modelId, inferenceBackend)
             liteRtCacheDir = runtimeCacheDir
@@ -165,7 +194,15 @@ class ChatInferenceManager(private val context: Context) {
             InitCrashGuard.markInitCompleted(context)
 
             liteRtEngine = engine
-            liteRtConversation = createLiteRtConversation(LiteRtConversationMode.Default)
+            // The UI defaults to Think off. Start default-thinking models with the
+            // same hard template context so the very first request cannot inherit
+            // the model's thinking default before ChatViewModel observes a toggle.
+            val initialMode = if (isDefaultThinkingModel) {
+                LiteRtConversationMode.NoThinking
+            } else {
+                LiteRtConversationMode.Default
+            }
+            liteRtConversation = createLiteRtConversation(initialMode)
             runtime = RuntimeKind.LiteRtLm
             Log.i(TAG, "LiteRT-LM engine ready on $backend: $modelPath")
         } catch (t: Throwable) {
@@ -193,30 +230,38 @@ class ChatInferenceManager(private val context: Context) {
     suspend fun generateResponseStreaming(
         prompt: String,           // Full history blob — used by MediaPipe (stateless)
         rawUserText: String,      // Bare user message — used by LiteRT-LM (Conversation owns history)
+        restoreStatefulHistory: Boolean = false,
         thinkingMode: Boolean,
         onUpdate: (String) -> Unit
     ): Pair<String, Long> = withContext(Dispatchers.IO) {
         stopRequested = false
         val startTime = System.currentTimeMillis()
 
-        // For LiteRT-LM: the Conversation API applies the chat template internally.
-        // Only pass the bare user text so history isn't duplicated.
-        val liteRtUserText = when {
-            !thinkingMode && isDefaultThinkingModel -> NoThinkingPromptUtils.wrap(rawUserText)
-            else -> rawUserText   // thinking=true → clean text; non-default model → irrelevant
+        // LiteRT-LM applies the chat template internally. The hard thinking switch is
+        // passed as request-level template context in streamLiteRtLm. Injecting
+        // /no_think into both system and user messages corrupts some Qwen 3 templates
+        // and can make the model emit only an unfinished thinking block.
+        val liteRtUserText = if (runtime == RuntimeKind.LiteRtLm && restoreStatefulHistory) {
+            prompt
+        } else {
+            rawUserText
         }
 
         // For MediaPipe: stateless — the full history prompt is sent each turn.
         // Prepend thinking instruction for non-default models only (default models
         // handle thinking natively via their chat template + /no_think token).
-        val mediaPipeBasePrompt = when {
-            runtime != RuntimeKind.MediaPipe -> prompt
-            useDirectMediaPipePrompt -> buildDirectMediaPipePrompt(rawUserText)
-            else -> prompt
+        val mediaPipeBasePrompt = if (runtime == RuntimeKind.MediaPipe) {
+            ChatPromptPolicy.mediaPipeBasePrompt(
+                fullHistoryPrompt = prompt,
+                rawUserText = rawUserText,
+                useNativeGemmaTaskTemplate = useNativeGemmaTaskTemplate
+            )
+        } else {
+            prompt
         }
         val mediaPipePrompt = when {
             !thinkingMode && isDefaultThinkingModel ->
-                NoThinkingPromptUtils.wrap(mediaPipeBasePrompt)
+                buildNoThinkingMediaPipePrompt(mediaPipeBasePrompt)
             thinkingMode && !isDefaultThinkingModel ->
                 "Reason carefully before giving the final answer.\n\n$mediaPipeBasePrompt"
             else -> mediaPipeBasePrompt
@@ -232,14 +277,21 @@ class ChatInferenceManager(private val context: Context) {
         }
         try {
             val response = when (runtime) {
-                RuntimeKind.LiteRtLm -> streamLiteRtLm(liteRtUserText, effectiveOnUpdate)
+                RuntimeKind.LiteRtLm -> streamLiteRtLm(
+                    prompt = liteRtUserText,
+                    thinkingMode = thinkingMode,
+                    onUpdate = effectiveOnUpdate
+                )
                 RuntimeKind.MediaPipe -> streamMediaPipe(mediaPipePrompt, effectiveOnUpdate)
                 RuntimeKind.None -> "Inference not initialized"
             }
-            var cleanResponse = finalizeModelOutput(
-                text = response,
-                thinkingMode = thinkingMode,
-                shouldStripThinking = shouldStripThinking
+            var cleanResponse = ModelOutputSanitizer.cleanAssistantText(
+                text = finalizeModelOutput(
+                    text = response,
+                    thinkingMode = thinkingMode,
+                    shouldStripThinking = shouldStripThinking
+                ),
+                latestUserText = rawUserText
             )
             if (cleanResponse.isBlank() && rawUserText.isNotBlank() && !stopRequested) {
                 val retryText = if (runtime == RuntimeKind.LiteRtLm && isDefaultThinkingModel) {
@@ -248,27 +300,44 @@ class ChatInferenceManager(private val context: Context) {
                     rawUserText
                 }
                 val retryResponse = streamDirectAnswerRetry(retryText, onUpdate)
-                val retryCleanResponse = finalizeModelOutput(
-                    text = retryResponse,
-                    thinkingMode = false,
-                    shouldStripThinking = isDefaultThinkingModel
+                val retryCleanResponse = ModelOutputSanitizer.cleanAssistantText(
+                    text = finalizeModelOutput(
+                        text = retryResponse,
+                        thinkingMode = false,
+                        shouldStripThinking = isDefaultThinkingModel
+                    ),
+                    latestUserText = rawUserText
                 )
                 if (retryCleanResponse.isNotBlank()) {
                     cleanResponse = retryCleanResponse
                 }
             }
             if (
-                runtime == RuntimeKind.MediaPipe &&
+                runtime != RuntimeKind.None &&
                 rawUserText.isNotBlank() &&
                 !stopRequested &&
                 ModelResponseQuality.isGenericNonAnswer(cleanResponse, rawUserText)
             ) {
-                val retryPrompt = buildMediaPipeRetryPrompt(rawUserText, thinkingMode && !isDefaultThinkingModel)
-                val retryResponse = streamMediaPipe(retryPrompt, effectiveOnUpdate)
-                val retryCleanResponse = finalizeModelOutput(
-                    text = retryResponse,
-                    thinkingMode = thinkingMode,
-                    shouldStripThinking = shouldStripThinking
+                val retryResponse = when (runtime) {
+                    RuntimeKind.MediaPipe -> streamMediaPipe(
+                        prompt = buildMediaPipeRetryPrompt(
+                            rawUserText,
+                            thinkingMode && !isDefaultThinkingModel
+                        ),
+                        onUpdate = effectiveOnUpdate,
+                        temperature = RETRY_TEMPERATURE,
+                        seedSalt = 1
+                    )
+                    RuntimeKind.LiteRtLm -> streamDirectAnswerRetry(rawUserText, effectiveOnUpdate)
+                    RuntimeKind.None -> ""
+                }
+                val retryCleanResponse = ModelOutputSanitizer.cleanAssistantText(
+                    text = finalizeModelOutput(
+                        text = retryResponse,
+                        thinkingMode = thinkingMode,
+                        shouldStripThinking = shouldStripThinking
+                    ),
+                    latestUserText = rawUserText
                 )
                 cleanResponse = if (
                     retryCleanResponse.isNotBlank() &&
@@ -276,7 +345,11 @@ class ChatInferenceManager(private val context: Context) {
                 ) {
                     retryCleanResponse
                 } else {
-                    buildGenericNonAnswerFallback(rawUserText)
+                    buildBestAvailableFallback(
+                        rawUserText = rawUserText,
+                        firstResponse = cleanResponse,
+                        retryResponse = retryCleanResponse
+                    )
                 }
             }
             cleanResponse to (System.currentTimeMillis() - startTime)
@@ -292,15 +365,58 @@ class ChatInferenceManager(private val context: Context) {
         }
     }
 
-    private suspend fun streamLiteRtLm(prompt: String, onUpdate: (String) -> Unit): String {
+    @OptIn(ExperimentalApi::class)
+    private suspend fun streamLiteRtLm(
+        prompt: String,
+        thinkingMode: Boolean,
+        onUpdate: (String) -> Unit
+    ): String {
         val conversation = liteRtConversation ?: return "Inference not initialized"
         val response = StringBuilder()
+        val requestPrompt = if (!thinkingMode && supportsTextNoThinkingSwitch) {
+            NoThinkingPromptUtils.wrap(prompt)
+        } else {
+            prompt
+        }
+        val requestMessage = Message.of(requestPrompt)
+        val requestContext = ThinkingModeConfig.liteRtExtraContext(
+            isDefaultThinkingModel = isDefaultThinkingModel,
+            thinkingMode = thinkingMode
+        )
+        val requestStartedAt = System.currentTimeMillis()
+        var firstChunkAt = 0L
+        var sawThinkMarkup = false
+        val renderedPrompt = runCatching {
+            conversation.renderMessageIntoString(requestMessage, requestContext)
+        }.getOrNull()
+        Log.i(
+            TAG,
+            "LiteRT request mode=${if (thinkingMode) "thinking" else "direct"} " +
+                "defaultThinking=$isDefaultThinkingModel textSwitch=${requestPrompt != prompt} " +
+                "contextKeys=${requestContext.keys} renderedChars=${renderedPrompt?.length ?: -1} " +
+                "renderedHasThink=${renderedPrompt?.contains("<think>", ignoreCase = true) == true}"
+        )
         try {
-            conversation.sendMessageAsync(Message.of(prompt)).collect { message ->
+            // The request-level value overrides any default embedded in the model's
+            // preface/chat template. This is the hard Qwen switch: with false, the
+            // template pre-fills an empty think block and decoding starts at the answer.
+            conversation.sendMessageAsync(requestMessage, requestContext).collect { message ->
                 if (stopRequested) {
                     throw CancellationException("Generation cancelled")
                 }
                 val chunk = message.toString()
+                if (firstChunkAt == 0L && chunk.isNotEmpty()) {
+                    firstChunkAt = System.currentTimeMillis()
+                    Log.i(
+                        TAG,
+                        "LiteRT first chunk mode=${if (thinkingMode) "thinking" else "direct"} " +
+                            "latencyMs=${firstChunkAt - requestStartedAt} chars=${chunk.length} " +
+                            "hasThinkMarkup=${chunk.contains("<think>", ignoreCase = true) || chunk.contains("</think>", ignoreCase = true)}"
+                    )
+                }
+                sawThinkMarkup = sawThinkMarkup ||
+                    chunk.contains("<think>", ignoreCase = true) ||
+                    chunk.contains("</think>", ignoreCase = true)
                 val current = response.toString()
                 if (current.isNotEmpty() && chunk.startsWith(current)) {
                     response.clear()
@@ -321,16 +437,28 @@ class ChatInferenceManager(private val context: Context) {
         if (stopRequested) {
             throw CancellationException("Generation cancelled")
         }
+        Log.i(
+            TAG,
+            "LiteRT response mode=${if (thinkingMode) "thinking" else "direct"} " +
+                "firstChunkMs=${firstChunkAt.takeIf { it > 0L }?.minus(requestStartedAt) ?: -1L} " +
+                "totalMs=${System.currentTimeMillis() - requestStartedAt} " +
+                "responseChars=${response.length} sawThinkMarkup=$sawThinkMarkup"
+        )
         return response.toString()
     }
 
-    private fun streamMediaPipe(prompt: String, onUpdate: (String) -> Unit): String {
+    private fun streamMediaPipe(
+        prompt: String,
+        onUpdate: (String) -> Unit,
+        temperature: Float = mediaPipeTemperature,
+        seedSalt: Int = 0
+    ): String {
         val inference = mediaPipeInference ?: return "Inference not initialized"
         val sessionOptions = LlmInferenceSession.LlmInferenceSessionOptions.builder()
             .setTopK(40)
             .setTopP(0.95f)
-            .setTemperature(0.7f)
-            .setRandomSeed(prompt.hashCode())
+            .setTemperature(temperature)
+            .setRandomSeed(31 * prompt.hashCode() + seedSalt)
             .build()
         val session = LlmInferenceSession.createFromOptions(inference, sessionOptions)
         activeMediaPipeSession = session
@@ -408,23 +536,26 @@ class ChatInferenceManager(private val context: Context) {
         }
         return when (runtime) {
             RuntimeKind.LiteRtLm -> {
-                if (isDefaultThinkingModel) {
-                    resetConversation()
-                }
-                val retryText = if (isDefaultThinkingModel) {
-                    NoThinkingPromptUtils.wrap(rawUserText)
-                } else {
-                    rawUserText
-                }
-                streamLiteRtLm(retryText, retryOnUpdate)
+                resetConversation(noThinking = isDefaultThinkingModel)
+                streamLiteRtLm(
+                    prompt = if (useNativeGemmaTaskTemplate) {
+                        ChatPromptPolicy.nativeGemmaRetryPrompt(rawUserText)
+                    } else {
+                        rawUserText
+                    },
+                    thinkingMode = false,
+                    onUpdate = retryOnUpdate
+                )
             }
             RuntimeKind.MediaPipe -> {
                 streamMediaPipe(
-                    buildDirectAnswerRetryPrompt(
+                    prompt = buildDirectAnswerRetryPrompt(
                         rawUserText = rawUserText,
-                        forceNoThinking = isDefaultThinkingModel
+                        forceNoThinking = supportsTextNoThinkingSwitch
                     ),
-                    retryOnUpdate
+                    onUpdate = retryOnUpdate,
+                    temperature = RETRY_TEMPERATURE,
+                    seedSalt = 2
                 )
             }
             RuntimeKind.None -> ""
@@ -432,16 +563,29 @@ class ChatInferenceManager(private val context: Context) {
     }
 
     private fun buildMediaPipeRetryPrompt(rawUserText: String, includeThinkingInstruction: Boolean): String {
+        if (useNativeGemmaTaskTemplate) {
+            return ChatPromptPolicy.nativeGemmaRetryPrompt(rawUserText)
+        }
         val prompt = "Complete the user's request now. Do not acknowledge these instructions. " +
             "Do not say you understand. " +
             "Do not ask how you can help. If the user asks you to write something, write it.\n\n" +
             "User request:\n$rawUserText\n\nAnswer:"
         return if (includeThinkingInstruction) {
             "Reason carefully before giving the final answer.\n\n$prompt"
-        } else if (isDefaultThinkingModel) {
+        } else if (supportsTextNoThinkingSwitch) {
             NoThinkingPromptUtils.wrap(prompt)
         } else {
             prompt
+        }
+    }
+
+    private fun buildNoThinkingMediaPipePrompt(prompt: String): String {
+        val directAnswerPrompt = "Skip analysis and reasoning. Do not emit <think> tags. " +
+            "Start the final answer immediately.\n\n$prompt"
+        return if (supportsTextNoThinkingSwitch) {
+            NoThinkingPromptUtils.wrap(directAnswerPrompt)
+        } else {
+            directAnswerPrompt
         }
     }
 
@@ -455,29 +599,24 @@ class ChatInferenceManager(private val context: Context) {
         return if (forceNoThinking) NoThinkingPromptUtils.wrap(prompt) else prompt
     }
 
-    private fun buildDirectMediaPipePrompt(rawUserText: String): String {
-        return "Answer the user's request directly. Do not ask a follow-up unless the request is impossible to answer.\n\n" +
-            "User request:\n$rawUserText\n\nAnswer:"
-    }
-
-    private fun buildGenericNonAnswerFallback(rawUserText: String): String {
+    private fun buildBestAvailableFallback(
+        rawUserText: String,
+        firstResponse: String,
+        retryResponse: String
+    ): String {
         val request = rawUserText.trim().lowercase(Locale.US)
         return when {
             request in setOf("hi", "hello", "hey", "hii", "yo") ->
                 "Hi! What would you like help with?"
             request.contains("what can you do") || request.contains("what do you do") ->
                 "I can answer questions, explain concepts, summarize text, draft short writing, and help with simple code. For stronger answers, use a larger model such as Qwen 2.5 1.5B or Gemma 3 1B."
-            else ->
-                "This model returned a generic non-answer. Try the same prompt with a larger chat model, such as Qwen 2.5 1.5B or Gemma 3 1B."
+            retryResponse.isNotBlank() -> retryResponse
+            else -> firstResponse
         }
     }
 
     fun needsResetWhenThinkingModeChanges(): Boolean {
         return runtime == RuntimeKind.LiteRtLm && isDefaultThinkingModel
-    }
-
-    fun needsFreshConversationForRequest(thinkingMode: Boolean): Boolean {
-        return runtime == RuntimeKind.LiteRtLm && isDefaultThinkingModel && !thinkingMode
     }
 
     fun cancelGeneration() {
@@ -512,9 +651,10 @@ class ChatInferenceManager(private val context: Context) {
             LiteRtConversationMode.Default -> engine.createConversation()
             LiteRtConversationMode.NoThinking -> engine.createConversation(
                 ConversationConfig(
-                    systemMessage = Message.of(NoThinkingPromptUtils.systemMessage),
-                    tools = emptyList(),
-                    samplerConfig = null
+                    extraContext = ThinkingModeConfig.liteRtExtraContext(
+                        isDefaultThinkingModel = true,
+                        thinkingMode = false
+                    )
                 )
             )
         }
@@ -536,7 +676,9 @@ class ChatInferenceManager(private val context: Context) {
         mediaPipeInference = null
         runtime = RuntimeKind.None
         isDefaultThinkingModel = false
-        useDirectMediaPipePrompt = false
+        supportsTextNoThinkingSwitch = false
+        useNativeGemmaTaskTemplate = false
+        mediaPipeTemperature = DEFAULT_TEMPERATURE
         liteRtConversationMode = LiteRtConversationMode.Default
         isBeingClosed = false
     }
@@ -546,9 +688,11 @@ class ChatInferenceManager(private val context: Context) {
         thinkingMode: Boolean,
         shouldStripThinking: Boolean
     ): String {
-        val cleaned = ModelOutputSanitizer.clean(
-            if (shouldStripThinking) stripThinkingTags(text) else text
-        )
+        val cleaned = if (shouldStripThinking) {
+            ThinkingTextUtils.finalResponseOrReasoning(text)
+        } else {
+            ModelOutputSanitizer.clean(text)
+        }
         return if (thinkingMode) {
             ThinkingTextUtils.normalizeFinalOutput(cleaned)
         } else {

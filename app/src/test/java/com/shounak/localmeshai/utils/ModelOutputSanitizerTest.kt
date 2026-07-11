@@ -45,4 +45,43 @@ class ModelOutputSanitizerTest {
             ThinkingTextUtils.normalizeFinalOutput(raw)
         )
     }
+
+    @Test
+    fun cleanRemovesGemmaTurnTokens() {
+        val raw = "<start_of_turn>model\nA qubit can represent a combination of states.<end_of_turn>"
+
+        assertEquals(
+            "A qubit can represent a combination of states.",
+            ModelOutputSanitizer.cleanAssistantText(raw, "What is a qubit?")
+        )
+    }
+
+    @Test
+    fun cleanAssistantTextRemovesEchoedUserAndRoleLinesFromScreenshotPattern() {
+        val raw = "Hi\nAssistant\n\nWhat is quantum computing?\n\nQuantum computing uses qubits."
+
+        assertEquals(
+            "What is quantum computing?\n\nQuantum computing uses qubits.",
+            ModelOutputSanitizer.cleanAssistantText(raw, "hi")
+        )
+    }
+
+    @Test
+    fun cleanAssistantTextKeepsLegitimateGreeting() {
+        assertEquals(
+            "Hi! What would you like help with?",
+            ModelOutputSanitizer.cleanAssistantText("Hi! What would you like help with?", "hi")
+        )
+    }
+
+    @Test
+    fun cleanPreservesModernEmojiSequences() {
+        val emojiText = "🙂 🐦‍🔥 👩🏽‍💻 🇮🇳 🫩"
+
+        assertEquals(emojiText, ModelOutputSanitizer.clean(emojiText))
+        assertEquals(
+            "Answer $emojiText",
+            ModelOutputSanitizer.cleanAssistantText("Answer $emojiText", "Show emoji")
+        )
+    }
 }

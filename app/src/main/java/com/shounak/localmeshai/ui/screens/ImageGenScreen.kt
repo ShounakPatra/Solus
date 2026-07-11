@@ -10,11 +10,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -77,6 +74,7 @@ import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.QuestionAnswer
+import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
@@ -105,13 +103,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -136,7 +134,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.shounak.localmeshai.models.ModelInfo
 import com.shounak.localmeshai.models.ModelStatus
 import com.shounak.localmeshai.models.ModelType
-import com.shounak.localmeshai.ui.theme.GaramondFontFamily
+import androidx.compose.ui.text.font.FontFamily
 import com.shounak.localmeshai.ui.viewmodels.MainViewModel
 import com.shounak.localmeshai.ui.viewmodels.VisionChatMessage
 import com.shounak.localmeshai.ui.viewmodels.VisionChatSession
@@ -344,7 +342,10 @@ fun ImageGenScreen(
                                 ) {
                                     itemsIndexed(
                                         messages,
-                                        key = { _, message -> message.id }
+                                        key = { _, message -> message.id },
+                                        contentType = { _, message ->
+                                            if (message.isUser) "vision_user" else "vision_assistant"
+                                        }
                                     ) { index, message ->
                                         VisionChatBubble(
                                             text = message.text,
@@ -352,7 +353,7 @@ fun ImageGenScreen(
                                             bitmap = message.bitmap,
                                             hazeState = hazeState,
                                             isStreaming = !message.isUser && isAnalyzing && index == messages.lastIndex,
-                                            entryDelayMs = (index * 25).coerceAtMost(300),
+                                            entryDelayMs = if (index == messages.lastIndex) 25 else 0,
                                             onFullscreenClick = { fullscreenMessageIndex = index }
                                         )
                                     }
@@ -386,9 +387,8 @@ fun ImageGenScreen(
                 }
 
                 // Bottom input group: glassmorphic composer matching ChatScreen
-                val composerCorner = if (isKeyboardOpen) 28.dp else 30.dp
-                val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-                val composerTint = if (isDark) Color.White.copy(alpha = 0.11f) else Color.White.copy(alpha = 0.58f)
+                val composerCorner = if (isKeyboardOpen) 18.dp else 20.dp
+                val composerTint = MaterialTheme.colorScheme.surfaceContainerHigh
                 GlassDispersionCard(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -547,24 +547,24 @@ fun ImageGenScreen(
                             placeholder = {
                                 Text(
                                     text = "Ask something about the image/file…",
-                                    color = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White.copy(alpha = 0.6f) else Color.Black.copy(alpha = 0.6f)
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             },
                             enabled = !isInputLocked,
                             minLines = 2,
                             maxLines = 5,
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(12.dp),
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
                             textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                color = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White else Color.Black
+                                color = MaterialTheme.colorScheme.onSurface
                             ),
                             colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                                 unfocusedBorderColor = androidx.compose.ui.graphics.Color.Transparent,
                                 focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
                                 unfocusedContainerColor = Color.Transparent,
                                 focusedContainerColor = Color.Transparent,
-                                focusedTextColor = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White else Color.Black,
-                                unfocusedTextColor = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White else Color.Black
+                                focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                unfocusedTextColor = MaterialTheme.colorScheme.onSurface
                             )
                         )
                     }
@@ -590,7 +590,6 @@ fun VisionFullscreenAnswerPanel(
     hazeState: HazeState
 ) {
     val message = messageProvider() ?: return
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
     val title = if (message.isUser) "Your question" else "Model response"
     val parsedContent = remember(message.text) {
         ThinkingTextUtils.parse(message.text, allowActiveThinking = false)
@@ -616,23 +615,8 @@ fun VisionFullscreenAnswerPanel(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(if (isDark) Color.Black.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.18f))
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.58f))
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .drawBehind {
-                    val glowColor = if (isDark) Color(0xFF007AFF).copy(alpha = 0.2f) else Color(0xFF007AFF).copy(alpha = 0.12f)
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(glowColor, Color.Transparent),
-                            center = Offset(size.width / 2f, size.height / 3f),
-                            radius = size.width * 0.8f
-                        )
-                    )
-                }
-        )
-
         GlassDispersionCard(
             hazeState = hazeState,
             modifier = Modifier
@@ -640,11 +624,11 @@ fun VisionFullscreenAnswerPanel(
                 .offset(y = panelOffsetY)
                 .graphicsLayer { alpha = panelAlpha }
                 .padding(horizontal = 12.dp, vertical = 8.dp),
-            cornerRadius = 28.dp,
+            cornerRadius = 20.dp,
             blurRadius = 38.dp,
             refractionStrength = 0.17f,
             dispersionAmount = 0.032f,
-            tintColor = if (isDark) Color.White.copy(alpha = 0.11f) else Color.White.copy(alpha = 0.68f),
+            tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             borderAlpha = 0.56f,
             contentPadding = PaddingValues(16.dp)
         ) {
@@ -657,12 +641,12 @@ fun VisionFullscreenAnswerPanel(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(title, style = MaterialTheme.typography.titleMedium, color = if (isDark) Color.White else Color.Black)
+                    Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                     LiquidGlassButton(
                         onClick = onClose,
                         hazeState = hazeState,
                         modifier = Modifier.size(42.dp),
-                        shape = RoundedCornerShape(21.dp),
+                        shape = RoundedCornerShape(12.dp),
                         contentPadding = PaddingValues(0.dp)
                     ) {
                         Icon(
@@ -705,7 +689,7 @@ fun VisionFullscreenAnswerPanel(
                         Text(
                             text = visibleText.toAsteriskEmphasisText(),
                             modifier = Modifier.fillMaxWidth(),
-                            color = if (isDark) Color.White else Color.Black
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -780,8 +764,7 @@ private fun VisionModelPicker(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val selectedName = models.firstOrNull { it.localPath == selectedPath }?.name ?: "Choose image model"
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val pickerTint = if (isDark) Color.White.copy(alpha = 0.08f) else Color.White.copy(alpha = 0.5f)
+    val pickerTint = MaterialTheme.colorScheme.surfaceContainerHigh
     val arrowRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = spring(
@@ -800,7 +783,7 @@ private fun VisionModelPicker(
                 .height(56.dp)
                 .dropdownTriggerBounce(expanded),
             enabled = models.isNotEmpty(),
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(12.dp),
             tintColor = pickerTint,
             contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp)
         ) {
@@ -842,11 +825,11 @@ fun ImageChatHistoryDialog(
             modifier = Modifier
                 .fillMaxWidth()
                 .wrapContentHeight(),
-            cornerRadius = 30.dp,
+            cornerRadius = 20.dp,
             blurRadius = 34.dp,
             refractionStrength = 0.16f,
             dispersionAmount = 0.030f,
-            tintColor = Color.White.copy(alpha = 0.12f),
+            tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             borderAlpha = 0.52f,
             contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 10.dp)
         ) {
@@ -882,8 +865,10 @@ fun ImageChatHistoryDialog(
                                     .fillMaxWidth()
                                     .fluidReveal(
                                         delayMillis = (index * 35).coerceAtMost(280),
-                                        initialScale = 0.94f,
-                                        initialYOffset = 10.dp
+                                        initialScale = 0.90f,
+                                        initialYOffset = 14.dp,
+                                        initialXOffset = if (index % 2 == 0) (-22).dp else 22.dp,
+                                        initialRotationZ = if (index % 2 == 0) -1.2f else 1.2f
                                     )
                                     .clickable { onSelect(session.id) }
                                     .glassEffect(
@@ -893,7 +878,7 @@ fun ImageChatHistoryDialog(
                                         tintColor = if (selected) {
                                             MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
                                         } else {
-                                            Color.White.copy(alpha = 0.07f)
+                                            MaterialTheme.colorScheme.surfaceContainer
                                         },
                                         borderAlpha = if (selected) 0.48f else 0.26f
                                     )
@@ -977,14 +962,13 @@ private fun ImageMetricRow(modelName: String) {
 
 @Composable
 private fun EmptyImageState(title: String, subtitle: String, hazeState: HazeState) {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val cardTint = if (isDark) Color.White.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.4f)
+    val cardTint = MaterialTheme.colorScheme.surfaceContainer
     GlassDispersionCard(
         hazeState = hazeState,
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 24.dp),
-        cornerRadius = 28.dp,
+        cornerRadius = 20.dp,
         tintColor = cardTint
     ) {
         Column(
@@ -997,8 +981,8 @@ private fun EmptyImageState(title: String, subtitle: String, hazeState: HazeStat
             Box(
                 modifier = Modifier
                     .size(56.dp)
-                    .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(28.dp))
-                    .border(0.5.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(28.dp)),
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(16.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -1013,13 +997,13 @@ private fun EmptyImageState(title: String, subtitle: String, hazeState: HazeStat
                 title,
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold),
                 textAlign = TextAlign.Center,
-                color = if (isDark) Color.White else Color.Black
+                color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 subtitle,
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (isDark) Color.White.copy(alpha = 0.6f) else Color.Black.copy(alpha = 0.6f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
         }
@@ -1099,48 +1083,37 @@ private fun UniquePlusIcon(
 
 @Composable
 private fun VisionLiquidProgressBar(modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "vision_liquid_progress")
-    val shift by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1_150),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "vision_liquid_progress_shift"
-    )
+    val shift = 0.5f
     val shimmerStart = -1.2f + shift * 2.4f
+    val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+    val borderColor = MaterialTheme.colorScheme.outlineVariant
+    val accentColor = MaterialTheme.colorScheme.primary
 
     Canvas(
         modifier = modifier
-            .height(14.dp)
+            .height(10.dp)
             .clip(RoundedCornerShape(999.dp))
-            .background(Color.White.copy(alpha = 0.08f))
+            .background(trackColor)
     ) {
         val corner = CornerRadius(size.height / 2f, size.height / 2f)
         drawRoundRect(
-            color = Color.White.copy(alpha = 0.10f),
+            color = trackColor,
             cornerRadius = corner
         )
         drawRoundRect(
             brush = Brush.horizontalGradient(
                 colors = listOf(
-                    Color(0xFF8BE9FF).copy(alpha = 0.20f),
-                    Color(0xFF4EA7FF).copy(alpha = 0.72f),
-                    Color(0xFFFF7CE8).copy(alpha = 0.36f),
-                    Color(0xFF8BE9FF).copy(alpha = 0.20f)
+                    accentColor.copy(alpha = 0.30f),
+                    accentColor.copy(alpha = 0.78f),
+                    accentColor,
+                    accentColor.copy(alpha = 0.30f)
                 ),
                 startX = size.width * shimmerStart,
                 endX = size.width * (shimmerStart + 1.2f)
             ),
             cornerRadius = corner
         )
-        drawRoundRect(
-            brush = Brush.verticalGradient(
-                listOf(Color.White.copy(alpha = 0.28f), Color.Transparent)
-            ),
-            cornerRadius = corner
-        )
+        drawRoundRect(color = borderColor, cornerRadius = corner, style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()))
     }
 }
 
@@ -1158,6 +1131,10 @@ private fun VisionComposerActions(
     onStop: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val sendAnimationScope = rememberCoroutineScope()
+    val rocketFlight = remember { Animatable(0f) }
+    var isRocketFlying by remember { mutableStateOf(false) }
+    val sendAnimationDensity = LocalDensity.current
     val addIconRotation by animateFloatAsState(
         targetValue = if (expanded) 45f else 0f,
         animationSpec = spring(
@@ -1184,7 +1161,7 @@ private fun VisionComposerActions(
                 tintColor = if (hasAttachment || expanded) {
                     MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
                 } else {
-                    Color.White.copy(alpha = 0.055f)
+                    MaterialTheme.colorScheme.surfaceContainerHighest
                 },
                 contentPadding = PaddingValues(0.dp)
             ) {
@@ -1261,23 +1238,64 @@ private fun VisionComposerActions(
             }
         }
         LiquidGlassButton(
-            onClick = if (isAnalyzing) onStop else onSend,
+            onClick = {
+                when {
+                    isRocketFlying -> Unit
+                    isAnalyzing -> onStop()
+                    canSend -> sendAnimationScope.launch {
+                        isRocketFlying = true
+                        rocketFlight.snapTo(0f)
+                        rocketFlight.animateTo(
+                            targetValue = 1f,
+                            animationSpec = tween(durationMillis = 190)
+                        )
+                        onSend()
+                        rocketFlight.animateTo(
+                            targetValue = 0f,
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioLowBouncy,
+                                stiffness = Spring.StiffnessMediumLow
+                            )
+                        )
+                        isRocketFlying = false
+                    }
+                }
+            },
             hazeState = hazeState,
-            enabled = isAnalyzing || canSend,
-            modifier = Modifier.size(48.dp),
+            enabled = isRocketFlying || isAnalyzing || canSend,
+            modifier = Modifier
+                .size(48.dp)
+                .graphicsLayer {
+                    val flight = rocketFlight.value
+                    translationX = with(sendAnimationDensity) { (flight * 8f).dp.toPx() }
+                    translationY = with(sendAnimationDensity) { (-flight * 36f).dp.toPx() }
+                    rotationZ = flight * 12f
+                    scaleX = 1f - flight * 0.16f
+                    scaleY = 1f - flight * 0.16f
+                },
             shape = RoundedCornerShape(24.dp),
             tintColor = MaterialTheme.colorScheme.primary.copy(alpha = if (isAnalyzing || canSend) 0.34f else 0.10f),
             contentPadding = PaddingValues(0.dp)
         ) {
             androidx.compose.animation.Crossfade(
-                targetState = isAnalyzing,
+                targetState = isAnalyzing && !isRocketFlying,
                 animationSpec = tween(180),
                 label = "vision_send_stop_icon"
             ) { analyzing ->
                 if (analyzing) {
                     Icon(Icons.Default.Stop, contentDescription = "Stop analyzing", modifier = Modifier.size(20.dp))
                 } else {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send question", modifier = Modifier.size(20.dp))
+                    Icon(
+                        Icons.Default.RocketLaunch,
+                        contentDescription = "Send question",
+                        modifier = Modifier
+                            .size(21.dp)
+                            .graphicsLayer {
+                                val flight = rocketFlight.value
+                                translationY = with(sendAnimationDensity) { (-flight * 8f).dp.toPx() }
+                                rotationZ = flight * 10f
+                            }
+                    )
                 }
             }
         }
@@ -1517,8 +1535,7 @@ private fun CodeBlock(
         }
     }
 
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val codeTint = if (isDark) Color.Black.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.4f)
+    val codeTint = MaterialTheme.colorScheme.surfaceContainerLowest
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -1548,8 +1565,8 @@ private fun CodeBlock(
                     },
                     hazeState = hazeState,
                     modifier = Modifier.height(34.dp),
-                    shape = RoundedCornerShape(17.dp),
-                    tintColor = Color(0xFF8BE9FF).copy(alpha = 0.16f),
+                    shape = RoundedCornerShape(10.dp),
+                    tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
                 ) {
                     if (copied) {
@@ -1563,7 +1580,7 @@ private fun CodeBlock(
                             Icons.Default.ContentCopy,
                             contentDescription = "Copy code",
                             modifier = Modifier.size(14.dp),
-                            tint = Color(0xFF8BE9FF)
+                            tint = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
@@ -1579,7 +1596,7 @@ private fun CodeBlock(
             ) {
                 Text(
                     text = code,
-                    fontFamily = GaramondFontFamily,
+                    fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontSize = androidx.compose.ui.unit.TextUnit(
                             11.5f, androidx.compose.ui.unit.TextUnitType.Sp
@@ -1588,7 +1605,7 @@ private fun CodeBlock(
                             18f, androidx.compose.ui.unit.TextUnitType.Sp
                         )
                     ),
-                    color = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White else Color.Black,
+                    color = MaterialTheme.colorScheme.onSurface,
                     softWrap = false
                 )
             }
@@ -1608,12 +1625,7 @@ private fun ThinkingProcessCard(
         }
     }
     
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val cardColor = if (isDark) {
-        Color.White.copy(alpha = 0.03f)
-    } else {
-        Color.Black.copy(alpha = 0.03f)
-    }
+    val cardColor = MaterialTheme.colorScheme.surfaceContainerHighest
     
     Column(
         modifier = Modifier
@@ -1621,7 +1633,7 @@ private fun ThinkingProcessCard(
             .background(cardColor, RoundedCornerShape(12.dp))
             .border(
                 width = 0.5.dp,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f),
+                color = MaterialTheme.colorScheme.outlineVariant,
                 shape = RoundedCornerShape(12.dp)
             )
             .padding(10.dp),
@@ -1754,14 +1766,19 @@ fun VisionChatBubble(
     onFullscreenClick: () -> Unit
 ) {
     val context = LocalContext.current
-    val entryProgress = remember { Animatable(0f) }
+    val entryProgress = remember { Animatable(if (entryDelayMs > 0) 0f else 1f) }
     LaunchedEffect(entryDelayMs) {
+        if (entryDelayMs <= 0) {
+            entryProgress.snapTo(1f)
+            return@LaunchedEffect
+        }
         if (entryDelayMs > 0) kotlinx.coroutines.delay(entryDelayMs.toLong())
         entryProgress.animateTo(
             targetValue = 1f,
             animationSpec = spring(
-                dampingRatio = if (isUser) Spring.DampingRatioLowBouncy else 0.82f,
-                stiffness = Spring.StiffnessMedium
+                dampingRatio = if (isUser) 0.62f else 0.70f,
+                stiffness = if (isUser) 460f else 400f,
+                visibilityThreshold = 0.001f
             )
         )
     }
@@ -1791,22 +1808,15 @@ fun VisionChatBubble(
                 translationX = (1f - entryValue) * if (isUser) 18f else -10f
                 scaleX = 0.97f + entryValue * 0.03f
                 scaleY = 0.97f + entryValue * 0.03f
+                rotationZ = (1f - entryValue) * if (isUser) 0.85f else -0.6f
             },
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
     ) {
         val userShape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
-        val userColor = if (androidx.compose.foundation.isSystemInDarkTheme()) {
-            Color(0xFF007AFF).copy(alpha = 0.35f)
-        } else {
-            Color(0xFF007AFF).copy(alpha = 0.15f)
-        }
+        val userColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
 
         val aiShape = RoundedCornerShape(topStart = 6.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 20.dp)
-        val aiColor = if (androidx.compose.foundation.isSystemInDarkTheme()) {
-            Color.White.copy(alpha = 0.07f)
-        } else {
-            Color.White.copy(alpha = 0.45f)
-        }
+        val aiColor = MaterialTheme.colorScheme.surfaceContainerHigh
 
         Box(
             modifier = Modifier
@@ -1852,7 +1862,7 @@ fun VisionChatBubble(
 
                 if (showStreamingDots) {
                     StreamingDotsIndicator(
-                        color = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White else Color.Black
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 } else {
                     segments.forEach { segment ->
@@ -1862,7 +1872,7 @@ fun VisionChatBubble(
                                     val visibleText = segment.text.trim('\n')
                                     AdaptiveMessageText(
                                         text = visibleText,
-                                        color = if (androidx.compose.foundation.isSystemInDarkTheme()) Color.White else Color.Black
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                 }
                             }
@@ -1896,7 +1906,7 @@ fun VisionChatBubble(
                     icon = Icons.Default.ContentCopy,
                     contentDescription = "Copy message",
                     hazeState = hazeState,
-                    tintColor = Color(0xFF8BE9FF),
+                    tintColor = MaterialTheme.colorScheme.primary,
                     onClick = {
                         val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                             as android.content.ClipboardManager

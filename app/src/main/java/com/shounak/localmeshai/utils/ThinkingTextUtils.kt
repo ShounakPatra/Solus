@@ -101,6 +101,35 @@ object ThinkingTextUtils {
         }
     }
 
+    /**
+     * Returns the final answer while hiding reasoning when possible. Some
+     * templates prefill the opening <think> tag, so generated text can contain
+     * only a closing tag. If generation stops before any final answer exists,
+     * preserve the reasoning text as a last-resort visible response instead of
+     * turning a non-empty generation into the app's empty-response fallback.
+     */
+    fun finalResponseOrReasoning(text: String): String {
+        val cleaned = ModelOutputSanitizer.clean(text)
+        val firstClose = closeThinkTagRegex.find(cleaned)
+        val firstOpen = openThinkTagRegex.find(cleaned)
+
+        if (firstClose != null && (firstOpen == null || firstOpen.range.first > firstClose.range.first)) {
+            val beforeClose = cleaned
+                .substring(0, firstClose.range.first)
+                .removeLooseThinkTags()
+                .trimLineBreaks()
+            val afterClose = cleaned
+                .substring(firstClose.range.last + 1)
+                .removeLooseThinkTags()
+                .trimLineBreaks()
+            return afterClose.ifBlank { beforeClose }
+        }
+
+        return parse(cleaned, allowActiveThinking = false)
+            .finalResponseText
+            .trimLineBreaks()
+    }
+
     private fun String.removeLooseThinkTags(): String =
         closeThinkTagRegex.replace(openThinkTagRegex.replace(this, ""), "")
 

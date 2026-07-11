@@ -16,8 +16,7 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Memory
@@ -27,9 +26,11 @@ import androidx.compose.runtime.*
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.ui.Modifier
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -68,7 +69,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -79,17 +79,24 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
 import com.shounak.localmeshai.utils.ModelRuntimeCoordinator
-import kotlin.math.absoluteValue
 import com.shounak.localmeshai.utils.ModelRuntimeOwner
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+import androidx.emoji2.bundled.BundledEmojiCompatConfig
+import androidx.emoji2.text.EmojiCompat
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        // Bundle the Emoji 16 font so user prompts and model responses render
+        // consistently even on phones without a downloadable emoji provider.
+        EmojiCompat.init(
+            BundledEmojiCompatConfig(this)
+                .setReplaceAll(true)
+        )
         InitCrashGuard.checkAndRecoverCrash(this)
         lifecycleScope.launch(Dispatchers.IO) {
             LiteRtRuntimeCache.pruneOnStartup(this@MainActivity)
@@ -165,11 +172,14 @@ sealed class Screen(
 @Composable
 fun MainNavigation(mainViewModel: MainViewModel) {
     val hazeState = remember { HazeState() }
-    val items = listOf(Screen.Chat, Screen.Models)
-    val pagerState = rememberPagerState(pageCount = { items.size })
-    val coroutineScope = rememberCoroutineScope()
-    val currentScreen = items[pagerState.currentPage]
+    val items = remember { listOf(Screen.Chat, Screen.Models) }
+    var selectedIndex by androidx.compose.runtime.saveable.rememberSaveable {
+        mutableIntStateOf(0)
+    }
     val context = androidx.compose.ui.platform.LocalContext.current
+    val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
+    val tabSwipeThresholdPx = with(density) { 64.dp.toPx() }
     val isKeyboardOpen = WindowInsets.isImeVisible
     val (isCompatible, compatibilityMessage) = remember { DeviceUtils.isDeviceCompatible(context) }
     var showRequirementDialog by remember { mutableStateOf(!isCompatible) }
@@ -204,72 +214,97 @@ fun MainNavigation(mainViewModel: MainViewModel) {
 
     LiquidGlassBackdrop(hazeState = hazeState) {
         Scaffold(
-            containerColor = Color.Transparent,
-            topBar = {
-                if (currentScreen != Screen.Chat) {
-                    LiquidTopBar(
-                        title = currentScreen.title,
-                        hazeState = hazeState
-                    )
-                }
-            },
+            containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
-                if (!isKeyboardOpen) {
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = !isKeyboardOpen,
+                    enter = androidx.compose.animation.fadeIn(
+                        animationSpec = androidx.compose.animation.core.tween(180)
+                    ) + androidx.compose.animation.slideInVertically(
+                        initialOffsetY = { it / 2 },
+                        animationSpec = spring(dampingRatio = 0.82f, stiffness = 460f)
+                    ),
+                    exit = androidx.compose.animation.fadeOut(
+                        animationSpec = androidx.compose.animation.core.tween(120)
+                    ) + androidx.compose.animation.slideOutVertically(
+                        targetOffsetY = { it / 2 },
+                        animationSpec = spring(dampingRatio = 0.92f, stiffness = 620f)
+                    )
+                ) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .navigationBarsPadding()
-                            .padding(horizontal = 22.dp, vertical = 14.dp),
+                            .padding(horizontal = 20.dp, vertical = 10.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         LiquidBottomNav(
                             items = items,
-                            selectedIndex = pagerState.currentPage,
+                            selectedIndex = selectedIndex,
                             hazeState = hazeState,
-                            onSelect = { index ->
-                                coroutineScope.launch {
-                                    pagerState.animateScrollToPage(index)
-                                }
-                            }
+                            onSelect = { index -> selectedIndex = index }
                         )
                     }
                 }
             }
         ) { innerPadding ->
-            HorizontalPager(
-                state = pagerState,
+            // A pager keeps the adjacent page beside the current one. On some
+            // display densities it can settle on a fractional pixel and expose a
+            // differently coloured strip at the right edge of Chat. A contained
+            // crossfade has one authoritative tab state and no adjacent page edge.
+            androidx.compose.animation.Crossfade(
+                targetState = selectedIndex,
+                animationSpec = androidx.compose.animation.core.tween(170),
+                label = "main_tab_crossfade",
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
                     .consumeWindowInsets(innerPadding)
-                    .clipToBounds(),
-                // Disable over-scroll glow — it looks wrong with the glass UI
-                beyondViewportPageCount = 0,
-                userScrollEnabled = true
+                    .pointerInput(selectedIndex, isKeyboardOpen, tabSwipeThresholdPx) {
+                        if (isKeyboardOpen) return@pointerInput
+                        var accumulatedDragX = 0f
+                        detectHorizontalDragGestures(
+                            onDragStart = { accumulatedDragX = 0f },
+                            onHorizontalDrag = { change, dragAmount ->
+                                accumulatedDragX += dragAmount
+                                change.consume()
+                            },
+                            onDragCancel = { accumulatedDragX = 0f },
+                            onDragEnd = {
+                                val targetIndex = when {
+                                    accumulatedDragX <= -tabSwipeThresholdPx ->
+                                        (selectedIndex + 1).coerceAtMost(items.lastIndex)
+                                    accumulatedDragX >= tabSwipeThresholdPx ->
+                                        (selectedIndex - 1).coerceAtLeast(0)
+                                    else -> selectedIndex
+                                }
+                                if (targetIndex != selectedIndex) {
+                                    selectedIndex = targetIndex
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                }
+                                accumulatedDragX = 0f
+                            }
+                        )
+                    }
             ) { page ->
-                val pageOffset = (
-                    (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction
-                ).coerceIn(-1f, 1f)
-                val distance = pageOffset.absoluteValue
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .clipToBounds()
+                        .background(MaterialTheme.colorScheme.background)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .fluidReveal(delayMillis = page * 70, initialYOffset = 10.dp)
-                            .graphicsLayer {
-                                translationX = pageOffset * size.width * 0.10f
-                                scaleX = 1f - distance * 0.04f
-                                scaleY = 1f - distance * 0.04f
-                                alpha = 1f - distance * 0.12f
+                    when (page) {
+                        0 -> ChatScreen(mainViewModel = mainViewModel, hazeState = hazeState)
+                        1 -> Column(modifier = Modifier.fillMaxSize()) {
+                            LiquidTopBar(
+                                title = Screen.Models.title,
+                                hazeState = hazeState
+                            )
+                            Box(modifier = Modifier.weight(1f)) {
+                                ModelManagerScreen(
+                                    mainViewModel = mainViewModel,
+                                    hazeState = hazeState
+                                )
                             }
-                    ) {
-                        when (page) {
-                            0 -> ChatScreen(mainViewModel = mainViewModel, hazeState = hazeState)
-                            1 -> ModelManagerScreen(mainViewModel = mainViewModel, hazeState = hazeState)
                         }
                     }
                 }
@@ -288,11 +323,10 @@ private fun LiquidBottomNav(
     val density = LocalDensity.current
     var containerWidthPx by remember { mutableFloatStateOf(0f) }
     var dragOffsetPx by remember { mutableFloatStateOf(0f) }
-    var visualSelectedIndex by remember { mutableIntStateOf(selectedIndex) }
     var isIndicatorDragging by remember { mutableStateOf(false) }
     var previousSelectedIndex by remember { mutableIntStateOf(selectedIndex) }
     val tabSwitchBounce = remember { Animatable(0f) }
-    val contentPaddingPx = with(density) { 12.dp.toPx() }
+    val contentPaddingPx = with(density) { 10.dp.toPx() }
     val itemGapPx = with(density) { 8.dp.toPx() }
     val contentWidthPx = (containerWidthPx - contentPaddingPx * 2f).coerceAtLeast(0f)
     val itemWidthPx = if (items.isNotEmpty()) {
@@ -308,7 +342,7 @@ private fun LiquidBottomNav(
     val maxIndicatorOffsetPx = (contentWidthPx - indicatorWidthPx).coerceAtLeast(0f)
     val stepPx = itemWidthPx + itemGapPx
     val baseIndicatorOffsetPx = if (itemWidthPx > 0f) {
-        (visualSelectedIndex * stepPx + indicatorInsetPx)
+        (selectedIndex * stepPx + indicatorInsetPx)
             .coerceIn(0f, maxIndicatorOffsetPx)
     } else {
         0f
@@ -340,7 +374,6 @@ private fun LiquidBottomNav(
 
     LaunchedEffect(selectedIndex) {
         if (!isIndicatorDragging) {
-            visualSelectedIndex = selectedIndex
             dragOffsetPx = 0f
         }
         if (previousSelectedIndex != selectedIndex) {
@@ -366,11 +399,11 @@ private fun LiquidBottomNav(
     LiquidGlassBox(
         modifier = Modifier
             .widthIn(max = 420.dp)
-            .height(88.dp)
+            .height(84.dp)
             .fluidReveal(delayMillis = 120, initialYOffset = 18.dp)
             .animatedGlassHalo(alpha = 0.055f, durationMillis = 5_200)
             .onSizeChanged { containerWidthPx = it.width.toFloat() }
-            .pointerInput(items.size, visualSelectedIndex, containerWidthPx) {
+            .pointerInput(items.size, selectedIndex, containerWidthPx) {
                 var dragStartedOnIndicator = false
                 detectDragGestures(
                     onDragStart = { offset ->
@@ -386,7 +419,6 @@ private fun LiquidBottomNav(
                             val rawIndex = ((finalOffsetPx + indicatorWidthPx / 2f) / stepPx)
                                 .roundToInt()
                                 .coerceIn(0, items.lastIndex)
-                            visualSelectedIndex = rawIndex
                             dragOffsetPx = 0f
                             isIndicatorDragging = false
                             onSelect(rawIndex)
@@ -408,7 +440,7 @@ private fun LiquidBottomNav(
                 )
             },
         hazeState = hazeState,
-        cornerRadius = 34.dp,
+        cornerRadius = 22.dp,
         refractionHeight = 30.dp,
         dispersion = 0.82f,
         blurRadius = 34.dp,
@@ -417,7 +449,7 @@ private fun LiquidBottomNav(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .padding(horizontal = 10.dp, vertical = 8.dp)
         ) {
             if (containerWidthPx > 0f) {
                 GlassDispersionCard(
@@ -431,15 +463,11 @@ private fun LiquidBottomNav(
                             scaleY = (indicatorScale - switchPulse * 0.035f).coerceAtLeast(0.92f)
                             translationY = -switchPulse * switchLiftPx
                         },
-                    cornerRadius = 30.dp,
+                    cornerRadius = 20.dp,
                     blurRadius = 32.dp,
                     refractionStrength = 0.17f,
                     dispersionAmount = 0.032f,
-                    tintColor = if (isSystemInDarkTheme()) {
-                        Color(0xFFC9EEFF).copy(alpha = 0.20f)
-                    } else {
-                        Color.White.copy(alpha = 0.72f)
-                    },
+                    tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
                     borderAlpha = 0.52f,
                     contentPadding = PaddingValues(0.dp),
                     animatedCaustics = true
@@ -454,11 +482,10 @@ private fun LiquidBottomNav(
                 items.forEachIndexed { index, screen ->
                     LiquidTabItem(
                         screen = screen,
-                        selected = visualSelectedIndex == index,
+                        selected = selectedIndex == index,
                         switchTrigger = selectedIndex,
                         modifier = Modifier.weight(1f),
                         onClick = {
-                            visualSelectedIndex = index
                             dragOffsetPx = 0f
                             onSelect(index)
                         }
@@ -474,7 +501,6 @@ private fun LiquidTopBar(
     title: String,
     hazeState: HazeState
 ) {
-    val isDark = isSystemInDarkTheme()
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -486,11 +512,11 @@ private fun LiquidTopBar(
             modifier = Modifier
                 .widthIn(max = 430.dp)
                 .fillMaxWidth()
-                .height(58.dp)
+                .height(56.dp)
                 .fluidReveal(initialYOffset = 10.dp)
                 .animatedGlassHalo(alpha = 0.05f, durationMillis = 4_700),
             hazeState = hazeState,
-            cornerRadius = 29.dp,
+            cornerRadius = 16.dp,
             refractionHeight = 24.dp,
             dispersion = 0.88f,
             blurRadius = 30.dp,
@@ -503,10 +529,8 @@ private fun LiquidTopBar(
             ) { visibleTitle ->
                 Text(
                     text = visibleTitle,
-                    color = if (isDark) Color.White else MaterialTheme.colorScheme.onSurface,
-                    fontSize = 27.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.1.sp
+                    color = MaterialTheme.colorScheme.onSurface,
+                    style = MaterialTheme.typography.headlineSmall
                 )
             }
         }
@@ -523,27 +547,30 @@ private fun LiquidTabItem(
 ) {
     val haptic = LocalHapticFeedback.current
     val interactionSource = remember { MutableInteractionSource() }
-    val isDark = isSystemInDarkTheme()
+    val isPressed by interactionSource.collectIsPressedAsState()
     var lastSwitchTrigger by remember { mutableIntStateOf(switchTrigger) }
     val selectedBounce = remember { Animatable(0f) }
     val scale by animateFloatAsState(
-        targetValue = if (selected) 1.04f else 0.96f,
+        targetValue = when {
+            isPressed -> 0.91f
+            selected -> 1f
+            else -> 0.96f
+        },
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioLowBouncy,
-            stiffness = Spring.StiffnessMediumLow
+            dampingRatio = if (isPressed) 0.90f else 0.58f,
+            stiffness = if (isPressed) 760f else 470f
         ),
         label = "liquid_tab_scale"
     )
-    val tint = if (selected) {
-        if (isDark) Color(0xFFC9EEFF).copy(alpha = 0.22f) else Color.White.copy(alpha = 0.70f)
-    } else {
-        Color.White.copy(alpha = 0.025f)
-    }
-    val contentColor = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
-    }
+    val contentColor by animateColorAsState(
+        targetValue = if (selected) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
+        },
+        animationSpec = spring(dampingRatio = 0.80f, stiffness = 560f),
+        label = "liquid_tab_content_color"
+    )
     val bounce = selectedBounce.value
     val rotationDirection = if (screen.route == Screen.Chat.route) -1f else 1f
 
@@ -583,14 +610,15 @@ private fun LiquidTabItem(
         Column(
             modifier = Modifier
                 .graphicsLayer {
-                    scaleX = scale + bounce * 0.08f
-                    scaleY = (scale - bounce * 0.025f).coerceAtLeast(0.9f)
+                    scaleX = scale
+                    scaleY = scale
                     translationY = -bounce * density * 4.5f
-                    rotationZ = bounce * rotationDirection * 4.2f
+                    rotationZ = bounce * rotationDirection * 4.2f +
+                        if (isPressed) rotationDirection * -1.2f else 0f
                 }
                 .widthIn(min = 96.dp, max = 126.dp)
                 .height(64.dp)
-                .padding(vertical = 8.dp),
+                .padding(top = 6.dp, bottom = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
@@ -598,14 +626,16 @@ private fun LiquidTabItem(
                 imageVector = screen.icon,
                 contentDescription = screen.label,
                 tint = contentColor,
-                modifier = Modifier.size(if (selected) 28.dp else 25.dp)
+                modifier = Modifier.size(if (selected) 24.dp else 22.dp)
             )
-            Spacer(modifier = Modifier.height(3.dp))
+            Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = screen.label,
                 color = contentColor,
-                fontSize = 13.sp,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                style = MaterialTheme.typography.labelMedium.copy(lineHeight = 16.sp),
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                maxLines = 1,
+                modifier = Modifier.padding(bottom = 2.dp)
             )
         }
     }
