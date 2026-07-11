@@ -9,8 +9,8 @@
 Chat, reason, code, and explore documents with local language models. Once a model is downloaded, your prompts and generated responses stay on your phone.
 
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/latest/download/release.apk">
-    <img src="https://img.shields.io/badge/Download-Latest_APK-20C997?style=for-the-badge&logo=android&logoColor=white" alt="Download the latest Solus APK" height="42" />
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.1.0/release.apk">
+    <img src="https://img.shields.io/badge/Download-Solus_1.1.0_APK-20C997?style=for-the-badge&logo=android&logoColor=white" alt="Download Solus 1.1.0 APK" height="42" />
   </a>
 </p>
 
