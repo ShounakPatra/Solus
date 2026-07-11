@@ -21,16 +21,16 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.0
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5.5.0
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6.2.0
 
       - name: Make Gradle executable
         run: chmod +x gradlew
@@ -45,7 +45,7 @@ jobs:
         run: ./gradlew assembleDebug
 
       - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: solus-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
