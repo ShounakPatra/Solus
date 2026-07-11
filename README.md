@@ -1,7 +1,6 @@
 <div align="center">
 
-<img src="<img width="400" height="400" alt="Solus-logo-final 1" src="https://github.com/user-attachments/assets/6d0fec0c-5f12-4c6d-83b4-9478065aca5b" />
-" width="170" alt="Solus logo" />
+<img src="https://github.com/user-attachments/assets/6d0fec0c-5f12-4c6d-83b4-9478065aca5b" width="170" alt="Solus logo" />
 
 # Solus
 
