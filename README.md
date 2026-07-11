@@ -30,6 +30,21 @@ Chat, reason, code, and explore documents with local language models. Once a mod
 
 ---
 
+## App Preview
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/chat-response.jpeg" width="280" alt="Solus answering a question with a local Gemma model" /></td>
+    <td align="center"><img src="docs/screenshots/model-manager-overview.jpeg" width="280" alt="Solus model manager with device guidance and Hugging Face access" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Private local chat</b></td>
+    <td align="center"><b>Guided model management</b></td>
+  </tr>
+</table>
+
+---
+
 ## Why Solus?
 
 Most AI assistants send every message to a remote server. Solus brings the model to your phone instead. Choose a compatible model, download it once, and continue chatting without sending your conversations to an AI API.
@@ -59,6 +74,34 @@ Most AI assistants send every message to a remote server. Solus brings the model
 
 ---
 
+## Solus vs Google AI Edge Gallery
+
+Both projects are open-source ways to explore generative AI directly on mobile hardware. Solus is shaped as a focused private Android assistant with document support and guided model management; Google AI Edge Gallery is a broader official showcase and experimentation playground for Google AI Edge technologies.
+
+| Capability | Solus | Google AI Edge Gallery |
+|---|---|---|
+| On-device model inference | ✅ Local generation after model download | ✅ Local generation after model download |
+| Multi-turn AI chat | ✅ | ✅ |
+| Thinking-mode control | ✅ Supported reasoning models | ✅ Supported models, including Gemma 4 |
+| Image questions | ✅ Camera and gallery input with compatible vision models | ✅ Ask Image workflow |
+| Persistent local chat history | ✅ | ✅ Session continuity |
+| In-app model discovery and downloads | ✅ Curated text, coding, reasoning, and vision options | ✅ Curated LiteRT models plus custom model loading |
+| Download controls and recovery | ✅ Progress, speed, pause, cancel, resume, and restart recovery | Model downloads are supported; these controls are not highlighted in the core feature overview |
+| Device and model guidance | ✅ RAM, chipset, runtime, size, context, and availability guidance | Per-device model benchmarks and custom model testing |
+| Document and source-file analysis | ✅ PDF, DOCX, PPTX, XLSX, ODT, HTML, RTF, Markdown, code, and more | Not presented as a core built-in workflow |
+| Android compatibility | ✅ Android 8.0+ | Android 12+ |
+| Open-source license | ✅ Apache 2.0 | ✅ Apache 2.0 |
+
+### Where Each App Shines
+
+**Choose Solus** when you want a straightforward private assistant, broader Android-version support, document analysis, detailed phone/model compatibility guidance, and resilient model downloads.
+
+**Choose Google AI Edge Gallery** when you want Google's official AI Edge playground, Prompt Lab controls, model benchmarking and custom model import, Audio Scribe, Agent Skills, MCP integrations, Mobile Actions, or availability through Google Play, iOS, and macOS.
+
+This comparison describes public features as of July 2026 and is not a performance benchmark. Solus is not affiliated with Google. See the [official Google AI Edge Gallery feature list](https://github.com/google-ai-edge/gallery#-core-features) and Google's [MCP and session-continuity update](https://developers.googleblog.com/a-smarter-google-ai-edge-gallery-mcp-integration-notifications-and-session-continuity/) for the current upstream details.
+
+---
+
 ## From Download to Private Chat
 
 | Step | What happens |
@@ -67,6 +110,13 @@ Most AI assistants send every message to a remote server. Solus brings the model
 | **2** | Open **Models** and choose a model suited to your device. |
 | **3** | Download the model once. Public models need no account; gated models may need a Hugging Face token. |
 | **4** | Start chatting. Inference and conversation history stay on your phone. |
+
+<p align="center">
+  <img src="docs/screenshots/chat-empty-state.jpeg" width="280" alt="Solus first-run chat screen before a model is selected" />
+  <img src="docs/screenshots/model-download-progress.jpeg" width="280" alt="Solus model download with progress, speed, pause, and cancel controls" />
+</p>
+
+<p align="center"><sub>Start with clear setup guidance, then monitor and control large model downloads directly in the app.</sub></p>
 
 ---
 
