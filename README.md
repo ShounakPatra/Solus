@@ -104,150 +104,38 @@ Model availability depends on whether a compatible Android-ready artifact exists
 
 ## Solus vs Google AI Edge Gallery
 
-Both applications run generative AI directly on mobile hardware. However, they are designed for different purposes.
+Both projects provide open-source tools for running generative AI directly on mobile hardware. Solus is designed as a focused private Android assistant with document support, guided model selection, and reliable model management.
 
-**Solus is built as a complete private Android assistant** for everyday conversations, coding, reasoning, image questions, document exploration, model management, and long-term personal use.
-
-**Google AI Edge Gallery is primarily an official demonstration and experimentation environment** for exploring Google AI Edge technologies, models, benchmarks, prompts, and agentic capabilities.
-
-### Core Assistant Features
-
-| Capability                                | Solus |                          Google AI Edge Gallery                          |
-| ----------------------------------------- | :---: | :----------------------------------------------------------------------: |
-| Fully on-device model inference           |   ✅   |                                     ✅                                    |
-| Offline generation after model download   |   ✅   |                                     ✅                                    |
-| No paid cloud AI API required             |   ✅   |                                     ✅                                    |
-| Multi-turn AI conversations               |   ✅   |                                     ✅                                    |
-| Persistent local conversation history     |   ✅   |                                     ✅                                    |
-| Dedicated everyday-assistant experience   |   ✅   |                  ❌ Showcase and experimentation focused                  |
-| Response sharing                          |   ✅   |                 ❌ Not offered as a core built-in workflow                |
-| Generation-speed feedback in chat         |   ✅   |                   ❌ Not offered as a core chat feature                   |
-| Automatic removal of model control tokens |   ✅   |                   ❌ Not presented as a built-in feature                  |
-| Cleanup of malformed thinking tags        |   ✅   |                   ❌ Not presented as a built-in feature                  |
-| Light and dark themes                     |   ✅   |                                     ✅                                    |
-| Android 8.0 or newer                      |   ✅   | ❌ Official compatibility depends on current builds and supported devices |
-
-### Documents and Local Files
-
-| Capability                                      | Solus | Google AI Edge Gallery |
-| ----------------------------------------------- | :---: | :--------------------: |
-| Built-in document-question workflow             |   ✅   |            ❌           |
-| PDF analysis                                    |   ✅   |            ❌           |
-| DOCX document analysis                          |   ✅   |            ❌           |
-| PPTX presentation analysis                      |   ✅   |            ❌           |
-| XLSX spreadsheet analysis                       |   ✅   |            ❌           |
-| ODT document analysis                           |   ✅   |            ❌           |
-| RTF document analysis                           |   ✅   |            ❌           |
-| HTML file analysis                              |   ✅   |            ❌           |
-| Markdown file analysis                          |   ✅   |            ❌           |
-| Local source-code file analysis                 |   ✅   |            ❌           |
-| Multiple document formats through one interface |   ✅   |            ❌           |
-| Document content combined with local AI chat    |   ✅   |            ❌           |
-
-> A ❌ in this section means the capability is not presented as a standard built-in document workflow in Google AI Edge Gallery. It does not mean developers cannot build similar functionality using Google AI Edge technologies.
-
-### Model Management
-
-| Capability                                     | Solus |                    Google AI Edge Gallery                   |
-| ---------------------------------------------- | :---: | :---------------------------------------------------------: |
-| In-app model discovery                         |   ✅   |                              ✅                              |
-| Multiple open-model families                   |   ✅   |                              ✅                              |
-| Text, coding, reasoning, and vision categories |   ✅   | ❌ Not organised as a dedicated assistant-oriented catalogue |
-| Device-aware model recommendations             |   ✅   |                              ❌                              |
-| RAM guidance before downloading                |   ✅   |                              ❌                              |
-| Chipset and runtime guidance                   |   ✅   |                              ❌                              |
-| Model-size guidance                            |   ✅   |              ✅ Basic download-size information              |
-| Context-window information                     |   ✅   |        ❌ Not consistently shown as assistant guidance       |
-| Model-availability and conversion status       |   ✅   |                              ❌                              |
-| Hugging Face gated-model support               |   ✅   |               ✅ Compatible Hugging Face models              |
-| Hugging Face token guidance                    |   ✅   |               ❌ Not a central guided workflow               |
-| Download progress                              |   ✅   |                              ✅                              |
-| Live download speed                            |   ✅   |           ❌ Not highlighted as a built-in control           |
-| Pause model download                           |   ✅   |            ❌ Not presented as a standard control            |
-| Cancel model download                          |   ✅   |            ❌ Not presented as a standard control            |
-| Resume interrupted download                    |   ✅   |            ❌ Not presented as a standard control            |
-| Recover downloads after app restart            |   ✅   |            ❌ Not presented as a standard control            |
-| Restart failed downloads                       |   ✅   |            ❌ Not presented as a standard control            |
-| Storage-aware download information             |   ✅   |          ❌ Not presented as detailed model guidance         |
-
-### Chat, Reasoning, Vision, and Coding
-
-| Capability                             | Solus |     Google AI Edge Gallery     |
-| -------------------------------------- | :---: | :----------------------------: |
-| General local AI chat                  |   ✅   |                ✅               |
-| Dedicated coding-model category        |   ✅   |                ❌               |
-| Dedicated reasoning-model category     |   ✅   |                ❌               |
-| Dedicated lightweight-model category   |   ✅   |                ❌               |
-| Thinking-mode control                  |   ✅   |                ✅               |
-| Camera image input                     |   ✅   |                ✅               |
-| Gallery image input                    |   ✅   |                ✅               |
-| Vision-language model support          |   ✅   |                ✅               |
-| Model-specific chat formatting         |   ✅   |                ✅               |
-| User-facing model suitability guidance |   ✅   |                ❌               |
-| Assistant-focused model selection      |   ✅   | ❌ Experiment-focused selection |
-
-### Project and Platform
-
-| Capability                                      | Solus |           Google AI Edge Gallery          |
-| ----------------------------------------------- | :---: | :---------------------------------------: |
-| Free to use                                     |   ✅   |                     ✅                     |
-| Open source                                     |   ✅   |                     ✅                     |
-| Apache License 2.0                              |   ✅   |                     ✅                     |
-| Designed specifically for Android assistant use |   ✅   | ❌ Broader cross-platform AI Edge showcase |
-| Direct APK release from GitHub                  |   ✅   |                     ✅                     |
-| Google Play availability                        |   ❌   |                     ✅                     |
-| iOS availability                                |   ❌   |                     ✅                     |
-| macOS experimentation                           |   ❌   |                     ✅                     |
-| Prompt Lab                                      |   ❌   |                     ✅                     |
-| Built-in model benchmarking                     |   ❌   |                     ✅                     |
-| Custom model testing                            |   ❌   |                     ✅                     |
-| Audio transcription                             |   ❌   |                     ✅                     |
-| Agent Skills                                    |   ❌   |                     ✅                     |
-| MCP integrations                                |   ❌   |               ✅ Experimental              |
-| Mobile Actions and function calling             |   ❌   |                     ✅                     |
-| Scheduled local notifications                   |   ❌   |                     ✅                     |
+| Feature                                                         | Solus | Google AI Edge Gallery |
+| --------------------------------------------------------------- | :---: | :--------------------: |
+| Fully offline inference                                         |   ✅   |            ✅           |
+| Open source                                                     |   ✅   |            ✅           |
+| Free                                                            |   ✅   |            ✅           |
+| Local conversation history                                      |   ✅   |            ✅           |
+| Vision models                                                   |   ✅   |            ✅           |
+| Document chat for PDF, DOCX, PPTX, XLSX, and other formats      |   ✅   |            ❌           |
+| Multiple model families                                         |   ✅   |            ✅           |
+| Thinking mode                                                   |   ✅   |            ✅           |
+| Download manager with resume support                            |   ✅   |            ✅           |
+| Device-aware model recommendations                              |   ✅   |            ❌           |
+| Response cleanup for control tokens and malformed thinking tags |   ✅   |            ❌           |
 
 ### Why Choose Solus?
 
 Choose **Solus** when you want:
 
-* A private AI assistant rather than a technology demonstration
-* One interface for chat, coding, reasoning, images, and documents
-* Support for PDF, Word, PowerPoint, Excel, Markdown, source code, and other local files
-* Clear guidance based on your phone's RAM, chipset, storage, and supported runtime
-* Resumable model downloads with visible progress and recovery controls
-* Curated model categories for chat, coding, reasoning, vision, and lightweight use
-* Broader compatibility with devices running Android 8.0 or newer
-* Clean generated output without exposed control tokens or broken thinking tags
-* A focused Android experience without requiring a cloud AI subscription
+* A private AI assistant rather than an experimentation-focused showcase
+* Local document chat across PDFs, Word files, presentations, spreadsheets, code, and other formats
+* Device-aware recommendations based on your phone and available resources
+* Resumable model downloads with progress and recovery support
+* Clean model output without exposed control tokens or malformed thinking tags
+* Support for chat, coding, reasoning, and vision model families
+* Compatibility with Android 8.0 and newer
+* A focused Android interface for daily local AI use
 
-### When Google AI Edge Gallery May Be More Suitable
-
-Google AI Edge Gallery may be more suitable when you specifically want to experiment with:
-
-* Google's latest AI Edge demonstrations
-* Prompt Lab parameters
-* Model benchmarking
-* Custom model imports
-* Audio Scribe
-* Agent Skills
-* Function calling
-* MCP connections
-* Mobile Actions
-* Scheduled notifications
-* Google Play, iOS, or macOS availability
-
-> This comparison covers publicly documented built-in features as of July 2026. It is not a model-quality or performance benchmark. Both projects are under active development, and their capabilities may change.
+> This comparison covers built-in user-facing features. Both projects are under active development, so capabilities may change in future releases.
 
 > Solus is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Google.
-
-Official upstream references:
-
-* [Google AI Edge Gallery repository](https://github.com/google-ai-edge/gallery)
-* [Google AI Edge Gallery core features](https://github.com/google-ai-edge/gallery#-core-features)
-* [Audio Scribe and Google Play update](https://developers.googleblog.com/google-ai-edge-gallery-now-with-audio-and-on-google-play/)
-* [MCP, notifications, and session-continuity update](https://developers.googleblog.com/a-smarter-google-ai-edge-gallery-mcp-integration-notifications-and-session-continuity/)
-* [Gemma Agent Skills announcement](https://developers.googleblog.com/bring-state-of-the-art-agentic-skills-to-the-edge-with-gemma-4/)
 
 ---
 
