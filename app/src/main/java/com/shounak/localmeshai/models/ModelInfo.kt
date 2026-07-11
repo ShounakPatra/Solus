@@ -1,5 +1,7 @@
 package com.shounak.localmeshai.models
 
+import androidx.compose.runtime.Immutable
+
 private val ContextWindowInFileName = Regex("""ekv(\d+)""", RegexOption.IGNORE_CASE)
 
 enum class ModelType(val label: String) {
@@ -23,6 +25,7 @@ enum class ModelPackage {
     ZipDirectory
 }
 
+@Immutable
 data class ModelInfo(
     val id: String,
     val name: String,

@@ -2,129 +2,114 @@ package com.shounak.localmeshai.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
-import com.shounak.localmeshai.R
 
-val GaramondFontFamily = FontFamily(
-    Font(R.font.eb_garamond_regular, FontWeight.Normal),
-    Font(R.font.eb_garamond_medium, FontWeight.Medium),
-    Font(R.font.eb_garamond_semibold, FontWeight.SemiBold),
-    Font(R.font.eb_garamond_bold, FontWeight.Bold),
-    Font(R.font.eb_garamond_italic, FontWeight.Normal, FontStyle.Italic),
-    Font(R.font.eb_garamond_medium_italic, FontWeight.Medium, FontStyle.Italic),
-    Font(R.font.eb_garamond_semibold_italic, FontWeight.SemiBold, FontStyle.Italic),
-    Font(R.font.eb_garamond_bold_italic, FontWeight.Bold, FontStyle.Italic)
-)
+/** Modern platform sans-serif keeps the interface technical, compact, and readable. */
+val AppSansFontFamily = FontFamily.SansSerif
 
-// M3 Expressive – richer typography hierarchy with varied weights
 val Typography = Typography(
     displayLarge = TextStyle(
-        fontFamily = GaramondFontFamily,
+        fontFamily = AppSansFontFamily,
         fontWeight = FontWeight.Bold,
-        fontSize = 59.sp,
-        lineHeight = 68.sp,
-        letterSpacing = 0.sp
+        fontSize = 48.sp,
+        lineHeight = 56.sp,
+        letterSpacing = (-0.6).sp
     ),
     displayMedium = TextStyle(
-        fontFamily = GaramondFontFamily,
+        fontFamily = AppSansFontFamily,
         fontWeight = FontWeight.Bold,
-        fontSize = 47.sp,
-        lineHeight = 56.sp,
-        letterSpacing = 0.sp
+        fontSize = 40.sp,
+        lineHeight = 48.sp,
+        letterSpacing = (-0.5).sp
     ),
     displaySmall = TextStyle(
-        fontFamily = GaramondFontFamily,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 38.sp,
-        lineHeight = 46.sp,
-        letterSpacing = 0.sp
-    ),
-    headlineLarge = TextStyle(
-        fontFamily = GaramondFontFamily,
+        fontFamily = AppSansFontFamily,
         fontWeight = FontWeight.SemiBold,
         fontSize = 34.sp,
         lineHeight = 42.sp,
-        letterSpacing = 0.sp
+        letterSpacing = (-0.4).sp
     ),
-    headlineMedium = TextStyle(
-        fontFamily = GaramondFontFamily,
+    headlineLarge = TextStyle(
+        fontFamily = AppSansFontFamily,
         fontWeight = FontWeight.SemiBold,
         fontSize = 30.sp,
         lineHeight = 38.sp,
-        letterSpacing = 0.sp
+        letterSpacing = (-0.35).sp
     ),
-    headlineSmall = TextStyle(
-        fontFamily = GaramondFontFamily,
+    headlineMedium = TextStyle(
+        fontFamily = AppSansFontFamily,
         fontWeight = FontWeight.SemiBold,
         fontSize = 26.sp,
         lineHeight = 34.sp,
-        letterSpacing = 0.sp
+        letterSpacing = (-0.25).sp
+    ),
+    headlineSmall = TextStyle(
+        fontFamily = AppSansFontFamily,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
+        letterSpacing = (-0.15).sp
     ),
     titleLarge = TextStyle(
-        fontFamily = GaramondFontFamily,
+        fontFamily = AppSansFontFamily,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 24.sp,
-        lineHeight = 30.sp,
-        letterSpacing = 0.sp
+        fontSize = 20.sp,
+        lineHeight = 26.sp,
+        letterSpacing = (-0.1).sp
     ),
     titleMedium = TextStyle(
-        fontFamily = GaramondFontFamily,
-        fontWeight = FontWeight.Medium,
-        fontSize = 18.sp,
-        lineHeight = 26.sp,
-        letterSpacing = 0.sp
+        fontFamily = AppSansFontFamily,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 17.sp,
+        lineHeight = 23.sp
     ),
     titleSmall = TextStyle(
-        fontFamily = GaramondFontFamily,
+        fontFamily = AppSansFontFamily,
         fontWeight = FontWeight.Medium,
-        fontSize = 16.sp,
-        lineHeight = 22.sp,
-        letterSpacing = 0.sp
+        fontSize = 15.sp,
+        lineHeight = 21.sp
     ),
     bodyLarge = TextStyle(
-        fontFamily = GaramondFontFamily,
+        fontFamily = AppSansFontFamily,
         fontWeight = FontWeight.Normal,
-        fontSize = 18.sp,
-        lineHeight = 26.sp,
-        letterSpacing = 0.sp
+        fontSize = 16.sp,
+        lineHeight = 24.sp
     ),
     bodyMedium = TextStyle(
-        fontFamily = GaramondFontFamily,
+        fontFamily = AppSansFontFamily,
         fontWeight = FontWeight.Normal,
-        fontSize = 16.sp,
-        lineHeight = 22.sp,
-        letterSpacing = 0.sp
+        fontSize = 14.sp,
+        lineHeight = 21.sp,
+        letterSpacing = 0.1.sp
     ),
     bodySmall = TextStyle(
-        fontFamily = GaramondFontFamily,
+        fontFamily = AppSansFontFamily,
         fontWeight = FontWeight.Normal,
-        fontSize = 14.sp,
-        lineHeight = 20.sp,
-        letterSpacing = 0.sp
+        fontSize = 13.sp,
+        lineHeight = 19.sp,
+        letterSpacing = 0.1.sp
     ),
     labelLarge = TextStyle(
-        fontFamily = GaramondFontFamily,
-        fontWeight = FontWeight.Medium,
-        fontSize = 16.sp,
-        lineHeight = 22.sp,
-        letterSpacing = 0.sp
-    ),
-    labelMedium = TextStyle(
-        fontFamily = GaramondFontFamily,
-        fontWeight = FontWeight.Medium,
+        fontFamily = AppSansFontFamily,
+        fontWeight = FontWeight.SemiBold,
         fontSize = 14.sp,
         lineHeight = 20.sp,
-        letterSpacing = 0.sp
+        letterSpacing = 0.15.sp
+    ),
+    labelMedium = TextStyle(
+        fontFamily = AppSansFontFamily,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 12.sp,
+        lineHeight = 18.sp,
+        letterSpacing = 0.2.sp
     ),
     labelSmall = TextStyle(
-        fontFamily = GaramondFontFamily,
+        fontFamily = AppSansFontFamily,
         fontWeight = FontWeight.Medium,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
-        letterSpacing = 0.sp
+        fontSize = 11.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.25.sp
     )
 )

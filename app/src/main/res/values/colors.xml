@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="splash_edge">#000000</color>
+    <!-- Matches LightColorScheme.background used by LiquidGlassBackdrop. -->
+    <color name="splash_edge">#F4F7F9</color>
+    <!-- Gradient stops matching the Compose LiquidGlassBackdrop gradient
+         (background → surfaceContainerLowest → surfaceContainerLow). -->
+    <color name="splash_gradient_start">#F4F7F9</color>
+    <color name="splash_gradient_end">#F7F9FA</color>
 </resources>

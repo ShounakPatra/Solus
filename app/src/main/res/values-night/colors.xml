@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches DarkColorScheme.background to prevent splash/window hand-off flashes. -->
+    <color name="splash_edge">#0A0F14</color>
+    <!-- Gradient stops matching the Compose LiquidGlassBackdrop gradient
+         (background → surfaceContainerLowest → surfaceContainerLow). -->
+    <color name="splash_gradient_start">#0A0F14</color>
+    <color name="splash_gradient_end">#0F151C</color>
+</resources>

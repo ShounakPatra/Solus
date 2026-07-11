@@ -18,11 +18,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -35,23 +30,23 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
@@ -69,10 +64,6 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.PopupProperties
 import dev.chrisbanes.haze.HazeState
-import dev.chrisbanes.haze.HazeStyle
-import dev.chrisbanes.haze.HazeTint
-import dev.chrisbanes.haze.hazeEffect
-import dev.chrisbanes.haze.hazeSource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.max
@@ -142,23 +133,39 @@ enum class LiquidGlassQuality {
     Fallback
 }
 
+@Volatile
+private var cachedLiquidGlassQuality: LiquidGlassQuality? = null
+
+private fun resolveLiquidGlassQuality(context: Context): LiquidGlassQuality {
+    cachedLiquidGlassQuality?.let { return it }
+    return synchronized(LiquidGlassQuality::class.java) {
+        cachedLiquidGlassQuality ?: run {
+            val activityManager =
+                context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val powerManager =
+                context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val totalRamGb = DeviceUtils.getTotalRamGB(context)
+            val hasHighEndGpuProfile = DeviceUtils.supportsLiteRtLmGpu()
+            when {
+                activityManager.isLowRamDevice || powerManager.isPowerSaveMode ->
+                    LiquidGlassQuality.Fallback
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    hasHighEndGpuProfile && totalRamGb >= 14.0 ->
+                    LiquidGlassQuality.Full
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    hasHighEndGpuProfile && totalRamGb >= 9.0 ->
+                    LiquidGlassQuality.Balanced
+                else -> LiquidGlassQuality.Fallback
+            }.also { cachedLiquidGlassQuality = it }
+        }
+    }
+}
+
 @Composable
 fun rememberLiquidGlassQuality(): LiquidGlassQuality {
     val context = LocalContext.current
-    return remember(context) {
-        val activityManager =
-            context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val powerManager =
-            context.getSystemService(Context.POWER_SERVICE) as PowerManager
-        when {
-            activityManager.isLowRamDevice || powerManager.isPowerSaveMode ->
-                LiquidGlassQuality.Fallback
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
-                LiquidGlassQuality.Full
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-                LiquidGlassQuality.Balanced
-            else -> LiquidGlassQuality.Fallback
-        }
+    return remember(context.applicationContext) {
+        resolveLiquidGlassQuality(context.applicationContext)
     }
 }
 
@@ -166,27 +173,52 @@ fun rememberLiquidGlassQuality(): LiquidGlassQuality {
 fun Modifier.fluidReveal(
     delayMillis: Int = 0,
     initialScale: Float = 0.96f,
-    initialYOffset: Dp = 14.dp
+    initialYOffset: Dp = 14.dp,
+    initialXOffset: Dp = 0.dp,
+    initialRotationZ: Float = 0f
 ): Modifier {
+    val quality = rememberLiquidGlassQuality()
     val density = LocalDensity.current
-    val progress = remember { Animatable(0f) }
-    LaunchedEffect(delayMillis, initialScale, initialYOffset) {
+    var hasRevealed by rememberSaveable { mutableStateOf(false) }
+    val progress = remember { Animatable(if (hasRevealed) 1f else 0f) }
+    LaunchedEffect(delayMillis, initialScale, initialYOffset, initialXOffset, initialRotationZ) {
+        if (hasRevealed) {
+            progress.snapTo(1f)
+            return@LaunchedEffect
+        }
         progress.snapTo(0f)
-        if (delayMillis > 0) delay(delayMillis.toLong())
+        val effectiveDelay = if (quality == LiquidGlassQuality.Fallback) {
+            delayMillis.coerceAtMost(80)
+        } else {
+            delayMillis
+        }
+        if (effectiveDelay > 0) delay(effectiveDelay.toLong())
         progress.animateTo(
             targetValue = 1f,
             animationSpec = spring(
-                dampingRatio = 0.68f,
-                stiffness = Spring.StiffnessMedium
+                dampingRatio = if (quality == LiquidGlassQuality.Fallback) 0.68f else 0.72f,
+                stiffness = if (quality == LiquidGlassQuality.Fallback) 520f else 430f,
+                visibilityThreshold = 0.001f
             )
         )
+        hasRevealed = true
     }
-    val offsetPx = with(density) { initialYOffset.toPx() }
+    val movementScale = if (quality == LiquidGlassQuality.Fallback) 0.45f else 1f
+    val effectiveInitialScale = if (quality == LiquidGlassQuality.Fallback) {
+        initialScale.coerceAtLeast(0.985f)
+    } else {
+        initialScale
+    }
+    val offsetYPx = with(density) { initialYOffset.toPx() } * movementScale
+    val offsetXPx = with(density) { initialXOffset.toPx() } * movementScale
+    val effectiveRotation = if (quality == LiquidGlassQuality.Fallback) 0f else initialRotationZ
     return this.graphicsLayer {
-        alpha = progress.value
-        scaleX = initialScale + (1f - initialScale) * progress.value
-        scaleY = initialScale + (1f - initialScale) * progress.value
-        translationY = (1f - progress.value) * offsetPx
+        alpha = progress.value.coerceIn(0f, 1f)
+        scaleX = effectiveInitialScale + (1f - effectiveInitialScale) * progress.value
+        scaleY = effectiveInitialScale + (1f - effectiveInitialScale) * progress.value
+        translationY = (1f - progress.value) * offsetYPx
+        translationX = (1f - progress.value) * offsetXPx
+        rotationZ = (1f - progress.value) * effectiveRotation
     }
 }
 
@@ -197,38 +229,32 @@ fun Modifier.animatedGlassHalo(
     durationMillis: Int = 3_800
 ): Modifier {
     if (!enabled) return this
-    val transition = rememberInfiniteTransition(label = "glass_halo")
-    val sweep by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "glass_halo_sweep"
-    )
-    return this.drawWithContent {
-        drawContent()
+    val accent = MaterialTheme.colorScheme.primary
+    return this.drawWithCache {
         val center = Offset(
-            x = size.width * (0.18f + 0.64f * sweep),
-            y = size.height * (0.10f + 0.72f * (1f - sweep))
+            x = size.width * 0.34f,
+            y = size.height * 0.24f
         )
         val radius = max(size.width, size.height) * 0.82f
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = alpha),
-                    Color(0xFF7DDCFF).copy(alpha = alpha * 0.72f),
-                    Color(0xFFFF7AC8).copy(alpha = alpha * 0.34f),
-                    Color.Transparent
-                ),
-                center = center,
-                radius = radius
+        val haloBrush = Brush.radialGradient(
+            colors = listOf(
+                Color.White.copy(alpha = alpha),
+                accent.copy(alpha = alpha * 0.68f),
+                accent.copy(alpha = alpha * 0.18f),
+                Color.Transparent
             ),
             center = center,
-            radius = radius,
-            blendMode = BlendMode.Screen
+            radius = radius
         )
+        onDrawWithContent {
+            drawContent()
+            drawCircle(
+                brush = haloBrush,
+                center = center,
+                radius = radius,
+                blendMode = BlendMode.Screen
+            )
+        }
     }
 }
 
@@ -237,150 +263,25 @@ fun LiquidGlassBackdrop(
     hazeState: HazeState,
     content: @Composable () -> Unit
 ) {
-    val isDark = isSystemInDarkTheme()
-    val infiniteTransition = rememberInfiniteTransition(label = "liquid_bg")
-
-    val blob1X by infiniteTransition.animateFloat(
-        initialValue = 0.08f,
-        targetValue = 0.82f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(4_400),
-            repeatMode = RepeatMode.Reverse
-        ), label = "blob1_x"
-    )
-    val blob1Y by infiniteTransition.animateFloat(
-        initialValue = 0.12f,
-        targetValue = 0.68f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(4_050),
-            repeatMode = RepeatMode.Reverse
-        ), label = "blob1_y"
-    )
-
-    val blob2X by infiniteTransition.animateFloat(
-        initialValue = 0.9f,
-        targetValue = 0.28f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(5_200),
-            repeatMode = RepeatMode.Reverse
-        ), label = "blob2_x"
-    )
-    val blob2Y by infiniteTransition.animateFloat(
-        initialValue = 0.78f,
-        targetValue = 0.22f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(4_650),
-            repeatMode = RepeatMode.Reverse
-        ), label = "blob2_y"
-    )
-
-    val blob3X by infiniteTransition.animateFloat(
-        initialValue = 0.22f,
-        targetValue = 0.72f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(5_900),
-            repeatMode = RepeatMode.Reverse
-        ), label = "blob3_x"
-    )
-    val blob3Y by infiniteTransition.animateFloat(
-        initialValue = 0.9f,
-        targetValue = 0.38f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(5_250),
-            repeatMode = RepeatMode.Reverse
-        ), label = "blob3_y"
-    )
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        Canvas(
-            modifier = Modifier
-                .fillMaxSize()
-                .hazeSource(state = hazeState)
-        ) {
-            val width = size.width
-            val height = size.height
-
-            if (isDark) {
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFF09051C),
-                            Color(0xFF18083D),
-                            Color(0xFF091838)
-                        )
-                    )
-                )
-            } else {
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFFF8F4FF),
-                            Color(0xFFE9E5FF),
-                            Color(0xFFDCEFFF)
-                        )
-                    )
-                )
-            }
-
-            val blob1Color = if (isDark) {
-                Color(0xFF00C8FF).copy(alpha = 0.34f)
-            } else {
-                Color(0xFF00AEEF).copy(alpha = 0.30f)
-            }
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(blob1Color, Color.Transparent),
-                    center = Offset(width * blob1X, height * blob1Y),
-                    radius = width * 0.86f
-                ),
-                center = Offset(width * blob1X, height * blob1Y),
-                radius = width * 0.86f
-            )
-
-            val blob2Color = if (isDark) {
-                Color(0xFFFF2DAA).copy(alpha = 0.31f)
-            } else {
-                Color(0xFFFF63B7).copy(alpha = 0.28f)
-            }
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(blob2Color, Color.Transparent),
-                    center = Offset(width * blob2X, height * blob2Y),
-                    radius = width * 0.92f
-                ),
-                center = Offset(width * blob2X, height * blob2Y),
-                radius = width * 0.92f
-            )
-
-            val blob3Color = if (isDark) {
-                Color(0xFF8E4DFF).copy(alpha = 0.42f)
-            } else {
-                Color(0xFF9B6CFF).copy(alpha = 0.32f)
-            }
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(blob3Color, Color.Transparent),
-                    center = Offset(width * blob3X, height * blob3Y),
-                    radius = width
-                ),
-                center = Offset(width * blob3X, height * blob3Y),
-                radius = width
-            )
-
-            drawRect(
-                brush = Brush.linearGradient(
+    val colors = MaterialTheme.colorScheme
+    // A full-window Haze source allocates an off-screen texture. Some mobile GPUs
+    // cap that texture below the physical display width, producing a dark strip at
+    // the edge; it can also flash black while the capture surface is initialised.
+    // Draw the deliberate low-saturation backdrop directly so every frame covers
+    // the complete window with the same deterministic pixels.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
                     colors = listOf(
-                        Color.Transparent,
-                        Color(0xFF5E7CFF).copy(alpha = if (isDark) 0.16f else 0.10f),
-                        Color.Transparent
-                    ),
-                    start = Offset(0f, height),
-                    end = Offset(width, 0f)
-                ),
-                blendMode = BlendMode.Screen
+                        colors.background,
+                        colors.surfaceContainerLowest,
+                        colors.surfaceContainerLow
+                    )
+                )
             )
-        }
-
+    ) {
         content()
     }
 }
@@ -423,88 +324,56 @@ fun Modifier.glassEffect(
     tintColor: Color = Color.White.copy(alpha = 0.10f),
     borderAlpha: Float = 0.25f,
 ): Modifier {
-    val isDark = isSystemInDarkTheme()
-    val quality = rememberLiquidGlassQuality()
-    val effectiveBlur = when (quality) {
-        LiquidGlassQuality.Full -> blurRadius
-        LiquidGlassQuality.Balanced -> blurRadius * 0.72f
-        LiquidGlassQuality.Fallback -> 0.dp
+    val colors = MaterialTheme.colorScheme
+    val isSurfaceLevel = tintColor == colors.surfaceContainerLowest ||
+        tintColor == colors.surfaceContainerLow ||
+        tintColor == colors.surfaceContainer ||
+        tintColor == colors.surfaceContainerHigh ||
+        tintColor == colors.surfaceContainerHighest
+    val effectiveTint = if (isSurfaceLevel) {
+        tintColor
+    } else {
+        tintColor
+            .copy(alpha = (tintColor.alpha * 0.38f).coerceAtMost(0.14f))
+            .compositeOver(colors.surfaceContainer)
     }
-    val effectiveTint = when (quality) {
-        LiquidGlassQuality.Full -> tintColor
-        LiquidGlassQuality.Balanced -> tintColor.copy(
-            alpha = max(tintColor.alpha, 0.12f)
+    // List items use cached translucent paint instead of a live background blur.
+    // A haze pass for every visible row is one of the most expensive operations
+    // Compose can perform while the rows are moving.
+    val blurred = this
+        .clip(shape)
+        .background(effectiveTint, shape)
+
+    return blurred.drawWithCache {
+        val surfaceBrush = Brush.linearGradient(
+            colors = listOf(
+                colors.surfaceContainerHigh.copy(alpha = borderAlpha * 0.34f),
+                Color.Transparent,
+                colors.primary.copy(alpha = borderAlpha * 0.10f),
+                Color.Transparent
+            ),
+            start = Offset(-size.width * 0.20f, -size.height * 0.10f),
+            end = Offset(size.width * 1.10f, size.height * 0.85f)
         )
-        LiquidGlassQuality.Fallback -> if (isDark) {
-            Color(0xFF25133E).copy(alpha = 0.90f)
-        } else {
-            Color.White.copy(alpha = 0.82f)
-        }
-    }
-    val fallbackTint = if (isDark) {
-        HazeTint(Color(0xFF25133E).copy(alpha = 0.94f))
-    } else {
-        HazeTint(Color.White.copy(alpha = 0.90f))
-    }
-    val clipped = this.clip(shape)
-    val blurred = if (quality == LiquidGlassQuality.Fallback) {
-        clipped.background(effectiveTint, shape)
-    } else {
-        clipped.hazeEffect(
-            state = hazeState,
-            style = HazeStyle(
-                blurRadius = effectiveBlur,
-                tints = listOf(
-                    HazeTint(
-                        Brush.linearGradient(
-                            listOf(
-                                effectiveTint.copy(alpha = effectiveTint.alpha * 0.75f),
-                                Color.White.copy(alpha = if (isDark) 0.055f else 0.16f),
-                                effectiveTint.copy(alpha = effectiveTint.alpha * 0.45f)
-                            )
-                        )
-                    )
-                ),
-                backgroundColor = Color.Transparent,
-                noiseFactor = when (quality) {
-                    LiquidGlassQuality.Full -> 0.055f
-                    LiquidGlassQuality.Balanced -> 0.032f
-                    LiquidGlassQuality.Fallback -> 0f
-                },
-                fallbackTint = fallbackTint
+        val outline = shape.createOutline(size, layoutDirection, this)
+        val outlineBrush = Brush.linearGradient(
+            listOf(
+                colors.outline.copy(alpha = borderAlpha * 1.15f),
+                colors.outlineVariant.copy(alpha = borderAlpha * 0.72f),
+                colors.primary.copy(alpha = borderAlpha * 0.42f),
+                colors.outlineVariant.copy(alpha = borderAlpha * 0.62f)
             )
         )
-    }
-
-    return blurred.drawWithContent {
-        drawContent()
-
-        drawRect(
-            brush = Brush.linearGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = borderAlpha * 0.75f),
-                    Color.Transparent,
-                    Color(0xFF80D8FF).copy(alpha = borderAlpha * 0.22f),
-                    Color.Transparent
-                ),
-                start = Offset(-size.width * 0.20f, -size.height * 0.10f),
-                end = Offset(size.width * 1.10f, size.height * 0.85f)
-            ),
-            blendMode = BlendMode.Screen
-        )
-
-        drawOutline(
-            outline = shape.createOutline(size, layoutDirection, this),
-            brush = Brush.linearGradient(
-                listOf(
-                    Color.White.copy(alpha = borderAlpha * 1.55f),
-                    Color.White.copy(alpha = borderAlpha * 0.20f),
-                    Color(0xFF8DCBFF).copy(alpha = borderAlpha * 0.85f),
-                    Color.White.copy(alpha = borderAlpha * 0.35f)
-                )
-            ),
-            style = Stroke(width = 0.8.dp.toPx())
-        )
+        val outlineStroke = Stroke(width = 0.8.dp.toPx())
+        onDrawWithContent {
+            drawContent()
+            drawRect(brush = surfaceBrush)
+            drawOutline(
+                outline = outline,
+                brush = outlineBrush,
+                style = outlineStroke
+            )
+        }
     }
 }
 
@@ -522,13 +391,23 @@ fun LiquidGlassButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val haptic = LocalHapticFeedback.current
-    val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.94f else 1f,
+    val animatedScaleX by animateFloatAsState(
+        targetValue = if (isPressed) 0.965f else 1f,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioLowBouncy,
-            stiffness = Spring.StiffnessMediumLow
+            dampingRatio = if (isPressed) 0.92f else 0.76f,
+            stiffness = if (isPressed) 650f else 480f,
+            visibilityThreshold = 0.001f
         ),
-        label = "liquid_button_scale"
+        label = "liquid_button_scale_x"
+    )
+    val animatedScaleY by animateFloatAsState(
+        targetValue = if (isPressed) 0.91f else 1f,
+        animationSpec = spring(
+            dampingRatio = if (isPressed) 0.94f else 0.72f,
+            stiffness = if (isPressed) 720f else 440f,
+            visibilityThreshold = 0.001f
+        ),
+        label = "liquid_button_scale_y"
     )
     val pressGlow by animateFloatAsState(
         targetValue = if (isPressed) 1f else 0f,
@@ -547,10 +426,10 @@ fun LiquidGlassButton(
                 durationMillis = 920
             )
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                scaleX = animatedScaleX
+                scaleY = animatedScaleY
                 alpha = if (enabled) 1f else 0.48f
-                translationY = pressGlow * density * 1.4f
+                translationY = pressGlow * density * 1.8f
             }
             .glassEffect(
                 hazeState = hazeState,
@@ -578,12 +457,15 @@ fun LiquidGlassButton(
 fun Modifier.jellyOnTouch(sensitivity: Float = 2.4f): Modifier {
     val rotationX = remember { Animatable(0f) }
     val rotationY = remember { Animatable(0f) }
+    val pressScale = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
 
     return this
         .graphicsLayer {
             this.rotationX = rotationX.value
             this.rotationY = rotationY.value
+            scaleX = pressScale.value
+            scaleY = pressScale.value
             cameraDistance = 18f * density
         }
         .pointerInput(sensitivity) {
@@ -593,6 +475,12 @@ fun Modifier.jellyOnTouch(sensitivity: Float = 2.4f): Modifier {
                 val centerY = size.height / 2f
                 val x = ((down.position.x - centerX) / centerX).coerceIn(-1f, 1f)
                 val y = ((down.position.y - centerY) / centerY).coerceIn(-1f, 1f)
+                scope.launch {
+                    pressScale.animateTo(
+                        0.965f,
+                        spring(dampingRatio = 0.88f, stiffness = 760f)
+                    )
+                }
                 scope.launch {
                     rotationY.animateTo(
                         x * sensitivity,
@@ -618,6 +506,12 @@ fun Modifier.jellyOnTouch(sensitivity: Float = 2.4f): Modifier {
                         spring(dampingRatio = 0.65f, stiffness = 680f)
                     )
                 }
+                scope.launch {
+                    pressScale.animateTo(
+                        1f,
+                        spring(dampingRatio = 0.56f, stiffness = 520f)
+                    )
+                }
             }
         }
 }
@@ -628,13 +522,12 @@ fun Modifier.glassmorphic(
     shape: androidx.compose.foundation.shape.CornerBasedShape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
     borderWidth: Dp = 1.dp
 ): Modifier {
-    val isDark = isSystemInDarkTheme()
-    val baseColor = if (isDark) Color.White.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.4f)
-    val borderColors = if (isDark) {
-        listOf(Color.White.copy(alpha = 0.15f), Color.White.copy(alpha = 0.03f))
-    } else {
-        listOf(Color.White.copy(alpha = 0.55f), Color.White.copy(alpha = 0.12f))
-    }
+    val colors = MaterialTheme.colorScheme
+    val baseColor = colors.surfaceContainer
+    val borderColors = listOf(
+        colors.outline.copy(alpha = 0.48f),
+        colors.outlineVariant.copy(alpha = 0.72f)
+    )
 
     return this.then(
         Modifier
@@ -658,7 +551,7 @@ fun GlassDropdownMenu(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val isDark = isSystemInDarkTheme()
+    val colors = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(22.dp)
     var keepPopupVisible by remember { mutableStateOf(expanded) }
     val visibilityState = remember { MutableTransitionState(false) }
@@ -678,16 +571,16 @@ fun GlassDropdownMenu(
             hazeState = hazeState,
             shape = shape,
             blurRadius = 28.dp,
-            tintColor = if (isDark) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.68f),
-            borderAlpha = 0.52f
+            tintColor = colors.surfaceContainerHigh,
+            borderAlpha = 0.38f
         )
     } else {
         modifier.background(
             brush = Brush.linearGradient(
                 listOf(
-                    if (isDark) Color(0xF228174B) else Color(0xF7FFFFFF),
-                    if (isDark) Color(0xF2181037) else Color(0xF2EEF4FF),
-                    if (isDark) Color(0xF21A2852) else Color(0xF2E6F3FF)
+                    colors.surfaceContainerHigh,
+                    colors.surfaceContainer,
+                    colors.surfaceContainerHigh
                 )
             ),
             shape = shape
@@ -708,9 +601,9 @@ fun GlassDropdownMenu(
             0.8.dp,
             Brush.linearGradient(
                 listOf(
-                    Color.White.copy(alpha = if (isDark) 0.48f else 0.78f),
-                    Color.White.copy(alpha = 0.10f),
-                    Color(0xFF7FCBFF).copy(alpha = 0.42f)
+                    colors.outline.copy(alpha = 0.58f),
+                    colors.outlineVariant.copy(alpha = 0.72f),
+                    colors.primary.copy(alpha = 0.34f)
                 )
             )
         ),
@@ -766,8 +659,10 @@ fun GlassDispersionCard(
 ) {
     var cardSize by remember { mutableStateOf(IntSize.Zero) }
     val quality = rememberLiquidGlassQuality()
-    val isDark = isSystemInDarkTheme()
-    var causticTime by remember { mutableFloatStateOf(0f) }
+    val colors = MaterialTheme.colorScheme
+    val elevatedTint = tintColor
+        .copy(alpha = (tintColor.alpha * 0.35f).coerceAtMost(0.14f))
+        .compositeOver(colors.surfaceContainerHigh)
     val causticShader = remember(quality) {
         if (quality == LiquidGlassQuality.Full &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
@@ -775,17 +670,6 @@ fun GlassDispersionCard(
             runCatching { createCausticShader() }.getOrNull()
         } else {
             null
-        }
-    }
-
-    LaunchedEffect(animatedCaustics, causticShader) {
-        if (animatedCaustics && causticShader != null) {
-            val startedAt = withFrameNanos { it }
-            while (true) {
-                withFrameNanos { now ->
-                    causticTime = (now - startedAt) / 1_000_000_000f
-                }
-            }
         }
     }
 
@@ -824,55 +708,18 @@ fun GlassDispersionCard(
                         renderEffect = dispersionEffect.asComposeRenderEffect()
                     }
                 }
-                .then(
-                    if (quality == LiquidGlassQuality.Fallback) {
-                        Modifier.background(
-                            if (isDark) {
-                                Color(0xE625153E)
-                            } else {
-                                Color.White.copy(alpha = 0.84f)
-                            }
-                        )
-                    } else {
-                        Modifier.hazeEffect(
-                            state = hazeState,
-                            style = HazeStyle(
-                                blurRadius = if (quality == LiquidGlassQuality.Full) {
-                                    blurRadius
-                                } else {
-                                    blurRadius * 0.72f
-                                },
-                                tints = listOf(
-                                    HazeTint(
-                                        Brush.linearGradient(
-                                            listOf(
-                                                tintColor,
-                                                Color.White.copy(alpha = 0.05f),
-                                                Color(0xFF769CFF).copy(alpha = 0.06f)
-                                            )
-                                        )
-                                    )
-                                ),
-                                backgroundColor = Color.Transparent,
-                                noiseFactor = if (quality == LiquidGlassQuality.Full) {
-                                    0.06f
-                                } else {
-                                    0.035f
-                                },
-                                fallbackTint = HazeTint(
-                                    if (isDark) Color(0xEE25153E) else Color.White
-                                )
-                            )
-                        )
-                    }
-                )
+                // Keep card elevation independent from asynchronous background
+                // capture. The cached tint is visually consistent and avoids a
+                // black intermediate frame on GPU/driver combinations where live
+                // blur setup is delayed.
+                .background(elevatedTint)
         )
 
         Canvas(modifier = Modifier.matchParentSize()) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && causticShader != null) {
                 drawCausticShader(
                     shader = causticShader,
-                    time = causticTime,
+                    time = 0.35f,
                     animatedCaustics = animatedCaustics
                 )
             } else {
@@ -914,10 +761,10 @@ fun GlassDispersionCard(
                     width = 0.8.dp,
                     brush = Brush.linearGradient(
                         listOf(
-                            Color.White.copy(alpha = borderAlpha * 1.6f),
-                            Color.White.copy(alpha = borderAlpha * 0.18f),
-                            Color(0xFF82D4FF).copy(alpha = borderAlpha),
-                            Color.White.copy(alpha = borderAlpha * 0.45f)
+                            colors.outline.copy(alpha = borderAlpha * 1.10f),
+                            colors.outlineVariant.copy(alpha = borderAlpha * 0.72f),
+                            colors.primary.copy(alpha = borderAlpha * 0.48f),
+                            colors.outlineVariant.copy(alpha = borderAlpha * 0.62f)
                         )
                     ),
                     shape = RoundedCornerShape(cornerRadius)

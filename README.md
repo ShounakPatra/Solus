@@ -9,7 +9,7 @@
 Chat, reason, code, and explore documents with local language models. Once a model is downloaded, your prompts and generated responses stay on your phone.
 
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases">
+  <a href="https://github.com/ShounakPatra/Solus/releases/latest/download/release.apk">
     <img src="https://img.shields.io/badge/Download-Latest_APK-20C997?style=for-the-badge&logo=android&logoColor=white" alt="Download the latest Solus APK" height="42" />
   </a>
 </p>
@@ -17,7 +17,8 @@ Chat, reason, code, and explore documents with local language models. Once a mod
 <p>
   <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=flat-square&logo=github&label=Stars" alt="GitHub stars" />
   <img src="https://img.shields.io/github/downloads/ShounakPatra/Solus/total?style=flat-square&label=Downloads&color=20C997" alt="Total downloads" />
-  <img src="https://img.shields.io/badge/version-1.0.0-4C8DFF?style=flat-square" alt="Version 1.0.0" />
+  <img src="https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg" alt="Android CI" />
+  <img src="https://img.shields.io/badge/version-1.1.0-4C8DFF?style=flat-square" alt="Version 1.1.0" />
   <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white" alt="Android 8.0 or newer" />
   <img src="https://img.shields.io/github/license/ShounakPatra/Solus?style=flat-square&color=A970FF" alt="Apache 2.0 license" />
   <img src="https://img.shields.io/badge/status-active-20C997?style=flat-square" alt="Active development" />
@@ -93,7 +94,7 @@ Model availability and performance depend on the Android-ready artifact, availab
 
 The app requires **Android 8.0 (API 26) or newer**. Model storage and memory requirements vary from roughly 500 MB for compact options to several gigabytes for larger models.
 
-> The first APK release has not been published yet. The download button above will become the permanent download destination as soon as an APK is attached to a GitHub Release.
+Releases are signed and published through GitHub. Verify that you are downloading from the official `ShounakPatra/Solus` repository.
 
 ---
 

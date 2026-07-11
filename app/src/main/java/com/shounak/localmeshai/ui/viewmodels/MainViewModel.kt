@@ -42,6 +42,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val unsafeInitOverrideIds = mutableStateListOf<String>()
 
     init {
+        DownloadStateStore.initialize(application)
         ModelRuntimeCoordinator.setReleasedCallback(ModelRuntimeOwner.Chat) {
             clearSelectedTextModel()
         }
@@ -50,7 +51,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         checkLocalModels()
         applyDeviceModelGuards()
+        reconcilePersistedDownloads()
         observeDownloadState()
+    }
+
+    private fun reconcilePersistedDownloads() {
+        DownloadStateStore.snapshots.value.values.forEach { snapshot ->
+            val model = availableModels.firstOrNull { it.id == snapshot.modelId } ?: return@forEach
+            val target = modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
+            if (target.exists() && (target.isDirectory || target.length() > 0L)) {
+                val validationError = localModelValidationError(model, target)
+                DownloadStateStore.update(
+                    snapshot.copy(
+                        status = if (validationError == null) ModelStatus.Available else ModelStatus.Failed,
+                        progress = if (validationError == null) 1f else snapshot.progress,
+                        downloadedBytes = if (target.isFile) target.length() else snapshot.downloadedBytes,
+                        bytesPerSecond = 0L,
+                        localPath = target.absolutePath,
+                        errorMessage = validationError
+                    )
+                )
+                return@forEach
+            }
+            if (snapshot.status != ModelStatus.Downloading) return@forEach
+            val downloadUrl = model.url ?: return@forEach
+            ModelDownloadService.start(
+                context = getApplication(),
+                modelId = model.id,
+                name = model.name,
+                url = downloadUrl,
+                fileName = model.fileName,
+                packageType = model.packageType,
+                token = _huggingFaceToken.value.ifBlank { null }
+            )
+        }
     }
 
     private fun checkLocalModels() {

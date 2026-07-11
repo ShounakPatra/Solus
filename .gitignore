@@ -19,6 +19,8 @@ local.properties
 # Signing keys and release artifacts
 *.jks
 *.keystore
+keystore.properties
+signing.properties
 release.apk
 app-release*.apk
 

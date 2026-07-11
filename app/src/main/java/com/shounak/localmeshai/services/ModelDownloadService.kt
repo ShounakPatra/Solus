@@ -15,6 +15,7 @@ import com.shounak.localmeshai.R
 import com.shounak.localmeshai.models.ModelPackage
 import com.shounak.localmeshai.models.ModelStatus
 import com.shounak.localmeshai.utils.DownloadSnapshot
+import com.shounak.localmeshai.utils.DownloadRestorationPolicy
 import com.shounak.localmeshai.utils.DownloadStateStore
 import com.shounak.localmeshai.utils.ModelDownloader
 import kotlinx.coroutines.CancellationException
@@ -35,6 +36,7 @@ class ModelDownloadService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        DownloadStateStore.initialize(applicationContext)
         downloader = ModelDownloader(applicationContext)
         notificationManager = getSystemService(NotificationManager::class.java)
         ensureChannels()
@@ -61,6 +63,16 @@ class ModelDownloadService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Removing the app from Recents is treated as an intentional pause, not
+        // a cancellation. Partial files and their snapshots remain until the
+        // user explicitly taps Cancel, and the next UI launch shows Resume.
+        jobs.keys.toList().forEach { modelId ->
+            pauseDownload(modelId = modelId, fallbackSpec = specs[modelId])
+        }
+        super.onTaskRemoved(rootIntent)
+    }
 
     override fun onDestroy() {
         serviceScope.cancel()
@@ -192,17 +204,43 @@ class ModelDownloadService : Service() {
                     )
                 )
             } catch (exception: Exception) {
-                DownloadStateStore.update(
-                    DownloadSnapshot(
-                        modelId = spec.modelId,
-                        status = ModelStatus.Failed,
-                        errorMessage = exception.message ?: "Download failed"
-                    )
+                val previous = DownloadStateStore.get(spec.modelId)
+                val partialBytes = maxOf(
+                    previous?.downloadedBytes ?: 0L,
+                    downloader.getPartialDownloadBytes(spec.modelId)
                 )
-                // Remove progress notification
-                notificationManager.cancel(spec.modelId.notificationId())
-                // Post high-priority failure notification (same channel as success)
-                notifyEvent(spec, "Download failed ✗", "${spec.name}: ${exception.message ?: "Download failed"}")
+                val isResumable = partialBytes > 0L
+                val failureSnapshot = DownloadSnapshot(
+                    modelId = spec.modelId,
+                    status = DownloadRestorationPolicy.afterFailure(partialBytes),
+                    progress = previous?.progress ?: 0f,
+                    downloadedBytes = partialBytes,
+                    totalBytes = previous?.totalBytes ?: -1L,
+                    errorMessage = if (isResumable) {
+                        "Download paused after an interruption. Tap Resume to continue."
+                    } else {
+                        exception.message ?: "Download failed"
+                    }
+                )
+                DownloadStateStore.update(failureSnapshot)
+                if (isResumable) {
+                    notificationManager.notify(
+                        spec.modelId.notificationId(),
+                        buildProgressNotification(
+                            spec = spec,
+                            title = spec.name,
+                            text = "Download paused — tap Resume to continue",
+                            progress = (failureSnapshot.progress * 100f).toInt(),
+                            indeterminate = failureSnapshot.totalBytes <= 0L,
+                            ongoing = false,
+                            showActions = true,
+                            pausedActions = true
+                        )
+                    )
+                } else {
+                    notificationManager.cancel(spec.modelId.notificationId())
+                    notifyEvent(spec, "Download failed ✗", "${spec.name}: ${exception.message ?: "Download failed"}")
+                }
             } finally {
                 jobs.remove(spec.modelId)
                 if (jobs.isEmpty()) {

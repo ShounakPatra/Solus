@@ -3,6 +3,7 @@ package com.shounak.localmeshai.ui.viewmodels
 import android.app.Application
 import android.content.Context
 import android.util.Log
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -28,12 +29,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+@Immutable
 data class ChatMessage(
     val text: String,
     val isUser: Boolean,
     val id: String = UUID.randomUUID().toString()
 )
 
+@Immutable
 data class ChatSession(
     val id: String,
     val title: String,
@@ -194,8 +197,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     lastUiUpdateAt = System.currentTimeMillis()
                     if (assistantIndex < messages.size) {
                         val current = messages[assistantIndex]
-                        val cleanPartial = ModelOutputSanitizer.clean(partial)
-                        messages[assistantIndex] = current.copy(text = cleanPartial.ifBlank { "\u2026" })
+                        val cleanPartial = ModelOutputSanitizer.cleanAssistantText(partial, userText)
+                        val visiblePartial = if (
+                            ModelResponseQuality.shouldSuppressLivePartial(cleanPartial)
+                        ) {
+                            "Generating…"
+                        } else {
+                            cleanPartial.ifBlank { "\u2026" }
+                        }
+                        messages[assistantIndex] = current.copy(text = visiblePartial)
                         // Do NOT call saveCurrentSession() here — persisting JSON on every
                         // token would hammer SharedPreferences. The final save happens below.
                     }
@@ -206,21 +216,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val modeChangedInStatefulThinkingRuntime =
                     lastRuntimeThinkingMode?.let { it != thinkingModeForRequest } == true &&
                         inferenceManager.needsResetWhenThinkingModeChanges()
-                val noThinkingRequestNeedsFreshRuntime =
-                    inferenceManager.needsFreshConversationForRequest(thinkingModeForRequest)
                 val shouldResetRuntimeConversation =
                     resetRuntimeConversationBeforeNextSend ||
-                        modeChangedInStatefulThinkingRuntime ||
-                        noThinkingRequestNeedsFreshRuntime
-                val runtimeUserText = if (shouldResetRuntimeConversation) prompt else userText
+                        modeChangedInStatefulThinkingRuntime
                 val (response, duration) = ioMutex.withLock {
                     if (shouldResetRuntimeConversation) {
-                        inferenceManager.resetConversation(noThinking = noThinkingRequestNeedsFreshRuntime)
+                        inferenceManager.resetConversation(noThinking = !thinkingModeForRequest)
                         resetRuntimeConversationBeforeNextSend = false
                     }
                     inferenceManager.generateResponseStreaming(
                         prompt = prompt,
-                        rawUserText = runtimeUserText,
+                        rawUserText = userText,
+                        restoreStatefulHistory = shouldResetRuntimeConversation,
                         thinkingMode = thinkingModeForRequest
                     ) { partial ->
                         liveUpdates.trySend(partial)
@@ -239,9 +246,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         )
                         val currentMessage = messages[assistantIndex]
                         messages[assistantIndex] = currentMessage.copy(
-                            text = finalResponse.ifBlank {
-                                "I could not generate a response. Try asking again with a little more detail."
-                            }
+                            text = finalResponse.ifBlank { GENERATION_FAILURE_TEXT }
                         )
                         saveCurrentSession()
                     }
@@ -527,33 +532,48 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         thinkingMode: Boolean,
         userText: String
     ): String {
-        val normalizedResponse = if (thinkingMode) {
+        val normalizedResponseRaw = if (thinkingMode) {
             ThinkingTextUtils.normalizeFinalOutput(response)
         } else {
             ModelOutputSanitizer.clean(response).trim()
         }
-        if (normalizedResponse.isUsableAssistantText(userText)) {
+        val normalizedResponse = ModelOutputSanitizer.cleanAssistantText(
+            normalizedResponseRaw,
+            userText
+        )
+        if (normalizedResponse.isUsableAssistantText()) {
             return normalizedResponse
         }
 
-        val normalizedCurrent = ThinkingTextUtils.normalizeFinalOutput(current)
-        if (normalizedCurrent.isUsableAssistantText(userText)) {
+        val normalizedCurrent = ModelOutputSanitizer.cleanAssistantText(
+            ThinkingTextUtils.normalizeFinalOutput(current),
+            userText
+        )
+        if (normalizedCurrent.isUsableAssistantText()) {
             return normalizedCurrent
         }
 
         return ""
     }
 
-    private fun String.isUsableAssistantText(userText: String): Boolean {
+    private fun String.isUsableAssistantText(): Boolean {
         val normalized = trim()
         return normalized.isNotBlank() &&
-            normalized !in PLACEHOLDER_TEXTS &&
-            !ModelResponseQuality.isGenericNonAnswer(normalized, userText)
+            normalized !in PLACEHOLDER_TEXTS
     }
 
     private companion object {
         const val KEY_SESSIONS = "sessions_json"
-        /** Placeholder texts that should never be persisted as real assistant messages. */
-        val PLACEHOLDER_TEXTS = setOf("Generating…", "Generating...", "…", "Reading input…", "Reading input...")
+        const val GENERATION_FAILURE_TEXT =
+            "I could not generate a response. Try asking again with a little more detail."
+        /** UI/status text that must never be fed back into a future model prompt. */
+        val PLACEHOLDER_TEXTS = setOf(
+            "Generating…",
+            "Generating...",
+            "…",
+            "Reading input…",
+            "Reading input...",
+            GENERATION_FAILURE_TEXT
+        )
     }
 }
