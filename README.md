@@ -54,40 +54,112 @@ Chat, reason, code, and explore documents with local language models. Once a mod
 
 ---
 
-## 🛠️ Tech Stack
+## Why Solus?
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Kotlin-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin" />
-  <img src="https://img.shields.io/badge/Jetpack_Compose-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
-  <img src="https://img.shields.io/badge/MediaPipe_GenAI-0097A7?style=for-the-badge&logo=google&logoColor=white" alt="MediaPipe" />
-  <img src="https://img.shields.io/badge/LiteRT_LM-FF6F00?style=for-the-badge&logo=tensorflow&logoColor=white" alt="LiteRT LM" />
-  <img src="https://img.shields.io/badge/Material_Design_3-757575?style=for-the-badge&logo=materialdesign&logoColor=white" alt="Material 3" />
+Most AI assistants send every message to a remote server. Solus brings the model to your phone instead. Choose a compatible model, download it once, and continue chatting without sending your conversations to an AI API.
+
+|                       | Experience                                                                                      |
+| --------------------- | ----------------------------------------------------------------------------------------------- |
+| **Private by design** | Prompts, chat history, and generation remain on-device.                                         |
+| **Works offline**     | After the selected model is downloaded, inference does not need an internet connection.         |
+| **Choose your model** | Pick from compact chat, coding, reasoning, and vision-capable model options.                    |
+| **Explore documents** | Ask questions about documents, spreadsheets, presentations, source code, and other local files. |
+| **Built for Android** | Device-aware model guidance helps you choose an option that fits your phone.                    |
+
+> Solus uses the internet to download model files. Some gated models also require accepting their licence and supplying a Hugging Face read token.
+
+---
+
+## Highlights
+
+* **Local AI chat** powered directly by your Android device
+* **Multiple model families**, including Qwen, Gemma, Llama, Phi, DeepSeek, TinyLlama, and FastVLM
+* **Thinking-mode control** for compatible reasoning models
+* **Image questions** with supported vision-language models
+* **Document analysis** for PDF, DOCX, PPTX, XLSX, ODT, HTML, RTF, Markdown, source code, and more
+* **Resumable model downloads** with progress, speed, storage, and recovery states
+* **Conversation history**, response sharing, and generation-speed feedback
+* **Clean output handling** that removes model control tokens and malformed thinking tags
+* **Glass-inspired Jetpack Compose UI** with light and dark theme support
+
+---
+
+## Supported Model Families
+
+<div align="center">
+
+<p>
+  <img src="https://img.shields.io/badge/Qwen-615CED?style=for-the-badge&logo=alibabacloud&logoColor=white" alt="Qwen models" />
+  <img src="https://img.shields.io/badge/Gemma-4285F4?style=for-the-badge&logo=google&logoColor=white" alt="Gemma models" />
+  <img src="https://img.shields.io/badge/Llama-6A5ACD?style=for-the-badge&logo=meta&logoColor=white" alt="Llama models" />
+  <img src="https://img.shields.io/badge/Phi-5E5E5E?style=for-the-badge&logo=microsoft&logoColor=white" alt="Phi models" />
 </p>
 
-- **UI & Layout:** Jetpack Compose + Material 3 + Haze (Glassmorphic blur backdrop)
-- **Local Runtimes:** MediaPipe GenAI (LLM & Vision inference) + LiteRT-LM (TensorFlow Lite runtime)
-- **Document Processing:** PDFBox Android + custom file-format parsers
-- **Build System:** Gradle (Kotlin DSL)
+<p>
+  <img src="https://img.shields.io/badge/DeepSeek-4D6BFE?style=for-the-badge&logo=deepseek&logoColor=white" alt="DeepSeek models" />
+  <img src="https://img.shields.io/badge/TinyLlama-F59E0B?style=for-the-badgeColor=white" alt="TinyLlama models" />
+  <img src="https://img.shields.io/badge/FastVLM-20C997?style=for-the-badge&logo=apple&logoColor=white" alt="FastVLM models" />
+</p>
+
+</div>
+
+Model availability depends on whether a compatible Android-ready artifact exists. Some listed models may require conversion before they can run through the supported on-device runtimes.
 
 ---
 
 ## 📊 Solus vs Google AI Edge Gallery
 
-Solus focuses on providing a clean, assistant-like private chat app with document ingestion and download resume support. Google AI Edge Gallery is a broader playground highlighting official Google AI Edge capabilities.
+Both projects provide open-source tools for running generative AI directly on mobile hardware. Solus is designed as a focused private Android assistant with document support, guided model selection, and reliable model management.
 
-| Feature / Capability | Solus | Google AI Edge Gallery |
-|---|---|---|
-| **On-device model inference** | ✅ Local generation after model download | ✅ Local generation after model download |
-| **Multi-turn Chat** | ✅ | ✅ |
-| **Thinking Mode Toggle** | ✅ Supported reasoning models | ✅ Supported models (Gemma 4, etc.) |
-| **Image Questions** | ✅ Multi-modal vision support | ✅ Ask Image workflow |
-| **Persistent Chat History** | ✅ | ✅ Session continuity |
-| **In-app model downloads** | ✅ Curated catalog | ✅ Curated LiteRT models |
-| **Download Recovery & Resume** | ✅ Pause, resume, and progress info | ❌ Basic download stream |
-| **Hardware & RAM Guidance** | ✅ Safety checks | ❌ Basic benchmarks |
-| **Document/Code Analysis** | ✅ PDF, DOCX, ODT, RTF, Markdown, Code | ❌ Not a core built-in workflow |
-| **Target Android Version** | ✅ Android 8.0+ | Android 12+ |
-| **License** | ✅ Apache 2.0 | ✅ Apache 2.0 |
+| Feature | Solus | Google AI Edge Gallery |
+|---|:---:|:---:|
+| **Fully offline inference** | ✅ | ✅ |
+| **Open source** | ✅ | ✅ |
+| **Free** | ✅ | ✅ |
+| **Local conversation history** | ✅ | ✅ |
+| **Vision models** | ✅ | ✅ |
+| **Document chat for PDF, DOCX, PPTX, XLSX, and other formats** | ✅ | ❌ |
+| **Multiple model families** | ✅ | ✅ |
+| **Thinking mode** | ✅ | ✅ |
+| **Download manager with resume support** | ✅ | ✅ |
+| **Device-aware model recommendations** | ✅ | ❌ |
+| **Response cleanup for control tokens and malformed thinking tags** | ✅ | ❌ |
+
+### Why Choose Solus?
+
+Choose **Solus** when you want:
+* A private AI assistant rather than an experimentation-focused showcase
+* Local document chat across PDFs, Word files, presentations, spreadsheets, code, and other formats
+* Device-aware recommendations based on your phone and available resources
+* Resumable model downloads with progress and recovery support
+* Clean model output without exposed control tokens or malformed thinking tags
+* Support for chat, coding, reasoning, and vision model families
+* Compatibility with Android 8.0 and newer
+* A focused Android interface for daily local AI use
+
+> This comparison covers built-in user-facing features. Both projects are under active development, so capabilities may change in future releases.
+>
+> Solus is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Google.
+
+---
+
+## From Download to Private Chat
+
+|  Step | What happens |
+| :---: | ------------------------------------------------------------------------------------------------------ |
+| **1** | Install Solus from the GitHub Releases page. |
+| **2** | Open **Models** and choose a model suited to your device. |
+| **3** | Review its size, requirements, runtime, context window, and compatibility guidance. |
+| **4** | Download the model once. Public models need no account; gated models may require a Hugging Face token. |
+| **5** | Start chatting. Inference and conversation history remain on your phone. |
+
+<p align="center">
+  <img src="docs/screenshots/chat-empty-state.jpeg" width="280" alt="Solus first-run chat screen" />
+  <img src="docs/screenshots/model-download-progress.jpeg" width="280" alt="Solus model download progress" />
+</p>
+<p align="center">
+  <sub>Start with clear setup guidance, then monitor and control large model downloads directly in the app.</sub>
+</p>
 
 ---
 
@@ -99,9 +171,11 @@ Select the model that best fits your storage, memory capacity, and target task:
 |---|---|:---:|:---:|
 | **Everyday conversation & summarization** | Qwen 2.5 Instruct / Gemma 3 | ~1.5 - 3 GB | No / Yes |
 | **Kotlin, Python, and coding help** | Qwen 2.5 Coder | ~2.2 GB | No |
-| **Math, planning & deep reasoning** | DeepSeek R1 Distill | ~1.8 GB | No |
-| **Image description & visual search** | Gemma 3n Vision / FastVLM | ~2.5 GB | Yes |
+| **Math, planning & deep reasoning** | DeepSeek R1 Distill or Qwen 3 | ~1.8 GB | No |
+| **Image description & visual search** | Gemma 3n Vision or FastVLM | ~2.5 GB | Yes |
 | **Limited RAM / Storage testing** | Qwen 2.5 0.5B / TinyLlama | ~400 MB | No |
+
+Model availability and performance depend on the Android-ready artifact, available storage, RAM, chipset, selected runtime, context length, and prompt. Solus identifies models that require conversion or are not currently ready for direct on-device use.
 
 ---
 
@@ -124,6 +198,8 @@ Solus
 │   └── build.gradle.kts
 └── gradle/                        # Dependency version catalog (libs.versions.toml)
 ```
+
+Third-party models remain subject to the licences and acceptable-use requirements established by their respective publishers.
 
 ---
 
