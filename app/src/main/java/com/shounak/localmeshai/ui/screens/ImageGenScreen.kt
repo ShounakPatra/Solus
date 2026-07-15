@@ -28,7 +28,10 @@ import com.shounak.localmeshai.utils.GlassDispersionCard
 import com.shounak.localmeshai.utils.GlassDropdownMenu
 import com.shounak.localmeshai.utils.LiquidGlassButton
 import com.shounak.localmeshai.utils.ModelOutputSanitizer
+import com.shounak.localmeshai.utils.ModelAnswerFormatter
+import com.shounak.localmeshai.utils.ModelAnswerSegment
 import com.shounak.localmeshai.utils.ThinkingTextUtils
+import com.shounak.localmeshai.ui.components.ModelMathCard
 import com.shounak.localmeshai.utils.fluidReveal
 import dev.chrisbanes.haze.HazeState
 import androidx.compose.ui.graphics.Color
@@ -590,6 +593,7 @@ fun VisionFullscreenAnswerPanel(
     hazeState: HazeState
 ) {
     val message = messageProvider() ?: return
+    val context = LocalContext.current
     val title = if (message.isUser) "Your question" else "Model response"
     val parsedContent = remember(message.text) {
         ThinkingTextUtils.parse(message.text, allowActiveThinking = false)
@@ -686,11 +690,27 @@ fun VisionFullscreenAnswerPanel(
 
                         val rawVisibleText = parsedContent.finalResponseText.ifBlank { if (message.isUser) "" else "Answers will appear here." }
                         val visibleText = if (message.isUser) rawVisibleText else rawVisibleText.normalizeModelAnswerText()
-                        Text(
-                            text = visibleText.toAsteriskEmphasisText(),
-                            modifier = Modifier.fillMaxWidth(),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                        val answerSegments = remember(visibleText, message.isUser) {
+                            if (message.isUser) listOf(ModelAnswerSegment.Text(visibleText))
+                            else ModelAnswerFormatter.parseSafely(visibleText)
+                        }
+                        answerSegments.forEach { segment ->
+                            when (segment) {
+                                is ModelAnswerSegment.Text -> Text(
+                                    text = segment.text.toAsteriskEmphasisText(),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                is ModelAnswerSegment.Code -> CodeBlock(
+                                    code = segment.code,
+                                    language = segment.language,
+                                    context = context,
+                                    hazeState = hazeState
+                                )
+                                is ModelAnswerSegment.DisplayMath ->
+                                    ModelMathCard(latex = segment.latex, hazeState = hazeState)
+                            }
+                        }
                     }
                 }
             }
@@ -1310,32 +1330,6 @@ private data class VisionAttachmentMenuSpec(
     val onClick: () -> Unit
 )
 
-private sealed class VisionMessageSegment {
-    data class VisionTextSegment(val text: String) : VisionMessageSegment()
-    data class VisionCodeSegment(val code: String, val language: String) : VisionMessageSegment()
-}
-
-private fun parseVisionMessageSegments(text: String): List<VisionMessageSegment> {
-    val result = mutableListOf<VisionMessageSegment>()
-    val fence = Regex("""```([\w+\-.]*)[ \t]*\n?([\s\S]*?)```""", RegexOption.MULTILINE)
-    var cursor = 0
-    for (match in fence.findAll(text)) {
-        if (match.range.first > cursor) {
-            val before = text.substring(cursor, match.range.first)
-            if (before.isNotEmpty()) result.add(VisionMessageSegment.VisionTextSegment(before))
-        }
-        val lang = match.groupValues[1].trim()
-        val code = match.groupValues[2].trimEnd()
-        result.add(VisionMessageSegment.VisionCodeSegment(code, lang))
-        cursor = match.range.last + 1
-    }
-    if (cursor < text.length) {
-        val tail = text.substring(cursor)
-        if (tail.isNotEmpty()) result.add(VisionMessageSegment.VisionTextSegment(tail))
-    }
-    return result.ifEmpty { listOf(VisionMessageSegment.VisionTextSegment(text)) }
-}
-
 private fun String.toAsteriskEmphasisText() = buildAnnotatedString {
     val source = this@toAsteriskEmphasisText
     var index = 0
@@ -1372,11 +1366,10 @@ private fun String.toAsteriskEmphasisText() = buildAnnotatedString {
 }
 
 private fun String.normalizeModelAnswerText(): String {
+    // Preserve LaTeX command prefixes (for example \times and \neq) until the
+    // answer formatter processes them.
     var normalized = ModelOutputSanitizer.clean(this)
-        .replace("\\r\\n", "\n")
-        .replace("\\n", "\n")
-        .replace("\\r", "\n")
-        .replace("\\t", "\t")
+    normalized = ModelAnswerFormatter.normalizeEscapedModelText(normalized)
 
     normalized = normalized.replace(Regex("""(?m)^[ \t]*(?:[*-][ \t]+)+\*\*(.+?)\*\*""")) { match ->
         "**${match.groupValues[1]}**"
@@ -1789,13 +1782,15 @@ fun VisionChatBubble(
         if (isUser) parsedContent.finalResponseText else parsedContent.finalResponseText.normalizeModelAnswerText()
     }
     val segments = remember(displayText, isUser) {
-        if (isUser) listOf(VisionMessageSegment.VisionTextSegment(displayText))
-        else parseVisionMessageSegments(displayText)
+        if (isUser) listOf(ModelAnswerSegment.Text(displayText))
+        else ModelAnswerFormatter.parseSafely(displayText)
     }
     val showStreamingDots = isStreaming && displayText.isStreamingPlaceholderText()
-    val hasCodeBlock = segments.any { it is VisionMessageSegment.VisionCodeSegment }
+    val hasRichBlock = segments.any {
+        it is ModelAnswerSegment.Code || it is ModelAnswerSegment.DisplayMath
+    }
     val hasTopImage = isUser && bitmap != null && !bitmap.isRecycled
-    val needsTopActionClearance = hasCodeBlock || hasTopImage || (!isUser && parsedContent.thinkingText != null)
+    val needsTopActionClearance = hasRichBlock || hasTopImage || (!isUser && parsedContent.thinkingText != null)
     val entryValue = entryProgress.value
 
     Column(
@@ -1867,7 +1862,7 @@ fun VisionChatBubble(
                 } else {
                     segments.forEach { segment ->
                         when (segment) {
-                            is VisionMessageSegment.VisionTextSegment -> {
+                            is ModelAnswerSegment.Text -> {
                                 if (segment.text.isNotBlank()) {
                                     val visibleText = segment.text.trim('\n')
                                     AdaptiveMessageText(
@@ -1876,13 +1871,16 @@ fun VisionChatBubble(
                                     )
                                 }
                             }
-                            is VisionMessageSegment.VisionCodeSegment -> {
+                            is ModelAnswerSegment.Code -> {
                                 CodeBlock(
                                     code = segment.code,
                                     language = segment.language,
                                     context = context,
                                     hazeState = hazeState
                                 )
+                            }
+                            is ModelAnswerSegment.DisplayMath -> {
+                                ModelMathCard(latex = segment.latex, hazeState = hazeState)
                             }
                         }
                     }

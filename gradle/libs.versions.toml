@@ -19,6 +19,10 @@ litertLm = "0.13.1"
 haze = "1.5.1"
 pdfboxAndroid = "2.0.27.0"
 emoji2 = "1.6.0"
+latexRenderer = "1.4.7"
+firebaseCrashlytics = "20.1.0"
+googleGmsGoogleServices = "4.5.0"
+googleFirebaseCrashlytics = "3.0.7"
 
 [libraries]
 haze = { group = "dev.chrisbanes.haze", name = "haze", version.ref = "haze" }
@@ -50,8 +54,14 @@ tensorflow-lite-metadata = { group = "org.tensorflow", name = "tensorflow-lite-m
 pdfbox-android = { group = "com.tom-roush", name = "pdfbox-android", version.ref = "pdfboxAndroid" }
 androidx-emoji2 = { group = "androidx.emoji2", name = "emoji2", version.ref = "emoji2" }
 androidx-emoji2-bundled = { group = "androidx.emoji2", name = "emoji2-bundled", version.ref = "emoji2" }
+latex-base = { module = "io.github.huarangmeng:latex-base", version.ref = "latexRenderer" }
+latex-parser = { module = "io.github.huarangmeng:latex-parser", version.ref = "latexRenderer" }
+latex-renderer = { module = "io.github.huarangmeng:latex-renderer", version.ref = "latexRenderer" }
+firebase-crashlytics = { group = "com.google.firebase", name = "firebase-crashlytics", version.ref = "firebaseCrashlytics" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+google-gms-google-services = { id = "com.google.gms.google-services", version.ref = "googleGmsGoogleServices" }
+google-firebase-crashlytics = { id = "com.google.firebase.crashlytics", version.ref = "googleFirebaseCrashlytics" }

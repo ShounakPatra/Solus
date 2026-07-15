@@ -20,6 +20,7 @@ import com.shounak.localmeshai.utils.InferenceBackend
 import com.shounak.localmeshai.utils.InitCrashGuard
 import com.shounak.localmeshai.utils.LiteRtRuntimeCache
 import com.shounak.localmeshai.utils.ModelOutputSanitizer
+import com.shounak.localmeshai.utils.PromptMathNormalizer
 import com.shounak.localmeshai.utils.ModelResponseQuality
 import com.shounak.localmeshai.utils.ModelDownloader
 import com.shounak.localmeshai.utils.NoThinkingPromptUtils
@@ -236,15 +237,21 @@ class ChatInferenceManager(private val context: Context) {
     ): Pair<String, Long> = withContext(Dispatchers.IO) {
         stopRequested = false
         val startTime = System.currentTimeMillis()
+        // Keep the user's original spelling in chat/history, but translate
+        // Unicode scripts such as (a+b)² for the inference request.  Small
+        // models commonly mis-tokenize those characters while understanding
+        // the equivalent ASCII (a+b)^2 correctly.
+        val inferencePrompt = PromptMathNormalizer.normalizeForInference(prompt)
+        val inferenceUserText = PromptMathNormalizer.normalizeForInference(rawUserText)
 
         // LiteRT-LM applies the chat template internally. The hard thinking switch is
         // passed as request-level template context in streamLiteRtLm. Injecting
         // /no_think into both system and user messages corrupts some Qwen 3 templates
         // and can make the model emit only an unfinished thinking block.
         val liteRtUserText = if (runtime == RuntimeKind.LiteRtLm && restoreStatefulHistory) {
-            prompt
+            inferencePrompt
         } else {
-            rawUserText
+            inferenceUserText
         }
 
         // For MediaPipe: stateless — the full history prompt is sent each turn.
@@ -252,12 +259,12 @@ class ChatInferenceManager(private val context: Context) {
         // handle thinking natively via their chat template + /no_think token).
         val mediaPipeBasePrompt = if (runtime == RuntimeKind.MediaPipe) {
             ChatPromptPolicy.mediaPipeBasePrompt(
-                fullHistoryPrompt = prompt,
-                rawUserText = rawUserText,
+                fullHistoryPrompt = inferencePrompt,
+                rawUserText = inferenceUserText,
                 useNativeGemmaTaskTemplate = useNativeGemmaTaskTemplate
             )
         } else {
-            prompt
+            inferencePrompt
         }
         val mediaPipePrompt = when {
             !thinkingMode && isDefaultThinkingModel ->
@@ -295,9 +302,9 @@ class ChatInferenceManager(private val context: Context) {
             )
             if (cleanResponse.isBlank() && rawUserText.isNotBlank() && !stopRequested) {
                 val retryText = if (runtime == RuntimeKind.LiteRtLm && isDefaultThinkingModel) {
-                    prompt
+                    inferencePrompt
                 } else {
-                    rawUserText
+                    inferenceUserText
                 }
                 val retryResponse = streamDirectAnswerRetry(retryText, onUpdate)
                 val retryCleanResponse = ModelOutputSanitizer.cleanAssistantText(
@@ -321,14 +328,14 @@ class ChatInferenceManager(private val context: Context) {
                 val retryResponse = when (runtime) {
                     RuntimeKind.MediaPipe -> streamMediaPipe(
                         prompt = buildMediaPipeRetryPrompt(
-                            rawUserText,
+                            inferenceUserText,
                             thinkingMode && !isDefaultThinkingModel
                         ),
                         onUpdate = effectiveOnUpdate,
                         temperature = RETRY_TEMPERATURE,
                         seedSalt = 1
                     )
-                    RuntimeKind.LiteRtLm -> streamDirectAnswerRetry(rawUserText, effectiveOnUpdate)
+                    RuntimeKind.LiteRtLm -> streamDirectAnswerRetry(inferenceUserText, effectiveOnUpdate)
                     RuntimeKind.None -> ""
                 }
                 val retryCleanResponse = ModelOutputSanitizer.cleanAssistantText(
