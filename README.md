@@ -185,6 +185,7 @@ Solus is built from the ground up to respect user privacy:
 ## 🗺️ Roadmap
 
 - [x] **v1.1.0 Releases:** Reliable thinking controls, resumable downloads, device hardware checks, glassmorphic UI polish, and unit testing coverage.
+- [x] **v1.1.1 Release:** Standardized hollow square placeholders (□) for empty LaTeX math rendering, robust isRenderableMath checks, and documentation polish.
 - [ ] **v1.2.0 (Next):** Download integrity checksums, cleaner model validation feedback, accessibility improvements, and setup documentation.
 - [ ] **v2.0.0 (Researching):** On-device speech recognition (whisper pipelines), local model conversions, custom benchmarks, and encrypted chat exports.
 
