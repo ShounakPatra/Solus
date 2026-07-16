@@ -141,7 +141,7 @@ class ModelAnswerFormatterTest {
     }
 
     @Test
-    fun preservesHyphensExactlyForListsAndMathematicalTerms() {
+    fun recognizesMarkdownListsWithoutChangingMathematicalNegatives() {
         val source = """
             - \(\frac{b}{2a}\) is the vertex.
             - The discriminant is b^2 - 4ac.
@@ -152,12 +152,52 @@ class ModelAnswerFormatterTest {
             .filterIsInstance<ModelAnswerSegment.Text>()
             .joinToString("") { it.text }
 
-        assertTrue(text.contains("- "))
+        assertTrue(text.contains("• "))
         assertTrue(text.contains("-4"))
         assertTrue(text.contains("-b"))
         assertTrue(text.contains("- x sin(x)"))
         assertTrue(text.contains("- cos(x)"))
-        assertTrue(ModelAnswerFormatter.parse(source).any { it is ModelAnswerSegment.DisplayMath })
+        assertFalse(ModelAnswerFormatter.parse(source).any { it is ModelAnswerSegment.DisplayMath })
+        assertTrue(ModelAnswerFormatter.parse(source).any { it is ModelAnswerSegment.InlineMathListItem })
+    }
+
+    @Test
+    fun keepsInlineMathAtTheStartOfAListItemInOneListSegment() {
+        val source = "- \\(\\frac{\\phantom{0}}{\\phantom{0}}\\): This represents a fraction."
+        val item = ModelAnswerFormatter.parse(source)
+            .filterIsInstance<ModelAnswerSegment.InlineMathListItem>()
+            .single()
+
+        val math = item.parts.filterIsInstance<ModelAnswerListPart.Math>().single()
+        assertEquals("\\frac{\\phantom{0}}{\\phantom{0}}", math.latex)
+        assertEquals("\\frac{\\square}{\\square}", ModelAnswerFormatter.prepareLatexForRenderer(math.latex))
+        assertEquals("(□⁄□)", ModelAnswerFormatter.formatMath(math.latex))
+    }
+
+    @Test
+    fun recoversMalformedDelimiterBetweenTwoInlineListFormulas() {
+        val source = "- \\(\\frac{1}{2}\\)\\(: \\(\\frac{\\phantom{0}}{\\phantom{0}}\\)\\: fraction symbol"
+        val item = ModelAnswerFormatter.parse(source)
+            .filterIsInstance<ModelAnswerSegment.InlineMathListItem>()
+            .single()
+        val math = item.parts.filterIsInstance<ModelAnswerListPart.Math>()
+        val text = item.parts.filterIsInstance<ModelAnswerListPart.Text>().joinToString("") { it.text }
+
+        assertEquals(listOf("\\frac{1}{2}", "\\frac{\\phantom{0}}{\\phantom{0}}"), math.map { it.latex })
+        assertTrue(text.contains("fraction symbol"))
+        assertFalse(text.contains("\\("))
+        assertEquals("\\frac{\\square}{\\square}", ModelAnswerFormatter.prepareLatexForRenderer(math[1].latex))
+    }
+
+    @Test
+    fun keepsInlineCodeAsDedicatedListContentWithoutVisibleBackticks() {
+        val source = "- `a` and `b` are matrix elements."
+        val item = ModelAnswerFormatter.parse(source)
+            .filterIsInstance<ModelAnswerSegment.InlineMathListItem>()
+            .single()
+
+        assertEquals(listOf("a", "b"), item.parts.filterIsInstance<ModelAnswerListPart.Code>().map { it.code })
+        assertFalse(item.parts.filterIsInstance<ModelAnswerListPart.Text>().any { it.text.contains('`') })
     }
 
     @Test
