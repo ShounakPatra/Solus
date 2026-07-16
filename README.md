@@ -49,14 +49,14 @@ Chat, reason, code, and analyze documents offline with complete privacy. Your co
 *   **📄 Deep Document Analysis:** Analyze local text, Markdown, code files, and documents directly inside your chats.
 *   **⏬ Resumable Downloads:** Storage-friendly download manager featuring download speed, progress indicators, pause/resume, and crash recovery.
 *   **📐 Device-Aware Model Guidance:** RAM, chipset, runtime, and compatibility flags help you pick the perfect model for your phone.
-*   **✨ Premium Glassmorphism UI:** A responsive, modern user interface built using Jetpack Compose and Haze live blur effects.
+*   **✨ Premium Glassmorphism UI:** A responsive, modern user interface built using Jetpack Compose.
 
 ---
 
 ## 🛠️ Built With
 
 - **Language:** Kotlin
-- **UI Toolkit:** Jetpack Compose (Modern Glassmorphic design with `dev.chrisbanes.haze`)
+- **UI Toolkit:** Jetpack Compose (Modern Glassmorphic design)
 - **Local Inference:** LiteRT (TensorFlow Lite), MediaPipe GenAI SDK
 - **LaTeX Math Rendering:** `com.hrm.latex`
 - **Data Persistence:** Room (SQLite)
