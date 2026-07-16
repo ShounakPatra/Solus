@@ -36,7 +36,10 @@ import com.shounak.localmeshai.utils.GlassDispersionCard
 import com.shounak.localmeshai.utils.GlassDropdownMenu
 import com.shounak.localmeshai.utils.LiquidGlassButton
 import com.shounak.localmeshai.utils.ModelOutputSanitizer
+import com.shounak.localmeshai.utils.ModelAnswerFormatter
+import com.shounak.localmeshai.utils.ModelAnswerSegment
 import com.shounak.localmeshai.utils.ThinkingTextUtils
+import com.shounak.localmeshai.ui.components.ModelMathCard
 import com.shounak.localmeshai.utils.animatedGlassHalo
 import com.shounak.localmeshai.utils.fluidReveal
 import com.shounak.localmeshai.utils.jellyOnTouch
@@ -89,6 +92,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -181,43 +185,6 @@ import java.util.zip.ZipFile
 import kotlin.math.max
 import kotlin.math.sqrt
 
-// ── Message segment model ──────────────────────────────────────────────────────
-/**
- * Represents either a plain-text span or a fenced code block inside a chat
- * message. Messages are split on triple-backtick fences before rendering.
- */
-private sealed class MessageSegment {
-    data class TextSegment(val text: String) : MessageSegment()
-    data class CodeSegment(val code: String, val language: String) : MessageSegment()
-}
-
-/**
- * Splits [text] into alternating [MessageSegment.TextSegment] and
- * [MessageSegment.CodeSegment] objects by matching markdown-style
- * triple-backtick code fences (e.g. ```kotlin ... ```).
- */
-private fun parseMessageSegments(text: String): List<MessageSegment> {
-    val result = mutableListOf<MessageSegment>()
-    // Matches ```[lang]\n code ``` — the language tag is optional.
-    val fence = Regex("""```([\w+\-.]*)[ \t]*\n?([\s\S]*?)```""", RegexOption.MULTILINE)
-    var cursor = 0
-    for (match in fence.findAll(text)) {
-        if (match.range.first > cursor) {
-            val before = text.substring(cursor, match.range.first)
-            if (before.isNotEmpty()) result.add(MessageSegment.TextSegment(before))
-        }
-        val lang = match.groupValues[1].trim()
-        val code = match.groupValues[2].trimEnd()
-        result.add(MessageSegment.CodeSegment(code, lang))
-        cursor = match.range.last + 1
-    }
-    if (cursor < text.length) {
-        val tail = text.substring(cursor)
-        if (tail.isNotEmpty()) result.add(MessageSegment.TextSegment(tail))
-    }
-    return result.ifEmpty { listOf(MessageSegment.TextSegment(text)) }
-}
-
 private fun String.toAsteriskEmphasisText() = buildAnnotatedString {
     val source = this@toAsteriskEmphasisText
     var index = 0
@@ -254,11 +221,11 @@ private fun String.toAsteriskEmphasisText() = buildAnnotatedString {
 }
 
 private fun String.normalizeModelAnswerText(): String {
+    // Do not globally decode literal \n/\r/\t sequences here: LaTeX commands
+    // such as \times, \neq and \rho begin with those characters and were being
+    // corrupted before the math formatter could see them.
     var normalized = ModelOutputSanitizer.clean(this)
-        .replace("\\r\\n", "\n")
-        .replace("\\n", "\n")
-        .replace("\\r", "\n")
-        .replace("\\t", "\t")
+    normalized = ModelAnswerFormatter.normalizeEscapedModelText(normalized)
 
     normalized = normalized.replace(Regex("""(?m)^[ \t]*(?:[*-][ \t]+)+\*\*(.+?)\*\*""")) { match ->
         "**${match.groupValues[1]}**"
@@ -612,10 +579,16 @@ fun ChatScreen(
             }
         }
     }
-    // Whether the list is scrolled away from the bottom (show scroll FAB)
+    // Show scroll-to-bottom FAB when not at the bottom
     val showScrollFab by remember {
         derivedStateOf {
             listState.canScrollForward
+        }
+    }
+    // Show scroll-to-top FAB when not at the top
+    val showScrollTopFab by remember {
+        derivedStateOf {
+            listState.canScrollBackward
         }
     }
 
@@ -963,8 +936,63 @@ fun ChatScreen(
                                     }
                                 }
                             }
+                        }
+                    }
 
-                            // Scroll-to-latest FAB
+                    // ── Stacked scroll FABs (BottomEnd, BoxScope) ─────────────────
+                    // Placed here — outside the when{} branches — so that .align()
+                    // is called directly inside BoxScope where it is valid.
+                    // Both buttons are only meaningful when there are messages.
+                    val hasMessages = if (selectedSupportsAttachments) {
+                        visionMessages.isNotEmpty()
+                    } else {
+                        textMessages.isNotEmpty()
+                    }
+                    if (hasMessages) {
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            // Scroll-to-top FAB — vanishes when already at the top
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = showScrollTopFab,
+                                enter = androidx.compose.animation.scaleIn(
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioLowBouncy,
+                                        stiffness = Spring.StiffnessMedium
+                                    )
+                                ) + androidx.compose.animation.fadeIn(animationSpec = tween(150)),
+                                exit = androidx.compose.animation.scaleOut(
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                                        stiffness = Spring.StiffnessMedium
+                                    )
+                                ) + androidx.compose.animation.fadeOut(animationSpec = tween(120))
+                            ) {
+                                LiquidGlassButton(
+                                    onClick = {
+                                        scope.launch {
+                                            listState.animateScrollToItem(0)
+                                        }
+                                    },
+                                    modifier = Modifier.size(46.dp),
+                                    hazeState = hazeState,
+                                    shape = RoundedCornerShape(23.dp),
+                                    tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                                    contentPadding = PaddingValues(0.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.KeyboardArrowUp,
+                                        contentDescription = "Scroll to top",
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+
+                            // Scroll-to-bottom FAB — vanishes when already at the bottom
                             androidx.compose.animation.AnimatedVisibility(
                                 visible = showScrollFab,
                                 enter = androidx.compose.animation.scaleIn(
@@ -978,10 +1006,7 @@ fun ChatScreen(
                                         dampingRatio = Spring.DampingRatioMediumBouncy,
                                         stiffness = Spring.StiffnessMedium
                                     )
-                                ) + androidx.compose.animation.fadeOut(animationSpec = tween(120)),
-                                modifier = Modifier
-                                    .align(Alignment.BottomEnd)
-                                    .padding(8.dp)
+                                ) + androidx.compose.animation.fadeOut(animationSpec = tween(120))
                             ) {
                                 LiquidGlassButton(
                                     onClick = {
@@ -996,8 +1021,7 @@ fun ChatScreen(
                                             }
                                         }
                                     },
-                                    modifier = Modifier
-                                        .size(46.dp),
+                                    modifier = Modifier.size(46.dp),
                                     hazeState = hazeState,
                                     shape = RoundedCornerShape(23.dp),
                                     tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.26f),
@@ -2609,12 +2633,14 @@ private fun ChatBubble(
         if (isUser) parsedContent.finalResponseText else parsedContent.finalResponseText.normalizeModelAnswerText()
     }
     val segments = remember(displayText, isUser) {
-        if (isUser) listOf(MessageSegment.TextSegment(displayText))
-        else parseMessageSegments(displayText)
+        if (isUser) listOf(ModelAnswerSegment.Text(displayText))
+        else ModelAnswerFormatter.parseSafely(displayText)
     }
     val showStreamingDots = isStreaming && displayText.isStreamingPlaceholderText()
-    val hasCodeBlock = segments.any { it is MessageSegment.CodeSegment }
-    val needsTopActionClearance = hasCodeBlock || (!isUser && parsedContent.thinkingText != null)
+    val hasRichBlock = segments.any {
+        it is ModelAnswerSegment.Code || it is ModelAnswerSegment.DisplayMath
+    }
+    val needsTopActionClearance = hasRichBlock || (!isUser && parsedContent.thinkingText != null)
     val entryValue = entryProgress.value
 
     Column(
@@ -2673,7 +2699,7 @@ private fun ChatBubble(
                 } else {
                     segments.forEach { segment ->
                         when (segment) {
-                            is MessageSegment.TextSegment -> {
+                            is ModelAnswerSegment.Text -> {
                                 if (segment.text.isNotBlank()) {
                                     val visibleText = segment.text.trim('\n')
                                     AdaptiveMessageText(
@@ -2682,13 +2708,16 @@ private fun ChatBubble(
                                     )
                                 }
                             }
-                            is MessageSegment.CodeSegment -> {
+                            is ModelAnswerSegment.Code -> {
                                 CodeBlock(
                                     code = segment.code,
                                     language = segment.language,
                                     context = context,
                                     hazeState = hazeState
                                 )
+                            }
+                            is ModelAnswerSegment.DisplayMath -> {
+                                ModelMathCard(latex = segment.latex, hazeState = hazeState)
                             }
                         }
                     }
@@ -2977,6 +3006,7 @@ private fun FullscreenAnswerPanel(
     hazeState: HazeState
 ) {
     val message = messageProvider() ?: return
+    val context = LocalContext.current
     val title = if (message.isUser) "Your question" else "Model response"
     val parsedContent = remember(message.text) {
         ThinkingTextUtils.parse(message.text, allowActiveThinking = false)
@@ -3055,11 +3085,27 @@ private fun FullscreenAnswerPanel(
                         }
                         val rawVisibleText = parsedContent.finalResponseText.ifBlank { if (message.isUser) "" else "Answers will appear here." }
                         val visibleText = if (message.isUser) rawVisibleText else rawVisibleText.normalizeModelAnswerText()
-                        Text(
-                            text = visibleText.toAsteriskEmphasisText(),
-                            modifier = Modifier.fillMaxWidth(),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                        val answerSegments = remember(visibleText, message.isUser) {
+                            if (message.isUser) listOf(ModelAnswerSegment.Text(visibleText))
+                            else ModelAnswerFormatter.parseSafely(visibleText)
+                        }
+                        answerSegments.forEach { segment ->
+                            when (segment) {
+                                is ModelAnswerSegment.Text -> Text(
+                                    text = segment.text.toAsteriskEmphasisText(),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                is ModelAnswerSegment.Code -> CodeBlock(
+                                    code = segment.code,
+                                    language = segment.language,
+                                    context = context,
+                                    hazeState = hazeState
+                                )
+                                is ModelAnswerSegment.DisplayMath ->
+                                    ModelMathCard(latex = segment.latex, hazeState = hazeState)
+                            }
+                        }
                     }
                 }
             }

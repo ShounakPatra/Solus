@@ -4,9 +4,9 @@
 
 # Solus
 
-### Private AI, running entirely on your Android device.
+### Private, local AI running entirely on your Android device.
 
-Chat, reason, code, and explore documents with local language models. Once a model is downloaded, your prompts and generated responses stay on your phone.
+Chat, reason, code, and explore documents with local language models. Once a model is downloaded, your prompts, documents, and generated responses stay 100% on your phone.
 
 <p>
   <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.1.0/release.apk">
@@ -15,37 +15,42 @@ Chat, reason, code, and explore documents with local language models. Once a mod
 </p>
 
 <p>
-  <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=flat-square&logo=github&label=Stars" alt="GitHub stars" />
-  <img src="https://img.shields.io/github/downloads/ShounakPatra/Solus/total?style=flat-square&label=Downloads&color=20C997" alt="Total downloads" />
+  <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=for-the-badge&logo=github&label=Stars&color=FFD700" alt="GitHub stars" />
+  <img src="https://img.shields.io/github/downloads/ShounakPatra/Solus/total?style=for-the-badge&label=Downloads&color=20C997" alt="Total downloads" />
   <img src="https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg" alt="Android CI" />
-  <img src="https://img.shields.io/badge/version-1.1.0-4C8DFF?style=flat-square" alt="Version 1.1.0" />
-  <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white" alt="Android 8.0 or newer" />
-  <img src="https://img.shields.io/github/license/ShounakPatra/Solus?style=flat-square&color=A970FF" alt="Apache 2.0 license" />
-  <img src="https://img.shields.io/badge/status-active-20C997?style=flat-square" alt="Active development" />
+  <img src="https://img.shields.io/badge/version-1.1.0-4C8DFF?style=for-the-badge" alt="Version 1.1.0" />
+  <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android 8.0 or newer" />
+  <img src="https://img.shields.io/github/license/ShounakPatra/Solus?style=for-the-badge&color=A970FF" alt="Apache 2.0 license" />
 </p>
 
-**No cloud inference. No subscription. No prompt history leaving your device.**
+**🔒 No cloud inference. 💳 No subscriptions. 📡 Works entirely offline.**
 
 </div>
 
 ---
 
-## App Preview
+## 📱 App Preview
 
-<table>
-  <tr>
-    <td align="center">
-      <img src="docs/screenshots/chat-response.jpeg" width="280" alt="Solus answering a question with a local Gemma model" />
-    </td>
-    <td align="center">
-      <img src="docs/screenshots/model-manager-overview.jpeg" width="280" alt="Solus model manager with device guidance and Hugging Face access" />
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><b>Private local chat</b></td>
-    <td align="center"><b>Guided model management</b></td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/screenshots/chat-response.jpeg" width="280" alt="Solus chat UI" style="border-radius: 12px; margin: 10px;" />
+  <img src="docs/screenshots/model-manager-overview.jpeg" width="280" alt="Solus Model Manager" style="border-radius: 12px; margin: 10px;" />
+</p>
+<p align="center">
+  <sub><b>Private Local Chat</b> (Left) &bull; <b>Guided Model Management</b> (Right)</sub>
+</p>
+
+---
+
+## ✨ Features & Highlights
+
+*   **💬 Local Multi-turn AI Chat:** Powered directly by your Android device's hardware.
+*   **🧠 Advanced Reasoning (Thinking Mode):** Toggle thinking mode control for reasoning-optimized models (like DeepSeek R1).
+*   **🖼️ Multimodal Vision Support:** Ask questions about images, photos, and camera inputs using compatible vision-language models.
+*   **📐 Math & Formula Rendering:** Beautiful, native LaTeX rendering with horizontal scroll containers, copy actions, and text selection support.
+*   **📄 Deep Document Analysis:** Analyze local text, Markdown, code files, and documents directly inside your chats.
+*   **⏬ Resumable Downloads:** Storage-friendly download manager featuring download speed, progress indicators, pause/resume, and crash recovery.
+*   **📐 Device-Aware Model Guidance:** RAM, chipset, runtime, and compatibility flags help you pick the perfect model for your phone.
+*   **✨ Premium Glassmorphic UI:** A responsive, modern user interface built using Jetpack Compose and Haze blur effects.
 
 ---
 
@@ -92,7 +97,7 @@ Most AI assistants send every message to a remote server. Solus brings the model
 
 <p>
   <img src="https://img.shields.io/badge/DeepSeek-4D6BFE?style=for-the-badge&logo=deepseek&logoColor=white" alt="DeepSeek models" />
-  <img src="https://img.shields.io/badge/TinyLlama-F59E0B?style=for-the-badge&logoColor=white" alt="TinyLlama models" />
+  <img src="https://img.shields.io/badge/TinyLlama-F59E0B?style=for-the-badgeColor=white" alt="TinyLlama models" />
   <img src="https://img.shields.io/badge/FastVLM-20C997?style=for-the-badge&logo=apple&logoColor=white" alt="FastVLM models" />
 </p>
 
@@ -102,28 +107,27 @@ Model availability depends on whether a compatible Android-ready artifact exists
 
 ---
 
-## Solus vs Google AI Edge Gallery
+## 📊 Solus vs Google AI Edge Gallery
 
 Both projects provide open-source tools for running generative AI directly on mobile hardware. Solus is designed as a focused private Android assistant with document support, guided model selection, and reliable model management.
 
-| Feature                                                         | Solus | Google AI Edge Gallery |
-| --------------------------------------------------------------- | :---: | :--------------------: |
-| Fully offline inference                                         |   ✅   |            ✅           |
-| Open source                                                     |   ✅   |            ✅           |
-| Free                                                            |   ✅   |            ✅           |
-| Local conversation history                                      |   ✅   |            ✅           |
-| Vision models                                                   |   ✅   |            ✅           |
-| Document chat for PDF, DOCX, PPTX, XLSX, and other formats      |   ✅   |            ❌           |
-| Multiple model families                                         |   ✅   |            ✅           |
-| Thinking mode                                                   |   ✅   |            ✅           |
-| Download manager with resume support                            |   ✅   |            ✅           |
-| Device-aware model recommendations                              |   ✅   |            ❌           |
-| Response cleanup for control tokens and malformed thinking tags |   ✅   |            ❌           |
+| Feature | Solus | Google AI Edge Gallery |
+|---|:---:|:---:|
+| **Fully offline inference** | ✅ | ✅ |
+| **Open source** | ✅ | ✅ |
+| **Free** | ✅ | ✅ |
+| **Local conversation history** | ✅ | ✅ |
+| **Vision models** | ✅ | ✅ |
+| **Document chat for PDF, DOCX, PPTX, XLSX, and other formats** | ✅ | ❌ |
+| **Multiple model families** | ✅ | ✅ |
+| **Thinking mode** | ✅ | ✅ |
+| **Download manager with resume support** | ✅ | ✅ |
+| **Device-aware model recommendations** | ✅ | ❌ |
+| **Response cleanup for control tokens and malformed thinking tags** | ✅ | ❌ |
 
 ### Why Choose Solus?
 
 Choose **Solus** when you want:
-
 * A private AI assistant rather than an experimentation-focused showcase
 * Local document chat across PDFs, Word files, presentations, spreadsheets, code, and other formats
 * Device-aware recommendations based on your phone and available resources
@@ -134,171 +138,159 @@ Choose **Solus** when you want:
 * A focused Android interface for daily local AI use
 
 > This comparison covers built-in user-facing features. Both projects are under active development, so capabilities may change in future releases.
-
+>
 > Solus is an independent open-source project and is not affiliated with, endorsed by, or sponsored by Google.
 
 ---
 
 ## From Download to Private Chat
 
-|  Step | What happens                                                                                           |
+|  Step | What happens |
 | :---: | ------------------------------------------------------------------------------------------------------ |
-| **1** | Install Solus from the GitHub Releases page.                                                           |
-| **2** | Open **Models** and choose a model suited to your device.                                              |
-| **3** | Review its size, requirements, runtime, context window, and compatibility guidance.                    |
+| **1** | Install Solus from the GitHub Releases page. |
+| **2** | Open **Models** and choose a model suited to your device. |
+| **3** | Review its size, requirements, runtime, context window, and compatibility guidance. |
 | **4** | Download the model once. Public models need no account; gated models may require a Hugging Face token. |
-| **5** | Start chatting. Inference and conversation history remain on your phone.                               |
+| **5** | Start chatting. Inference and conversation history remain on your phone. |
 
 <p align="center">
-  <img src="docs/screenshots/chat-empty-state.jpeg" width="280" alt="Solus first-run chat screen before a model is selected" />
-  <img src="docs/screenshots/model-download-progress.jpeg" width="280" alt="Solus model download with progress, speed, pause, and cancel controls" />
+  <img src="docs/screenshots/chat-empty-state.jpeg" width="280" alt="Solus first-run chat screen" />
+  <img src="docs/screenshots/model-download-progress.jpeg" width="280" alt="Solus model download progress" />
 </p>
-
 <p align="center">
   <sub>Start with clear setup guidance, then monitor and control large model downloads directly in the app.</sub>
 </p>
 
 ---
 
-## Built for Different Tasks
+## 🎯 Model Compatibility Guide
 
-| Need                                         | Good starting point           |
-| -------------------------------------------- | ----------------------------- |
-| Everyday chat, rewriting, and summaries      | Qwen 2.5 Instruct or Gemma 3  |
-| Kotlin, Python, shell, and code explanations | Qwen 2.5 Coder                |
-| Math, planning, and structured reasoning     | DeepSeek R1 Distill or Qwen 3 |
-| Image descriptions and visual questions      | Gemma 3n Vision or FastVLM    |
-| Lightweight testing on limited storage       | Qwen 2.5 0.5B or TinyLlama    |
+Select the model that best fits your storage, memory capacity, and target task:
 
-Model availability and performance depend on the Android-ready artifact, available storage, RAM, chipset, selected runtime, context length, and prompt.
+| Need | Recommended Starting Point | Size | Gated |
+|---|---|:---:|:---:|
+| **Everyday conversation & summarization** | Qwen 2.5 Instruct / Gemma 3 | ~1.5 - 3 GB | No / Yes |
+| **Kotlin, Python, and coding help** | Qwen 2.5 Coder | ~2.2 GB | No |
+| **Math, planning & deep reasoning** | DeepSeek R1 Distill or Qwen 3 | ~1.8 GB | No |
+| **Image description & visual search** | Gemma 3n Vision or FastVLM | ~2.5 GB | Yes |
+| **Limited RAM / Storage testing** | Qwen 2.5 0.5B / TinyLlama | ~400 MB | No |
 
-Solus identifies models that require conversion or are not currently ready for direct on-device use.
-
----
-
-## Install
-
-1. Open the [Solus Releases](https://github.com/ShounakPatra/Solus/releases) page.
-2. Download the newest APK attached to the latest release.
-3. Allow **Install unknown apps** for your browser or file manager if Android asks.
-4. Install and open Solus.
-5. Open the model manager and select a model suitable for your device.
-6. Download the model and begin a private local conversation.
-
-The app requires **Android 8.0 (API 26) or newer**.
-
-Model storage and memory requirements vary from roughly 500 MB for compact options to several gigabytes for larger models.
-
-Releases are signed and published through GitHub. Verify that you are downloading from the official `ShounakPatra/Solus` repository.
+Model availability and performance depend on the Android-ready artifact, available storage, RAM, chipset, selected runtime, context length, and prompt. Solus identifies models that require conversion or are not currently ready for direct on-device use.
 
 ---
 
-## Privacy
-
-Solus is designed around local inference:
-
-* Chat prompts and generated answers are processed on-device.
-* Saved conversation history remains in local app storage.
-* Imported document content is processed locally.
-* Selected images are analysed locally by compatible vision models.
-* No paid AI API key is required for public model downloads.
-* Internet access is used for model downloads and external model-page links.
-* Hugging Face tokens are only needed for models whose publishers gate access behind a licence.
-* Solus does not require a cloud inference subscription.
-
-Removing the application or clearing its storage may remove locally saved conversations and app data. Downloaded model-file behaviour may depend on their storage location.
-
-Please report security concerns privately using the repository's [security policy](SECURITY.md).
-
----
-
-## Build from Source
-
-### Requirements
-
-* Android Studio with Android SDK 36
-* JDK 17
-* Android device or emulator running API 26 or newer
-
-Clone the repository:
-
-```bash
-git clone https://github.com/ShounakPatra/Solus.git
-cd Solus
-```
-
-Open the project in Android Studio and allow Gradle sync to complete.
-
-Alternatively, build the debug APK from the Android Studio terminal or a PowerShell window:
-
-```powershell
-.\gradlew.bat assembleDebug
-```
-
-Run local unit tests:
-
-```powershell
-.\gradlew.bat testDebugUnitTest
-```
-
-The generated debug APK is located at:
+## 📂 Project Structure
 
 ```text
-app/build/outputs/apk/debug/app-debug.apk
+Solus
+├── app
+│   ├── src
+│   │   ├── main
+│   │   │   ├── java/com/shounak/localmeshai
+│   │   │   │   ├── ai/            # Model inference, session management, and parsing
+│   │   │   │   ├── ui/            # Jetpack Compose UI (screens, themes, components)
+│   │   │   │   │   ├── components/# Reusable elements (bubbles, math cards)
+│   │   │   │   │   ├── screens/   # Primary views (Chat, Models, ImageGen)
+│   │   │   │   │   └── theme/     # Glassmorphic themes and color palettes
+│   │   │   │   └── utils/         # Markdown, LaTeX parser, math normalizers, glass shaders
+│   │   │   └── res/               # Layouts, drawables, XML assets
+│   │   └── test/                  # Unit and integration test suites
+│   └── build.gradle.kts
+└── gradle/                        # Dependency version catalog (libs.versions.toml)
 ```
-
-Model files, APKs, keystores, build output, local credentials, and IDE-specific configuration are intentionally excluded from Git.
-
----
-
-## Tech Stack
-
-<p>
-  <img src="https://img.shields.io/badge/Kotlin-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin" />
-  <img src="https://img.shields.io/badge/Jetpack_Compose-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
-  <img src="https://img.shields.io/badge/MediaPipe-0097A7?style=for-the-badge&logo=google&logoColor=white" alt="MediaPipe" />
-  <img src="https://img.shields.io/badge/LiteRT_LM-FF6F00?style=for-the-badge&logo=tensorflow&logoColor=white" alt="LiteRT LM" />
-</p>
-
-* **Kotlin and Jetpack Compose** for the native Android experience
-* **MediaPipe GenAI** for Android-ready local language-model and vision inference
-* **LiteRT-LM** for compatible on-device model packages
-* **PDFBox Android** and structured document readers for local file analysis
-* **Material 3 and Haze** for the responsive glass-inspired interface
-
----
-
-## Contributing
-
-Bug reports, model-compatibility findings, documentation improvements, and focused pull requests are welcome.
-
-* Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
-* Use [GitHub Issues](https://github.com/ShounakPatra/Solus/issues) for bugs and feature ideas.
-* Check [CHANGELOG.md](CHANGELOG.md) for release history.
-* Follow the [Code of Conduct](CODE_OF_CONDUCT.md) when participating.
-* Never include private tokens, signing keys, downloaded model files, or personal documents in a contribution.
-
----
-
-## Author
-
-**Shounak Patra**
-GitHub: [@ShounakPatra](https://github.com/ShounakPatra)
-
----
-
-## License
-
-Solus is open source under the [Apache License 2.0](LICENSE).
 
 Third-party models remain subject to the licences and acceptable-use requirements established by their respective publishers.
 
 ---
 
-<div align="center">
+## 📥 Installation
 
-### Your phone. Your models. Your conversations.
+1. Go to the [Solus Releases](https://github.com/ShounakPatra/Solus/releases) page.
+2. Download the latest `release.apk`.
+3. Open the APK file on your device. (Enable "Install unknown apps" from settings if prompted).
+4. Run the app, head over to the **Models** tab, and select a compatible model to download.
 
-If Solus is useful to you, consider giving the repository a star. It helps more people discover private, on-device AI.
+*Requires **Android 8.0 (API 26) or newer** and a compatible ARM64 processor.*
 
-</div>
+---
+
+## 🏗️ Build from Source
+
+### Requirements
+- Android Studio Ladybug (or newer)
+- Android SDK 36
+- JDK 17
+
+```bash
+# Clone the repository
+git clone https://github.com/ShounakPatra/Solus.git
+cd Solus
+
+# Compile the debug APK
+./gradlew assembleDebug
+
+# Run unit tests
+./gradlew testDebugUnitTest
+```
+
+The debug APK will be generated at `app/build/outputs/apk/debug/app-debug.apk`.
+
+---
+
+## 🔐 Privacy by Design
+
+Solus is built from the ground up to respect user privacy:
+- All LLM and vision inference takes place locally on your GPU/CPU.
+- Prompt history is stored securely in SQLite database files inside local app storage.
+- Internet permissions are used *exclusively* for model file downloads and external hyperlinks.
+- Hugging Face API keys/tokens are only stored locally on your device (used for gated downloads).
+
+Please report security issues privately via our [Security Policy](SECURITY.md).
+
+---
+
+## 💡 FAQ
+
+<details>
+<summary><b>Does Solus run entirely offline?</b></summary>
+<p>Yes. Once a model is downloaded, you can disable Wi-Fi/cellular data entirely. Inference and chat history are processed locally without making network calls.</p>
+</details>
+
+<details>
+<summary><b>Why is the initial APK download around 200MB?</b></summary>
+<p>The APK bundles multiple heavy native runtimes (MediaPipe, LiteRT) and native C++ libraries for various CPU/GPU architectures to make on-device inference as fast as possible.</p>
+</details>
+
+<details>
+<summary><b>Can I import my own custom GGUF or ONNX model files?</b></summary>
+<p>Not directly. The current runtimes require models converted to a verified Android-compatible format (like <code>.task</code> or <code>.litertlm</code>) containing the correct tokenizer configurations.</p>
+</details>
+
+---
+
+## 🗺️ Roadmap
+
+- [x] **v1.1.0 Releases:** Reliable thinking controls, resumable downloads, device hardware checks, glassmorphic UI polish, and unit testing coverage.
+- [ ] **v1.2.0 (Next):** Download integrity checksums, cleaner model validation feedback, accessibility improvements, and setup documentation.
+- [ ] **v2.0.0 (Researching):** On-device speech recognition (whisper pipelines), local model conversions, custom benchmarks, and encrypted chat exports.
+
+---
+
+## 🤝 Contributing
+
+We welcome bug reports, model conversion suggestions, and code updates.
+- Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request.
+- Follow our [Code of Conduct](CODE_OF_CONDUCT.md) inside comments and issues.
+
+---
+
+## 👤 Author
+
+**Shounak Patra**
+* GitHub: [@ShounakPatra](https://github.com/ShounakPatra)
+
+---
+
+## 📄 License
+
+Solus is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.

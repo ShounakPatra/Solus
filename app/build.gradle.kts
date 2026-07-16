@@ -5,6 +5,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.google.gms.google.services)
+    alias(libs.plugins.google.firebase.crashlytics)
 }
 
 val keystorePropertiesFile = rootProject.file("keystore.properties")
@@ -22,8 +24,8 @@ android {
         applicationId = "com.shounak.localmeshai"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -80,9 +82,13 @@ dependencies {
     implementation(libs.androidx.material.icons.extended)
     implementation(libs.androidx.emoji2)
     implementation(libs.androidx.emoji2.bundled)
+    implementation(libs.firebase.crashlytics)
+    implementation(libs.latex.base)
+    implementation(libs.latex.parser)
+    implementation(libs.latex.renderer)
     implementation(libs.material)
     implementation(libs.androidx.navigation.compose)
-    
+
     implementation(libs.mediapipe.tasks.genai)
     implementation(libs.mediapipe.tasks.core)
     implementation(libs.litert.lm)
