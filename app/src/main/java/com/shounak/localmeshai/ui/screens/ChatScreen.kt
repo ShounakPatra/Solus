@@ -40,6 +40,7 @@ import com.shounak.localmeshai.utils.ModelAnswerFormatter
 import com.shounak.localmeshai.utils.ModelAnswerSegment
 import com.shounak.localmeshai.utils.ThinkingTextUtils
 import com.shounak.localmeshai.ui.components.ModelMathCard
+import com.shounak.localmeshai.ui.components.InlineMathListItem
 import com.shounak.localmeshai.utils.animatedGlassHalo
 import com.shounak.localmeshai.utils.fluidReveal
 import com.shounak.localmeshai.utils.jellyOnTouch
@@ -189,10 +190,33 @@ private fun String.toAsteriskEmphasisText() = buildAnnotatedString {
     val source = this@toAsteriskEmphasisText
     var index = 0
     while (index < source.length) {
-        val markerIndex = source.indexOf('*', startIndex = index)
+        val asteriskIndex = source.indexOf('*', startIndex = index)
+        val codeIndex = source.indexOf('`', startIndex = index)
+        val markerIndex = when {
+            asteriskIndex < 0 -> codeIndex
+            codeIndex < 0 -> asteriskIndex
+            else -> minOf(asteriskIndex, codeIndex)
+        }
         if (markerIndex == -1) {
             append(source.substring(index))
             break
+        }
+
+        if (source[markerIndex] == '`') {
+            val end = source.indexOf('`', startIndex = markerIndex + 1)
+            if (end == -1) {
+                append(source.substring(index))
+                break
+            }
+            append(source.substring(index, markerIndex))
+            val code = source.substring(markerIndex + 1, end)
+            if (code.isBlank()) append("``") else withStyle(
+                SpanStyle(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium)
+            ) {
+                append(code)
+            }
+            index = end + 1
+            continue
         }
 
         val marker = when {
@@ -2638,7 +2662,8 @@ private fun ChatBubble(
     }
     val showStreamingDots = isStreaming && displayText.isStreamingPlaceholderText()
     val hasRichBlock = segments.any {
-        it is ModelAnswerSegment.Code || it is ModelAnswerSegment.DisplayMath
+        it is ModelAnswerSegment.Code || it is ModelAnswerSegment.DisplayMath ||
+            it is ModelAnswerSegment.InlineMathListItem
     }
     val needsTopActionClearance = hasRichBlock || (!isUser && parsedContent.thinkingText != null)
     val entryValue = entryProgress.value
@@ -2718,6 +2743,12 @@ private fun ChatBubble(
                             }
                             is ModelAnswerSegment.DisplayMath -> {
                                 ModelMathCard(latex = segment.latex, hazeState = hazeState)
+                            }
+                            is ModelAnswerSegment.InlineMathListItem -> {
+                                InlineMathListItem(
+                                    parts = segment.parts,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
                             }
                         }
                     }
@@ -3104,6 +3135,11 @@ private fun FullscreenAnswerPanel(
                                 )
                                 is ModelAnswerSegment.DisplayMath ->
                                     ModelMathCard(latex = segment.latex, hazeState = hazeState)
+                                is ModelAnswerSegment.InlineMathListItem ->
+                                    InlineMathListItem(
+                                        parts = segment.parts,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
                             }
                         }
                     }

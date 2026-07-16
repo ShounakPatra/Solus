@@ -64,6 +64,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.PopupProperties
 import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.hazeEffect
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.max
@@ -272,6 +274,7 @@ fun LiquidGlassBackdrop(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .hazeSource(state = hazeState)
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
@@ -341,6 +344,7 @@ fun Modifier.glassEffect(
     // A haze pass for every visible row is one of the most expensive operations
     // Compose can perform while the rows are moving.
     val blurred = this
+        .hazeEffect(state = hazeState)
         .clip(shape)
         .background(effectiveTint, shape)
 

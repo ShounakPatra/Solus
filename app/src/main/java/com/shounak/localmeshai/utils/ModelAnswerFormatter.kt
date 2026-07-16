@@ -5,6 +5,14 @@ sealed interface ModelAnswerSegment {
     data class Text(val text: String) : ModelAnswerSegment
     data class Code(val code: String, val language: String) : ModelAnswerSegment
     data class DisplayMath(val latex: String) : ModelAnswerSegment
+    /** A Markdown bullet with text, code, and formula fragments kept in one flow. */
+    data class InlineMathListItem(val parts: List<ModelAnswerListPart>) : ModelAnswerSegment
+}
+
+sealed interface ModelAnswerListPart {
+    data class Text(val text: String) : ModelAnswerListPart
+    data class Math(val latex: String) : ModelAnswerListPart
+    data class Code(val code: String) : ModelAnswerListPart
 }
 
 /**
@@ -50,32 +58,33 @@ object ModelAnswerFormatter {
     )
 
     fun parse(text: String): List<ModelAnswerSegment> {
+        val normalizedText = normalizeEscapedModelText(text)
         val result = mutableListOf<ModelAnswerSegment>()
         var cursor = 0
-        while (cursor < text.length) {
-            val fenceStart = text.indexOf("```", cursor)
+        while (cursor < normalizedText.length) {
+            val fenceStart = normalizedText.indexOf("```", cursor)
             if (fenceStart < 0) {
-                appendRichText(text.substring(cursor), result)
+                appendRichText(normalizedText.substring(cursor), result)
                 break
             }
-            appendRichText(text.substring(cursor, fenceStart), result)
-            val headerEnd = text.indexOf('\n', fenceStart + 3)
+            appendRichText(normalizedText.substring(cursor, fenceStart), result)
+            val headerEnd = normalizedText.indexOf('\n', fenceStart + 3)
             if (headerEnd < 0) {
-                appendText(text.substring(fenceStart), result)
+                appendText(normalizedText.substring(fenceStart), result)
                 break
             }
-            val fenceEnd = text.indexOf("```", headerEnd + 1)
+            val fenceEnd = normalizedText.indexOf("```", headerEnd + 1)
             if (fenceEnd < 0) {
-                appendText(text.substring(fenceStart), result)
+                appendText(normalizedText.substring(fenceStart), result)
                 break
             }
             result += ModelAnswerSegment.Code(
-                code = text.substring(headerEnd + 1, fenceEnd).trimEnd(),
-                language = text.substring(fenceStart + 3, headerEnd).trim()
+                code = normalizedText.substring(headerEnd + 1, fenceEnd).trimEnd(),
+                language = normalizedText.substring(fenceStart + 3, headerEnd).trim()
             )
             cursor = fenceEnd + 3
         }
-        return result.ifEmpty { listOf(ModelAnswerSegment.Text(formatInlineMath(text))) }
+        return result.ifEmpty { listOf(ModelAnswerSegment.Text(formatInlineMath(normalizedText))) }
     }
 
     /** Never allows malformed model formatting to crash composition. */
@@ -104,12 +113,20 @@ object ModelAnswerFormatter {
             }
             output.append(text[cursor++])
         }
-        return output.toString()
+        return repairMalformedInlineDelimiters(output.toString())
     }
 
     /** True for expressions that need the native renderer instead of selectable text. */
     fun requiresNativeMathRenderer(latex: String): Boolean =
-        requiresNativeRenderer(normalizeEscapedModelText(latex))
+        requiresNativeRenderer(prepareLatexForRenderer(latex))
+
+    /**
+     * Replaces unsupported invisible layout commands with standard TeX spacing.
+     * This preserves a generic fraction/root shape without rendering a literal
+     * question mark or producing an empty formula card.
+     */
+    fun prepareLatexForRenderer(latex: String): String =
+        replaceInvisibleLayoutCommands(normalizeEscapedModelText(latex), replacement = "\\square")
 
     fun formatInlineMath(text: String): String {
         val output = StringBuilder()
@@ -131,7 +148,12 @@ object ModelAnswerFormatter {
     fun formatMath(latex: String): String =
         collapseWhitespace(
             formatCommands(
-                normalizeEscapedModelText(latex).trim().removePrefix("\\(").removeSuffix("\\)")
+                replaceInvisibleLayoutCommands(
+                    normalizeEscapedModelText(latex),
+                    // □ (U+25A1) is universally readable — shows clearly as an empty slot
+                    // e.g. \frac{\phantom{0}}{\phantom{0}} → (□⁄□)
+                    replacement = "□"
+                ).trim().removePrefix("\\(").removeSuffix("\\)")
                     .removePrefix("\\[").removeSuffix("\\]"),
                 decorateBoxes = true
             ).replace("{", "").replace("}", "")
@@ -156,6 +178,19 @@ object ModelAnswerFormatter {
             }
         }
         while (cursor < source.length) {
+            val listItem = readInlineMathListItemAt(source, cursor)
+            if (listItem != null) {
+                flushProse()
+                result += ModelAnswerSegment.InlineMathListItem(listItem.parts)
+                cursor = listItem.endExclusive
+                continue
+            }
+            val markerEnd = markdownBulletEnd(source, cursor)
+            if (markerEnd != null) {
+                prose.append("• ")
+                cursor = markerEnd
+                continue
+            }
             // A model may show the LaTeX source as an inline-code example, for
             // example `\\begin{bmatrix}...\\end{bmatrix}`.  That is documentation,
             // not a formula to render.  Keep it verbatim so it cannot be split
@@ -233,9 +268,54 @@ object ModelAnswerFormatter {
         return null
     }
 
+    private fun readInlineMathListItemAt(source: String, start: Int): ParsedListItem? {
+        val markerEnd = markdownBulletEnd(source, start) ?: return null
+        val lineEnd = source.indexOf('\n', markerEnd).let { if (it < 0) source.length else it }
+        val parts = parseListParts(source.substring(markerEnd, lineEnd))
+        return if (parts.any { it is ModelAnswerListPart.Math || it is ModelAnswerListPart.Code }) {
+            ParsedListItem(parts = parts, endExclusive = lineEnd)
+        } else null
+    }
+
+    private fun parseListParts(source: String): List<ModelAnswerListPart> {
+        val result = mutableListOf<ModelAnswerListPart>()
+        val prose = StringBuilder()
+        var cursor = 0
+        fun flushProse() {
+            val formatted = displayText(prose.toString())
+            if (formatted.isNotBlank()) result += ModelAnswerListPart.Text(formatted)
+            prose.clear()
+        }
+        while (cursor < source.length) {
+            if (source[cursor] == '`') {
+                val end = source.indexOf('`', cursor + 1)
+                if (end > cursor + 1) {
+                    flushProse()
+                    result += ModelAnswerListPart.Code(source.substring(cursor + 1, end))
+                    cursor = end + 1
+                    continue
+                }
+            }
+            val math = readMathAt(source, cursor)
+            if (math != null) {
+                if (isRenderableMath(math.latex)) {
+                    flushProse()
+                    result += ModelAnswerListPart.Math(math.latex.trim())
+                } else {
+                    prose.append(readableMalformedMath(math.latex))
+                }
+                cursor = math.endExclusive
+                continue
+            }
+            prose.append(source[cursor++])
+        }
+        flushProse()
+        return result
+    }
+
     private fun appendText(source: String, result: MutableList<ModelAnswerSegment>) {
         if (source.isEmpty()) return
-        val formatted = stripMarkdownEmphasis(formatInlineMath(source))
+        val formatted = displayText(source)
         if (formatted.isEmpty()) return
         val previous = result.lastOrNull()
         if (previous is ModelAnswerSegment.Text) {
@@ -254,9 +334,71 @@ object ModelAnswerFormatter {
         }
     }
 
+    private fun displayText(source: String): String = stripMarkdownEmphasis(formatInlineMath(source))
+
+    /**
+     * Identifies actual Markdown list markers without interpreting leading
+     * mathematical negatives such as -x, - cos(x), or -4 as bullets.
+     */
+    private fun markdownBulletEnd(source: String, start: Int): Int? {
+        if (source.getOrNull(start) != '-') return null
+        if (start > 0 && source[start - 1] != '\n' && source[start - 1] != '\r') return null
+        var cursor = start + 1
+        if (source.getOrNull(cursor) != ' ' && source.getOrNull(cursor) != '\t') return null
+        while (source.getOrNull(cursor) == ' ' || source.getOrNull(cursor) == '\t') cursor++
+        var contentStart = cursor
+        while (source.startsWith("**", contentStart) || source.startsWith("__", contentStart)) contentStart += 2
+        val firstContent = source.getOrNull(contentStart) ?: return null
+        val startsInlineCode = firstContent == '`'
+        val startsDelimitedMath = source.startsWith("\\(", contentStart) ||
+            source.startsWith("\\[", contentStart) || source.startsWith("$", contentStart)
+        return if (firstContent.isUpperCase() || startsInlineCode || startsDelimitedMath) cursor else null
+    }
+
     /** Removes Markdown bold/underline markers after code sections are isolated. */
     private fun stripMarkdownEmphasis(value: String): String =
         value.replace("**", "").replace("__", "")
+
+    private fun replaceInvisibleLayoutCommands(source: String, replacement: String): String {
+        val commands = listOf("\\phantom", "\\hphantom", "\\vphantom")
+        val output = StringBuilder()
+        var cursor = 0
+        while (cursor < source.length) {
+            val command = commands.firstOrNull { source.startsWith("$it{", cursor) }
+            if (command == null) {
+                output.append(source[cursor++])
+                continue
+            }
+            val open = cursor + command.length
+            val close = matchingBrace(source, open)
+            if (close < 0) {
+                output.append(source[cursor++])
+                continue
+            }
+            output.append(replacement)
+            cursor = close + 1
+        }
+        return output.toString()
+    }
+
+    /** Recovers a common small-model typo: `\(:` is punctuation, not math. */
+    private fun repairMalformedInlineDelimiters(source: String): String {
+        val output = StringBuilder(source.length)
+        var cursor = 0
+        while (cursor < source.length) {
+            if (source.startsWith("\\(", cursor)) {
+                val next = source.getOrNull(cursor + 2)
+                val afterEscape = source.getOrNull(cursor + 3)
+                val escapedPunctuation = next == '\\' && afterEscape != null && afterEscape in ":;,"
+                if ((next != null && next in ":;,") || escapedPunctuation) {
+                    cursor += 2
+                    continue
+                }
+            }
+            output.append(source[cursor++])
+        }
+        return output.toString()
+    }
 
     private fun requiresNativeRenderer(latex: String): Boolean =
         latex.contains("\\\\") || latex.count { it == '{' } > 2 ||
@@ -267,7 +409,12 @@ object ModelAnswerFormatter {
      * more useful to show "fraction" than a black card containing only "-".
      */
     private fun isRenderableMath(latex: String): Boolean {
-        val value = normalizeEscapedModelText(latex).trim()
+        // Pre-process phantoms with \square — the same replacement prepareLatexForRenderer
+        // uses — so this check validates exactly what the native renderer will receive.
+        val value = replaceInvisibleLayoutCommands(
+            normalizeEscapedModelText(latex).trim(),
+            replacement = "\\square"
+        )
         if (value.isBlank() || value.all { it.isWhitespace() || it in "-–—:;,." }) return false
 
         if (!allCommandsHaveArguments(value, listOf("\\dfrac", "\\tfrac", "\\frac"), 2)) return false
@@ -509,4 +656,5 @@ object ModelAnswerFormatter {
     }.trim()
 
     private data class ParsedMath(val latex: String, val endExclusive: Int, val isInline: Boolean)
+    private data class ParsedListItem(val parts: List<ModelAnswerListPart>, val endExclusive: Int)
 }
