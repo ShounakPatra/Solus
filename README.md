@@ -11,10 +11,20 @@ Your conversations never leave your phone.
 
 <br/>
 
+<!-- Custom glass-gradient download CTA (docs/assets/download-solus-apk.svg) -->
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/latest">
-    <img src="https://img.shields.io/badge/Download-Solus_Latest_APK-20C997?style=for-the-badge&logo=android&logoColor=white" alt="Download Solus APK" height="44" />
+  <a href="https://github.com/ShounakPatra/Solus/releases/latest" title="Download the latest Solus APK">
+    <img
+      src="docs/assets/download-solus-apk.svg"
+      alt="Download Solus APK — Latest v1.2.0"
+      width="360"
+      height="72"
+    />
   </a>
+</p>
+
+<p>
+  <sub>Tap the button to get the newest release · Android 8.0+</sub>
 </p>
 
 <p>
@@ -152,8 +162,19 @@ Solus
 
 ## 📥 Installation
 
-1. Open **[Releases](https://github.com/ShounakPatra/Solus/releases)** (or the big download badge above).
-2. Download the latest **`release.apk`** for **v1.2.0**.
+<p align="center">
+  <a href="https://github.com/ShounakPatra/Solus/releases/latest" title="Download the latest Solus APK">
+    <img
+      src="docs/assets/download-solus-apk.svg"
+      alt="Download Solus APK — Latest v1.2.0"
+      width="360"
+      height="72"
+    />
+  </a>
+</p>
+
+1. Tap the **Download Solus APK** button (or open **[Releases](https://github.com/ShounakPatra/Solus/releases)**).
+2. Download **`release.apk`** for **v1.2.0**.
 3. Install on your phone (allow *Install unknown apps* if prompted).
 4. Open Solus → **Models** → download a compatible model → start chatting.
 
@@ -253,7 +274,19 @@ Solus is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for d
 
 <div align="center">
 
-**Made for private, on-device AI.**  
-[⬇ Download v1.2.0](https://github.com/ShounakPatra/Solus/releases/latest) · [★ Star on GitHub](https://github.com/ShounakPatra/Solus)
+**Made for private, on-device AI.**
+
+<p>
+  <a href="https://github.com/ShounakPatra/Solus/releases/latest" title="Download the latest Solus APK">
+    <img
+      src="docs/assets/download-solus-apk.svg"
+      alt="Download Solus APK — Latest v1.2.0"
+      width="320"
+      height="64"
+    />
+  </a>
+</p>
+
+[★ Star on GitHub](https://github.com/ShounakPatra/Solus)
 
 </div>

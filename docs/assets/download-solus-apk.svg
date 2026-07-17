@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="72" viewBox="0 0 360 72" role="img" aria-label="Download Solus Latest APK">
+  <defs>
+    <linearGradient id="btnGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#14B8A6"/>
+      <stop offset="45%" stop-color="#20C997"/>
+      <stop offset="100%" stop-color="#0EA5E9"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.28"/>
+      <stop offset="48%" stop-color="#FFFFFF" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="iconGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#E0F2FE" stop-opacity="0.9"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-30%" width="140%" height="180%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#0F766E" flood-opacity="0.35"/>
+    </filter>
+    <filter id="innerGlow">
+      <feGaussianBlur stdDeviation="0.6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Outer soft glow plate -->
+  <rect x="8" y="6" width="344" height="58" rx="29" fill="#20C997" opacity="0.12"/>
+
+  <!-- Main pill -->
+  <g filter="url(#softShadow)">
+    <rect x="12" y="8" width="336" height="54" rx="27" fill="url(#btnGrad)"/>
+    <rect x="12" y="8" width="336" height="54" rx="27" fill="url(#shine)"/>
+    <!-- Border highlight -->
+    <rect x="12.75" y="8.75" width="334.5" height="52.5" rx="26.25" fill="none" stroke="#FFFFFF" stroke-opacity="0.35" stroke-width="1.5"/>
+  </g>
+
+  <!-- Icon circle -->
+  <circle cx="48" cy="35" r="18" fill="#FFFFFF" fill-opacity="0.18"/>
+  <circle cx="48" cy="35" r="18" fill="none" stroke="#FFFFFF" stroke-opacity="0.4" stroke-width="1"/>
+
+  <!-- Android head (simple) -->
+  <g transform="translate(48 35)" fill="url(#iconGrad)" filter="url(#innerGlow)">
+    <!-- antennae -->
+    <line x1="-7" y1="-11" x2="-10" y2="-16" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round"/>
+    <line x1="7" y1="-11" x2="10" y2="-16" stroke="#FFFFFF" stroke-width="1.6" stroke-linecap="round"/>
+    <!-- head -->
+    <path d="M-11 -2 a11 9 0 0 1 22 0 v1 H-11 Z"/>
+    <!-- eyes -->
+    <circle cx="-4.5" cy="-5" r="1.4" fill="#0D9488"/>
+    <circle cx="4.5" cy="-5" r="1.4" fill="#0D9488"/>
+    <!-- body -->
+    <rect x="-10" y="1" width="20" height="10" rx="2.2"/>
+    <!-- arms -->
+    <rect x="-14.5" y="1.5" width="3.2" height="8" rx="1.6"/>
+    <rect x="11.3" y="1.5" width="3.2" height="8" rx="1.6"/>
+    <!-- legs -->
+    <rect x="-7" y="11" width="3.5" height="5.5" rx="1.5"/>
+    <rect x="3.5" y="11" width="3.5" height="5.5" rx="1.5"/>
+  </g>
+
+  <!-- Primary label -->
+  <text x="78" y="32" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="17" font-weight="700" fill="#FFFFFF" letter-spacing="0.3">Download Solus APK</text>
+  <!-- Secondary label -->
+  <text x="78" y="50" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="11.5" font-weight="500" fill="#ECFEFF" fill-opacity="0.92" letter-spacing="0.8">LATEST · v1.2.0 · FREE · OFFLINE</text>
+
+  <!-- Right chevron badge -->
+  <g transform="translate(318 35)">
+    <circle r="14" fill="#FFFFFF" fill-opacity="0.16"/>
+    <path d="M-3 -6 L5 0 L-3 6" fill="none" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
