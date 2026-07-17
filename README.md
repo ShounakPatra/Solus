@@ -13,7 +13,7 @@ Your conversations never leave your phone.
 
 <!-- Custom glass-gradient download CTA (docs/assets/download-solus-apk.svg) -->
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/latest" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.2.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
       alt="Download Solus APK — Latest v1.2.0"
@@ -28,7 +28,7 @@ Your conversations never leave your phone.
 </p>
 
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/latest">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.2.0/app-release.apk">
     <img src="https://img.shields.io/github/v/release/ShounakPatra/Solus?style=for-the-badge&logo=semantic-release&label=Latest%20version&color=20C997" alt="Latest app version" />
   </a>
   <img src="https://img.shields.io/badge/version-1.2.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 1.2.0" />
@@ -179,7 +179,7 @@ Solus
 ## 📥 Installation
 
 <p align="center">
-  <a href="https://github.com/ShounakPatra/Solus/releases/latest" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.2.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
       alt="Download Solus APK — Latest v1.2.0"
@@ -297,7 +297,7 @@ Solus is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for d
 **Made for private, on-device AI.**
 
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/latest" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.2.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
       alt="Download Solus APK — Latest v1.2.0"
