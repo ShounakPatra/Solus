@@ -68,6 +68,8 @@ Your conversations never leave your phone.
 
 ## ✨ Features
 
+<div align="center">
+
 | | Capability |
 |---|---|
 | 💬 | **Local multi-turn chat** — inference on-device via CPU / GPU |
@@ -78,6 +80,8 @@ Your conversations never leave your phone.
 | 📱 | **Device-aware guidance** — RAM, chipset, and compatibility-aware model picks |
 | ✨ | **Glassmorphism UI** — Compose + Haze blur, fluid tab & FAB motion |
 | 📚 | **History that just works** — open past chats even before a model is ready |
+
+</div>
 
 ---
 
@@ -93,6 +97,8 @@ Your conversations never leave your phone.
 
 ## 🛠️ Built With
 
+<div align="center">
+
 | Layer | Stack |
 |---|---|
 | Language | **Kotlin 2.3.0** |
@@ -101,11 +107,15 @@ Your conversations never leave your phone.
 | Math | `com.hrm.latex` |
 | Local state | **SharedPreferences** (chat history, settings, download state) |
 
+</div>
+
 ---
 
 ## 📊 Solus vs Google AI Edge Gallery
 
 Both run generative AI on-device. Solus focuses on a polished private Android assistant with documents, guided models, and reliable downloads.
+
+<div align="center">
 
 | Feature | Solus | Google AI Edge Gallery |
 |---|:---:|:---:|
@@ -122,9 +132,13 @@ Both run generative AI on-device. Solus focuses on a polished private Android as
 | Response cleanup (control tokens / thinking tags) | ✅ | ❌ |
 | Deferred history when no model is ready | ✅ | ❌ |
 
+</div>
+
 ---
 
 ## 🎯 Model Compatibility Guide
+
+<div align="center">
 
 | Need | Starting point | Size | Gated |
 |---|---|:---:|:---:|
@@ -133,6 +147,8 @@ Both run generative AI on-device. Solus focuses on a polished private Android as
 | Math, planning, reasoning | DeepSeek R1 Distill / Qwen 3 | ~1.8 GB | No |
 | Images & visual Q&A | Gemma 3n Vision / FastVLM | ~2.5 GB | Yes |
 | Low RAM / quick test | Qwen 2.5 0.5B / TinyLlama | ~400 MB | No |
+
+</div>
 
 > Tip: use the **Models** tab filters and device cards — Solus highlights what fits your phone.
 
@@ -248,6 +264,8 @@ Yes in <b>v1.2.0</b>. Messages load immediately; initialise a chat model to cont
 
 ## 🗺️ Roadmap
 
+<div align="center">
+
 | Version | Status | Highlights |
 |---|:---:|---|
 | **v1.0.0** | ✅ Shipped | Core local chat, model manager, glass UI foundation |
@@ -256,6 +274,8 @@ Yes in <b>v1.2.0</b>. Messages load immediately; initialise a chat model to cont
 | **v1.2.0** | ✅ **Current** | Tab motion, Haze scroll FABs, FAB docking, deferred history load |
 | **v1.3.0** | 🔜 Next | Download integrity checksums, stronger model validation UX, accessibility pass |
 | **v2.0.0** | 🔬 Research | On-device speech (Whisper-class), local conversion helpers, benchmarks, encrypted exports |
+
+</div>
 
 ---
 
