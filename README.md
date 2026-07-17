@@ -40,7 +40,7 @@ Your conversations never leave your phone.
   <img src="https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg" alt="Android CI" />
   <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android 8.0 or newer" />
   <img src="https://img.shields.io/github/license/ShounakPatra/Solus?style=for-the-badge&color=A970FF" alt="Apache 2.0 license" />
-  <img src="https://img.shields.io/badge/Kotlin-2.x-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin" />
+  <img src="https://img.shields.io/badge/Kotlin-2.3.0-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.3.0" />
   <img src="https://img.shields.io/badge/Jetpack_Compose-UI-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 </p>
 
@@ -95,7 +95,7 @@ Your conversations never leave your phone.
 
 | Layer | Stack |
 |---|---|
-| Language | **Kotlin** |
+| Language | **Kotlin 2.3.0** |
 | UI | **Jetpack Compose**, Material 3, Haze glass blur |
 | Inference | **LiteRT** (TensorFlow Lite), **MediaPipe GenAI** |
 | Math | `com.hrm.latex` |
