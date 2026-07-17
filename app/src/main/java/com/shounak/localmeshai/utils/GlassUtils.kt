@@ -386,6 +386,7 @@ fun LiquidGlassButton(
     shape: Shape = RoundedCornerShape(50),
     tintColor: Color = Color.White.copy(alpha = 0.10f),
     contentPadding: PaddingValues = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
+    blurRadius: Dp = 20.dp,
     content: @Composable RowScope.() -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -434,7 +435,7 @@ fun LiquidGlassButton(
             .glassEffect(
                 hazeState = hazeState,
                 shape = shape,
-                blurRadius = 20.dp,
+                blurRadius = blurRadius,
                 tintColor = tintColor,
                 borderAlpha = 0.34f + pressGlow * 0.28f
             )

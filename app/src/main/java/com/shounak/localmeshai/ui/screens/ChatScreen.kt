@@ -45,9 +45,15 @@ import com.shounak.localmeshai.utils.animatedGlassHalo
 import com.shounak.localmeshai.utils.fluidReveal
 import com.shounak.localmeshai.utils.jellyOnTouch
 import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
 import androidx.compose.ui.draw.rotate
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -142,6 +148,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -424,6 +431,7 @@ fun ChatScreen(
     val textState by chatViewModel.draftText.collectAsState()
     val error by chatViewModel.error.collectAsState()
     val currentSessionId by chatViewModel.currentSessionId.collectAsState()
+    val pendingSessionId by chatViewModel.pendingSessionId.collectAsState()
     val selectedTextModelPath by mainViewModel.selectedTextModelPath.collectAsState()
     val selectedVisionModelPath by mainViewModel.selectedVisionModelPath.collectAsState()
     val visionCurrentSessionId by visionViewModel.currentSessionId.collectAsState()
@@ -873,52 +881,29 @@ fun ChatScreen(
                     activeError?.let { ErrorCard(it) }
                 }
 
+                // Pending hold only when messages were not loaded into the list yet.
+                // Once textMessages/visionMessages are non-empty, the list branch wins.
+                val canShowChatMessages = isCurrentModelReady || currentSessionId != null
+                val isPendingChatHold = !selectedSupportsAttachments &&
+                    pendingSessionId != null &&
+                    !isCurrentModelReady &&
+                    textMessages.isEmpty()
+
                 Box(
                     modifier = Modifier.weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
                     when {
-                        selectedModelPath == null -> {
-                            EmptyState(
-                                title = "No model selected",
-                                subtitle = if (downloadedChatModels.isEmpty()) {
-                                    "Open Models and download a phone-ready model."
-                                } else {
-                                    "Choose a model above to begin."
-                                },
-                                hazeState = hazeState
-                            )
-                        }
-                        !isCurrentModelReady -> {
-                            EmptyState(
-                                title = if (isCurrentModelBusy) "Initialising model" else "Model is not ready",
-                                subtitle = if (isCurrentModelBusy) "This usually takes a moment." else "Choose the model again or select another downloaded model.",
-                                hazeState = hazeState
-                            )
-                        }
-                        selectedSupportsAttachments && visionMessages.isEmpty() -> {
-                            EmptyState(
-                                title = "Ask with images or files",
-                                subtitle = "Use the + inside the chat box to add camera, photos, or files.",
-                                hazeState = hazeState
-                            )
-                        }
-                        !selectedSupportsAttachments && textMessages.isEmpty() -> {
-                            // Show starter prompt suggestions when model is ready but chat is empty
-                            StarterPrompts(
-                                hazeState = hazeState,
-                                onPromptSelected = { prompt ->
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    chatViewModel.sendMessage(prompt)
-                                }
-                            )
-                        }
-                        else -> {
+                        // 1. Prioritise showing messages if they exist (history with no model active).
+                        (selectedSupportsAttachments && visionMessages.isNotEmpty()) ||
+                            (!selectedSupportsAttachments && textMessages.isNotEmpty()) -> {
                             // Wrap the entire list in SelectionContainer so text selection works
                             SelectionContainer {
                                 LazyColumn(
                                     state = listState,
-                                    modifier = Modifier.fillMaxSize(),
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .hazeSource(state = hazeState),
                                     contentPadding = PaddingValues(vertical = 8.dp),
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
@@ -961,104 +946,86 @@ fun ChatScreen(
                                 }
                             }
                         }
+                        // 2. Fallbacks and empty states
+                        isPendingChatHold -> {
+                            EmptyState(
+                                title = "Chat loaded",
+                                subtitle = "Initialise a model to continue",
+                                hazeState = hazeState
+                            )
+                        }
+                        selectedModelPath == null -> {
+                            EmptyState(
+                                title = "No model selected",
+                                subtitle = if (downloadedChatModels.isEmpty()) {
+                                    "Open Models and download a phone-ready model."
+                                } else {
+                                    "Choose a model above to begin."
+                                },
+                                hazeState = hazeState
+                            )
+                        }
+                        !canShowChatMessages -> {
+                            EmptyState(
+                                title = if (isCurrentModelBusy) "Initialising model" else "Model is not ready",
+                                subtitle = if (isCurrentModelBusy) "This usually takes a moment." else "Choose the model again or select another downloaded model.",
+                                hazeState = hazeState
+                            )
+                        }
+                        selectedSupportsAttachments && visionMessages.isEmpty() -> {
+                            EmptyState(
+                                title = "Ask with images or files",
+                                subtitle = "Use the + inside the chat box to add camera, photos, or files.",
+                                hazeState = hazeState
+                            )
+                        }
+                        else -> {
+                            // Model ready / session open, but chat is empty — starter prompts
+                            StarterPrompts(
+                                hazeState = hazeState,
+                                onPromptSelected = { prompt ->
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    chatViewModel.sendMessage(prompt)
+                                }
+                            )
+                        }
                     }
 
                     // ── Stacked scroll FABs (BottomEnd, BoxScope) ─────────────────
                     // Placed here — outside the when{} branches — so that .align()
                     // is called directly inside BoxScope where it is valid.
-                    // Both buttons are only meaningful when there are messages.
+                    // Both buttons are only meaningful when the message list is shown.
                     val hasMessages = if (selectedSupportsAttachments) {
                         visionMessages.isNotEmpty()
                     } else {
                         textMessages.isNotEmpty()
                     }
                     if (hasMessages) {
-                        Column(
+                        ScrollFabCluster(
+                            showTop = showScrollTopFab,
+                            showBottom = showScrollFab,
+                            hazeState = hazeState,
+                            onScrollTop = {
+                                scope.launch {
+                                    listState.animateScrollToItem(0)
+                                }
+                            },
+                            onScrollBottom = {
+                                scope.launch {
+                                    val lastIndex = if (selectedSupportsAttachments) {
+                                        visionMessages.lastIndex
+                                    } else {
+                                        textMessages.lastIndex
+                                    }
+                                    if (lastIndex >= 0) {
+                                        listState.animateScrollToItem(lastIndex, scrollOffset = 100_000)
+                                    }
+                                }
+                            },
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)
-                                .padding(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            // Scroll-to-top FAB — vanishes when already at the top
-                            androidx.compose.animation.AnimatedVisibility(
-                                visible = showScrollTopFab,
-                                enter = androidx.compose.animation.scaleIn(
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioLowBouncy,
-                                        stiffness = Spring.StiffnessMedium
-                                    )
-                                ) + androidx.compose.animation.fadeIn(animationSpec = tween(150)),
-                                exit = androidx.compose.animation.scaleOut(
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                                        stiffness = Spring.StiffnessMedium
-                                    )
-                                ) + androidx.compose.animation.fadeOut(animationSpec = tween(120))
-                            ) {
-                                LiquidGlassButton(
-                                    onClick = {
-                                        scope.launch {
-                                            listState.animateScrollToItem(0)
-                                        }
-                                    },
-                                    modifier = Modifier.size(46.dp),
-                                    hazeState = hazeState,
-                                    shape = RoundedCornerShape(23.dp),
-                                    tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
-                                    contentPadding = PaddingValues(0.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.KeyboardArrowUp,
-                                        contentDescription = "Scroll to top",
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
-
-                            // Scroll-to-bottom FAB — vanishes when already at the bottom
-                            androidx.compose.animation.AnimatedVisibility(
-                                visible = showScrollFab,
-                                enter = androidx.compose.animation.scaleIn(
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioLowBouncy,
-                                        stiffness = Spring.StiffnessMedium
-                                    )
-                                ) + androidx.compose.animation.fadeIn(animationSpec = tween(150)),
-                                exit = androidx.compose.animation.scaleOut(
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                                        stiffness = Spring.StiffnessMedium
-                                    )
-                                ) + androidx.compose.animation.fadeOut(animationSpec = tween(120))
-                            ) {
-                                LiquidGlassButton(
-                                    onClick = {
-                                        scope.launch {
-                                            val lastIndex = if (selectedSupportsAttachments) {
-                                                visionMessages.lastIndex
-                                            } else {
-                                                textMessages.lastIndex
-                                            }
-                                            if (lastIndex >= 0) {
-                                                listState.animateScrollToItem(lastIndex, scrollOffset = 100_000)
-                                            }
-                                        }
-                                    },
-                                    modifier = Modifier.size(46.dp),
-                                    hazeState = hazeState,
-                                    shape = RoundedCornerShape(23.dp),
-                                    tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.26f),
-                                    contentPadding = PaddingValues(0.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.KeyboardArrowDown,
-                                        contentDescription = "Scroll to latest",
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
-                        }
+                                .padding(8.dp)
+                        )
                     }
 
                     // Initialising / Generating overlay
@@ -2388,6 +2355,246 @@ private fun MetricRow(modelName: String, lastDuration: Long, tokensPerSecond: Fl
             AssistChip(onClick = {}, label = { Text(timeLabel) })
             AssistChip(onClick = {}, label = { Text(String.format(Locale.US, "%.1f tok/s", tokensPerSecond)) })
         }
+    }
+}
+
+private val ScrollFabSize = 46.dp
+private val ScrollFabGap = 8.dp
+/** Vertical distance between stacked FAB centres / dock slots. */
+private val ScrollFabStep = ScrollFabSize + ScrollFabGap
+
+/**
+ * Two-slot scroll FAB stack with spring-docked motion.
+ *
+ * - Both visible: top in the upper slot, bottom in the lower dock.
+ * - Only top (user at chat bottom): top eases **down** into the dock.
+ * - Only bottom (user at chat top): bottom **stays** in the lower dock (never takes the top slot).
+ *
+ * Enter/exit use opposite directional flourishes so each button feels unique.
+ */
+@Composable
+private fun ScrollFabCluster(
+    showTop: Boolean,
+    showBottom: Boolean,
+    hazeState: HazeState,
+    onScrollTop: () -> Unit,
+    onScrollBottom: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val density = LocalDensity.current
+    val stepPx = with(density) { ScrollFabStep.toPx() }
+
+    // Stack always reserves two slots so the top FAB can dock without layout jumps.
+    val stackHeight = ScrollFabSize * 2 + ScrollFabGap
+
+    // Offset from the TOP of the stack box.
+    // Upper slot = 0.dp, dock (lower) slot = ScrollFabStep.
+    val topTargetY = when {
+        showTop && showBottom -> 0.dp
+        showTop -> ScrollFabStep // slide down into dock when bottom FAB is gone
+        else -> 0.dp
+    }
+    // Bottom FAB always occupies the lower dock — never moves into the upper slot.
+    val bottomTargetY = ScrollFabStep
+
+    val topY by animateDpAsState(
+        targetValue = topTargetY,
+        animationSpec = spring(
+            dampingRatio = 0.62f,
+            stiffness = 260f,
+            visibilityThreshold = 0.1.dp
+        ),
+        label = "scroll_top_fab_dock_y"
+    )
+    val bottomY by animateDpAsState(
+        targetValue = bottomTargetY,
+        animationSpec = spring(
+            dampingRatio = 0.72f,
+            stiffness = 360f,
+            visibilityThreshold = 0.1.dp
+        ),
+        label = "scroll_bottom_fab_dock_y"
+    )
+
+    // Liquid settle only while the top FAB relocates between slots.
+    val topTravel by animateFloatAsState(
+        targetValue = if (showTop && showBottom) 0f else if (showTop) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.55f, stiffness = 220f),
+        label = "scroll_top_fab_travel"
+    )
+
+    Box(
+        modifier = modifier
+            .width(ScrollFabSize)
+            .height(stackHeight)
+    ) {
+        // ── Scroll-to-top ────────────────────────────────────────────────────
+        androidx.compose.animation.AnimatedVisibility(
+            visible = showTop,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .offset(y = topY)
+                .graphicsLayer {
+                    // Mild arc + jelly while relocating to/from dock.
+                    val t = topTravel
+                    translationX = -kotlin.math.sin(t * Math.PI.toFloat()) * stepPx * 0.08f
+                    rotationZ = (1f - t) * -6f + t * 4f
+                    scaleX = 1f + kotlin.math.sin(t * Math.PI.toFloat()) * 0.06f
+                    scaleY = 1f - kotlin.math.sin(t * Math.PI.toFloat()) * 0.05f
+                },
+            enter = androidx.compose.animation.fadeIn(tween(200)) +
+                androidx.compose.animation.scaleIn(
+                    initialScale = 0.55f,
+                    animationSpec = spring(
+                        dampingRatio = 0.55f,
+                        stiffness = 380f
+                    )
+                ) +
+                androidx.compose.animation.slideInVertically(
+                    animationSpec = spring(dampingRatio = 0.68f, stiffness = 320f),
+                    initialOffsetY = { -it }
+                ) +
+                androidx.compose.animation.expandVertically(
+                    animationSpec = spring(dampingRatio = 0.78f, stiffness = 360f),
+                    expandFrom = Alignment.Top
+                ),
+            exit = androidx.compose.animation.fadeOut(tween(150)) +
+                androidx.compose.animation.scaleOut(
+                    targetScale = 0.6f,
+                    animationSpec = spring(dampingRatio = 0.9f, stiffness = 480f)
+                ) +
+                androidx.compose.animation.slideOutVertically(
+                    animationSpec = spring(dampingRatio = 0.86f, stiffness = 420f),
+                    targetOffsetY = { -it / 2 }
+                ) +
+                androidx.compose.animation.shrinkVertically(
+                    animationSpec = spring(dampingRatio = 0.9f, stiffness = 480f),
+                    shrinkTowards = Alignment.Top
+                )
+        ) {
+            ScrollHazeFab(
+                onClick = onScrollTop,
+                hazeState = hazeState,
+                tintAlpha = 0.18f,
+                icon = Icons.Default.KeyboardArrowUp,
+                contentDescription = "Scroll to top"
+            )
+        }
+
+        // ── Scroll-to-bottom ─────────────────────────────────────────────────
+        androidx.compose.animation.AnimatedVisibility(
+            visible = showBottom,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .offset(y = bottomY),
+            enter = androidx.compose.animation.fadeIn(tween(200)) +
+                androidx.compose.animation.scaleIn(
+                    initialScale = 0.55f,
+                    animationSpec = spring(
+                        dampingRatio = 0.55f,
+                        stiffness = 380f
+                    )
+                ) +
+                androidx.compose.animation.slideInVertically(
+                    animationSpec = spring(dampingRatio = 0.68f, stiffness = 320f),
+                    initialOffsetY = { it }
+                ) +
+                androidx.compose.animation.expandVertically(
+                    animationSpec = spring(dampingRatio = 0.78f, stiffness = 360f),
+                    expandFrom = Alignment.Bottom
+                ),
+            exit = androidx.compose.animation.fadeOut(tween(150)) +
+                androidx.compose.animation.scaleOut(
+                    targetScale = 0.6f,
+                    animationSpec = spring(dampingRatio = 0.9f, stiffness = 480f)
+                ) +
+                androidx.compose.animation.slideOutVertically(
+                    animationSpec = spring(dampingRatio = 0.86f, stiffness = 420f),
+                    targetOffsetY = { it / 2 }
+                ) +
+                androidx.compose.animation.shrinkVertically(
+                    animationSpec = spring(dampingRatio = 0.9f, stiffness = 480f),
+                    shrinkTowards = Alignment.Bottom
+                )
+        ) {
+            ScrollHazeFab(
+                onClick = onScrollBottom,
+                hazeState = hazeState,
+                tintAlpha = 0.26f,
+                icon = Icons.Default.KeyboardArrowDown,
+                contentDescription = "Scroll to latest"
+            )
+        }
+    }
+}
+
+/**
+ * Circular scroll FAB with real Haze background blur.
+ *
+ * [LiquidGlassButton] / [glassEffect] paint an opaque scrim that hides Haze, and an
+ * unclipped [hazeEffect] draws square corners. This path clips to a circle first, then
+ * applies Haze only — no solid glass fill on top.
+ */
+@Composable
+private fun ScrollHazeFab(
+    onClick: () -> Unit,
+    hazeState: HazeState,
+    tintAlpha: Float,
+    icon: ImageVector,
+    contentDescription: String
+) {
+    val shape = RoundedCornerShape(23.dp)
+    val colors = MaterialTheme.colorScheme
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val haptic = LocalHapticFeedback.current
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.92f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "scroll_haze_fab_scale"
+    )
+
+    Box(
+        modifier = Modifier
+            .size(ScrollFabSize)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            // Clip first so Haze draws as a circle, not a square.
+            .clip(shape)
+            .hazeEffect(
+                state = hazeState,
+                style = HazeStyle(
+                    backgroundColor = colors.surface,
+                    blurRadius = 28.dp,
+                    tint = HazeTint(colors.primary.copy(alpha = tintAlpha)),
+                    noiseFactor = 0.08f
+                )
+            )
+            .border(
+                width = 0.8.dp,
+                color = colors.outline.copy(alpha = 0.42f),
+                shape = shape
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null
+            ) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(20.dp),
+            tint = colors.onSurface
+        )
     }
 }
 

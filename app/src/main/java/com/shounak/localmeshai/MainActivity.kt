@@ -21,12 +21,22 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material3.*
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.Animatable
 import androidx.compose.runtime.*
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -248,14 +258,55 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                 }
             }
         ) { innerPadding ->
-            // A pager keeps the adjacent page beside the current one. On some
-            // display densities it can settle on a fractional pixel and expose a
-            // differently coloured strip at the right edge of Chat. A contained
-            // crossfade has one authoritative tab state and no adjacent page edge.
-            androidx.compose.animation.Crossfade(
+            // Directional tab transition (mirrors both ways):
+            // Chat → Models: content enters from the right
+            // Models → Chat: content enters from the left (same feel, mirrored)
+            // Avoids a horizontal pager, which can leave a fractional-pixel edge strip.
+            AnimatedContent(
                 targetState = selectedIndex,
-                animationSpec = androidx.compose.animation.core.tween(170),
-                label = "main_tab_crossfade",
+                transitionSpec = {
+                    val forward = targetState > initialState
+                    val enterSpring = spring<IntOffset>(
+                        dampingRatio = 0.86f,
+                        stiffness = 420f
+                    )
+                    val exitSpring = spring<IntOffset>(
+                        dampingRatio = 0.92f,
+                        stiffness = 520f
+                    )
+                    val enterOffset: (fullWidth: Int) -> Int = { fullWidth ->
+                        val delta = (fullWidth * 0.14f).toInt().coerceAtLeast(1)
+                        if (forward) delta else -delta
+                    }
+                    val exitOffset: (fullWidth: Int) -> Int = { fullWidth ->
+                        val delta = (fullWidth * 0.10f).toInt().coerceAtLeast(1)
+                        if (forward) -delta else delta
+                    }
+                    (
+                        slideInHorizontally(
+                            animationSpec = enterSpring,
+                            initialOffsetX = enterOffset
+                        ) + fadeIn(animationSpec = tween(180)) + scaleIn(
+                            initialScale = 0.985f,
+                            animationSpec = spring(
+                                dampingRatio = 0.86f,
+                                stiffness = 420f
+                            )
+                        )
+                    ).togetherWith(
+                        slideOutHorizontally(
+                            animationSpec = exitSpring,
+                            targetOffsetX = exitOffset
+                        ) + fadeOut(animationSpec = tween(140)) + scaleOut(
+                            targetScale = 0.985f,
+                            animationSpec = spring(
+                                dampingRatio = 0.92f,
+                                stiffness = 520f
+                            )
+                        )
+                    ).using(SizeTransform(clip = false))
+                },
+                label = "main_tab_content",
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)

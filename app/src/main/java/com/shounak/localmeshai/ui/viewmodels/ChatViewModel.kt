@@ -77,6 +77,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentSessionId = MutableStateFlow<String?>(null)
     val currentSessionId = _currentSessionId.asStateFlow()
 
+    /** Session selected while no model is ready; promoted when [isModelReady] becomes true. */
+    private val _pendingSessionId = MutableStateFlow<String?>(null)
+    val pendingSessionId = _pendingSessionId.asStateFlow()
+
     private var currentModelPath: String? = null
     private var initGeneration: Int = 0
     private var initJob: Job? = null
@@ -94,6 +98,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val crashMsg = InitCrashGuard.consumeLastCrashMessage(application)
         if (crashMsg != null) {
             messages.add(ChatMessage("⚠️ $crashMsg\n\nTry a MediaPipe (.task) model instead.", false))
+        }
+        // Promote any deferred history selection once a model finishes initialising.
+        viewModelScope.launch {
+            isModelReady.collect { ready ->
+                if (ready) commitPendingSession()
+            }
         }
     }
 
@@ -306,6 +316,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         saveCurrentSession()
         messages.clear()
         _currentSessionId.value = null
+        _pendingSessionId.value = null
         resetRuntimeConversationBeforeNextSend = true
         lastRuntimeThinkingMode = null
         _lastInferenceTime.value = 0L
@@ -319,19 +330,47 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val session = chatSessions.firstOrNull { it.id == sessionId } ?: return
         messages.clear()
         messages.addAll(session.messages)
-        _currentSessionId.value = session.id
         resetRuntimeConversationBeforeNextSend = true
         lastRuntimeThinkingMode = null
         _lastInferenceTime.value = 0L
         _tokensPerSecond.value = 0f
         _error.value = null
+        if (_isModelReady.value) {
+            // Model ready: open the session immediately (unchanged behaviour).
+            _currentSessionId.value = session.id
+            _pendingSessionId.value = null
+        } else {
+            // No model yet: load messages into memory so Share/hasMessages work,
+            // but keep currentSessionId null and queue the session for later.
+            // Rapid re-selects: last sessionId wins on _pendingSessionId.
+            _pendingSessionId.value = session.id
+            _currentSessionId.value = null
+        }
+    }
+
+    /**
+     * Promotes a deferred history selection once a model is ready.
+     * Messages are already loaded; this only commits [currentSessionId].
+     */
+    fun commitPendingSession() {
+        val pending = _pendingSessionId.value ?: return
+        if (chatSessions.none { it.id == pending }) {
+            _pendingSessionId.value = null
+            return
+        }
+        _currentSessionId.value = pending
+        _pendingSessionId.value = null
     }
 
     fun deleteChatSession(sessionId: String) {
         val removingCurrent = sessionId == _currentSessionId.value
+        val removingPending = sessionId == _pendingSessionId.value
         chatSessions.removeAll { it.id == sessionId }
         persistSessions()
-        if (removingCurrent) {
+        if (removingPending) {
+            _pendingSessionId.value = null
+        }
+        if (removingCurrent || (removingPending && _currentSessionId.value == null)) {
             messages.clear()
             _currentSessionId.value = null
             resetRuntimeConversationBeforeNextSend = true
@@ -345,6 +384,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         chatSessions.clear()
         messages.clear()
         _currentSessionId.value = null
+        _pendingSessionId.value = null
         resetRuntimeConversationBeforeNextSend = true
         lastRuntimeThinkingMode = null
         _lastInferenceTime.value = 0L
