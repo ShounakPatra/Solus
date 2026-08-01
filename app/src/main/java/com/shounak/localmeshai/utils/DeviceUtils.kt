@@ -33,6 +33,14 @@ object DeviceUtils {
         return memoryInfo.availMem / (1024L * 1024L)
     }
 
+    fun getBatteryTemperatureCelsius(context: Context): Float? {
+        return runCatching {
+            val intent = context.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+            val temp10ths = intent?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+            if (temp10ths > 0) temp10ths / 10f else null
+        }.getOrNull()
+    }
+
     fun selectBackend(modelInfo: ModelInfo, availableRamMb: Long): InferenceBackend {
         return selectBackend(modelInfo.fileName, availableRamMb)
     }

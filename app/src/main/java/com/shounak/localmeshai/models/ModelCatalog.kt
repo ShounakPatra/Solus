@@ -2,29 +2,61 @@ package com.shounak.localmeshai.models
 
 object ModelCatalog {
     val defaultModels = listOf(
-        // Recommended all-rounder (always at top)
+        // Recommended working local AI models (always at top)
         ModelInfo(
-            id = "qwen25_15b_q8_1280",
-            name = "Qwen 2.5 1.5B Instruct",
-            size = "1.6 GB",
+            id = "deepseek_r1_qwen15b_q8",
+            name = "DeepSeek R1 Distill Qwen 1.5B ⭐ Highly Recommended",
+            size = "1.86 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
-            fileName = "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task",
-            description = "Balanced everyday text model for chat, summarizing, rewriting, explanations, and light coding. It uses a public Android MediaPipe .task build, so it downloads without a Hugging Face license and avoids the riskier LiteRT-LM GPU init path.",
+            fileName = "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv1280.task",
+            description = "⭐ Highly Recommended on-device model! Packaged as an Android MediaPipe .task model that loads weights into RAM/GPU and executes real local neural network inference with step-by-step reasoning.",
             backend = "MediaPipe LLM CPU-safe",
-            deviceTarget = "8 GB RAM, Dimensity 7000+ / Snapdragon 6 Gen+ / Exynos 1380+",
-            url = hf("litert-community/Qwen2.5-1.5B-Instruct", "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task"),
-            modelPageUrl = "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct",
-            isRecommended = true
+            deviceTarget = "8 GB nominal RAM, all supported chipsets",
+            url = hf("litert-community/DeepSeek-R1-Distill-Qwen-1.5B", "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv1280.task"),
+            modelPageUrl = "https://huggingface.co/litert-community/DeepSeek-R1-Distill-Qwen-1.5B",
+            isRecommended = true,
+            supportsThinkingMode = true
+        ),
+        ModelInfo(
+            id = "gemma3n_e2b_vision",
+            name = "Gemma 3n E2B 2B Vision ⭐ Recommended",
+            size = "2.92 GB",
+            status = ModelStatus.NotDownloaded,
+            type = ModelType.Vision,
+            fileName = "gemma-3n-E2B-it-int4.task",
+            description = "⭐ Recommended Android-ready Gemma 3n 2B multimodal model for local image Q&A, visual detail analysis, and chat.",
+            backend = "MediaPipe LLM Vision CPU-safe",
+            deviceTarget = "8 GB RAM, all supported chipsets",
+            url = hf("google/gemma-3n-E2B-it-litert-preview", "gemma-3n-E2B-it-int4.task"),
+            modelPageUrl = "https://huggingface.co/google/gemma-3n-E2B-it-litert-preview",
+            requiresHuggingFaceToken = true,
+            isRecommended = true,
+            contextWindowTokens = 32768
+        ),
+        ModelInfo(
+            id = "qwen3_06b_litertlm",
+            name = "Qwen 3 0.6B ⭐ Recommended",
+            size = "586 MB",
+            status = ModelStatus.NotDownloaded,
+            type = ModelType.Text,
+            fileName = "Qwen3-0.6B.litertlm",
+            description = "⭐ Recommended lightweight Qwen 3 model for ultra-fast local reasoning, quick Q&A, and smooth step-by-step answers on any Android phone.",
+            backend = "LiteRT-LM GPU",
+            deviceTarget = "8 GB nominal RAM, all supported chipsets",
+            url = hf("litert-community/Qwen3-0.6B", "Qwen3-0.6B.litertlm"),
+            modelPageUrl = "https://huggingface.co/litert-community/Qwen3-0.6B",
+            isRecommended = true,
+            contextWindowTokens = 4096
         ),
         ModelInfo(
             id = "gemma3_1b_recommended",
-            name = "Gemma 3 1B IT - Starter Model",
+            name = "Gemma 3 1B IT ⭐ Recommended",
             size = "555 MB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
             fileName = "gemma3-1b-it-int4.task",
-            description = "Small Gemma starter model for quick questions, short summaries, and checking that local chat works. It runs through LiteRT-LM's native conversation layer; accept the Google Gemma license on Hugging Face and paste a read token before downloading.",
+            description = "⭐ Recommended small Gemma starter model for fast questions, short summaries, and quick on-device chat.",
             backend = "LiteRT-LM Conversation (CPU)",
             deviceTarget = "8 GB RAM, all supported chipsets",
             url = hf("litert-community/Gemma3-1B-IT", "gemma3-1b-it-int4.task"),
@@ -32,6 +64,60 @@ object ModelCatalog {
             requiresHuggingFaceToken = true,
             isRecommended = true,
             contextWindowTokens = 2048
+        ),
+        ModelInfo(
+            id = "qwen25_15b_q8_1280",
+            name = "Qwen 2.5 1.5B Instruct ⭐ Recommended",
+            size = "1.6 GB",
+            status = ModelStatus.NotDownloaded,
+            type = ModelType.Text,
+            fileName = "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task",
+            description = "Balanced everyday text model for chat, summarizing, rewriting, explanations, and light coding.",
+            backend = "MediaPipe LLM CPU-safe",
+            deviceTarget = "8 GB RAM, all supported chipsets",
+            url = hf("litert-community/Qwen2.5-1.5B-Instruct", "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task"),
+            modelPageUrl = "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct",
+            isRecommended = true
+        ),
+        ModelInfo(
+            id = "bonsai_8b_1bit_gguf",
+            name = "Bonsai 8B (1-Bit GGUF)",
+            size = "~1.85 GB (est.)",
+            status = ModelStatus.NeedsConversion,
+            type = ModelType.Text,
+            fileName = "Bonsai-8B-Q1_0.gguf",
+            description = "1-bit ternary quantized 8B parameter GGUF model file reserved for future native llama.cpp engine integration.",
+            backend = "Conversion needed",
+            deviceTarget = "8 GB RAM, needs native engine artifact",
+            url = null,
+            modelPageUrl = "https://huggingface.co/prism-ml/Bonsai-8B-gguf",
+            isRecommended = false,
+            contextWindowTokens = 4096
+        ),
+        ModelInfo(
+            id = "qwen25_15b_gguf",
+            name = "Qwen 2.5 1.5B (GGUF Q4_K_M)",
+            size = "~1.1 GB (est.)",
+            status = ModelStatus.NeedsConversion,
+            type = ModelType.Text,
+            fileName = "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            description = "4-bit GGUF build reserved for future native llama.cpp engine integration.",
+            backend = "Conversion needed",
+            deviceTarget = "6 GB+ RAM, needs native engine artifact",
+            url = null,
+            modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+            contextWindowTokens = 4096
+        ),
+        ModelInfo(
+            id = "safetensors_conversion_info",
+            name = "Safetensors Guide 💡",
+            size = "N/A",
+            status = ModelStatus.ComingSoon,
+            type = ModelType.Text,
+            fileName = "model.safetensors",
+            description = "Raw .safetensors (PyTorch FP16/BF16) checkpoints exceed mobile RAM limits. Download corresponding pre-quantized .gguf or .litertlm models above for on-device chat.",
+            backend = "Needs GGUF / LiteRT conversion",
+            deviceTarget = "Conversion guidance"
         ),
         // ── Coding specialists ────────────────────────────────────────
         ModelInfo(
@@ -93,30 +179,17 @@ object ModelCatalog {
             requiresHuggingFaceToken = true
         ),
         ModelInfo(
-            id = "qwen25_7b_candidate",
-            name = "Qwen 2.5 7B Instruct",
-            size = "~7 GB (est.)",
+            id = "qwen25_7b_gguf",
+            name = "Qwen 2.5 7B Instruct (GGUF Q4_K_M)",
+            size = "~4.68 GB (est.)",
             status = ModelStatus.NeedsConversion,
             type = ModelType.Text,
-            fileName = "qwen2.5-7b-instruct.litertlm",
-            description = "Large Qwen 2.5 general chat model intended for stronger reasoning, richer writing, and more reliable long answers. This entry is a future Android build placeholder until a compatible on-device GPU artifact is available.",
+            fileName = "qwen2.5-7b-instruct-q4_k_m.gguf",
+            description = "High-quality Qwen 2.5 7B model reserved for future native llama.cpp tensor engine integration.",
             backend = "Conversion needed",
-            deviceTarget = "16 GB RAM, needs Android GPU artifact",
-            modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct"
-        ),
-        ModelInfo(
-            id = "qwen3_06b_litertlm",
-            name = "Qwen 3 0.6B",
-            size = "586 MB",
-            status = ModelStatus.NotDownloaded,
-            type = ModelType.Text,
-            fileName = "Qwen3-0.6B.litertlm",
-            description = "Tiny Qwen 3 model with basic reasoning support, useful for fast local tests and short step-by-step answers. This is a LiteRT-LM GPU file, so prefer a MediaPipe .task model on mid-range devices if initialization is unstable.",
-            backend = "LiteRT-LM GPU",
-            deviceTarget = "8 GB nominal RAM (flagship chipset recommended)",
-            url = hf("litert-community/Qwen3-0.6B", "Qwen3-0.6B.litertlm"),
-            modelPageUrl = "https://huggingface.co/litert-community/Qwen3-0.6B",
-            isRecommended = true,
+            deviceTarget = "12–16 GB RAM, needs native engine artifact",
+            url = null,
+            modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF",
             contextWindowTokens = 4096
         ),
         ModelInfo(
@@ -177,31 +250,35 @@ object ModelCatalog {
             requiresHuggingFaceToken = true
         ),
         ModelInfo(
-            id = "llama31_8b_candidate",
-            name = "Llama 3.1 8B Instruct",
-            size = "~8 GB (est.)",
+            id = "llama31_8b_gguf",
+            name = "Llama 3.1 8B Instruct (GGUF Q4_K_M)",
+            size = "~4.92 GB (est.)",
             status = ModelStatus.NeedsConversion,
             type = ModelType.Text,
-            fileName = "llama-3.1-8b-instruct.litertlm",
-            description = "Strong Llama 3.1 8B model for higher-quality general chat, reasoning, and writing. This is a future-build placeholder until a compatible Android GPU artifact is available, and the Meta license still applies.",
+            fileName = "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+            description = "Strong Llama 3.1 8B model reserved for future native llama.cpp tensor engine integration.",
             backend = "Conversion needed",
-            deviceTarget = "16 GB RAM, needs Android GPU artifact",
-            modelPageUrl = "https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct",
-            requiresHuggingFaceToken = true
+            deviceTarget = "12–16 GB RAM, needs native engine artifact",
+            url = null,
+            modelPageUrl = "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+            requiresHuggingFaceToken = true,
+            contextWindowTokens = 4096
         ),
 
         // ── Mistral family ───────────────────────────────────────────
         ModelInfo(
-            id = "mistral_7b_candidate",
-            name = "Mistral 7B Instruct v0.3",
-            size = "~7.2 GB (est.)",
+            id = "mistral_7b_gguf",
+            name = "Mistral 7B Instruct v0.3 (GGUF Q4_K_M)",
+            size = "~4.37 GB (est.)",
             status = ModelStatus.NeedsConversion,
             type = ModelType.Text,
-            fileName = "mistral-7b-instruct-v03.litertlm",
-            description = "Mistral 7B Instruct is a capable general chat model known for concise, practical answers and good instruction following. It cannot run from the original checkpoint here until an Android-ready GPU artifact is available.",
+            fileName = "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+            description = "Mistral 7B Instruct model reserved for future native llama.cpp tensor engine integration.",
             backend = "Conversion needed",
-            deviceTarget = "16 GB RAM, needs Android GPU artifact",
-            modelPageUrl = "https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3"
+            deviceTarget = "12–16 GB RAM, needs native engine artifact",
+            url = null,
+            modelPageUrl = "https://huggingface.co/bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+            contextWindowTokens = 4096
         ),
         ModelInfo(
             id = "mistral_ministral_8b_candidate",
@@ -301,30 +378,19 @@ object ModelCatalog {
 
         // ── DeepSeek family ──────────────────────────────────────────
         ModelInfo(
-            id = "deepseek_r1_qwen15b_q8",
-            name = "DeepSeek R1 Distill Qwen 1.5B",
-            size = "1.86 GB",
+            id = "deepseek_r1_qwen7b_gguf",
+            name = "DeepSeek R1 Distill Qwen 7B (GGUF Q4_K_M)",
+            size = "4.68 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
-            fileName = "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv1280.task",
-            description = "Small DeepSeek R1 distill focused on step-by-step reasoning and problem solving. It is packaged as an Android MediaPipe .task model, making it a safer reasoning option than larger future GPU-only builds.",
-            backend = "MediaPipe LLM CPU-safe",
-            deviceTarget = "8 GB nominal RAM",
-            url = hf("litert-community/DeepSeek-R1-Distill-Qwen-1.5B", "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv1280.task"),
-            modelPageUrl = "https://huggingface.co/litert-community/DeepSeek-R1-Distill-Qwen-1.5B",
-            isRecommended = true
-        ),
-        ModelInfo(
-            id = "deepseek_r1_qwen7b_candidate",
-            name = "DeepSeek R1 Distill Qwen 7B",
-            size = "~7 GB (est.)",
-            status = ModelStatus.NeedsConversion,
-            type = ModelType.Text,
-            fileName = "deepseek-r1-distill-qwen-7b.litertlm",
-            description = "Larger DeepSeek R1 distill for stronger math, logic, and structured reasoning than the 1.5B build. It is a future-build placeholder until a compatible Android GPU artifact is available.",
-            backend = "Conversion needed",
-            deviceTarget = "16 GB RAM, needs Android GPU artifact",
-            modelPageUrl = "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+            fileName = "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
+            description = "Larger DeepSeek R1 distill for stronger math, logic, and structured step-by-step reasoning running locally on-device via llama.cpp JNI backend.",
+            backend = "llama.cpp JNI",
+            deviceTarget = "12–16 GB RAM recommended",
+            url = hf("unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF", "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"),
+            modelPageUrl = "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF",
+            supportsThinkingMode = true,
+            contextWindowTokens = 4096
         ),
 
         // ── GLM family ───────────────────────────────────────────────
@@ -430,21 +496,6 @@ object ModelCatalog {
         ),
 
         // ── Vision / Image Q&A models ────────────────────────────────
-        ModelInfo(
-            id = "gemma3n_e2b_vision",
-            name = "Gemma 3n E2B Vision",
-            size = "2.92 GB",
-            status = ModelStatus.NotDownloaded,
-            type = ModelType.Vision,
-            fileName = "gemma-3n-E2B-it-int4.task",
-            description = "Gemma 3n E2B Vision is an Android-ready image Q&A model for describing photos, reading visual details, and answering questions about selected images. It requires accepting the Google Gemma license and using a Hugging Face read token.",
-            backend = "MediaPipe LLM Vision CPU-safe",
-            deviceTarget = "8 GB RAM recommended",
-            url = hf("google/gemma-3n-E2B-it-litert-preview", "gemma-3n-E2B-it-int4.task"),
-            modelPageUrl = "https://huggingface.co/google/gemma-3n-E2B-it-litert-preview",
-            requiresHuggingFaceToken = true,
-            contextWindowTokens = 32768
-        ),
         ModelInfo(
             id = "gemma3n_e4b_vision",
             name = "Gemma 3n E4B Vision",

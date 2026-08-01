@@ -34,6 +34,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedVisionModelPath = MutableStateFlow<String?>(null)
     val selectedVisionModelPath = _selectedVisionModelPath.asStateFlow()
 
+    val appSettings = com.shounak.localmeshai.utils.AppSettings.getInstance(application)
+    val appSettingsData = appSettings.settings
+
     private val settingsPrefs = application.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
     private val _huggingFaceToken = MutableStateFlow(settingsPrefs.getString(KEY_HF_TOKEN, "").orEmpty())
     val huggingFaceToken = _huggingFaceToken.asStateFlow()

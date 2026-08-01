@@ -240,6 +240,10 @@ class ModelDownloader(private val context: Context) {
         }
 
         val url = URL(downloadUrl)
+        if (!url.protocol.equals("https", ignoreCase = true)) {
+            throw IOException("Insecure HTTP connections are blocked for model downloads. URL must use HTTPS.")
+        }
+
         val connection = (url.openConnection() as HttpURLConnection).apply {
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
@@ -261,8 +265,11 @@ class ModelDownloader(private val context: Context) {
             val location = connection.getHeaderField("Location")
                 ?: throw IOException("Download redirect did not include a destination.")
             connection.disconnect()
-            val redirected = URL(url, location).toString()
-            return openConnection(redirected, bearerToken, redirects + 1, rangeStart)
+            val redirectedUrl = URL(url, location)
+            if (!redirectedUrl.protocol.equals("https", ignoreCase = true)) {
+                throw IOException("Insecure HTTP redirect blocked. Model download must remain on HTTPS.")
+            }
+            return openConnection(redirectedUrl.toString(), bearerToken, redirects + 1, rangeStart)
         }
 
         return connection
@@ -270,13 +277,17 @@ class ModelDownloader(private val context: Context) {
 
     private fun unzipModel(zipFile: File, targetDirectory: File) {
         val canonicalTarget = targetDirectory.canonicalFile
+        var totalUncompressedBytes = 0L
+        val maxAllowedBytes = 16L * 1024L * 1024L * 1024L // 16 GB max total model size guard
+
         ZipInputStream(zipFile.inputStream().buffered()).use { zip ->
+            val buffer = ByteArray(8192)
             while (true) {
                 val entry = zip.nextEntry ?: break
                 val safeName = entry.name.replace('\\', '/')
                 val outputFile = File(canonicalTarget, safeName).canonicalFile
                 if (!outputFile.path.startsWith(canonicalTarget.path + File.separator)) {
-                    throw IOException("Blocked unsafe ZIP entry: ${entry.name}")
+                    throw IOException("Blocked unsafe ZIP entry path traversal: ${entry.name}")
                 }
 
                 if (entry.isDirectory) {
@@ -284,7 +295,15 @@ class ModelDownloader(private val context: Context) {
                 } else {
                     outputFile.parentFile?.mkdirs()
                     FileOutputStream(outputFile).use { output ->
-                        zip.copyTo(output)
+                        while (true) {
+                            val read = zip.read(buffer)
+                            if (read == -1) break
+                            totalUncompressedBytes += read
+                            if (totalUncompressedBytes > maxAllowedBytes) {
+                                throw IOException("ZIP archive uncompressed size exceeds maximum safety limit (16 GB). Download aborted.")
+                            }
+                            output.write(buffer, 0, read)
+                        }
                     }
                 }
                 zip.closeEntry()
@@ -293,13 +312,19 @@ class ModelDownloader(private val context: Context) {
     }
 
     private fun resolveExtractedModelDirectory(root: File): File {
+        val canonicalRoot = root.canonicalFile
         val children = root.listFiles()
             ?.filterNot { it.name == "__MACOSX" || it.name == ".DS_Store" }
             .orEmpty()
         val directories = children.filter { it.isDirectory }
         val files = children.filter { it.isFile }
 
-        return if (files.isEmpty() && directories.size == 1) directories.first() else root
+        val resolved = if (files.isEmpty() && directories.size == 1) directories.first() else root
+        val canonicalResolved = resolved.canonicalFile
+        if (!canonicalResolved.path.startsWith(canonicalRoot.path)) {
+            throw IOException("Extracted model directory path traversal detected.")
+        }
+        return canonicalResolved
     }
 
     private fun readServerMessage(connection: HttpURLConnection): String {
@@ -417,13 +442,25 @@ class ModelDownloader(private val context: Context) {
             return -1
         }
 
+        fun isLikelyGgufFile(file: File): Boolean {
+            if (!file.isFile || file.length() < 4L) return false
+            return runCatching {
+                file.inputStream().use { input ->
+                    val bytes = ByteArray(4)
+                    val read = input.read(bytes)
+                    read == 4 && (bytes[0] == 0x47.toByte() && bytes[1] == 0x47.toByte() && bytes[2] == 0x55.toByte() && bytes[3] == 0x46.toByte())
+                }
+            }.getOrDefault(false)
+        }
+
         private const val TASK_MARKER_SCAN_BYTES = 16 * 1024
         private val TASK_MARKERS = listOf(
             "TFL3".toByteArray(Charsets.US_ASCII),
             "TF_LITE".toByteArray(Charsets.US_ASCII),
             "TFLITE".toByteArray(Charsets.US_ASCII),
             "mediapipe".toByteArray(Charsets.US_ASCII),
-            "MediaPipe".toByteArray(Charsets.US_ASCII)
+            "MediaPipe".toByteArray(Charsets.US_ASCII),
+            "GGUF".toByteArray(Charsets.US_ASCII)
         )
     }
 }

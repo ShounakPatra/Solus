@@ -194,6 +194,23 @@ fun MainNavigation(mainViewModel: MainViewModel) {
     val (isCompatible, compatibilityMessage) = remember { DeviceUtils.isDeviceCompatible(context) }
     var showRequirementDialog by remember { mutableStateOf(!isCompatible) }
 
+    val prefs = remember { context.getSharedPreferences("solus_prefs", android.content.Context.MODE_PRIVATE) }
+    var showOnboarding by remember {
+        mutableStateOf(!prefs.getBoolean("onboarding_completed", false))
+    }
+
+    if (showOnboarding) {
+        com.shounak.localmeshai.ui.components.OnboardingOverlay(
+            isVisible = showOnboarding,
+            hazeState = hazeState,
+            onGoToModels = {
+                prefs.edit().putBoolean("onboarding_completed", true).apply()
+                showOnboarding = false
+                selectedIndex = 1
+            }
+        )
+    }
+
     if (showRequirementDialog) {
         AlertDialog(
             onDismissRequest = { showRequirementDialog = false },
@@ -222,12 +239,14 @@ fun MainNavigation(mainViewModel: MainViewModel) {
         )
     }
 
+    val appSettingsData by mainViewModel.appSettingsData.collectAsState()
+
     LiquidGlassBackdrop(hazeState = hazeState) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = !isKeyboardOpen,
+                    visible = !isKeyboardOpen && !appSettingsData.enableAutoHideBottomBar,
                     enter = androidx.compose.animation.fadeIn(
                         animationSpec = androidx.compose.animation.core.tween(180)
                     ) + androidx.compose.animation.slideInVertically(
@@ -267,41 +286,41 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                 transitionSpec = {
                     val forward = targetState > initialState
                     val enterSpring = spring<IntOffset>(
-                        dampingRatio = 0.86f,
-                        stiffness = 420f
+                        dampingRatio = 0.78f,
+                        stiffness = 380f
                     )
                     val exitSpring = spring<IntOffset>(
-                        dampingRatio = 0.92f,
-                        stiffness = 520f
+                        dampingRatio = 0.84f,
+                        stiffness = 450f
                     )
                     val enterOffset: (fullWidth: Int) -> Int = { fullWidth ->
-                        val delta = (fullWidth * 0.14f).toInt().coerceAtLeast(1)
+                        val delta = (fullWidth * 0.16f).toInt().coerceAtLeast(1)
                         if (forward) delta else -delta
                     }
                     val exitOffset: (fullWidth: Int) -> Int = { fullWidth ->
-                        val delta = (fullWidth * 0.10f).toInt().coerceAtLeast(1)
+                        val delta = (fullWidth * 0.12f).toInt().coerceAtLeast(1)
                         if (forward) -delta else delta
                     }
                     (
                         slideInHorizontally(
                             animationSpec = enterSpring,
                             initialOffsetX = enterOffset
-                        ) + fadeIn(animationSpec = tween(180)) + scaleIn(
-                            initialScale = 0.985f,
+                        ) + fadeIn(animationSpec = tween(220)) + scaleIn(
+                            initialScale = 0.96f,
                             animationSpec = spring(
-                                dampingRatio = 0.86f,
-                                stiffness = 420f
+                                dampingRatio = 0.78f,
+                                stiffness = 380f
                             )
                         )
                     ).togetherWith(
                         slideOutHorizontally(
                             animationSpec = exitSpring,
                             targetOffsetX = exitOffset
-                        ) + fadeOut(animationSpec = tween(140)) + scaleOut(
-                            targetScale = 0.985f,
+                        ) + fadeOut(animationSpec = tween(160)) + scaleOut(
+                            targetScale = 0.96f,
                             animationSpec = spring(
-                                dampingRatio = 0.92f,
-                                stiffness = 520f
+                                dampingRatio = 0.84f,
+                                stiffness = 450f
                             )
                         )
                     ).using(SizeTransform(clip = false))
@@ -316,9 +335,8 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                         var accumulatedDragX = 0f
                         detectHorizontalDragGestures(
                             onDragStart = { accumulatedDragX = 0f },
-                            onHorizontalDrag = { change, dragAmount ->
+                            onHorizontalDrag = { _, dragAmount ->
                                 accumulatedDragX += dragAmount
-                                change.consume()
                             },
                             onDragCancel = { accumulatedDragX = 0f },
                             onDragEnd = {
@@ -353,7 +371,8 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                             Box(modifier = Modifier.weight(1f)) {
                                 ModelManagerScreen(
                                     mainViewModel = mainViewModel,
-                                    hazeState = hazeState
+                                    hazeState = hazeState,
+                                    onGoToChat = { selectedIndex = 0 }
                                 )
                             }
                         }

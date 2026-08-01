@@ -46,18 +46,23 @@ object InitCrashGuard {
     fun checkAndRecoverCrash(context: Context): String? {
         val crashedModelId = prefs(context).getString(KEY_INIT_IN_PROGRESS, null)
         if (crashedModelId != null) {
-            blockModel(context, crashedModelId)
+            val safeId = sanitizeModelId(crashedModelId)
+            blockModel(context, safeId)
             prefs(context).edit()
                 .remove(KEY_INIT_IN_PROGRESS)
                 .putString(
                     KEY_LAST_CRASH_MESSAGE,
-                    "The model \"$crashedModelId\" crashed during native initialization. " +
+                    "The model \"$safeId\" crashed during native initialization. " +
                     "It has been blocked on ${DeviceUtils.currentDeviceChipLabel()} so selecting it will not crash the app again. " +
                     "Use the recommended MediaPipe .task model instead."
                 )
                 .commit()
         }
         return crashedModelId
+    }
+
+    private fun sanitizeModelId(rawId: String): String {
+        return rawId.replace(Regex("""[^a-zA-Z0-9._-]"""), "_").take(128)
     }
 
     /** Returns and clears the last crash message for display. */

@@ -16,7 +16,7 @@ Your conversations never leave your phone.
   <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.2.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v1.2.0"
+      alt="Download Solus APK — Latest v1.5.0"
       width="360"
       height="72"
     />
@@ -28,10 +28,10 @@ Your conversations never leave your phone.
 </p>
 
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.2.0/app-release.apk">
+  <a href="https://github.com/ShounakPatra/Solus/releases">
     <img src="https://img.shields.io/github/v/release/ShounakPatra/Solus?style=for-the-badge&logo=semantic-release&label=Latest%20version&color=20C997" alt="Latest app version" />
   </a>
-  <img src="https://img.shields.io/badge/version-1.2.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 1.2.0" />
+  <img src="https://img.shields.io/badge/version-1.5.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 1.5.0" />
   <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=for-the-badge&logo=github&label=Stars&color=FFD700" alt="GitHub stars" />
   <img src="https://img.shields.io/github/downloads/ShounakPatra/Solus/total?style=for-the-badge&label=Downloads&color=20C997" alt="Total downloads" />
 </p>
@@ -39,7 +39,7 @@ Your conversations never leave your phone.
 <p>
   <img src="https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg" alt="Android CI" />
   <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android 8.0 or newer" />
-  <img src="https://img.shields.io/github/license/ShounakPatra/Solus?style=for-the-badge&color=A970FF" alt="Apache 2.0 license" />
+  <img src="https://img.shields.io/badge/License-Apache_2.0-A970FF?style=for-the-badge&logo=apache&logoColor=white" alt="Apache 2.0 license" />
   <img src="https://img.shields.io/badge/Kotlin-2.3.0-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.3.0" />
   <img src="https://img.shields.io/badge/Jetpack_Compose-UI-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 </p>
@@ -76,22 +76,30 @@ Your conversations never leave your phone.
 | 🧠 | **Thinking mode** — full control for reasoning models (e.g. DeepSeek R1-style) |
 | 🖼️ | **Vision & documents** — images, camera, files, and rich document chat |
 | 📐 | **Math rendering** — native LaTeX, scrollable formulas, copy & selection |
-| ⏬ | **Resumable downloads** — pause, resume, speed, progress, crash recovery |
-| 📱 | **Device-aware guidance** — RAM, chipset, and compatibility-aware model picks |
-| ✨ | **Glassmorphism UI** — Compose + Haze blur, fluid tab & FAB motion |
-| 📚 | **History that just works** — open past chats even before a model is ready |
+| ⏬ | **High-tech download dashboard** — live speed (MB/s), size progress, dynamic ETA, glow accents |
+| ⚙️ | **Full-screen customization** — toggle themes, telemetry, auto-hide nav, timers, personas |
+| 🎨 | **Dynamic model accent themes** — DeepSeek (Cyan), Gemma (Amber), Qwen (Violet), Llama (Emerald) |
+| 📱 | **Auto-hide bottom navigation** — full-screen chat with left/right tab swipe gesture navigation |
+| 📊 | **Telemetry & thermal guard** — real-time t/s, TTFT latency, battery temp (°C), available RAM |
+| ⚡ | **Solus Bench rating** — on-card benchmark rating dialog showing device speed ratings & profiles |
+| 🎯 | **System prompt personas** — General, Code Auditor, Simple ELI5, Proofreader, Translator |
+| ✨ | **Glassmorphism UI** — Compose + Haze blur, fluid tab motion & dark glass controls |
 
 </div>
 
 ---
 
-## 🆕 What’s new in **v1.2.0**
+## 🆕 What’s new in **v1.5.0**
 
-- **Directional tab transitions** — Chat ↔ Models share a smooth mirrored slide + fade
-- **Real blur on scroll FABs** — circular Haze glass buttons over the message list
-- **Smarter FAB docking** — top FAB eases into the bottom dock when you’re at the end of chat; bottom FAB keeps its corner seat at the top of chat
-- **Deferred history load** — pick a chat with no model initialised; messages load, Share works, session commits when a model is ready
-- **History always visible** — message list is prioritised so past chats are never hidden behind empty “no model” states
+- **Full-Screen Settings & Customization** — Comprehensive customization menu with solid opaque background and glassmorphic category cards for themes, telemetry, layout, timers, and tokens.
+- **Dynamic Model Accent Themes** — Instant reactive theme accent colors adapting automatically to DeepSeek (Cyan), Gemma (Amber), Qwen (Violet), and Llama (Emerald).
+- **Auto-Hide Bottom Navigation** — Toggleable auto-hide bottom bar mode for full-screen chat, seamlessly paired with left/right horizontal swipe tab navigation.
+- **High-Tech Downloading Model Cards** — Resumable downloads equipped with live speed (`⚡ MB/s`), percentage, downloaded vs total size (`MB/GB`), dynamic ETA countdown (`⏱️ ETA: 1m 45s`), and family accent glowing borders.
+- **Inference Telemetry & Thermal Guard** — Sleek single-line scrollable telemetry bar providing real-time speed (`t/s`), TTFT latency (`ms`), backend engine, battery temperature (`°C`), and available RAM (`GB free`).
+- **Solus Bench Performance Rating** — On-card device benchmark rating dialog showing model performance profiles and expected token speeds.
+- **System Prompt Personas** — Quick prompt presets with automatic chat input clearing when switching back to General.
+- **Circular Dark Glass Controls** — Custom dark glass back button styling in Settings.
+- **Hugging Face Token Manager** — Token management integrated directly into Settings with a direct link to the token creation video guide.
 
 ---
 
@@ -103,9 +111,9 @@ Your conversations never leave your phone.
 |---|---|
 | Language | **Kotlin 2.3.0** |
 | UI | **Jetpack Compose**, Material 3, Haze glass blur |
-| Inference | **LiteRT** (TensorFlow Lite), **MediaPipe GenAI** |
+| Inference | **LiteRT** (TensorFlow Lite), **MediaPipe GenAI**, **llama.cpp JNI** |
 | Math | `com.hrm.latex` |
-| Local state | **SharedPreferences** (chat history, settings, download state) |
+| Local state | **SharedPreferences** (chat history, app settings, download state) |
 
 </div>
 
@@ -113,7 +121,7 @@ Your conversations never leave your phone.
 
 ## 📊 Solus vs Google AI Edge Gallery
 
-Both run generative AI on-device. Solus focuses on a polished private Android assistant with documents, guided models, and reliable downloads.
+Both run generative AI on-device. Solus focuses on a polished private Android assistant with documents, guided models, custom settings, and reliable downloads.
 
 <div align="center">
 
@@ -125,12 +133,12 @@ Both run generative AI on-device. Solus focuses on a polished private Android as
 | Local conversation history | ✅ | ✅ |
 | Vision models | ✅ | ✅ |
 | Document chat (PDF, DOCX, PPTX, XLSX, …) | ✅ | ❌ |
-| Multiple model families | ✅ | ✅ |
-| Thinking mode | ✅ | ✅ |
-| Download manager with resume | ✅ | ✅ |
-| Device-aware model recommendations | ✅ | ❌ |
+| Custom Settings & Themes | ✅ | ❌ |
+| Auto-hide bottom navigation & swipe tabs | ✅ | ❌ |
+| Resumable download manager with live ETA | ✅ | ✅ |
+| Device-aware model recommendations & bench ratings | ✅ | ❌ |
 | Response cleanup (control tokens / thinking tags) | ✅ | ❌ |
-| Deferred history when no model is ready | ✅ | ❌ |
+| Real-time thermal & RAM telemetry guard | ✅ | ❌ |
 
 </div>
 
@@ -161,12 +169,13 @@ Solus
 ├── app/
 │   ├── src/main/java/com/shounak/localmeshai/
 │   │   ├── ai/                 # Inference managers & runtimes
+│   │   ├── models/             # Model catalog & info
 │   │   ├── ui/
-│   │   │   ├── components/     # Math cards, bubbles, shared UI
-│   │   │   ├── screens/        # Chat, Models, Image / vision flows
-│   │   │   ├── theme/          # Colors, typography, glass theme
+│   │   │   ├── components/     # Math cards, telemetry, preset bars, shared UI
+│   │   │   ├── screens/        # Chat, Models, Settings, Image flows
+│   │   │   ├── theme/          # Colors, typography, glass theme, model accent themes
 │   │   │   └── viewmodels/     # Chat, Vision, Main
-│   │   ├── utils/              # Glass effects, sanitizers, downloads
+│   │   ├── utils/              # AppSettings, Glass effects, sanitizers, downloads
 │   │   └── MainActivity.kt
 │   └── build.gradle.kts
 ├── docs/screenshots/
@@ -182,7 +191,7 @@ Solus
   <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.2.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v1.2.0"
+      alt="Download Solus APK — Latest v1.5.0"
       width="360"
       height="72"
     />
@@ -190,7 +199,7 @@ Solus
 </p>
 
 1. Tap the **Download Solus APK** button (or open **[Releases](https://github.com/ShounakPatra/Solus/releases)**).
-2. Download **`release.apk`** for **v1.2.0**.
+2. Download **`release.apk`** for **v1.5.0**.
 3. Install on your phone (allow *Install unknown apps* if prompted).
 4. Open Solus → **Models** → download a compatible model → start chatting.
 
@@ -240,7 +249,7 @@ Yes. After a model is downloaded you can turn off Wi‑Fi and mobile data. Chat 
 <summary><b>Why is the APK relatively large (~200MB)?</b></summary>
 <br/>
 
-Native runtimes (MediaPipe, LiteRT) and architecture-specific libraries ship in the APK so inference is fast out of the box.
+Native runtimes (MediaPipe, LiteRT, llama.cpp JNI) and architecture-specific libraries ship in the APK so inference is fast out of the box.
 
 </details>
 
@@ -248,15 +257,15 @@ Native runtimes (MediaPipe, LiteRT) and architecture-specific libraries ship in 
 <summary><b>Can I load arbitrary GGUF / ONNX files?</b></summary>
 <br/>
 
-Not yet. Current runtimes need Android-ready formats such as <code>.task</code> or <code>.litertlm</code> with the right tokenizer setup.
+Current runtimes support optimized Android formats (`.task`, `.litertlm`). Custom GGUF support via llama.cpp JNI is actively expanded.
 
 </details>
 
 <details>
-<summary><b>I opened history without a model — is that expected?</b></summary>
+<summary><b>How do I access gated models like Gemma 3?</b></summary>
 <br/>
 
-Yes in <b>v1.2.0</b>. Messages load immediately; initialise a chat model to continue generating.
+Enter your Hugging Face read token inside **Settings** → **Hugging Face Access Token**. Use the "How to create token" button for a quick video tutorial.
 
 </details>
 
@@ -269,11 +278,10 @@ Yes in <b>v1.2.0</b>. Messages load immediately; initialise a chat model to cont
 | Version | Status | Highlights |
 |---|:---:|---|
 | **v1.0.0** | ✅ Shipped | Core local chat, model manager, glass UI foundation |
-| **v1.1.0** | ✅ Shipped | Thinking controls, resumable downloads, device checks, UI polish, tests |
-| **v1.1.1** | ✅ Shipped | LaTeX □ placeholders, math render hardening, layout polish |
-| **v1.2.0** | ✅ **Current** | Tab motion, Haze scroll FABs, FAB docking, deferred history load |
-| **v1.3.0** | 🔜 Next | Download integrity checksums, stronger model validation UX, accessibility pass |
-| **v2.0.0** | 🔬 Research | On-device speech (Whisper-class), local conversion helpers, benchmarks, encrypted exports |
+| **v1.1.0** | ✅ Shipped | Thinking controls, resumable downloads, device checks, UI polish |
+| **v1.2.0** | ✅ Shipped | Tab motion, Haze scroll FABs, FAB docking, deferred history load |
+| **v1.5.0** | ✅ **Current** | Full settings menu, dynamic themes, auto-hide nav, high-tech downloading cards, telemetry guard, personas |
+| **v2.0.0** | 🔬 Research | On-device speech (Whisper-class), local GGUF conversion helpers, encrypted exports |
 
 </div>
 
@@ -300,7 +308,7 @@ Solus is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for d
   <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.2.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v1.2.0"
+      alt="Download Solus APK — Latest v1.5.0"
       width="320"
       height="64"
     />

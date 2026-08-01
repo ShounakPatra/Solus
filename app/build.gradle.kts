@@ -3,7 +3,6 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.google.gms.google.services)
     alias(libs.plugins.google.firebase.crashlytics)
@@ -24,8 +23,8 @@ android {
         applicationId = "com.shounak.localmeshai"
         minSdk = 26
         targetSdk = 36
-        versionCode = 4
-        versionName = "1.2.0"
+        versionCode = 5
+        versionName = "1.5.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -59,6 +58,21 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+
+    val sdkDirString = project.findProperty("sdk.dir")?.toString() 
+        ?: System.getenv("ANDROID_HOME") 
+        ?: System.getenv("ANDROID_SDK_ROOT")
+        ?: "C:/Users/shoun/AppData/Local/Android/Sdk"
+    val ndkDir = file(sdkDirString).resolve("ndk")
+    val hasValidNdk = ndkDir.exists() && ndkDir.listFiles()?.any { it.resolve("source.properties").isFile } == true
+    if (hasValidNdk) {
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
+        }
     }
 }
 

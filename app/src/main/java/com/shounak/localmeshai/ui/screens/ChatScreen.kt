@@ -41,6 +41,11 @@ import com.shounak.localmeshai.utils.ModelAnswerSegment
 import com.shounak.localmeshai.utils.ThinkingTextUtils
 import com.shounak.localmeshai.ui.components.ModelMathCard
 import com.shounak.localmeshai.ui.components.InlineMathListItem
+import com.shounak.localmeshai.ui.components.QuickSuggestionPills
+import com.shounak.localmeshai.ui.components.InferenceTelemetryBar
+import com.shounak.localmeshai.ui.components.SystemPromptPresetsBar
+import com.shounak.localmeshai.ui.theme.ModelTheme
+import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.animatedGlassHalo
 import com.shounak.localmeshai.utils.fluidReveal
 import com.shounak.localmeshai.utils.jellyOnTouch
@@ -102,6 +107,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Settings
+import com.shounak.localmeshai.ui.screens.SettingsDialog
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Share
@@ -134,6 +141,7 @@ import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -421,7 +429,9 @@ fun ChatScreen(
     var recordingElapsedMs by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
     var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
     var showHistory by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
+    val appSettingsData by mainViewModel.appSettingsData.collectAsState()
     var fullscreenMessageIndex by remember { mutableStateOf<Int?>(null) }
     var fullscreenVisionMessageIndex by remember { mutableStateOf<Int?>(null) }
     val isInitializing by chatViewModel.isInitializing.collectAsState()
@@ -432,6 +442,8 @@ fun ChatScreen(
     val error by chatViewModel.error.collectAsState()
     val currentSessionId by chatViewModel.currentSessionId.collectAsState()
     val pendingSessionId by chatViewModel.pendingSessionId.collectAsState()
+    val tokensPerSecond by chatViewModel.tokensPerSecond.collectAsState()
+    val lastInferenceMs by chatViewModel.lastInferenceTime.collectAsState()
     val selectedTextModelPath by mainViewModel.selectedTextModelPath.collectAsState()
     val selectedVisionModelPath by mainViewModel.selectedVisionModelPath.collectAsState()
     val visionCurrentSessionId by visionViewModel.currentSessionId.collectAsState()
@@ -776,6 +788,14 @@ fun ChatScreen(
         )
     }
 
+    if (showSettings) {
+        SettingsDialog(
+            mainViewModel = mainViewModel,
+            hazeState = hazeState,
+            onDismissRequest = { showSettings = false }
+        )
+    }
+
     val chatBackground = Brush.verticalGradient(
         colors = listOf(
             MaterialTheme.colorScheme.background,
@@ -842,6 +862,9 @@ fun ChatScreen(
                     selectedAudioBytes = null
                 },
                 onHistory = { showHistory = true },
+                onSettings = if (appSettingsData.enableAutoHideBottomBar) {
+                    { showSettings = true }
+                } else null,
                 onShare = {
                     if (selectedSupportsAttachments) {
                         shareVisionConversation(context, visionMessages.toList())
@@ -853,7 +876,31 @@ fun ChatScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        if (selectedModelPath != null && appSettingsData.enableTelemetryBar) {
+            val batteryTempC = remember(appSettingsData.showThermalGuard) {
+                if (appSettingsData.showThermalGuard) DeviceUtils.getBatteryTemperatureCelsius(context) else null
+            }
+            val availableRamMb = remember(appSettingsData.showRamGuard) {
+                if (appSettingsData.showRamGuard) DeviceUtils.getAvailableRamMb(context) else null
+            }
+            val modelAccentColor = remember(selectedModel?.id, appSettingsData.enableDynamicThemes) {
+                if (appSettingsData.enableDynamicThemes) ModelTheme.getAccentColor(selectedModel?.id) else Color(0xFF3B82F6)
+            }
+
+            InferenceTelemetryBar(
+                tokensPerSecond = tokensPerSecond,
+                lastInferenceMs = lastInferenceMs,
+                activeBackend = selectedModel?.backend ?: "Local GPU/CPU",
+                batteryTempC = batteryTempC,
+                availableRamMb = availableRamMb,
+                accentColor = modelAccentColor,
+                modifier = Modifier
+                    .padding(horizontal = 16.dp, vertical = 2.dp)
+                    .align(Alignment.CenterHorizontally)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
 
         Box(
             modifier = Modifier
@@ -1084,6 +1131,36 @@ fun ChatScreen(
                     animationSpec = spring(dampingRatio = 0.86f, stiffness = 420f),
                     label = "chat_composer_max_height"
                 )
+                var selectedPersonaId by rememberSaveable { mutableStateOf("default") }
+                val modelAccentColor = remember(selectedModel?.id, appSettingsData.enableDynamicThemes) {
+                    if (appSettingsData.enableDynamicThemes) ModelTheme.getAccentColor(selectedModel?.id) else Color(0xFF3B82F6)
+                }
+                val hasMessagesInChat = if (selectedSupportsAttachments) visionMessages.isNotEmpty() else textMessages.isNotEmpty()
+
+                if (!hasMessagesInChat && appSettingsData.enablePersonaPresets) {
+                    SystemPromptPresetsBar(
+                        selectedPersonaId = selectedPersonaId,
+                        onSelectPersona = { persona ->
+                            selectedPersonaId = persona.id
+                            if (persona.systemPrompt.isNotBlank()) {
+                                chatViewModel.setDraftText("${persona.systemPrompt}\n\nTask: ")
+                            } else {
+                                chatViewModel.setDraftText("")
+                            }
+                        },
+                        accentColor = modelAccentColor,
+                        modifier = Modifier.padding(bottom = 2.dp)
+                    )
+                }
+
+                QuickSuggestionPills(
+                    isVisible = appSettingsData.enableSuggestionPills && !hasMessagesInChat && textState.isBlank() && selectedModelPath != null && !isCurrentModelBusy,
+                    onSelectSuggestion = { prompt ->
+                        chatViewModel.setDraftText(prompt)
+                    },
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+
                 val composerTint = MaterialTheme.colorScheme.surfaceContainerHigh
                 GlassDispersionCard(
                     modifier = Modifier
@@ -2231,6 +2308,7 @@ private fun ChatControlRow(
     onSelectModel: (ModelInfo) -> Unit,
     onNewChat: () -> Unit,
     onHistory: () -> Unit,
+    onSettings: (() -> Unit)? = null,
     onShare: () -> Unit,
     hazeState: HazeState
 ) {
@@ -2264,6 +2342,17 @@ private fun ChatControlRow(
             contentPadding = PaddingValues(0.dp)
         ) {
             Icon(Icons.Default.History, contentDescription = "Chat history", modifier = Modifier.size(25.dp))
+        }
+        if (onSettings != null) {
+            LiquidGlassButton(
+                onClick = onSettings,
+                hazeState = hazeState,
+                modifier = Modifier.size(52.dp),
+                shape = RoundedCornerShape(26.dp),
+                contentPadding = PaddingValues(0.dp)
+            ) {
+                Icon(Icons.Default.Settings, contentDescription = "Settings", modifier = Modifier.size(24.dp))
+            }
         }
         LiquidGlassButton(
             onClick = onShare,

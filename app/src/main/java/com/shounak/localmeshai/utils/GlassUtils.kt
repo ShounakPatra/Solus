@@ -196,8 +196,8 @@ fun Modifier.fluidReveal(
         progress.animateTo(
             targetValue = 1f,
             animationSpec = spring(
-                dampingRatio = if (quality == LiquidGlassQuality.Fallback) 0.68f else 0.72f,
-                stiffness = if (quality == LiquidGlassQuality.Fallback) 520f else 430f,
+                dampingRatio = if (quality == LiquidGlassQuality.Fallback) 0.74f else 0.76f,
+                stiffness = if (quality == LiquidGlassQuality.Fallback) 480f else 380f,
                 visibilityThreshold = 0.001f
             )
         )
@@ -395,17 +395,17 @@ fun LiquidGlassButton(
     val animatedScaleX by animateFloatAsState(
         targetValue = if (isPressed) 0.965f else 1f,
         animationSpec = spring(
-            dampingRatio = if (isPressed) 0.92f else 0.76f,
-            stiffness = if (isPressed) 650f else 480f,
+            dampingRatio = if (isPressed) 0.88f else 0.76f,
+            stiffness = if (isPressed) 600f else 380f,
             visibilityThreshold = 0.001f
         ),
         label = "liquid_button_scale_x"
     )
     val animatedScaleY by animateFloatAsState(
-        targetValue = if (isPressed) 0.91f else 1f,
+        targetValue = if (isPressed) 0.93f else 1f,
         animationSpec = spring(
-            dampingRatio = if (isPressed) 0.94f else 0.72f,
-            stiffness = if (isPressed) 720f else 440f,
+            dampingRatio = if (isPressed) 0.90f else 0.74f,
+            stiffness = if (isPressed) 640f else 360f,
             visibilityThreshold = 0.001f
         ),
         label = "liquid_button_scale_y"
@@ -448,14 +448,14 @@ fun LiquidGlassButton(
                 onClick()
             }
             .padding(contentPadding),
-        horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
         content = content
     )
 }
 
 @Composable
-fun Modifier.jellyOnTouch(sensitivity: Float = 2.4f): Modifier {
+fun Modifier.jellyOnTouch(sensitivity: Float = 6f): Modifier {
     val rotationX = remember { Animatable(0f) }
     val rotationY = remember { Animatable(0f) }
     val pressScale = remember { Animatable(1f) }
@@ -498,19 +498,19 @@ fun Modifier.jellyOnTouch(sensitivity: Float = 2.4f): Modifier {
                 scope.launch {
                     rotationX.animateTo(
                         0f,
-                        spring(dampingRatio = 0.65f, stiffness = 680f)
+                        spring(dampingRatio = 0.72f, stiffness = 420f)
                     )
                 }
                 scope.launch {
                     rotationY.animateTo(
                         0f,
-                        spring(dampingRatio = 0.65f, stiffness = 680f)
+                        spring(dampingRatio = 0.72f, stiffness = 420f)
                     )
                 }
                 scope.launch {
                     pressScale.animateTo(
                         1f,
-                        spring(dampingRatio = 0.56f, stiffness = 520f)
+                        spring(dampingRatio = 0.72f, stiffness = 380f)
                     )
                 }
             }

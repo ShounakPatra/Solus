@@ -40,6 +40,7 @@ class ChatInferenceManager(private val context: Context) {
     private var liteRtEngine: Engine? = null
     private var liteRtConversation: Conversation? = null
     private var liteRtCacheDir: File? = null
+    private var llamaCppEngine: LlamaCppEngine? = null
     private var runtime = RuntimeKind.None
     @Volatile private var activeMediaPipeSession: LlmInferenceSession? = null
     @Volatile private var activeMediaPipeFuture: Future<String>? = null
@@ -113,6 +114,15 @@ class ChatInferenceManager(private val context: Context) {
         }
         stopRequested = false
         isBeingClosed = false
+
+        if (ChatRuntimePolicy.isGgufModel(file.name)) {
+            val engine = LlamaCppEngine(context)
+            engine.initialize(modelPath = file.absolutePath)
+            llamaCppEngine = engine
+            runtime = RuntimeKind.LlamaCpp
+            Log.i(TAG, "LlamaCpp GGUF engine initialized for: ${file.name}")
+            return
+        }
 
         val shouldUseLiteRtLmConversation = ChatRuntimePolicy.shouldUseLiteRtLmConversation(
             fileName = file.name,
@@ -290,6 +300,7 @@ class ChatInferenceManager(private val context: Context) {
                     onUpdate = effectiveOnUpdate
                 )
                 RuntimeKind.MediaPipe -> streamMediaPipe(mediaPipePrompt, effectiveOnUpdate)
+                RuntimeKind.LlamaCpp -> streamLlamaCpp(inferencePrompt, effectiveOnUpdate)
                 RuntimeKind.None -> "Inference not initialized"
             }
             var cleanResponse = ModelOutputSanitizer.cleanAssistantText(
@@ -336,6 +347,7 @@ class ChatInferenceManager(private val context: Context) {
                         seedSalt = 1
                     )
                     RuntimeKind.LiteRtLm -> streamDirectAnswerRetry(inferenceUserText, effectiveOnUpdate)
+                    RuntimeKind.LlamaCpp -> ""
                     RuntimeKind.None -> ""
                 }
                 val retryCleanResponse = ModelOutputSanitizer.cleanAssistantText(
@@ -531,6 +543,20 @@ class ChatInferenceManager(private val context: Context) {
         }
     }
 
+    private suspend fun streamLlamaCpp(
+        prompt: String,
+        onUpdate: (String) -> Unit
+    ): String {
+        val engine = llamaCppEngine ?: return "GGUF engine not initialized"
+        val sb = StringBuilder()
+        engine.generateStream(prompt) { token ->
+            if (stopRequested) return@generateStream
+            sb.append(token)
+            onUpdate(ModelOutputSanitizer.clean(sb.toString()))
+        }
+        return sb.toString()
+    }
+
     private suspend fun streamDirectAnswerRetry(
         rawUserText: String,
         onUpdate: (String) -> Unit
@@ -565,6 +591,7 @@ class ChatInferenceManager(private val context: Context) {
                     seedSalt = 2
                 )
             }
+            RuntimeKind.LlamaCpp -> ""
             RuntimeKind.None -> ""
         }
     }
@@ -721,10 +748,13 @@ class ChatInferenceManager(private val context: Context) {
         return result.trimStart()
     }
 
+    fun isLlamaCppRuntime(): Boolean = runtime == RuntimeKind.LlamaCpp
+
     private enum class RuntimeKind {
         None,
         MediaPipe,
-        LiteRtLm
+        LiteRtLm,
+        LlamaCpp
     }
 
     private enum class LiteRtConversationMode {

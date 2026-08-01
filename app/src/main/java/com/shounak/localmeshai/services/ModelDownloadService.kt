@@ -329,17 +329,42 @@ class ModelDownloadService : Service() {
         notificationManager.cancel(modelId.notificationId())
     }
 
+    private val downloadStartTimes = mutableMapOf<String, Long>()
+
     private fun notifyProgress(spec: DownloadSpec, snapshot: DownloadSnapshot) {
         val percent = (snapshot.progress * 100).toInt().coerceIn(0, 100)
         if (percent >= 100 && snapshot.totalBytes > 0L) {
             return
         }
+        val startTime = downloadStartTimes.getOrPut(spec.modelId) { System.currentTimeMillis() }
+        val elapsedSec = ((System.currentTimeMillis() - startTime) / 1000L).coerceAtLeast(0L)
+        val elapsedMin = elapsedSec / 60L
+        val elapsedSeconds = elapsedSec % 60L
+        val elapsedStr = if (elapsedMin > 0L) {
+            String.format(java.util.Locale.US, "%dm %ds", elapsedMin, elapsedSeconds)
+        } else {
+            String.format(java.util.Locale.US, "%ds", elapsedSeconds)
+        }
+
+        val etaStr = if (snapshot.bytesPerSecond > 0L && snapshot.totalBytes > snapshot.downloadedBytes) {
+            val remainingBytes = snapshot.totalBytes - snapshot.downloadedBytes
+            val etaSec = (remainingBytes / snapshot.bytesPerSecond).coerceAtLeast(1L)
+            val etaMin = etaSec / 60L
+            val etaSeconds = etaSec % 60L
+            if (etaMin > 0L) {
+                String.format(java.util.Locale.US, "%dm %ds", etaMin, etaSeconds)
+            } else {
+                String.format(java.util.Locale.US, "%ds", etaSeconds)
+            }
+        } else ""
+
         val speed = "${formatBytes(snapshot.bytesPerSecond)}/s"
         val hasTotalBytes = snapshot.totalBytes > 0L
         val content = if (hasTotalBytes) {
-            "$percent% — ${formatBytes(snapshot.downloadedBytes)} of ${formatBytes(snapshot.totalBytes)} — $speed"
+            val etaPart = if (etaStr.isNotBlank()) " • ETA $etaStr" else ""
+            "$percent% • ${formatBytes(snapshot.downloadedBytes)} / ${formatBytes(snapshot.totalBytes)} • $speed • Elapsed $elapsedStr$etaPart"
         } else {
-            "${formatBytes(snapshot.downloadedBytes)} downloaded — $speed"
+            "${formatBytes(snapshot.downloadedBytes)} downloaded • $speed • Elapsed $elapsedStr"
         }
         // Use a determinate bar once total size is known; stay indeterminate otherwise
         notificationManager.notify(
@@ -434,7 +459,6 @@ class ModelDownloadService : Service() {
             .putExtra(EXTRA_URL, spec.url)
             .putExtra(EXTRA_FILE_NAME, spec.fileName)
             .putExtra(EXTRA_PACKAGE_TYPE, spec.packageType.name)
-            .putExtra(EXTRA_TOKEN, spec.bearerToken)
         return PendingIntent.getService(
             this,
             (spec.modelId + action).hashCode().let { if (it == Int.MIN_VALUE) 3 else kotlin.math.abs(it) },

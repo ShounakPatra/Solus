@@ -71,6 +71,23 @@ data class ModelInfo(
 
     val effectiveContextWindowTokens: Int?
         get() = contextWindowTokens ?: ContextWindowInFileName.find(fileName)?.groupValues?.get(1)?.toIntOrNull()
+
+    val etaString: String
+        get() {
+            if (status != ModelStatus.Downloading || bytesPerSecond <= 0L || totalBytes <= 0L || downloadedBytes >= totalBytes) {
+                return ""
+            }
+            val remainingBytes = totalBytes - downloadedBytes
+            val secondsLeft = (remainingBytes / bytesPerSecond).coerceAtLeast(1L)
+            val hours = secondsLeft / 3600L
+            val minutes = (secondsLeft % 3600L) / 60L
+            val seconds = secondsLeft % 60L
+            return when {
+                hours > 0L -> String.format(java.util.Locale.US, "%dh %dm", hours, minutes)
+                minutes > 0L -> String.format(java.util.Locale.US, "%dm %ds", minutes, seconds)
+                else -> String.format(java.util.Locale.US, "%ds", seconds)
+            }
+        }
 }
 
 private fun Int.withThousandsSeparator(): String {
