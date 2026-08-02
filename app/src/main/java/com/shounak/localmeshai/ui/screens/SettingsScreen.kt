@@ -11,23 +11,31 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.shounak.localmeshai.ui.viewmodels.MainViewModel
 import com.shounak.localmeshai.utils.LiquidGlassButton
 import dev.chrisbanes.haze.HazeState
+import kotlinx.coroutines.delay
 
 private const val HF_TOKEN_TUTORIAL_URL = "https://youtu.be/il58zFv0tmU?si=5o_gE8p-JqwWkekY"
 
@@ -40,8 +48,20 @@ fun SettingsDialog(
     val settingsData by mainViewModel.appSettingsData.collectAsState()
     val appSettings = mainViewModel.appSettings
     var hfTokenDraft by remember { mutableStateOf(settingsData.huggingFaceToken) }
+    var isTokenVisible by remember { mutableStateOf(false) }
+    var showLastChar by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
+
+    LaunchedEffect(hfTokenDraft) {
+        if (hfTokenDraft.isNotEmpty() && !isTokenVisible) {
+            showLastChar = true
+            delay(1200L)
+            showLastChar = false
+        } else {
+            showLastChar = false
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismissRequest,
@@ -211,7 +231,38 @@ fun SettingsDialog(
                             singleLine = true,
                             label = { Text("Hugging Face Read Token") },
                             leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                            visualTransformation = PasswordVisualTransformation(),
+                            trailingIcon = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (hfTokenDraft.isNotEmpty()) {
+                                        IconButton(
+                                            onClick = {
+                                                hfTokenDraft = ""
+                                                showLastChar = false
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Clear,
+                                                contentDescription = "Clear token",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = { isTokenVisible = !isTokenVisible }
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            contentDescription = if (isTokenVisible) "Hide token" else "Show token",
+                                            tint = if (isTokenVisible) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            },
+                            visualTransformation = if (isTokenVisible) {
+                                VisualTransformation.None
+                            } else {
+                                LastCharPasswordVisualTransformation(showLastChar = showLastChar)
+                            },
                             shape = RoundedCornerShape(14.dp)
                         )
 
@@ -306,5 +357,26 @@ private fun SettingsSwitchRow(
             checked = checked,
             onCheckedChange = onCheckedChange
         )
+    }
+}
+
+private class LastCharPasswordVisualTransformation(
+    private val showLastChar: Boolean,
+    private val maskChar: Char = '•'
+) : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        if (text.isEmpty()) {
+            return TransformedText(text, OffsetMapping.Identity)
+        }
+        val transformedText = if (showLastChar) {
+            if (text.length > 1) {
+                maskChar.toString().repeat(text.length - 1) + text.last()
+            } else {
+                text.text
+            }
+        } else {
+            maskChar.toString().repeat(text.length)
+        }
+        return TransformedText(AnnotatedString(transformedText), OffsetMapping.Identity)
     }
 }

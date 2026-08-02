@@ -344,7 +344,7 @@ class ModelDownloader(private val context: Context) {
                     val pageInstruction = huggingFaceModelPageUrl(url)
                         ?.let { " Visit $it to ask for access." }
                         .orEmpty()
-                    "Hugging Face denied access. Accept the model license and paste a read token before downloading.$pageInstruction$suffix"
+                    "Hugging Face denied access. Open Settings (⚙️) → Hugging Face Access Token to enter your read token.$pageInstruction$suffix"
                 } else {
                     "Server denied the model download (HTTP $responseCode).$suffix"
                 }

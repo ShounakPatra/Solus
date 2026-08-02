@@ -226,7 +226,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             updateModel(modelId) {
                 it.copy(
                     status = ModelStatus.NotDownloaded,
-                    errorMessage = "Accept this model's Hugging Face license and paste a read token in Access before downloading."
+                    errorMessage = "This model requires a Hugging Face token. Open Settings (⚙️) → Hugging Face Access Token to paste your token."
                 )
             }
             return

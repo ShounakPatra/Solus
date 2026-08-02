@@ -58,6 +58,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -388,6 +389,8 @@ fun ModelManagerScreen(
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     onUnsafeDownload = { mainViewModel.startDownloadAnyway(model.id) },
                     onUnsafeTry = { mainViewModel.tryModelAnyway(model.id) },
+                    isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
+                    onOpenSettings = { showSettings = true },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -427,6 +430,8 @@ fun ModelManagerScreen(
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
+                    isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
+                    onOpenSettings = { showSettings = true },
                     hazeState = hazeState
                 )
             }
@@ -465,6 +470,8 @@ fun ModelManagerScreen(
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
+                    isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
+                    onOpenSettings = { showSettings = true },
                     hazeState = hazeState
                 )
             }
@@ -497,6 +504,8 @@ fun ModelManagerScreen(
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
+                    isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
+                    onOpenSettings = { showSettings = true },
                     hazeState = hazeState
                 )
             }
@@ -535,6 +544,8 @@ fun ModelManagerScreen(
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
+                    isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
+                    onOpenSettings = { showSettings = true },
                     hazeState = hazeState
                 )
             }
@@ -1242,6 +1253,8 @@ fun ModelItem(
     onDelete: (() -> Unit)? = null,
     onUnsafeDownload: (() -> Unit)? = null,
     onUnsafeTry: (() -> Unit)? = null,
+    isHfTokenBlank: Boolean = false,
+    onOpenSettings: (() -> Unit)? = null,
     enableDynamicThemes: Boolean = true,
     hazeState: HazeState
 ) {
@@ -1498,12 +1511,35 @@ fun ModelItem(
             }
 
             model.errorMessage?.let { error ->
-                ClickableUrlText(
-                    text = error,
-                    color = MaterialTheme.colorScheme.error,
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    onOpenUrl = { url -> openUrl(context, url) }
-                )
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    ClickableUrlText(
+                        text = error,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.fillMaxWidth(),
+                        onOpenUrl = { url -> openUrl(context, url) }
+                    )
+                    if (
+                        onOpenSettings != null && (
+                            error.contains("Hugging Face token", ignoreCase = true) ||
+                            error.contains("read token", ignoreCase = true) ||
+                            error.contains("denied access", ignoreCase = true)
+                        )
+                    ) {
+                        OutlinedButton(
+                            onClick = { onOpenSettings.invoke() },
+                            modifier = Modifier.height(34.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                        ) {
+                            Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Open Settings to add token", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
             }
 
             FlowRow(
@@ -1647,11 +1683,22 @@ fun ModelItem(
                     )
                 }
 
+                var showHfTokenPromptDialog by remember { mutableStateOf(false) }
+                if (showHfTokenPromptDialog) {
+                    HfTokenRequiredDialog(
+                        modelName = model.name,
+                        hazeState = hazeState,
+                        onDismissRequest = { showHfTokenPromptDialog = false },
+                        onOpenSettings = { onOpenSettings?.invoke() }
+                    )
+                }
+
                 LiquidGlassButton(
                     onClick = when {
                         model.status == ModelStatus.Downloading -> onPause
                         canDownloadAnyway -> ({ showRiskyDownloadConfirm = true })
                         canTryAnyway -> ({ showRiskyTryConfirm = true })
+                        model.requiresHuggingFaceToken && isHfTokenBlank && model.localPath == null -> ({ showHfTokenPromptDialog = true })
                         else -> onAction
                     },
                     enabled = !isSelected &&
@@ -1902,6 +1949,96 @@ private fun RiskyModelActionDialog(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(confirmLabel)
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HfTokenRequiredDialog(
+    modelName: String,
+    hazeState: HazeState,
+    onDismissRequest: () -> Unit,
+    onOpenSettings: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismissRequest,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .clip(RoundedCornerShape(24.dp)),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = "Token Required",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Hugging Face Access Token needed",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Text(
+                    text = "$modelName requires a Hugging Face Access Token to download.\n\nPlease open Settings (⚙️) → Hugging Face Access Token to paste your read token.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onDismissRequest) {
+                        Text("Cancel")
+                    }
+
+                    LiquidGlassButton(
+                        onClick = {
+                            onDismissRequest()
+                            onOpenSettings()
+                        },
+                        hazeState = hazeState,
+                        modifier = Modifier.height(40.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
+                    ) {
+                        Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Open Settings")
                     }
                 }
             }
