@@ -28,9 +28,6 @@ Your conversations never leave your phone.
 </p>
 
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases">
-    <img src="https://img.shields.io/github/v/release/ShounakPatra/Solus?style=for-the-badge&logo=semantic-release&label=Latest%20version&color=20C997" alt="Latest app version" />
-  </a>
   <img src="https://img.shields.io/badge/version-1.5.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 1.5.0" />
   <img src="https://img.shields.io/badge/APK_size-208_MB-FF6B6B?style=for-the-badge&logo=android&logoColor=white" alt="APK size 208 MB" />
   <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=for-the-badge&logo=github&label=Stars&color=FFD700" alt="GitHub stars" />
@@ -278,11 +275,11 @@ Enter your Hugging Face read token inside **Settings** → **Hugging Face Access
 
 | Version | Status | Highlights |
 |---|:---:|---|
-| **v1.0.0** | ✅ Shipped | Core local chat, model manager, glass UI foundation |
-| **v1.1.0** | ✅ Shipped | Thinking controls, resumable downloads, device checks, UI polish |
-| **v1.2.0** | ✅ Shipped | Tab motion, Haze scroll FABs, FAB docking, deferred history load |
-| **v1.5.0** | ✅ **Current** | Full settings menu, dynamic themes, auto-hide nav, high-tech downloading cards, telemetry guard, personas |
-| **v2.0.0** | 🔬 Research | On-device speech (Whisper-class), local GGUF conversion helpers, encrypted exports |
+| **v1.0.0 – v1.2.0** | ✅ Shipped | Core local chat, thinking controls, resumable downloads, directional tab motion, Haze scroll FABs |
+| **v1.5.0** | ✅ **Current** | Full Settings menu, dynamic model themes, auto-hide nav, high-tech downloading cards, telemetry guard, system prompt personas |
+| **v1.6.0** | 🔜 Next | SHA-256 download checksum verification, custom HF model URL downloader, low-RAM device memory optimizations |
+| **v2.0.0** | 🛠️ Planned | Local RAG document chat indexing (PDF/DOCX embeddings), encrypted chat history backup & export, voice Q&A |
+| **v5.0.0** | 🎯 **Major Milestone** | Full native support for running future build "Coming Soon" models & direct `.gguf` models on-device via llama.cpp JNI |
 
 </div>
 
