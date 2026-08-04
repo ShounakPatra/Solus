@@ -205,7 +205,27 @@ Solus
 
 ---
 
-## 🏗️ Build from Source
+## 🏗️ On-Device Architecture Pipeline
+
+Solus processes all text, vision, and reasoning inference 100% locally on your phone without sending any data over the internet:
+
+```mermaid
+flowchart LR
+    A["📱 User Input"] --> B["🔤 Local Tokenizer"]
+    B --> C["⚡ LiteRT / MediaPipe / llama.cpp"]
+    C --> D["🧠 On-Device NPU / GPU / CPU"]
+    D --> E["💬 Streamed Response"]
+
+    style A fill:#0EA5E9,stroke:#0284C7,color:#fff
+    style B fill:#20C997,stroke:#0F766E,color:#fff
+    style C fill:#A970FF,stroke:#7E22CE,color:#fff
+    style D fill:#FF6B6B,stroke:#C53030,color:#fff
+    style E fill:#10B981,stroke:#047857,color:#fff
+```
+
+---
+
+## 🛠️ Build from Source
 
 **Requirements:** Android Studio (Ladybug or newer) · Android SDK **36** · **JDK 17**
 
@@ -224,12 +244,37 @@ Debug APK path: `app/build/outputs/apk/debug/app-debug.apk`
 
 ---
 
-## 🔐 Privacy by Design
+## 🧪 Custom Model Integration Guide
 
-- Inference runs **only on-device** (CPU / GPU) after models are downloaded.
-- Chat history stays in **local app storage** (not a cloud backend).
-- Network access is for **model downloads** and optional links — not for chatting.
-- Hugging Face tokens (for gated models) are stored **only on the device**.
+Developers can easily register custom `.task` or `.litertlm` models in `ModelCatalog.kt`:
+
+```kotlin
+ModelInfo(
+    id = "custom-model-id",
+    name = "My Custom Model 1.5B",
+    fileName = "custom_model.task",
+    url = "https://huggingface.co/user/repo/resolve/main/custom_model.task",
+    type = ModelType.Text,
+    backend = ModelBackend.LiteRtLm,
+    recommendedRamGb = 6,
+    requiresHuggingFaceToken = false
+)
+```
+
+1. Add your `ModelInfo` entry into `app/src/main/java/com/shounak/localmeshai/models/ModelCatalog.kt`.
+2. Build and run: `./gradlew assembleDebug`.
+
+---
+
+## 🔐 Privacy & Security Architecture
+
+Solus is built from the ground up with **Privacy by Design**:
+
+- **100% Offline Execution:** After downloading model weights, Wi-Fi and cellular data can be completely turned off.
+- **Zero Network Telemetry:** No analytics, no tracking, no external API calls during inference.
+- **Local Storage Isolation:** Chat history and session state remain stored strictly inside sandbox app storage (`SharedPreferences`).
+- **Sandboxed Token Security:** Hugging Face read tokens are stored locally on-device and transmitted only directly to Hugging Face CDN for gated weight downloads.
+- **Native Crash Guard:** `InitCrashGuard` protects your device by detecting native initialization faults and preventing repeated crash loops.
 
 ---
 
