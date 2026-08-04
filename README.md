@@ -13,7 +13,7 @@ Your conversations never leave your phone.
 
 <!-- Custom glass-gradient download CTA (docs/assets/download-solus-apk.svg) -->
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/tag/v1.5.0" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.5.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
       alt="Download Solus APK — Latest v1.5.0"
@@ -188,7 +188,7 @@ Solus
 ## 📥 Installation
 
 <p align="center">
-  <a href="https://github.com/ShounakPatra/Solus/releases/tag/v1.5.0" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.5.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
       alt="Download Solus APK — Latest v1.5.0"
@@ -305,7 +305,7 @@ Solus is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for d
 **Made for private, on-device AI.**
 
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/tag/v1.5.0" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.5.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
       alt="Download Solus APK — Latest v1.5.0"
