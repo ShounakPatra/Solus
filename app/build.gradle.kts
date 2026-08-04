@@ -60,8 +60,8 @@ android {
         compose = true
     }
 
-    val sdkDirString = project.findProperty("sdk.dir")?.toString() 
-        ?: System.getenv("ANDROID_HOME") 
+    val sdkDirString = project.findProperty("sdk.dir")?.toString()
+        ?: System.getenv("ANDROID_HOME")
         ?: System.getenv("ANDROID_SDK_ROOT")
         ?: "C:/Users/shoun/AppData/Local/Android/Sdk"
     val ndkDir = file(sdkDirString).resolve("ndk")

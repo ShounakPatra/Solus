@@ -1427,9 +1427,8 @@ fun ModelItem(
                 ((model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) && model.downloadedBytes > 0L)
             ) {
                 Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp)),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
                     color = modelFamilyAccent.copy(alpha = 0.08f),
                     border = BorderStroke(1.dp, modelFamilyAccent.copy(alpha = 0.35f))
                 ) {
@@ -1968,11 +1967,10 @@ private fun HfTokenRequiredDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .clip(RoundedCornerShape(24.dp)),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+            modifier = Modifier.fillMaxWidth(0.92f),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.50f))
         ) {
             Column(
                 modifier = Modifier.padding(24.dp),
