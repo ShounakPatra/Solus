@@ -32,6 +32,7 @@ Your conversations never leave your phone.
     <img src="https://img.shields.io/github/v/release/ShounakPatra/Solus?style=for-the-badge&logo=semantic-release&label=Latest%20version&color=20C997" alt="Latest app version" />
   </a>
   <img src="https://img.shields.io/badge/version-1.5.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 1.5.0" />
+  <img src="https://img.shields.io/badge/APK_size-208_MB-FF6B6B?style=for-the-badge&logo=android&logoColor=white" alt="APK size 208 MB" />
   <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=for-the-badge&logo=github&label=Stars&color=FFD700" alt="GitHub stars" />
   <img src="https://img.shields.io/github/downloads/ShounakPatra/Solus/total?style=for-the-badge&label=Downloads&color=20C997" alt="Total downloads" />
 </p>
