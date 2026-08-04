@@ -23,6 +23,7 @@ keystore.properties
 signing.properties
 release.apk
 app-release*.apk
+app/release/
 
 # Temporary UI inspection screenshots / exports
 /*.png
