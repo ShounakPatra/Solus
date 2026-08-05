@@ -122,6 +122,15 @@ fun SettingsDialog(
                     // Category 1: Visual Themes
                     SettingsCategory(title = "🎨 Visual Themes") {
                         SettingsSwitchRow(
+                            title = "Dark Mode",
+                            subtitle = "Enable dark visual appearance throughout the app (default)",
+                            checked = settingsData.enableDarkMode,
+                            onCheckedChange = { enabled ->
+                                appSettings.updateSettings { it.copy(enableDarkMode = enabled) }
+                            }
+                        )
+                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.3f))
+                        SettingsSwitchRow(
                             title = "Dynamic Model Accent Themes",
                             subtitle = "Adapt UI accents for DeepSeek (Cyan), Gemma (Amber), Qwen (Violet), Llama (Green)",
                             checked = settingsData.enableDynamicThemes,

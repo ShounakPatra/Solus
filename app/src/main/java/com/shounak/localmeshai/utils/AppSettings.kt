@@ -7,11 +7,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 data class AppSettingsData(
+    val enableDarkMode: Boolean = true,
     val enableDynamicThemes: Boolean = true,
     val enableTelemetryBar: Boolean = true,
     val showThermalGuard: Boolean = true,
     val showRamGuard: Boolean = true,
-    val enableSuggestionPills: Boolean = true,
+    val enableSuggestionPills: Boolean = false,
     val enablePersonaPresets: Boolean = true,
     val enableSolusBench: Boolean = true,
     val enableAutoHideBottomBar: Boolean = false,
@@ -27,11 +28,12 @@ class AppSettings private constructor(context: Context) {
 
     private fun loadSettings(): AppSettingsData {
         return AppSettingsData(
+            enableDarkMode = prefs.getBoolean(KEY_DARK_MODE, true),
             enableDynamicThemes = prefs.getBoolean(KEY_DYNAMIC_THEMES, true),
             enableTelemetryBar = prefs.getBoolean(KEY_TELEMETRY_BAR, true),
             showThermalGuard = prefs.getBoolean(KEY_THERMAL_GUARD, true),
             showRamGuard = prefs.getBoolean(KEY_RAM_GUARD, true),
-            enableSuggestionPills = prefs.getBoolean(KEY_SUGGESTION_PILLS, true),
+            enableSuggestionPills = prefs.getBoolean(KEY_SUGGESTION_PILLS, false),
             enablePersonaPresets = prefs.getBoolean(KEY_PERSONA_PRESETS, true),
             enableSolusBench = prefs.getBoolean(KEY_SOLUS_BENCH, true),
             enableAutoHideBottomBar = prefs.getBoolean(KEY_AUTO_HIDE_BOTTOM_BAR, false),
@@ -43,6 +45,7 @@ class AppSettings private constructor(context: Context) {
     fun updateSettings(transform: (AppSettingsData) -> AppSettingsData) {
         val updated = transform(_settings.value)
         prefs.edit()
+            .putBoolean(KEY_DARK_MODE, updated.enableDarkMode)
             .putBoolean(KEY_DYNAMIC_THEMES, updated.enableDynamicThemes)
             .putBoolean(KEY_TELEMETRY_BAR, updated.enableTelemetryBar)
             .putBoolean(KEY_THERMAL_GUARD, updated.showThermalGuard)
@@ -58,6 +61,7 @@ class AppSettings private constructor(context: Context) {
     }
 
     companion object {
+        private const val KEY_DARK_MODE = "enable_dark_mode"
         private const val KEY_DYNAMIC_THEMES = "enable_dynamic_themes"
         private const val KEY_TELEMETRY_BAR = "enable_telemetry_bar"
         private const val KEY_THERMAL_GUARD = "show_thermal_guard"

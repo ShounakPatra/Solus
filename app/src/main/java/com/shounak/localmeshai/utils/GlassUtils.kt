@@ -329,7 +329,9 @@ fun Modifier.glassEffect(
         tintColor == colors.surfaceContainerLow ||
         tintColor == colors.surfaceContainer ||
         tintColor == colors.surfaceContainerHigh ||
-        tintColor == colors.surfaceContainerHighest
+        tintColor == colors.surfaceContainerHighest ||
+        tintColor == colors.primaryContainer ||
+        tintColor == colors.primary
     val effectiveTint = if (isSurfaceLevel) {
         tintColor
     } else {

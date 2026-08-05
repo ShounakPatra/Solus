@@ -1831,7 +1831,7 @@ private fun ChatComposerActions(
     val thinkActive = canThink && thinkingMode
     val thinkContentColor = when {
         !canThink -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
-        thinkActive -> Color.White
+        thinkActive -> MaterialTheme.colorScheme.onPrimaryContainer
         else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.86f)
     }
     Column(
@@ -1979,7 +1979,7 @@ private fun ChatComposerActions(
                     .dropdownTriggerBounce(thinkActive),
                 shape = RoundedCornerShape(topStart = 14.dp, topEnd = 24.dp, bottomStart = 24.dp, bottomEnd = 14.dp),
                 tintColor = when {
-                    thinkActive -> MaterialTheme.colorScheme.primary.copy(alpha = 0.32f)
+                    thinkActive -> MaterialTheme.colorScheme.primaryContainer
                     canThink -> MaterialTheme.colorScheme.surfaceContainerHighest
                     else -> MaterialTheme.colorScheme.surfaceContainerLow
                 },

@@ -62,15 +62,7 @@ object DeviceUtils {
 
     fun isDeviceCompatible(context: Context): Pair<Boolean, String> {
         val ram = getTotalRamGB(context)
-        val ramCompatible = ram >= MIN_RAM_GIB_FOR_8_GB_DEVICE
-        val soc = deviceSoCText()
-        val socCompatible = isSupportedChipset(soc)
-
-        return if (ramCompatible && socCompatible) {
-            true to "Device ready: ${String.format(Locale.US, "%.1f", ram)} GiB usable RAM, ${deviceChipLabel()}"
-        } else {
-            false to buildRequirementMessage(ram, ramCompatible, socCompatible)
-        }
+        return true to "Device ready: ${String.format(Locale.US, "%.1f", ram)} GiB usable RAM, ${deviceChipLabel()}"
     }
 
     fun canInitializeLiteRtLm(

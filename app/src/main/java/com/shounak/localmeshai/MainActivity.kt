@@ -115,9 +115,10 @@ class MainActivity : ComponentActivity() {
         preferHighestRefreshRate()
         requestNotificationPermissionIfNeeded()
         setContent {
-            LocalMeshAITheme {
-                val mainViewModel: MainViewModel = viewModel()
+            val mainViewModel: MainViewModel = viewModel()
+            val appSettingsData by mainViewModel.appSettingsData.collectAsState()
 
+            LocalMeshAITheme(darkTheme = appSettingsData.enableDarkMode) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -191,9 +192,6 @@ fun MainNavigation(mainViewModel: MainViewModel) {
     val haptic = LocalHapticFeedback.current
     val tabSwipeThresholdPx = with(density) { 64.dp.toPx() }
     val isKeyboardOpen = WindowInsets.isImeVisible
-    val (isCompatible, compatibilityMessage) = remember { DeviceUtils.isDeviceCompatible(context) }
-    var showRequirementDialog by remember { mutableStateOf(!isCompatible) }
-
     val prefs = remember { context.getSharedPreferences("solus_prefs", android.content.Context.MODE_PRIVATE) }
     var showOnboarding by remember {
         mutableStateOf(!prefs.getBoolean("onboarding_completed", false))
@@ -207,34 +205,6 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                 prefs.edit().putBoolean("onboarding_completed", true).apply()
                 showOnboarding = false
                 selectedIndex = 1
-            }
-        )
-    }
-
-    if (showRequirementDialog) {
-        AlertDialog(
-            onDismissRequest = { showRequirementDialog = false },
-            title = { Text("Phone may not meet requirements") },
-            text = {
-                Text(
-                    "$compatibilityMessage\n\n" +
-                    "Local AI models run on the phone GPU and require:\n" +
-                    "\u2022 MediaTek Dimensity 7000 series or higher\n" +
-                    "\u2022 Qualcomm Snapdragon 6 Gen series or higher\n" +
-                    "\u2022 Samsung Exynos 1380 or higher\n" +
-                    "\u2022 8 GB nominal RAM\n\n" +
-                    "You can still browse and download models, but local inference may not work on this device."
-                )
-            },
-            confirmButton = {
-                Button(onClick = { (context as? android.app.Activity)?.finish() }) {
-                    Text("Close app")
-                }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showRequirementDialog = false }) {
-                    Text("Continue anyway")
-                }
             }
         )
     }

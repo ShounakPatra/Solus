@@ -92,7 +92,7 @@ private val ExpressiveShapes = Shapes(
 
 @Composable
 fun LocalMeshAITheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
+    darkTheme: Boolean = true,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {

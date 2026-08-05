@@ -200,7 +200,6 @@ fun ModelManagerScreen(
     onGoToChat: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    val (isCompatible, compatibilityMessage) = remember { DeviceUtils.isDeviceCompatible(context) }
     val selectedTextModel by mainViewModel.selectedTextModelPath.collectAsState()
     val selectedVisionModel by mainViewModel.selectedVisionModelPath.collectAsState()
     val huggingFaceToken by mainViewModel.huggingFaceToken.collectAsState()
@@ -315,9 +314,6 @@ fun ModelManagerScreen(
             }
         }
 
-        item {
-            DeviceCard(isCompatible = isCompatible, message = compatibilityMessage, hazeState = hazeState)
-        }
         item {
             // Storage usage summary
             val downloadedModels = mainViewModel.availableModels.filter {
