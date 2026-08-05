@@ -29,7 +29,7 @@ Your conversations never leave your phone.
 
 <p>
   <img src="https://img.shields.io/badge/version-1.5.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 1.5.0" />
-  <img src="https://img.shields.io/badge/APK_size-208_MB-FF6B6B?style=for-the-badge&logo=android&logoColor=white" alt="APK size 208 MB" />
+  <img src="https://img.shields.io/badge/APK_size-218_MB-FF6B6B?style=for-the-badge&logo=android&logoColor=white" alt="APK size 218 MB" />
   <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=for-the-badge&logo=github&label=Stars&color=FFD700" alt="GitHub stars" />
   <img src="https://img.shields.io/github/downloads/ShounakPatra/Solus/total?style=for-the-badge&label=Downloads&color=20C997" alt="Total downloads" />
 </p>
