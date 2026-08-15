@@ -40,16 +40,13 @@ Your conversations never leave your phone.
   <img src="https://img.shields.io/badge/License-Apache_2.0-A970FF?style=for-the-badge&logo=apache&logoColor=white" alt="Apache 2.0 license" />
   <img src="https://img.shields.io/badge/Kotlin-2.3.0-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.3.0" />
   <img src="https://img.shields.io/badge/Jetpack_Compose-UI-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
-  <p align="center">
-  <a href="https://trendshift.io/repositories/156746?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-156746" target="_blank" rel="noopener noreferrer">
-  <img
-    
-src="https://trendshift.io/api/badge/repositories/156746"
-    alt="ShounakPatra%2FSolus | Trendshift"
-    width="250"
-    height="55"
-  />
-</a>
+<p align="center">
+  <a href="https://trendshift.io/repositories/156746" target="_blank" rel="noopener noreferrer">
+    <img
+      src="https://img.shields.io/badge/Trendshift-View%20Solus-7C3AED?style=for-the-badge&logo=trendmicro&logoColor=white"
+      alt="View Solus on Trendshift"
+    />
+  </a>
 </p>
 
 **🔒 100% Offline &nbsp;•&nbsp; 💳 No Subscriptions &nbsp;•&nbsp; 🚀 On-Device Speed &nbsp;•&nbsp; ✨ Glass UI**
@@ -189,11 +186,10 @@ Solus
 ├── docs/screenshots/
 ├── gradle/libs.versions.toml
 └── README.md
-```
 
 ---
 
-## 📥 Installation
+📥 Installation
 
 <p align="center">
   <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.5.0/app-release.apk" title="Download the latest Solus APK">
@@ -204,22 +200,19 @@ Solus
       height="72"
     />
   </a>
-</p>
+</p>1. Tap the Download Solus APK button (or open "Releases" (https://github.com/ShounakPatra/Solus/releases)).
+2. Download "release.apk" for v1.5.0.
+3. Install on your phone (allow Install unknown apps if prompted).
+4. Open Solus → Models → download a compatible model → start chatting.
 
-1. Tap the **Download Solus APK** button (or open **[Releases](https://github.com/ShounakPatra/Solus/releases)**).
-2. Download **`release.apk`** for **v1.5.0**.
-3. Install on your phone (allow *Install unknown apps* if prompted).
-4. Open Solus → **Models** → download a compatible model → start chatting.
-
-**Requirements:** Android **8.0+** (API 26), **ARM64** device recommended for on-device models.
+Requirements: Android 8.0+ (API 26), ARM64 device recommended for on-device models.
 
 ---
 
-## 🏗️ On-Device Architecture Pipeline
+🏗️ On-Device Architecture Pipeline
 
 Solus processes all text, vision, and reasoning inference 100% locally on your phone without sending any data over the internet:
 
-```mermaid
 flowchart LR
     A["📱 User Input"] --> B["🔤 Local Tokenizer"]
     B --> C["⚡ LiteRT / MediaPipe / llama.cpp"]
@@ -231,15 +224,13 @@ flowchart LR
     style C fill:#A970FF,stroke:#7E22CE,color:#fff
     style D fill:#FF6B6B,stroke:#C53030,color:#fff
     style E fill:#10B981,stroke:#047857,color:#fff
-```
 
 ---
 
-## 🛠️ Build from Source
+🛠️ Build from Source
 
-**Requirements:** Android Studio (Ladybug or newer) · Android SDK **36** · **JDK 17**
+Requirements: Android Studio (Ladybug or newer) · Android SDK 36 · JDK 17
 
-```bash
 git clone https://github.com/ShounakPatra/Solus.git
 cd Solus
 
@@ -248,15 +239,102 @@ cd Solus
 
 # Unit tests
 ./gradlew testDebugUnitTest
-```
 
-Debug APK path: `app/build/outputs/apk/debug/app-debug.apk`
+Debug APK path: "app/build/outputs/apk/debug/app-debug.apk"
 
 ---
 
-## 🧪 Custom Model Integration Guide
+🧪 Custom Model Integration Guide
 
-Developers can easily register custom `.task` or `.litertlm` models in `ModelCatalog.kt`:
+Developers can easily register custom ".task" or ".litertlm" models in "ModelCatalog.kt":
+
+ModelInfo(
+    id = "custom-model-id",
+    name = "My Custom Model 1.5B",
+    fileName = "custom_model.task",
+    url = "https://huggingface.co/user/repo/resolve/main/custom_model.task",
+    type = ModelType.Text,
+    backend = ModelBackend.LiteRtLm,
+    recommendedRamGb = 6,
+    requiresHuggingFaceToken = false
+)
+
+1. Add your "ModelInfo" entry into "app/src/main/java/com/shounak/localmeshai/models/ModelCatalog.kt".
+2. Build and run: "./gradlew assembleDebug".
+
+---
+
+🔐 Privacy & Security Architecture
+
+Solus is built from the ground up with Privacy by Design:
+
+- 100% Offline Execution: After downloading model weights, Wi-Fi and cellular data can be completely turned off.
+- Zero Network Telemetry: No analytics, no tracking, no external API calls during inference.
+- Local Storage Isolation: Chat history and session state remain stored strictly inside sandbox app storage ("SharedPreferences").
+- Sandboxed Token Security: Hugging Face read tokens are stored locally on-device and transmitted only directly to Hugging Face CDN for gated weight downloads.
+- Native Crash Guard: "InitCrashGuard" protects your device by detecting native initialization faults and preventing repeated crash loops.
+
+---
+
+💡 FAQ
+
+<details>
+<summary><b>Does Solus run fully offline?</b></summary>
+<br/>Yes. After a model is downloaded you can turn off Wi-Fi and mobile data. Chat and history stay local.
+
+</details><details>
+<summary><b>Why is the APK relatively large (~200MB)?</b></summary>
+<br/>Native runtimes (MediaPipe, LiteRT, llama.cpp JNI) and architecture-specific libraries ship in the APK so inference is fast out of the box.
+
+</details><details>
+<summary><b>Can I load arbitrary GGUF / ONNX files?</b></summary>
+<br/>Current runtimes support optimized Android formats (".task", ".litertlm"). Custom GGUF support via llama.cpp JNI is actively expanded.
+
+</details><details>
+<summary><b>How do I access gated models like Gemma 3?</b></summary>
+<br/>Enter your Hugging Face read token inside Settings → Hugging Face Access Token. Use the "How to create token" button for a quick video tutorial.
+
+</details>---
+
+🗺️ Roadmap
+
+<div align="center">Version| Status| Highlights
+v1.0.0 – v1.2.0| ✅ Shipped| Core local chat, thinking controls, resumable downloads, directional tab motion, Haze scroll FABs
+v1.5.0| ✅ Current| Full Settings menu, dynamic model themes, auto-hide nav, high-tech downloading cards, telemetry guard, system prompt personas
+v1.6.0| 🔜 Next| SHA-256 download checksum verification, custom HF model URL downloader, low-RAM device memory optimizations
+v2.0.0| 🛠️ Planned| Local RAG document chat indexing (PDF/DOCX embeddings), encrypted chat history backup & export, voice Q&A
+v5.0.0| 🎯 Major Milestone| Full native support for running future build "Coming Soon" models & direct ".gguf" models on-device via llama.cpp JNI
+
+</div>---
+
+👤 Author
+
+Shounak Patra
+GitHub: "@ShounakPatra" (https://github.com/ShounakPatra)
+
+---
+
+📄 License
+
+Solus is licensed under the Apache License 2.0. See "LICENSE" (LICENSE) for details.
+
+---
+
+<div align="center">Made for private, on-device AI.
+
+<p>
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.5.0/app-release.apk" title="Download the latest Solus APK">
+    <img
+      src="docs/assets/download-solus-apk.svg"
+      alt="Download Solus APK — Latest v1.5.0"
+      width="320"
+      height="64"
+    />
+  </a>
+</p>"★ Star on GitHub" (https://github.com/ShounakPatra/Solus)
+
+</div>
+``` easily register custom `.task` or `.litertlm` models in `ModelCatalog.kt`:
 
 ```kotlin
 ModelInfo(
