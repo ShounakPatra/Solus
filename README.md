@@ -40,6 +40,7 @@ Your conversations never leave your phone.
   <img src="https://img.shields.io/badge/License-Apache_2.0-A970FF?style=for-the-badge&logo=apache&logoColor=white" alt="Apache 2.0 license" />
   <img src="https://img.shields.io/badge/Kotlin-2.3.0-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.3.0" />
   <img src="https://img.shields.io/badge/Jetpack_Compose-UI-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
+  <a href="https://trendshift.io/repositories/17521?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-17521" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/17521" alt="rukamori%2FArchiveTune | Trendshift" width="250" height="55"/></a>
 </p>
 
 **🔒 100% Offline &nbsp;•&nbsp; 💳 No Subscriptions &nbsp;•&nbsp; 🚀 On-Device Speed &nbsp;•&nbsp; ✨ Glass UI**
