@@ -30,6 +30,12 @@ android {
     }
 
     signingConfigs {
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         if (keystorePropertiesFile.isFile) {
             create("release") {
                 storeFile = file(keystoreProperties.getProperty("storeFile"))
@@ -41,6 +47,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debugConfig")
+        }
         release {
             if (keystorePropertiesFile.isFile) {
                 signingConfig = signingConfigs.getByName("release")
