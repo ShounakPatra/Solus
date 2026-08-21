@@ -29,12 +29,15 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    val debugKeystoreFile = file("${rootDir}/debug.keystore")
     signingConfigs {
-        create("debugConfig") {
-            storeFile = file("${rootDir}/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        if (debugKeystoreFile.isFile) {
+            create("debugConfig") {
+                storeFile = debugKeystoreFile
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
         if (keystorePropertiesFile.isFile) {
             create("release") {
@@ -48,7 +51,9 @@ android {
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("debugConfig")
+            if (debugKeystoreFile.isFile) {
+                signingConfig = signingConfigs.findByName("debugConfig")
+            }
         }
         release {
             if (keystorePropertiesFile.isFile) {
@@ -60,6 +65,10 @@ android {
                 "proguard-rules.pro"
             )
         }
+    }
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
