@@ -895,25 +895,36 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateStream(
         }
     }
 
-    if (!chat_msgs.empty()) {
-        const char * model_tmpl = llama_model_chat_template(holder->model, nullptr);
+    const llama_vocab * vocab = holder->vocab;
+    const char * model_tmpl = llama_model_chat_template(holder->model, nullptr);
 
-        // ── Llama 3 / 3.1 / 3.2 Instruct special handling ────────────────────────────
-        // Detect Llama 3 by the presence of the distinctive header tokens in the template.
-        // Llama 3 models expect:
-        //   <|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n...<|eot_id|>...
-        // Without a system turn the model can produce confused, multi-lingual, or repetitive output.
-        // We also must NOT call llama_chat_apply_template for Llama 3 if the model template is
-        // already known – the built-in "llama3" template in llama-chat.cpp handles it perfectly –
-        // but we MUST ensure a system turn is present.
-        bool is_llama3 = false;
-        if (model_tmpl) {
-            std::string tmpl_str(model_tmpl);
-            is_llama3 = (tmpl_str.find("<|start_header_id|>") != std::string::npos &&
-                         tmpl_str.find("<|end_header_id|>")   != std::string::npos) ||
-                        (tmpl_str == "llama3");
+    // ── Llama 3 / 3.1 / 3.2 Instruct detection ──────────────────────────────────
+    // Detect Llama 3 by:
+    // 1. Chat template keywords ("<|start_header_id|>", "llama3")
+    // 2. Or presence of control token "<|start_header_id|>" in the model vocabulary
+    bool is_llama3 = false;
+    if (model_tmpl) {
+        std::string tmpl_str(model_tmpl);
+        is_llama3 = (tmpl_str.find("<|start_header_id|>") != std::string::npos &&
+                     tmpl_str.find("<|end_header_id|>")   != std::string::npos) ||
+                    (tmpl_str == "llama3");
+    }
+    if (!is_llama3 && vocab) {
+        llama_token header_tok = LLAMA_TOKEN_NULL;
+        int n_tok = llama_tokenize(vocab, "<|start_header_id|>", 19, &header_tok, 1, false, true);
+        if (n_tok == 1 && header_tok != LLAMA_TOKEN_NULL && llama_vocab_is_control(vocab, header_tok)) {
+            is_llama3 = true;
         }
+    }
+    if (is_llama3) {
+        LOGI("SolusLlamaJNI: Detected Llama 3 / 3.1 / 3.2 Instruct model architecture");
+        if (!model_tmpl || strlen(model_tmpl) == 0) {
+            model_tmpl = "llama3";
+            LOGI("SolusLlamaJNI: Defaulted chat template to 'llama3'");
+        }
+    }
 
+    if (!chat_msgs.empty()) {
         if (is_llama3) {
             // Check if the caller already provided a system turn.
             bool has_system = false;
@@ -936,7 +947,6 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateStream(
                 LOGI("SolusLlamaJNI: Injected default system prompt for Llama 3 model");
             }
         }
-        // ─────────────────────────────────────────────────────────────────────────────
 
         std::vector<char> tmpl_buf(4096);
         int32_t tmpl_res = llama_chat_apply_template(
@@ -1051,14 +1061,10 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateStream(
     }
 
     // 2. Tokenize prompt
-    // IMPORTANT: use add_special=false, parse_special=true.
-    // The chat template already embeds BOS as text (e.g. "<|begin_of_text|>" for Llama 3).
-    // With add_special=true the tokenizer would inject a second BOS token, producing
-    // [128000, 128000, ...] which shifts attention and causes incoherent/gibberish output.
-    // parse_special=true ensures that special token strings in the formatted text
-    // (like <|begin_of_text|>, <|start_header_id|>, etc.) are correctly tokenized
-    // as their special token IDs rather than as plain text pieces.
-    const llama_vocab * vocab = holder->vocab;
+    // Use add_special=false, parse_special=true so special tokens in the template
+    // (such as <|start_header_id|>, <|eot_id|>, etc.) are tokenized as their control IDs,
+    // while preventing the tokenizer from automatically appending an unwanted EOS token
+    // to the end of the prompt (which would close generation prematurely).
     const bool add_special = false;
     const bool parse_special = true;
     int n_tokens_req = -llama_tokenize(vocab, formatted_prompt.c_str(), formatted_prompt.length(), nullptr, 0, add_special, parse_special);
@@ -1090,7 +1096,6 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateStream(
         );
     }
 
-
     if (n_tokens <= 0) {
         LOGE("SolusLlamaJNI: Failed to tokenize prompt");
         if (on_error_method) {
@@ -1109,6 +1114,38 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateStream(
         LOGW("SolusLlamaJNI: Prompt length (%zu tokens) exceeds context limit (%u tokens), truncating %zu oldest tokens",
              prompt_tokens.size(), max_prompt_tokens, tokens_to_drop);
         prompt_tokens.erase(prompt_tokens.begin(), prompt_tokens.begin() + tokens_to_drop);
+    }
+
+    // ── Ensure BOS (Beginning-Of-Sentence) token at position 0 ──────────────────
+    // Models like Llama 3, Gemma, Mistral, Llama 2 require their BOS token at position 0
+    // to calibrate attention sinks and RoPE positional offsets.
+    // llama_chat_apply_template does NOT emit BOS in its string output because llama.cpp CLI
+    // typically tokenizes with add_special=true.
+    // Since we tokenize with add_special=false (to prevent unwanted EOS tokens at prompt end),
+    // we must explicitly ensure position 0 contains the model's BOS token.
+    llama_token bos = llama_vocab_bos(vocab);
+    bool should_add_bos = llama_vocab_get_add_bos(vocab) || is_llama3;
+    if (should_add_bos && bos != LLAMA_TOKEN_NULL) {
+        if (prompt_tokens.empty() || prompt_tokens[0] != bos) {
+            prompt_tokens.insert(prompt_tokens.begin(), bos);
+            LOGI("SolusLlamaJNI: Prepended model BOS token (%d)", bos);
+        }
+    }
+
+    // Deduplicate any consecutive leading BOS tokens (if template or caller already included one)
+    while (prompt_tokens.size() >= 2 && prompt_tokens[0] == bos && prompt_tokens[1] == bos && bos != LLAMA_TOKEN_NULL) {
+        LOGW("SolusLlamaJNI: Detected duplicate leading BOS token (%d), removing duplicate", bos);
+        prompt_tokens.erase(prompt_tokens.begin());
+    }
+
+    // Diagnostic logging: log prompt details and first tokens
+    {
+        std::string token_ids_str;
+        for (size_t i = 0; i < std::min<size_t>(prompt_tokens.size(), 10); ++i) {
+            token_ids_str += std::to_string(prompt_tokens[i]) + " ";
+        }
+        LOGI("SolusLlamaJNI: Prompt token count=%zu, first tokens: [%s]",
+             prompt_tokens.size(), token_ids_str.c_str());
     }
 
     llama_kv_cache_clear(holder->ctx);
@@ -1219,24 +1256,31 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateStream(
         // again doubles every token's repetition penalty, corrupting the sampler state
         // and causing gibberish / out-of-distribution output.
 
-        if (llama_vocab_is_eog(vocab, token) || token == eos_token || token == eot_token) {
-            LOGI("SolusLlamaJNI: Generation completed at step %d (EOG/EOS token)", n_generated);
+        if (llama_vocab_is_eog(vocab, token) || token == eos_token || token == eot_token ||
+            (is_llama3 && llama_vocab_is_control(vocab, token))) {
+            LOGI("SolusLlamaJNI: Generation completed at step %d (EOG/EOS/Control token %d)", n_generated, token);
             break;
         }
 
         char piece_buf[256];
         int n_piece = llama_token_to_piece(vocab, token, piece_buf, sizeof(piece_buf), 0, false);
-        if (n_piece > 0) {
+        if (n_piece < 0) {
+            std::vector<char> big_piece(-n_piece);
+            n_piece = llama_token_to_piece(vocab, token, big_piece.data(), big_piece.size(), 0, false);
+            if (n_piece > 0) {
+                utf8_stream_buf.append(big_piece.data(), n_piece);
+            }
+        } else if (n_piece > 0) {
             utf8_stream_buf.append(piece_buf, n_piece);
-            std::string piece_to_emit = extract_complete_utf8(utf8_stream_buf);
+        }
 
-            if (!piece_to_emit.empty() && !holder->stop_requested.load(std::memory_order_relaxed) && !holder->is_closed.load(std::memory_order_relaxed)) {
-                if (!call_jni_string_method_checked(env, callback_obj, on_token_method, piece_to_emit.c_str())) {
-                    LOGE("SolusLlamaJNI: onToken threw exception, aborting generation loop");
-                    holder->stop_requested.store(true, std::memory_order_release);
-                    aborted = true;
-                    break;
-                }
+        std::string piece_to_emit = extract_complete_utf8(utf8_stream_buf);
+        if (!piece_to_emit.empty() && !holder->stop_requested.load(std::memory_order_relaxed) && !holder->is_closed.load(std::memory_order_relaxed)) {
+            if (!call_jni_string_method_checked(env, callback_obj, on_token_method, piece_to_emit.c_str())) {
+                LOGE("SolusLlamaJNI: onToken threw exception, aborting generation loop");
+                holder->stop_requested.store(true, std::memory_order_release);
+                aborted = true;
+                break;
             }
         }
 
