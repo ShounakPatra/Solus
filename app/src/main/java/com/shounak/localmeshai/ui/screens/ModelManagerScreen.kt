@@ -30,10 +30,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Delete
@@ -41,23 +43,31 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import com.shounak.localmeshai.utils.ChatRuntimePolicy
+import com.shounak.localmeshai.ai.GgufDiagnosticRunner
+import com.shounak.localmeshai.ai.GgufDiagnosticReport
+import kotlinx.coroutines.launch
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -326,17 +336,29 @@ fun ModelManagerScreen(
         }
 
         item {
-            PrivacyCard(hazeState = hazeState)
+            DeviceHardwareCard(hazeState = hazeState)
         }
 
         item {
-            SearchAndFilterRow(
-                searchQuery = searchQuery,
-                onSearchChange = { searchQuery = it },
-                selectedTier = selectedTier,
-                onTierChange = { selectedTier = it },
-                hazeState = hazeState
-            )
+            PrivacyCard(hazeState = hazeState)
+        }
+
+        @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+        stickyHeader {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.background)
+                    .padding(vertical = 4.dp)
+            ) {
+                SearchAndFilterRow(
+                    searchQuery = searchQuery,
+                    onSearchChange = { searchQuery = it },
+                    selectedTier = selectedTier,
+                    onTierChange = { selectedTier = it },
+                    hazeState = hazeState
+                )
+            }
         }
 
         if (showEmpty) {
@@ -617,8 +639,8 @@ fun ModelManagerScreen(
 
         item {
             CustomModelCard(
-                onAddModel = { name, url, type ->
-                    mainViewModel.addCustomModel(name = name, url = url, type = type)
+                onAddModel = { name, url, type, sha256 ->
+                    mainViewModel.addCustomModel(name = name, url = url, type = type, sha256 = sha256)
                 },
                 hazeState = hazeState
             )
@@ -648,7 +670,7 @@ private fun SearchAndFilterRow(
                     initialXOffset = (-16).dp,
                     initialRotationZ = -0.45f
                 )
-                .animatedGlassHalo(alpha = 0.035f, durationMillis = 4_800)
+                .animatedGlassHalo(shape = searchShape, alpha = 0.035f, durationMillis = 4_800)
                 .glassEffect(
                     hazeState = hazeState,
                     shape = searchShape,
@@ -805,7 +827,7 @@ private fun StorageSummaryCard(downloadedModels: List<ModelInfo>, hazeState: Haz
                 initialXOffset = (-18).dp,
                 initialRotationZ = -0.6f
             )
-            .animatedGlassHalo(enabled = downloadedModels.isNotEmpty(), alpha = 0.04f, durationMillis = 5_000)
+            .animatedGlassHalo(enabled = downloadedModels.isNotEmpty(), shape = MaterialTheme.shapes.medium, alpha = 0.04f, durationMillis = 5_000)
             .glassEffect(hazeState = hazeState, shape = MaterialTheme.shapes.medium, blurRadius = 16.dp, tintColor = cardTint),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         shape = MaterialTheme.shapes.medium
@@ -870,7 +892,7 @@ private fun DeviceCard(isCompatible: Boolean, message: String, hazeState: HazeSt
                 initialXOffset = 18.dp,
                 initialRotationZ = 0.6f
             )
-            .animatedGlassHalo(alpha = if (isCompatible) 0.045f else 0.03f, durationMillis = 4_600)
+            .animatedGlassHalo(shape = MaterialTheme.shapes.medium, alpha = if (isCompatible) 0.045f else 0.03f, durationMillis = 4_600)
             .glassEffect(hazeState = hazeState, shape = MaterialTheme.shapes.medium, blurRadius = 20.dp, tintColor = tintColor, borderAlpha = borderAlpha),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         shape = MaterialTheme.shapes.medium
@@ -891,6 +913,139 @@ private fun DeviceCard(isCompatible: Boolean, message: String, hazeState: HazeSt
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.bodyMedium
             )
+        }
+    }
+}
+
+@Composable
+private fun DeviceHardwareCard(hazeState: HazeState) {
+    val context = LocalContext.current
+    var ramInfo by remember { mutableStateOf(DeviceUtils.getRamMemoryInfo(context)) }
+    val socInfo = remember { DeviceUtils.getDeviceSoCInfo(context) }
+    val cardTint = MaterialTheme.colorScheme.surfaceContainer
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(2000L)
+            ramInfo = DeviceUtils.getRamMemoryInfo(context)
+        }
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .fluidReveal(
+                delayMillis = 80,
+                initialYOffset = 20.dp,
+                initialXOffset = 18.dp,
+                initialRotationZ = 0.5f
+            )
+            .animatedGlassHalo(
+                enabled = true,
+                shape = MaterialTheme.shapes.medium,
+                alpha = 0.035f,
+                durationMillis = 4_800
+            )
+            .glassEffect(
+                hazeState = hazeState,
+                shape = MaterialTheme.shapes.medium,
+                blurRadius = 16.dp,
+                tintColor = cardTint
+            ),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+        shape = MaterialTheme.shapes.medium
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f, fill = false)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Memory,
+                        contentDescription = "Device SoC Model",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "Processor & Memory",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            text = socInfo.title,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (socInfo.details.isNotBlank()) {
+                            Text(
+                                text = socInfo.details,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        text = String.format(Locale.US, "%.2f GB free", ramInfo.availableGb),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+
+            // Live RAM utilization bar
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                LinearProgressIndicator(
+                    progress = { ramInfo.usedPercentage },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = when {
+                        ramInfo.usedPercentage > 0.88f -> MaterialTheme.colorScheme.error
+                        ramInfo.usedPercentage > 0.75f -> MaterialTheme.colorScheme.tertiary
+                        else -> MaterialTheme.colorScheme.primary
+                    },
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Available: ${String.format(Locale.US, "%.2f", ramInfo.availableGb)} GB / Total: ${String.format(Locale.US, "%.1f", ramInfo.totalGb)} GB",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "${(ramInfo.usedPercentage * 100).toInt()}% used",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
     }
 }
@@ -948,7 +1103,7 @@ private fun AccessCard(
                 initialXOffset = 18.dp,
                 initialRotationZ = 0.55f
             )
-            .animatedGlassHalo(alpha = 0.035f, durationMillis = 5_200)
+            .animatedGlassHalo(shape = MaterialTheme.shapes.medium, alpha = 0.035f, durationMillis = 5_200)
             .glassEffect(hazeState = hazeState, shape = MaterialTheme.shapes.medium, blurRadius = 16.dp, tintColor = cardTint),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         shape = MaterialTheme.shapes.medium
@@ -1004,13 +1159,19 @@ private fun AccessCard(
 }
 
 @Composable
-private fun CustomModelCard(onAddModel: (String, String, ModelType) -> Unit, hazeState: HazeState) {
+private fun CustomModelCard(
+    onAddModel: (String, String, ModelType, String?) -> Unit,
+    hazeState: HazeState
+) {
     var modelName by rememberSaveable { mutableStateOf("") }
     var modelUrl by rememberSaveable { mutableStateOf("") }
+    var modelSha256 by rememberSaveable { mutableStateOf("") }
     var textSelected by rememberSaveable { mutableStateOf(false) }
     var imageSelected by rememberSaveable { mutableStateOf(false) }
-    val hasTypeSelection = textSelected || imageSelected
-    val selectedTypeCount = (if (textSelected) 1 else 0) + (if (imageSelected) 1 else 0)
+    val isGguf = modelUrl.trim().endsWith(".gguf", ignoreCase = true)
+    val effectiveTextSelected = textSelected || (isGguf && !imageSelected)
+    val hasTypeSelection = effectiveTextSelected || imageSelected
+    val selectedTypeCount = (if (effectiveTextSelected) 1 else 0) + (if (imageSelected) 1 else 0)
     val cardTint = MaterialTheme.colorScheme.surfaceContainerLow
 
     Card(
@@ -1034,10 +1195,10 @@ private fun CustomModelCard(onAddModel: (String, String, ModelType) -> Unit, haz
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CustomModelTypeButton(
-                    label = "Text",
-                    selected = textSelected,
+                    label = "Text (LLM / GGUF)",
+                    selected = effectiveTextSelected,
                     hazeState = hazeState,
-                    onClick = { textSelected = !textSelected }
+                    onClick = { textSelected = !effectiveTextSelected }
                 )
                 CustomModelTypeButton(
                     label = "Image",
@@ -1052,7 +1213,7 @@ private fun CustomModelCard(onAddModel: (String, String, ModelType) -> Unit, haz
                 onValueChange = { modelName = it },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                label = { Text("Name") },
+                label = { Text("Name (optional)") },
                 shape = RoundedCornerShape(12.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
@@ -1065,7 +1226,7 @@ private fun CustomModelCard(onAddModel: (String, String, ModelType) -> Unit, haz
                 value = modelUrl,
                 onValueChange = { modelUrl = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Direct .task, .litertlm, or .tflite URL") },
+                label = { Text("Direct .gguf, .litertlm, .task URL or HF repo/file") },
                 leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
                 minLines = 1,
                 maxLines = 3,
@@ -1077,16 +1238,33 @@ private fun CustomModelCard(onAddModel: (String, String, ModelType) -> Unit, haz
                     focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
                 )
             )
+            OutlinedTextField(
+                value = modelSha256,
+                onValueChange = { modelSha256 = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("SHA-256 Checksum (optional)") },
+                leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null) },
+                shape = RoundedCornerShape(12.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                )
+            )
             LiquidGlassButton(
                 onClick = {
-                    if (textSelected) {
-                        onAddModel(modelName, modelUrl, ModelType.Text)
+                    val cleanSha = modelSha256.trim().ifBlank { null }
+                    if (effectiveTextSelected) {
+                        onAddModel(modelName, modelUrl, ModelType.Text, cleanSha)
                     }
                     if (imageSelected) {
-                        onAddModel(modelName, modelUrl, ModelType.Vision)
+                        onAddModel(modelName, modelUrl, ModelType.Vision, cleanSha)
                     }
                     modelName = ""
                     modelUrl = ""
+                    modelSha256 = ""
                     textSelected = false
                     imageSelected = false
                 },
@@ -1319,21 +1497,15 @@ fun ModelItem(
                 initialXOffset = if ((model.id.hashCode() and 1) == 0) (-16).dp else 16.dp,
                 initialRotationZ = if ((model.id.hashCode() and 1) == 0) -0.8f else 0.8f
             )
-            .animateContentSize(
-                animationSpec = spring(
-                    dampingRatio = 0.68f,
-                    stiffness = 430f
-                )
-            )
             .graphicsLayer {
                 scaleX = 1f + selectionMotion * 0.012f
                 scaleY = 1f + selectionMotion * 0.012f
                 translationY = -selectionMotion * 2.5f * density
                 rotationZ = selectionMotion * -0.18f
             }
-            .animatedGlassHalo(enabled = isSelected, alpha = 0.055f, durationMillis = 4_400)
             .jellyOnTouch(sensitivity = 1.45f)
-            .glassEffect(hazeState = hazeState, shape = itemShape, blurRadius = 16.dp, tintColor = tintColor, borderAlpha = borderAlpha),
+            .glassEffect(hazeState = hazeState, shape = itemShape, blurRadius = 16.dp, tintColor = tintColor, borderAlpha = borderAlpha)
+            .animatedGlassHalo(enabled = isSelected, shape = itemShape, alpha = 0.055f, durationMillis = 4_400),
         shape = itemShape,
         colors = CardDefaults.cardColors(containerColor = Color.Transparent)
     ) {
@@ -1422,11 +1594,18 @@ fun ModelItem(
                 model.status == ModelStatus.Downloading ||
                 ((model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) && model.downloadedBytes > 0L)
             ) {
+                val cardAccent = if (model.status == ModelStatus.Failed) MaterialTheme.colorScheme.error else modelFamilyAccent
+                val cardTitle = when (model.status) {
+                    ModelStatus.Downloading -> "Downloading Model…"
+                    ModelStatus.Paused -> "Download Paused"
+                    ModelStatus.Failed -> "Download Failed"
+                    else -> "Download Status"
+                }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
-                    color = modelFamilyAccent.copy(alpha = 0.08f),
-                    border = BorderStroke(1.dp, modelFamilyAccent.copy(alpha = 0.35f))
+                    color = cardAccent.copy(alpha = 0.08f),
+                    border = BorderStroke(1.dp, cardAccent.copy(alpha = 0.35f))
                 ) {
                     Column(
                         modifier = Modifier
@@ -1447,13 +1626,13 @@ fun ModelItem(
                                 Box(
                                     modifier = Modifier
                                         .size(8.dp)
-                                        .background(modelFamilyAccent, RoundedCornerShape(4.dp))
+                                        .background(cardAccent, RoundedCornerShape(4.dp))
                                 )
                                 Text(
-                                    text = if (model.status == ModelStatus.Downloading) "Downloading Model…" else "Download Paused",
+                                    text = cardTitle,
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold,
-                                    color = modelFamilyAccent
+                                    color = cardAccent
                                 )
                             }
                             if (model.status == ModelStatus.Downloading && model.bytesPerSecond > 0L) {
@@ -1610,6 +1789,86 @@ fun ModelItem(
                         Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Bench")
+                    }
+                }
+
+                var showGgufDiagDialog by remember { mutableStateOf(false) }
+                var isRunningGgufDiag by remember { mutableStateOf(false) }
+                var ggufDiagReport by remember { mutableStateOf<GgufDiagnosticReport?>(null) }
+                val diagScope = rememberCoroutineScope()
+
+                if (showGgufDiagDialog) {
+                    AlertDialog(
+                        onDismissRequest = { if (!isRunningGgufDiag) showGgufDiagDialog = false },
+                        title = { Text("🔬 GGUF Native Diagnostics") },
+                        text = {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (isRunningGgufDiag) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                        Text(
+                                            "Running native GGUF diagnostics (inspect → load → prompt decode → token generation → free)...",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                } else if (ggufDiagReport != null) {
+                                    val rep = ggufDiagReport!!
+                                    Text(
+                                        rep.toMarkdown(),
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            if (!isRunningGgufDiag) {
+                                TextButton(onClick = { showGgufDiagDialog = false }) {
+                                    Text("Close")
+                                }
+                            }
+                        },
+                        dismissButton = {
+                            if (!isRunningGgufDiag && ggufDiagReport != null) {
+                                val clipboard = LocalClipboardManager.current
+                                TextButton(onClick = {
+                                    clipboard.setText(AnnotatedString(ggufDiagReport!!.toMarkdown()))
+                                }) {
+                                    Text("Copy Report")
+                                }
+                            }
+                        }
+                    )
+                }
+
+                if (model.status == ModelStatus.Available && model.localPath != null && ChatRuntimePolicy.isGgufModel(model.fileName)) {
+                    LiquidGlassButton(
+                        onClick = {
+                            showGgufDiagDialog = true
+                            isRunningGgufDiag = true
+                            ggufDiagReport = null
+                            diagScope.launch {
+                                val rep = GgufDiagnosticRunner.runDiagnostics(context, model.localPath!!)
+                                ggufDiagReport = rep
+                                isRunningGgufDiag = false
+                            }
+                        },
+                        hazeState = hazeState,
+                        modifier = Modifier.height(40.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                    ) {
+                        Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Diag")
                     }
                 }
 

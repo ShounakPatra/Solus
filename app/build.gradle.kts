@@ -23,10 +23,14 @@ android {
         applicationId = "com.shounak.localmeshai"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.5.0"
+        versionCode = 6
+        versionName = "2.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters.addAll(listOf("arm64-v8a", "x86_64"))
+        }
     }
 
     val debugKeystoreFile = file("${rootDir}/debug.keystore")
@@ -76,6 +80,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     val sdkDirString = project.findProperty("sdk.dir")?.toString()
@@ -129,6 +134,7 @@ dependencies {
     implementation(libs.pdfbox.android)
     implementation(libs.haze)
     implementation(libs.haze.materials)
+    implementation(libs.okhttp)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
@@ -138,3 +144,8 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 }
+
+tasks.matching { it.name.contains("AarMetadata") }.configureEach {
+    enabled = false
+}
+

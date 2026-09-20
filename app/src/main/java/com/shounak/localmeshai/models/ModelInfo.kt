@@ -44,6 +44,13 @@ data class ModelInfo(
     val supportsAudioInput: Boolean = false,
     val supportsThinkingMode: Boolean = false,
     val contextWindowTokens: Int? = null,
+    val sha256: String? = null,
+    /**
+     * Expected file size in bytes for GGUF artifact validation. 0 = no size check.
+     * Used to detect if a wrong variant (e.g. Q4_0 instead of Q4_K_M) was downloaded.
+     * Tolerance is ±5% to accommodate minor re-uploads to HuggingFace.
+     */
+    val expectedFileSizeBytes: Long = 0L,
     val progress: Float = 0f,
     val downloadedBytes: Long = 0L,
     val totalBytes: Long = -1L,

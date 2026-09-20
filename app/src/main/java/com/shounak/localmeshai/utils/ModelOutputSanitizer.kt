@@ -12,7 +12,8 @@ object ModelOutputSanitizer {
     private const val SENTENCEPIECE_SPACE = '\u2581'
 
     private val specialTokenRegex = Regex(
-        pattern = """<\|(?:im_start|im_end|begin_of_text|end_of_text|endoftext)\|>|<(?:bos|eos|start_of_turn|end_of_turn)>|<\s*/?s\s*>""",
+        // ChatML tokens, Llama 2/3 BOS/EOS, Llama 3 header/turn tokens, generic <s>/<\s>
+        pattern = """\<\|(?:im_start|im_end|begin_of_text|end_of_text|endoftext|eot_id|start_header_id|end_header_id)\|\>|<(?:bos|eos|start_of_turn|end_of_turn)>|<\s*/?s\s*>""",
         option = RegexOption.IGNORE_CASE
     )
     private val assistantRoleLineRegex = Regex(

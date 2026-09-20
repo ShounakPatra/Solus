@@ -17,7 +17,8 @@ data class AppSettingsData(
     val enableSolusBench: Boolean = true,
     val enableAutoHideBottomBar: Boolean = false,
     val autoUnloadMinutes: Int = 15,
-    val huggingFaceToken: String = ""
+    val huggingFaceToken: String = "",
+    val autoCheckUpdates: Boolean = true
 )
 
 class AppSettings private constructor(context: Context) {
@@ -38,7 +39,8 @@ class AppSettings private constructor(context: Context) {
             enableSolusBench = prefs.getBoolean(KEY_SOLUS_BENCH, true),
             enableAutoHideBottomBar = prefs.getBoolean(KEY_AUTO_HIDE_BOTTOM_BAR, false),
             autoUnloadMinutes = prefs.getInt(KEY_AUTO_UNLOAD_MINS, 15),
-            huggingFaceToken = prefs.getString(KEY_HF_TOKEN, "").orEmpty()
+            huggingFaceToken = prefs.getString(KEY_HF_TOKEN, "").orEmpty(),
+            autoCheckUpdates = prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true)
         )
     }
 
@@ -56,6 +58,7 @@ class AppSettings private constructor(context: Context) {
             .putBoolean(KEY_AUTO_HIDE_BOTTOM_BAR, updated.enableAutoHideBottomBar)
             .putInt(KEY_AUTO_UNLOAD_MINS, updated.autoUnloadMinutes)
             .putString(KEY_HF_TOKEN, updated.huggingFaceToken)
+            .putBoolean(KEY_AUTO_CHECK_UPDATES, updated.autoCheckUpdates)
             .apply()
         _settings.value = updated
     }
@@ -72,6 +75,7 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_AUTO_HIDE_BOTTOM_BAR = "auto_hide_bottom_bar"
         private const val KEY_AUTO_UNLOAD_MINS = "auto_unload_minutes"
         private const val KEY_HF_TOKEN = "hf_read_token"
+        private const val KEY_AUTO_CHECK_UPDATES = "auto_check_updates"
 
         @Volatile
         private var INSTANCE: AppSettings? = null

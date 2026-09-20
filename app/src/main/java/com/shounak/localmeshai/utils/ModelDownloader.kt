@@ -7,15 +7,18 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
-import java.net.HttpURLConnection
 import java.net.URI
-import java.net.URL
+import java.security.MessageDigest
 import java.util.Locale
-import java.util.zip.ZipInputStream
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipFile
+import java.util.zip.ZipInputStream
 import kotlin.coroutines.coroutineContext
 
 data class DownloadProgress(
@@ -69,6 +72,7 @@ class ModelDownloader(private val context: Context) {
         fileName: String,
         packageType: ModelPackage,
         bearerToken: String?,
+        expectedSha256: String? = null,
         onProgress: suspend (DownloadProgress) -> Unit
     ): DownloadResult = withContext(Dispatchers.IO) {
         var retryCount = 0
@@ -80,6 +84,7 @@ class ModelDownloader(private val context: Context) {
                     fileName = fileName,
                     packageType = packageType,
                     bearerToken = bearerToken,
+                    expectedSha256 = expectedSha256,
                     onProgress = onProgress
                 )
             } catch (exception: IOException) {
@@ -103,42 +108,79 @@ class ModelDownloader(private val context: Context) {
         throw IOException("Download retry loop exited unexpectedly.")
     }
 
+    private val httpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(CONNECT_TIMEOUT_MS.toLong(), TimeUnit.MILLISECONDS)
+            .readTimeout(READ_TIMEOUT_MS.toLong(), TimeUnit.MILLISECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+    }
+
     private suspend fun downloadModelOnce(
         url: String,
         modelId: String,
         fileName: String,
         packageType: ModelPackage,
         bearerToken: String?,
+        expectedSha256: String? = null,
         onProgress: suspend (DownloadProgress) -> Unit
     ): DownloadResult {
+        if (!url.startsWith("https://", ignoreCase = true)) {
+            throw IOException("Insecure HTTP connections are blocked for model downloads. URL must use HTTPS.")
+        }
+
         val target = getTargetFile(modelId, fileName, packageType)
         val tempFile = modelRoot.resolve("$modelId.download")
         val existingBytes = tempFile.takeIf { it.exists() }?.length()?.takeIf { it > 0L } ?: 0L
-        val connection = openConnection(url, bearerToken, rangeStart = existingBytes.takeIf { it > 0L })
-        val responseCode = connection.responseCode
 
-        if (responseCode !in 200..299) {
-            val serverMessage = readServerMessage(connection)
-            connection.disconnect()
+        val requestBuilder = Request.Builder()
+            .url(url)
+            .header("Accept", "application/octet-stream")
+            .header("Accept-Encoding", "identity")
+            .header("User-Agent", "Solus/1.0 Android")
+
+        if (existingBytes > 0L) {
+            requestBuilder.header("Range", "bytes=$existingBytes-")
+        }
+        val uri = runCatching { URI(url) }.getOrNull()
+        if (!bearerToken.isNullOrBlank() && uri?.host?.endsWith("huggingface.co") == true) {
+            requestBuilder.header("Authorization", "Bearer ${bearerToken.trim()}")
+        }
+
+        val call = httpClient.newCall(requestBuilder.build())
+        val response = call.execute()
+
+        val responseCode = response.code
+        if (!response.isSuccessful) {
+            val serverMessage = runCatching {
+                response.body.string().lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(MAX_ERROR_MESSAGE_CHARS)
+            }.getOrDefault("")
+            response.close()
             throw IOException(downloadErrorMessage(url, responseCode, serverMessage))
         }
 
-        val contentType = connection.contentType.orEmpty().lowercase(Locale.US)
+        val body = response.body
+
+        val contentType = response.header("Content-Type").orEmpty().lowercase(Locale.US)
         if (contentType.contains("text/html") || contentType.contains("application/json")) {
-            val serverMessage = readServerMessage(connection)
-            connection.disconnect()
+            val serverMessage = runCatching {
+                body.string().lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(MAX_ERROR_MESSAGE_CHARS)
+            }.getOrDefault("")
+            response.close()
             throw IOException("Model host returned a web page instead of a model file. $serverMessage")
         }
 
-        val append = existingBytes > 0L && responseCode == HttpURLConnection.HTTP_PARTIAL
+        val append = existingBytes > 0L && responseCode == 206
         if (existingBytes > 0L && !append) {
             tempFile.delete()
         }
 
-        val totalBytes = if (append && connection.contentLengthLong > 0L) {
-            existingBytes + connection.contentLengthLong
+        val contentLength = body.contentLength()
+        val totalBytes = if (append && contentLength > 0L) {
+            existingBytes + contentLength
         } else {
-            connection.contentLengthLong
+            contentLength
         }
         var downloaded = if (append) existingBytes else 0L
         val startedAt = System.currentTimeMillis()
@@ -171,21 +213,23 @@ class ModelDownloader(private val context: Context) {
         emitProgress(force = true)
 
         try {
-            connection.inputStream.use { input ->
-                FileOutputStream(tempFile, append).use { output ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        val read = input.read(buffer)
-                        if (read == -1) break
-                        output.write(buffer, 0, read)
-                        downloaded += read
-                        emitProgress()
+            response.use { resp ->
+                resp.body.byteStream().use { input ->
+                    FileOutputStream(tempFile, append).use { output ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            val read = input.read(buffer)
+                            if (read == -1) break
+                            output.write(buffer, 0, read)
+                            downloaded += read
+                            emitProgress()
+                        }
                     }
                 }
             }
         } finally {
-            connection.disconnect()
+            call.cancel()
         }
         emitProgress(force = true)
 
@@ -205,6 +249,14 @@ class ModelDownloader(private val context: Context) {
             val message = invalidTaskFileMessage(tempFile)
             tempFile.delete()
             throw IOException(message)
+        }
+
+        if (!expectedSha256.isNullOrBlank()) {
+            val actualSha256 = computeSha256(tempFile)
+            if (!actualSha256.equals(expectedSha256.trim(), ignoreCase = true)) {
+                tempFile.delete()
+                throw IOException("SHA-256 checksum verification failed. Expected: ${expectedSha256.trim()}, Actual: $actualSha256")
+            }
         }
 
         val localPath = when (packageType) {
@@ -227,52 +279,6 @@ class ModelDownloader(private val context: Context) {
         }
 
         return DownloadResult(localPath = localPath, bytesDownloaded = downloaded)
-    }
-
-    private fun openConnection(
-        downloadUrl: String,
-        bearerToken: String?,
-        redirects: Int = 0,
-        rangeStart: Long? = null
-    ): HttpURLConnection {
-        if (redirects > MAX_REDIRECTS) {
-            throw IOException("Too many redirects while downloading model.")
-        }
-
-        val url = URL(downloadUrl)
-        if (!url.protocol.equals("https", ignoreCase = true)) {
-            throw IOException("Insecure HTTP connections are blocked for model downloads. URL must use HTTPS.")
-        }
-
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
-            instanceFollowRedirects = false
-            requestMethod = "GET"
-            setRequestProperty("Accept", "application/octet-stream")
-            setRequestProperty("Accept-Encoding", "identity")
-            setRequestProperty("User-Agent", "Solus/1.0 Android")
-            if (rangeStart != null && rangeStart > 0L) {
-                setRequestProperty("Range", "bytes=$rangeStart-")
-            }
-            if (!bearerToken.isNullOrBlank() && url.host.endsWith("huggingface.co")) {
-                setRequestProperty("Authorization", "Bearer ${bearerToken.trim()}")
-            }
-        }
-
-        val responseCode = connection.responseCode
-        if (responseCode in 300..399) {
-            val location = connection.getHeaderField("Location")
-                ?: throw IOException("Download redirect did not include a destination.")
-            connection.disconnect()
-            val redirectedUrl = URL(url, location)
-            if (!redirectedUrl.protocol.equals("https", ignoreCase = true)) {
-                throw IOException("Insecure HTTP redirect blocked. Model download must remain on HTTPS.")
-            }
-            return openConnection(redirectedUrl.toString(), bearerToken, redirects + 1, rangeStart)
-        }
-
-        return connection
     }
 
     private fun unzipModel(zipFile: File, targetDirectory: File) {
@@ -327,19 +333,10 @@ class ModelDownloader(private val context: Context) {
         return canonicalResolved
     }
 
-    private fun readServerMessage(connection: HttpURLConnection): String {
-        return runCatching {
-            val stream = connection.errorStream ?: connection.inputStream
-            stream.bufferedReader().use { reader ->
-                reader.readText().lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
-            }.take(MAX_ERROR_MESSAGE_CHARS)
-        }.getOrDefault("")
-    }
-
     private fun downloadErrorMessage(url: String, responseCode: Int, serverMessage: String): String {
         val suffix = serverMessage.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()
         return when {
-            responseCode == HttpURLConnection.HTTP_UNAUTHORIZED || responseCode == HttpURLConnection.HTTP_FORBIDDEN -> {
+            responseCode == 401 || responseCode == 403 -> {
                 if (url.contains("huggingface.co")) {
                     val pageInstruction = huggingFaceModelPageUrl(url)
                         ?.let { " Visit $it to ask for access." }
@@ -349,7 +346,7 @@ class ModelDownloader(private val context: Context) {
                     "Server denied the model download (HTTP $responseCode).$suffix"
                 }
             }
-            responseCode == HttpURLConnection.HTTP_NOT_FOUND -> "Model file was not found at the configured URL.$suffix"
+            responseCode == 404 -> "Model file was not found at the configured URL.$suffix"
             else -> "Model download failed with HTTP $responseCode.$suffix"
         }
     }
@@ -401,6 +398,36 @@ class ModelDownloader(private val context: Context) {
         private const val SPEED_SAMPLE_INTERVAL_MS = 500L
         private const val MAX_DOWNLOAD_RETRIES = 5
         private const val RETRY_BASE_DELAY_MS = 1_500L
+
+        fun computeSha256(file: File): String {
+            if (!file.exists() || !file.isFile) {
+                throw IOException("Cannot compute checksum: file does not exist or is not a regular file")
+            }
+            val digest = MessageDigest.getInstance("SHA-256")
+            FileInputStream(file).use { fis ->
+                val buffer = ByteArray(64 * 1024)
+                var bytesRead: Int
+                while (fis.read(buffer).also { bytesRead = it } != -1) {
+                    digest.update(buffer, 0, bytesRead)
+                }
+            }
+            val hashBytes = digest.digest()
+            val sb = java.lang.StringBuilder(hashBytes.size * 2)
+            for (b in hashBytes) {
+                sb.append(String.format(Locale.US, "%02x", b))
+            }
+            return sb.toString()
+        }
+
+        fun verifyFileSha256(file: File, expectedSha256: String): Boolean {
+            if (expectedSha256.isBlank()) return true
+            return try {
+                val actual = computeSha256(file)
+                actual.equals(expectedSha256.trim(), ignoreCase = true)
+            } catch (_: Exception) {
+                false
+            }
+        }
 
         fun isLikelyTaskBundle(file: File): Boolean {
             if (!file.isFile || file.length() < 4L) return false

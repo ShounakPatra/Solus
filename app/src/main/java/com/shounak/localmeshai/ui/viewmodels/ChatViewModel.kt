@@ -193,6 +193,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         // Do NOT saveCurrentSession() here — the placeholder "Generating…" must
         // never be persisted. The session is saved only after a real response arrives.
 
+        val targetSessionId = _currentSessionId.value
         val thinkingModeForRequest = _thinkingMode.value
         generationJob = viewModelScope.launch {
             _isGenerating.value = true
@@ -205,7 +206,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     val waitMs = 33L - (now - lastUiUpdateAt)
                     if (waitMs > 0L) delay(waitMs)
                     lastUiUpdateAt = System.currentTimeMillis()
-                    if (assistantIndex < messages.size) {
+                    if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
                         val current = messages[assistantIndex]
                         val cleanPartial = ModelOutputSanitizer.cleanAssistantText(partial, userText)
                         val visiblePartial = if (
@@ -223,6 +224,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             try {
                 val prompt = buildPrompt(userText)
+                val structuredMessages = buildStructuredHistory(userText)
                 val modeChangedInStatefulThinkingRuntime =
                     lastRuntimeThinkingMode?.let { it != thinkingModeForRequest } == true &&
                         inferenceManager.needsResetWhenThinkingModeChanges()
@@ -237,6 +239,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     inferenceManager.generateResponseStreaming(
                         prompt = prompt,
                         rawUserText = userText,
+                        structuredMessages = structuredMessages,
                         restoreStatefulHistory = shouldResetRuntimeConversation,
                         thinkingMode = thinkingModeForRequest
                     ) { partial ->
@@ -245,33 +248,35 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 lastRuntimeThinkingMode = thinkingModeForRequest
 
-                launch(Dispatchers.Main.immediate) {
-                    if (assistantIndex < messages.size) {
-                        val current = messages[assistantIndex].text
-                        val finalResponse = resolveFinalAssistantText(
-                            response = response,
-                            current = current,
-                            thinkingMode = thinkingModeForRequest,
-                            userText = userText
-                        )
-                        val currentMessage = messages[assistantIndex]
-                        messages[assistantIndex] = currentMessage.copy(
-                            text = finalResponse.ifBlank { GENERATION_FAILURE_TEXT }
-                        )
-                        saveCurrentSession()
+                if (!inferenceManager.isStopRequested && _isGenerating.value) {
+                    launch(Dispatchers.Main.immediate) {
+                        if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
+                            val current = messages[assistantIndex].text
+                            val finalResponse = resolveFinalAssistantText(
+                                response = response,
+                                current = current,
+                                thinkingMode = thinkingModeForRequest,
+                                userText = userText
+                            )
+                            val currentMessage = messages[assistantIndex]
+                            messages[assistantIndex] = currentMessage.copy(
+                                text = finalResponse.ifBlank { GENERATION_FAILURE_TEXT }
+                            )
+                            saveCurrentSession()
+                        }
                     }
-                }
-                _lastInferenceTime.value = duration
-                _tokensPerSecond.value = if (duration > 0L) {
-                    estimateTokenCount(response) * 1000f / duration.toFloat()
-                } else {
-                    0f
+                    _lastInferenceTime.value = duration
+                    _tokensPerSecond.value = if (duration > 0L) {
+                        estimateTokenCount(response) * 1000f / duration.toFloat()
+                    } else {
+                        0f
+                    }
                 }
             } catch (exception: CancellationException) {
                 Log.i("ChatViewModel", "Inference stopped", exception)
                 resetRuntimeConversationBeforeNextSend = true
-                if (assistantIndex < messages.size) {
-                    viewModelScope.launch(Dispatchers.Main.immediate) {
+                if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
+                    launch(Dispatchers.Main.immediate) {
                         val current = messages[assistantIndex].text
                         // Preserve partial streamed text; only replace pure placeholders.
                         val finalText = if (current == "Generating…" || current == "…" || current.isBlank()) {
@@ -284,12 +289,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } catch (t: Throwable) {
-                Log.e("ChatViewModel", "Inference error", t)
-                resetRuntimeConversationBeforeNextSend = true
-                if (assistantIndex < messages.size) {
-                    viewModelScope.launch(Dispatchers.Main.immediate) {
-                        messages[assistantIndex] = messages[assistantIndex].copy(text = "⚠️ Error: ${t.message}")
-                        saveCurrentSession()
+                if (inferenceManager.isStopRequested) {
+                    Log.i("ChatViewModel", "Inference error ignored because stop was requested", t)
+                    resetRuntimeConversationBeforeNextSend = true
+                } else {
+                    Log.e("ChatViewModel", "Inference error", t)
+                    resetRuntimeConversationBeforeNextSend = true
+                    if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
+                        launch(Dispatchers.Main.immediate) {
+                            messages[assistantIndex] = messages[assistantIndex].copy(text = "⚠️ Error: ${t.message}")
+                            saveCurrentSession()
+                        }
                     }
                 }
             } finally {
@@ -302,9 +312,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopGenerating() {
+        if (!_isGenerating.value) return
+        _isGenerating.value = false
         resetRuntimeConversationBeforeNextSend = true
         inferenceManager.cancelGeneration()
         generationJob?.cancel()
+
+        // Immediately update UI state on the main thread
+        val assistantIndex = messages.indexOfLast { !it.isUser }
+        if (assistantIndex >= 0 && assistantIndex < messages.size) {
+            val current = messages[assistantIndex].text
+            val finalText = if (current == "Generating…" || current == "…" || current.isBlank()) {
+                "Stopped."
+            } else {
+                ModelOutputSanitizer.clean(current)
+            }
+            messages[assistantIndex] = messages[assistantIndex].copy(text = finalText)
+            saveCurrentSession()
+        }
     }
 
     fun uninitializeModel() {
@@ -312,7 +337,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startNewChat() {
-        stopGenerating()
+        if (_isGenerating.value) {
+            stopGenerating()
+        }
         saveCurrentSession()
         messages.clear()
         _currentSessionId.value = null
@@ -326,6 +353,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectChatSession(sessionId: String) {
         if (sessionId == _currentSessionId.value) return
+        if (_isGenerating.value) {
+            stopGenerating()
+        }
         saveCurrentSession()
         val session = chatSessions.firstOrNull { it.id == sessionId } ?: return
         messages.clear()
@@ -363,6 +393,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteChatSession(sessionId: String) {
+        if (sessionId == _currentSessionId.value && _isGenerating.value) {
+            stopGenerating()
+        }
         val removingCurrent = sessionId == _currentSessionId.value
         val removingPending = sessionId == _pendingSessionId.value
         chatSessions.removeAll { it.id == sessionId }
@@ -381,6 +414,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearHistory() {
+        if (_isGenerating.value) {
+            stopGenerating()
+        }
         chatSessions.clear()
         messages.clear()
         _currentSessionId.value = null
@@ -491,6 +527,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         historyPrefs.edit().putString(KEY_SESSIONS, array.toString()).apply()
     }
 
+    private fun buildStructuredHistory(latestUserText: String): List<Pair<String, String>> {
+        val turns = mutableListOf<Pair<String, String>>()
+        messages
+            .dropLast(2)
+            .takeLast(12)
+            .forEach { message ->
+                val cleanText = message.text.toPromptText(message.isUser)
+                if (cleanText.isNotBlank()) {
+                    val role = if (message.isUser) "user" else "assistant"
+                    turns.add(role to cleanText)
+                }
+            }
+        turns.add("user" to latestUserText.trim())
+        return turns
+    }
+
     private fun buildPrompt(latestUserText: String): String {
         val previousTurns = messages
             .dropLast(2)
@@ -577,23 +629,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             ModelOutputSanitizer.clean(response).trim()
         }
-        val normalizedResponse = ModelOutputSanitizer.cleanAssistantText(
-            normalizedResponseRaw,
-            userText
-        )
-        if (normalizedResponse.isUsableAssistantText()) {
-            return normalizedResponse
+        val normalizedResponse = if (thinkingMode) {
+            normalizedResponseRaw
+        } else {
+            ThinkingTextUtils.finalResponseOrReasoning(normalizedResponseRaw)
         }
-
-        val normalizedCurrent = ModelOutputSanitizer.cleanAssistantText(
-            ThinkingTextUtils.normalizeFinalOutput(current),
-            userText
-        )
-        if (normalizedCurrent.isUsableAssistantText()) {
-            return normalizedCurrent
+        val normalizedCurrent = ModelOutputSanitizer.clean(current).trim()
+        return when {
+            normalizedResponse.isUsableAssistantText() -> normalizedResponse
+            normalizedCurrent.isUsableAssistantText() -> normalizedCurrent
+            else -> ""
         }
-
-        return ""
     }
 
     private fun String.isUsableAssistantText(): Boolean {
@@ -611,6 +657,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             "Generating…",
             "Generating...",
             "…",
+            "Stopped.",
             "Reading input…",
             "Reading input...",
             GENERATION_FAILURE_TEXT

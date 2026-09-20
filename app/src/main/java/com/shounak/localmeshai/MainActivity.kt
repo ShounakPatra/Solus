@@ -101,12 +101,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
-        // Bundle the Emoji 16 font so user prompts and model responses render
-        // consistently even on phones without a downloadable emoji provider.
-        EmojiCompat.init(
-            BundledEmojiCompatConfig(this)
-                .setReplaceAll(true)
-        )
+        // Offload font bundling to background so it doesn't block the main UI thread during startup.
+        lifecycleScope.launch(Dispatchers.Default) {
+            runCatching {
+                EmojiCompat.init(
+                    BundledEmojiCompatConfig(this@MainActivity)
+                        .setReplaceAll(false)
+                )
+            }
+        }
         InitCrashGuard.checkAndRecoverCrash(this)
         lifecycleScope.launch(Dispatchers.IO) {
             LiteRtRuntimeCache.pruneOnStartup(this@MainActivity)
@@ -441,7 +444,7 @@ private fun LiquidBottomNav(
             .widthIn(max = 420.dp)
             .height(84.dp)
             .fluidReveal(delayMillis = 120, initialYOffset = 18.dp)
-            .animatedGlassHalo(alpha = 0.055f, durationMillis = 5_200)
+            .animatedGlassHalo(shape = RoundedCornerShape(26.dp), alpha = 0.055f, durationMillis = 5_200)
             .onSizeChanged { containerWidthPx = it.width.toFloat() }
             .pointerInput(items.size, selectedIndex, containerWidthPx) {
                 var dragStartedOnIndicator = false
@@ -554,7 +557,7 @@ private fun LiquidTopBar(
                 .fillMaxWidth()
                 .height(56.dp)
                 .fluidReveal(initialYOffset = 10.dp)
-                .animatedGlassHalo(alpha = 0.05f, durationMillis = 4_700),
+                .animatedGlassHalo(shape = RoundedCornerShape(16.dp), alpha = 0.05f, durationMillis = 4_700),
             hazeState = hazeState,
             cornerRadius = 16.dp,
             refractionHeight = 24.dp,

@@ -136,7 +136,8 @@ class ModelDownloadService : Service() {
                     modelId = spec.modelId,
                     fileName = spec.fileName,
                     packageType = spec.packageType,
-                    bearerToken = spec.bearerToken
+                    bearerToken = spec.bearerToken,
+                    expectedSha256 = spec.sha256
                 ) { progress ->
                     val snapshot = DownloadSnapshot(
                         modelId = spec.modelId,
@@ -216,11 +217,7 @@ class ModelDownloadService : Service() {
                     progress = previous?.progress ?: 0f,
                     downloadedBytes = partialBytes,
                     totalBytes = previous?.totalBytes ?: -1L,
-                    errorMessage = if (isResumable) {
-                        "Download paused after an interruption. Tap Resume to continue."
-                    } else {
-                        exception.message ?: "Download failed"
-                    }
+                    errorMessage = exception.message ?: "Download failed"
                 )
                 DownloadStateStore.update(failureSnapshot)
                 if (isResumable) {
@@ -229,7 +226,7 @@ class ModelDownloadService : Service() {
                         buildProgressNotification(
                             spec = spec,
                             title = spec.name,
-                            text = "Download paused — tap Resume to continue",
+                            text = "Download interrupted — tap Retry to continue",
                             progress = (failureSnapshot.progress * 100f).toInt(),
                             indeterminate = failureSnapshot.totalBytes <= 0L,
                             ongoing = false,
@@ -500,7 +497,8 @@ class ModelDownloadService : Service() {
             url = url,
             fileName = fileName,
             packageType = ModelPackage.valueOf(packageTypeName),
-            bearerToken = getStringExtra(EXTRA_TOKEN)?.ifBlank { null }
+            bearerToken = getStringExtra(EXTRA_TOKEN)?.ifBlank { null },
+            sha256 = getStringExtra(EXTRA_SHA256)?.ifBlank { null }
         )
     }
 
@@ -525,7 +523,8 @@ class ModelDownloadService : Service() {
         val url: String,
         val fileName: String,
         val packageType: ModelPackage,
-        val bearerToken: String?
+        val bearerToken: String?,
+        val sha256: String? = null
     )
 
     companion object {
@@ -541,8 +540,18 @@ class ModelDownloadService : Service() {
         private const val EXTRA_FILE_NAME = "file_name"
         private const val EXTRA_PACKAGE_TYPE = "package_type"
         private const val EXTRA_TOKEN = "token"
+        private const val EXTRA_SHA256 = "sha256"
 
-        fun start(context: Context, modelId: String, name: String, url: String, fileName: String, packageType: ModelPackage, token: String?) {
+        fun start(
+            context: Context,
+            modelId: String,
+            name: String,
+            url: String,
+            fileName: String,
+            packageType: ModelPackage,
+            token: String?,
+            sha256: String? = null
+        ) {
             val intent = Intent(context, ModelDownloadService::class.java)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_MODEL_ID, modelId)
@@ -551,6 +560,7 @@ class ModelDownloadService : Service() {
                 .putExtra(EXTRA_FILE_NAME, fileName)
                 .putExtra(EXTRA_PACKAGE_TYPE, packageType.name)
                 .putExtra(EXTRA_TOKEN, token)
+                .putExtra(EXTRA_SHA256, sha256)
             androidx.core.content.ContextCompat.startForegroundService(context, intent)
         }
 
@@ -569,7 +579,8 @@ class ModelDownloadService : Service() {
             url: String,
             fileName: String,
             packageType: ModelPackage,
-            token: String?
+            token: String?,
+            sha256: String? = null
         ) {
             context.startService(
                 Intent(context, ModelDownloadService::class.java)
@@ -580,11 +591,21 @@ class ModelDownloadService : Service() {
                     .putExtra(EXTRA_FILE_NAME, fileName)
                     .putExtra(EXTRA_PACKAGE_TYPE, packageType.name)
                     .putExtra(EXTRA_TOKEN, token)
+                    .putExtra(EXTRA_SHA256, sha256)
             )
         }
 
-        fun resume(context: Context, modelId: String, name: String, url: String, fileName: String, packageType: ModelPackage, token: String?) {
-            start(context, modelId, name, url, fileName, packageType, token)
+        fun resume(
+            context: Context,
+            modelId: String,
+            name: String,
+            url: String,
+            fileName: String,
+            packageType: ModelPackage,
+            token: String?,
+            sha256: String? = null
+        ) {
+            start(context, modelId, name, url, fileName, packageType, token, sha256)
         }
     }
 }

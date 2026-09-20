@@ -23,6 +23,7 @@ latexRenderer = "1.4.7"
 firebaseCrashlytics = "20.1.0"
 googleGmsGoogleServices = "4.5.0"
 googleFirebaseCrashlytics = "3.0.7"
+okhttp = "5.5.0"
 
 [libraries]
 haze = { group = "dev.chrisbanes.haze", name = "haze", version.ref = "haze" }
@@ -58,6 +59,7 @@ latex-base = { module = "io.github.huarangmeng:latex-base", version.ref = "latex
 latex-parser = { module = "io.github.huarangmeng:latex-parser", version.ref = "latexRenderer" }
 latex-renderer = { module = "io.github.huarangmeng:latex-renderer", version.ref = "latexRenderer" }
 firebase-crashlytics = { group = "com.google.firebase", name = "firebase-crashlytics", version.ref = "firebaseCrashlytics" }
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

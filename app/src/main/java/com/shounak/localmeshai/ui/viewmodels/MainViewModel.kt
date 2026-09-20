@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.shounak.localmeshai.ai.LlamaCppEngine
 import com.shounak.localmeshai.models.ModelCatalog
 import com.shounak.localmeshai.models.ModelInfo
 import com.shounak.localmeshai.models.ModelPackage
@@ -44,6 +45,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val availableModels = mutableStateListOf(*ModelCatalog.defaultModels.toTypedArray())
     val unsafeInitOverrideIds = mutableStateListOf<String>()
 
+    private val _updateState = MutableStateFlow<com.shounak.localmeshai.utils.AppUpdateManager.UpdateCheckResult?>(null)
+    val updateState = _updateState.asStateFlow()
+
+    private val _isCheckingForUpdates = MutableStateFlow(false)
+    val isCheckingForUpdates = _isCheckingForUpdates.asStateFlow()
+
     init {
         DownloadStateStore.initialize(application)
         ModelRuntimeCoordinator.setReleasedCallback(ModelRuntimeOwner.Chat) {
@@ -52,13 +59,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ModelRuntimeCoordinator.setReleasedCallback(ModelRuntimeOwner.Vision) {
             clearSelectedVisionModel()
         }
-        checkLocalModels()
         applyDeviceModelGuards()
-        reconcilePersistedDownloads()
         observeDownloadState()
+
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            checkLocalModels()
+            reconcilePersistedDownloads()
+        }
+
+        if (appSettingsData.value.autoCheckUpdates) {
+            checkForUpdates(silent = true)
+        }
     }
 
-    private fun reconcilePersistedDownloads() {
+    fun checkForUpdates(silent: Boolean = false) {
+        if (_isCheckingForUpdates.value) return
+        viewModelScope.launch {
+            _isCheckingForUpdates.value = true
+            val result = com.shounak.localmeshai.utils.AppUpdateManager.checkForUpdates(
+                com.shounak.localmeshai.BuildConfig.VERSION_NAME
+            )
+            _isCheckingForUpdates.value = false
+            if (!silent || result is com.shounak.localmeshai.utils.AppUpdateManager.UpdateCheckResult.UpdateAvailable) {
+                _updateState.value = result
+            }
+        }
+    }
+
+    fun dismissUpdateState() {
+        _updateState.value = null
+    }
+
+    private suspend fun reconcilePersistedDownloads() = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         DownloadStateStore.snapshots.value.values.forEach { snapshot ->
             val model = availableModels.firstOrNull { it.id == snapshot.modelId } ?: return@forEach
             val target = modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
@@ -85,42 +117,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 url = downloadUrl,
                 fileName = model.fileName,
                 packageType = model.packageType,
-                token = _huggingFaceToken.value.ifBlank { null }
+                token = _huggingFaceToken.value.ifBlank { null },
+                sha256 = model.sha256
             )
         }
     }
 
-    private fun checkLocalModels() {
-        availableModels.forEachIndexed { index, model ->
-            if (model.isFuturePlaceholder) return@forEachIndexed
-            val target = modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
-            if (target.exists() && (target.isDirectory || target.length() > 0L)) {
-                val validationError = localModelValidationError(model, target)
-                if (validationError != null) {
-                    availableModels[index] = model.copy(
-                        status = ModelStatus.Failed,
-                        progress = 0f,
-                        localPath = null,
-                        errorMessage = validationError
-                    )
-                    return@forEachIndexed
+    private suspend fun checkLocalModels() {
+        val updates = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val list = mutableListOf<Pair<Int, ModelInfo>>()
+            availableModels.forEachIndexed { index, model ->
+                if (model.isFuturePlaceholder) return@forEachIndexed
+                val target = modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
+                if (target.exists() && (target.isDirectory || target.length() > 0L)) {
+                    val validationError = localModelValidationError(model, target)
+                    if (validationError != null) {
+                        list.add(index to model.copy(
+                            status = ModelStatus.Failed,
+                            progress = 0f,
+                            localPath = null,
+                            errorMessage = validationError
+                        ))
+                        return@forEachIndexed
+                    }
+                    if (canRetryBlockedModelOnLiteRtCpu(model)) {
+                        InitCrashGuard.unblockModel(getApplication(), model.id)
+                    }
+                    val blocked = InitCrashGuard.isModelBlocked(getApplication(), model.id)
+                    val deviceBlockMessage = deviceBlockMessage(model)
+                    val blockMessage = when {
+                        blocked -> InitCrashGuard.blockedModelMessage()
+                        deviceBlockMessage != null -> deviceBlockMessage
+                        else -> null
+                    }
+                    list.add(index to model.copy(
+                        status = if (blockMessage != null) ModelStatus.Blocked else ModelStatus.Available,
+                        progress = 1f,
+                        localPath = target.absolutePath,
+                        errorMessage = blockMessage
+                    ))
                 }
-                if (canRetryBlockedModelOnLiteRtCpu(model)) {
-                    InitCrashGuard.unblockModel(getApplication(), model.id)
+            }
+            list
+        }
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            updates.forEach { (index, updatedModel) ->
+                if (index in availableModels.indices) {
+                    availableModels[index] = updatedModel
                 }
-                val blocked = InitCrashGuard.isModelBlocked(getApplication(), model.id)
-                val deviceBlockMessage = deviceBlockMessage(model)
-                val blockMessage = when {
-                    blocked -> InitCrashGuard.blockedModelMessage()
-                    deviceBlockMessage != null -> deviceBlockMessage
-                    else -> null
-                }
-                availableModels[index] = model.copy(
-                    status = if (blockMessage != null) ModelStatus.Blocked else ModelStatus.Available,
-                    progress = 1f,
-                    localPath = target.absolutePath,
-                    errorMessage = blockMessage
-                )
             }
         }
     }
@@ -136,7 +180,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectTextModel(path: String) {
-        val modelType = availableModels.firstOrNull { it.localPath == path }?.type
+        val model = availableModels.firstOrNull { it.localPath == path }
+        if (model != null && (model.status == ModelStatus.Failed || model.status == ModelStatus.Blocked)) {
+            _selectedTextModelPath.value = null
+            return
+        }
+        val modelType = model?.type
         if (modelType == ModelType.Vision) {
             _selectedVisionModelPath.value = path
             _selectedTextModelPath.value = null
@@ -147,7 +196,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectVisionModel(path: String) {
-        val modelType = availableModels.firstOrNull { it.localPath == path }?.type
+        val model = availableModels.firstOrNull { it.localPath == path }
+        if (model != null && (model.status == ModelStatus.Failed || model.status == ModelStatus.Blocked)) {
+            _selectedVisionModelPath.value = null
+            return
+        }
+        val modelType = model?.type
         if (modelType == ModelType.Text) {
             _selectedTextModelPath.value = path
             _selectedVisionModelPath.value = null
@@ -250,7 +304,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             url = downloadUrl,
             fileName = model.fileName,
             packageType = model.packageType,
-            token = _huggingFaceToken.value.ifBlank { null }
+            token = _huggingFaceToken.value.ifBlank { null },
+            sha256 = model.sha256
         )
     }
 
@@ -366,21 +421,61 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun addCustomModel(name: String, url: String, type: ModelType) {
-        val cleanUrl = url.trim()
-        if (cleanUrl.isBlank()) return
-        val fileName = customTypedFileName(inferFileName(cleanUrl, type), type)
+    fun normalizeCustomModelUrl(input: String): String {
+        var clean = input.trim()
+        if (clean.isBlank()) return ""
+
+        // If it's a Hugging Face web URL with /blob/, replace /blob/ with /resolve/
+        if (clean.contains("huggingface.co", ignoreCase = true)) {
+            if (clean.contains("/blob/")) {
+                clean = clean.replace("/blob/", "/resolve/")
+            }
+            if (!clean.contains("?download=true") && !clean.contains("&download=true")) {
+                clean = if (clean.contains("?")) "$clean&download=true" else "$clean?download=true"
+            }
+            return clean
+        }
+
+        // Check if it matches shorthand "org/repo/filename"
+        val parts = clean.split("/")
+        if (parts.size >= 3 && !clean.startsWith("http://", ignoreCase = true) && !clean.startsWith("https://", ignoreCase = true)) {
+            val org = parts[0]
+            val repo = parts[1]
+            val rest = parts.drop(2).joinToString("/")
+            return "https://huggingface.co/$org/$repo/resolve/main/$rest?download=true"
+        }
+
+        return clean
+    }
+
+    fun addCustomModel(name: String, url: String, type: ModelType, sha256: String? = null) {
+        val normalizedUrl = normalizeCustomModelUrl(url)
+        if (normalizedUrl.isBlank()) return
+        val rawFileName = inferFileName(normalizedUrl, type)
+        val isGguf = rawFileName.endsWith(".gguf", ignoreCase = true)
+        val effectiveType = if (isGguf) ModelType.Text else type
+        val fileName = if (isGguf) rawFileName else customTypedFileName(rawFileName, effectiveType)
         val packageType = if (fileName.endsWith(".zip", ignoreCase = true)) {
             ModelPackage.ZipDirectory
         } else {
             ModelPackage.SingleFile
         }
-        // Mask off the sign bit so the id is always non-negative.
-        // Long.MIN_VALUE.absoluteValue is still Long.MIN_VALUE in Kotlin/Java,
-        // which would yield a negative model id and break equality checks.
-        val id = "custom_${type.name.lowercase()}_${cleanUrl.hashCode().toLong() and 0x7FFFFFFFFFFFFFFFL}"
+        val id = "custom_${effectiveType.name.lowercase()}_${normalizedUrl.hashCode().toLong() and 0x7FFFFFFFFFFFFFFFL}"
         val displayName = name.trim().ifBlank {
             fileName.substringBeforeLast('.').replace('-', ' ').replace('_', ' ')
+        }
+
+        val backendName = when {
+            isGguf -> "llama.cpp GGUF"
+            effectiveType == ModelType.Vision -> if (fileName.endsWith(".tflite", ignoreCase = true)) "TensorFlow Lite" else "On-device multimodal GPU"
+            fileName.endsWith(".litertlm", ignoreCase = true) -> "LiteRT-LM GPU"
+            else -> "MediaPipe LLM CPU-safe"
+        }
+
+        val descriptionText = when {
+            isGguf -> "Custom GGUF model running locally via native llama.cpp backend."
+            effectiveType == ModelType.Vision -> "User supplied image, audio, or multimodal model."
+            else -> "User supplied .task or .litertlm text model."
         }
 
         val model = ModelInfo(
@@ -388,21 +483,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             name = displayName,
             size = "Custom",
             status = ModelStatus.NotDownloaded,
-            type = type,
+            type = effectiveType,
             fileName = fileName,
             packageType = packageType,
-            description = if (type == ModelType.Vision) {
-                "User supplied image, audio, or multimodal model."
-            } else {
-                "User supplied .task or .litertlm text model."
-            },
-            backend = when (type) {
-                ModelType.Vision -> if (fileName.endsWith(".tflite", ignoreCase = true)) "TensorFlow Lite" else "On-device multimodal GPU"
-                ModelType.Text -> if (fileName.endsWith(".litertlm", ignoreCase = true)) "LiteRT-LM GPU" else "MediaPipe LLM CPU-safe"
-            },
-            deviceTarget = "8 GB RAM, Snapdragon 6+ or Dimensity 7000+",
-            url = cleanUrl,
-            requiresHuggingFaceToken = cleanUrl.contains("huggingface.co")
+            description = descriptionText,
+            backend = backendName,
+            deviceTarget = "All supported chipsets",
+            url = normalizedUrl,
+            sha256 = sha256?.trim()?.ifBlank { null },
+            requiresHuggingFaceToken = normalizedUrl.contains("huggingface.co")
         )
 
         val existingIndex = availableModels.indexOfFirst { it.id == id }
@@ -486,6 +575,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ) {
             return "This .task file does not look like a MediaPipe or LiteRT task bundle. Delete it and download a verified Android .task model."
         }
+        if (model.fileName.endsWith(".gguf", ignoreCase = true)) {
+            val ggufError = LlamaCppEngine.canLoadModel(target.absolutePath)
+            if (ggufError != null) {
+                return ggufError
+            }
+        }
         return null
     }
 
@@ -493,16 +588,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (model.isFuturePlaceholder) {
             return null
         }
-        if (!model.fileName.endsWith(".litertlm", ignoreCase = true)) return null
-        val (allowed, reason) = DeviceUtils.canInitializeLiteRtLm(
+        val (allowed, reason) = DeviceUtils.checkModelSafetyProfile(
             context = getApplication(),
-            modelId = model.id,
-            modelName = model.name,
-            modelSize = model.size,
-            isVision = model.type == ModelType.Vision,
-            fileName = model.fileName,
-            backendLabel = model.backend,
-            supportsAudioInput = model.supportsAudioInput
+            modelInfo = model
         )
         return reason.takeUnless { allowed || it.isBlank() }
     }
@@ -532,6 +620,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         return when {
+            baseName.endsWith(".gguf", ignoreCase = true) -> baseName
             baseName.endsWith(".task", ignoreCase = true) -> baseName
             baseName.endsWith(".litertlm", ignoreCase = true) -> baseName
             baseName.endsWith(".tflite", ignoreCase = true) -> baseName
@@ -544,6 +633,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val MIN_VALID_MODEL_BYTES = 1_000_000L
         private const val KEY_HF_TOKEN = "hugging_face_read_token"
+
+        fun normalizeCustomModelUrl(input: String): String {
+            var clean = input.trim()
+            if (clean.isBlank()) return ""
+
+            // If it's a Hugging Face web URL with /blob/, replace /blob/ with /resolve/
+            if (clean.contains("huggingface.co", ignoreCase = true)) {
+                if (clean.contains("/blob/")) {
+                    clean = clean.replace("/blob/", "/resolve/")
+                }
+                if (!clean.contains("?download=true") && !clean.contains("&download=true")) {
+                    clean = if (clean.contains("?")) "$clean&download=true" else "$clean?download=true"
+                }
+                return clean
+            }
+
+            // Check if it matches shorthand "org/repo/filename"
+            val parts = clean.split("/")
+            if (parts.size >= 3 && !clean.startsWith("http://", ignoreCase = true) && !clean.startsWith("https://", ignoreCase = true)) {
+                val org = parts[0]
+                val repo = parts[1]
+                val rest = parts.drop(2).joinToString("/")
+                return "https://huggingface.co/$org/$repo/resolve/main/$rest?download=true"
+            }
+
+            return clean
+        }
     }
 
     override fun onCleared() {

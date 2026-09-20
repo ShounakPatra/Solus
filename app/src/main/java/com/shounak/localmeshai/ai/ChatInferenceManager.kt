@@ -82,7 +82,12 @@ class ChatInferenceManager(private val context: Context) {
         modelId: String = "",
         modelName: String = "",
         modelSize: String = "",
-        allowUnsafeOverride: Boolean = false
+        allowUnsafeOverride: Boolean = false,
+        /**
+         * Expected GGUF file size in bytes for artifact integrity validation. 0L = no check.
+         * Pass [ModelInfo.expectedFileSizeBytes] from the catalog entry.
+         */
+        expectedFileSizeBytes: Long = 0L
     ) {
         val file = File(modelPath)
         if (!file.exists()) {
@@ -116,11 +121,23 @@ class ChatInferenceManager(private val context: Context) {
         isBeingClosed = false
 
         if (ChatRuntimePolicy.isGgufModel(file.name)) {
+            val paramsB = DeviceUtils.estimateModelParametersB(modelName.ifBlank { effectiveId }, modelSize)
+            val dynamicContext = DeviceUtils.recommendedContextWindow(context, paramsB)
+            val dynamicThreads = DeviceUtils.recommendedThreadCount(context)
+            val (nBatch, nUbatch) = DeviceUtils.recommendedBatchSize(context)
+
             val engine = LlamaCppEngine(context)
-            engine.initialize(modelPath = file.absolutePath)
+            engine.initialize(
+                modelPath = file.absolutePath,
+                threads = dynamicThreads,
+                contextWindow = dynamicContext,
+                nBatch = nBatch,
+                nUbatch = nUbatch,
+                expectedFileSizeBytes = expectedFileSizeBytes
+            )
             llamaCppEngine = engine
             runtime = RuntimeKind.LlamaCpp
-            Log.i(TAG, "LlamaCpp GGUF engine initialized for: ${file.name}")
+            Log.i(TAG, "LlamaCpp GGUF engine initialized for: ${file.name} (ctx: $dynamicContext, threads: $dynamicThreads, batch: $nBatch/$nUbatch)")
             return
         }
 
@@ -241,6 +258,7 @@ class ChatInferenceManager(private val context: Context) {
     suspend fun generateResponseStreaming(
         prompt: String,           // Full history blob — used by MediaPipe (stateless)
         rawUserText: String,      // Bare user message — used by LiteRT-LM (Conversation owns history)
+        structuredMessages: List<Pair<String, String>>? = null, // Structured conversation turns for GGUF
         restoreStatefulHistory: Boolean = false,
         thinkingMode: Boolean,
         onUpdate: (String) -> Unit
@@ -300,7 +318,12 @@ class ChatInferenceManager(private val context: Context) {
                     onUpdate = effectiveOnUpdate
                 )
                 RuntimeKind.MediaPipe -> streamMediaPipe(mediaPipePrompt, effectiveOnUpdate)
-                RuntimeKind.LlamaCpp -> streamLlamaCpp(inferencePrompt, effectiveOnUpdate)
+                RuntimeKind.LlamaCpp -> streamLlamaCpp(
+                    prompt = inferencePrompt,
+                    rawUserText = inferenceUserText,
+                    structuredMessages = structuredMessages,
+                    onUpdate = effectiveOnUpdate
+                )
                 RuntimeKind.None -> "Inference not initialized"
             }
             var cleanResponse = ModelOutputSanitizer.cleanAssistantText(
@@ -332,6 +355,7 @@ class ChatInferenceManager(private val context: Context) {
             }
             if (
                 runtime != RuntimeKind.None &&
+                runtime != RuntimeKind.LlamaCpp &&
                 rawUserText.isNotBlank() &&
                 !stopRequested &&
                 ModelResponseQuality.isGenericNonAnswer(cleanResponse, rawUserText)
@@ -347,7 +371,7 @@ class ChatInferenceManager(private val context: Context) {
                         seedSalt = 1
                     )
                     RuntimeKind.LiteRtLm -> streamDirectAnswerRetry(inferenceUserText, effectiveOnUpdate)
-                    RuntimeKind.LlamaCpp -> ""
+                    RuntimeKind.LlamaCpp -> streamDirectAnswerRetry(inferenceUserText, effectiveOnUpdate)
                     RuntimeKind.None -> ""
                 }
                 val retryCleanResponse = ModelOutputSanitizer.cleanAssistantText(
@@ -545,14 +569,26 @@ class ChatInferenceManager(private val context: Context) {
 
     private suspend fun streamLlamaCpp(
         prompt: String,
+        rawUserText: String = "",
+        structuredMessages: List<Pair<String, String>>? = null,
         onUpdate: (String) -> Unit
     ): String {
         val engine = llamaCppEngine ?: return "GGUF engine not initialized"
         val sb = StringBuilder()
-        engine.generateStream(prompt) { token ->
+        // Use structured messages directly when available.
+        // When they are absent (e.g. direct-answer retry), synthesise a single user turn
+        // from rawUserText. Never re-parse a pre-formatted text transcript back into roles —
+        // that approach misparses any user content that literally contains "User:", etc.
+        val messages: List<Pair<String, String>> = structuredMessages
+            ?: if (rawUserText.isNotBlank()) listOf("user" to rawUserText.trim())
+            else listOf("user" to prompt.trim())
+        val result = engine.generateStream(prompt = prompt, messages = messages) { token ->
             if (stopRequested) return@generateStream
             sb.append(token)
             onUpdate(ModelOutputSanitizer.clean(sb.toString()))
+        }
+        if (result == LlamaGenerationResult.Stopped || stopRequested) {
+            throw CancellationException("Generation stopped by user")
         }
         return sb.toString()
     }
@@ -591,7 +627,13 @@ class ChatInferenceManager(private val context: Context) {
                     seedSalt = 2
                 )
             }
-            RuntimeKind.LlamaCpp -> ""
+            RuntimeKind.LlamaCpp -> {
+                streamLlamaCpp(
+                    prompt = rawUserText,
+                    rawUserText = rawUserText,
+                    onUpdate = retryOnUpdate
+                )
+            }
             RuntimeKind.None -> ""
         }
     }
@@ -638,16 +680,11 @@ class ChatInferenceManager(private val context: Context) {
         firstResponse: String,
         retryResponse: String
     ): String {
-        val request = rawUserText.trim().lowercase(Locale.US)
-        return when {
-            request in setOf("hi", "hello", "hey", "hii", "yo") ->
-                "Hi! What would you like help with?"
-            request.contains("what can you do") || request.contains("what do you do") ->
-                "I can answer questions, explain concepts, summarize text, draft short writing, and help with simple code. For stronger answers, use a larger model such as Qwen 2.5 1.5B or Gemma 3 1B."
-            retryResponse.isNotBlank() -> retryResponse
-            else -> firstResponse
-        }
+        return if (retryResponse.isNotBlank()) retryResponse else firstResponse
     }
+
+    val isStopRequested: Boolean
+        get() = stopRequested
 
     fun needsResetWhenThinkingModeChanges(): Boolean {
         return runtime == RuntimeKind.LiteRtLm && isDefaultThinkingModel
@@ -655,6 +692,7 @@ class ChatInferenceManager(private val context: Context) {
 
     fun cancelGeneration() {
         stopRequested = true
+        llamaCppEngine?.stop()
         runCatching { liteRtConversation?.cancelProcess() }
         val session = activeMediaPipeSession
         if (session != null) {
@@ -706,6 +744,8 @@ class ChatInferenceManager(private val context: Context) {
         liteRtEngine = null
         LiteRtRuntimeCache.clear(context, liteRtCacheDir)
         liteRtCacheDir = null
+        try { llamaCppEngine?.close() } catch (_: Throwable) {}
+        llamaCppEngine = null
         try { mediaPipeInference?.close() } catch (_: Throwable) {}
         mediaPipeInference = null
         runtime = RuntimeKind.None

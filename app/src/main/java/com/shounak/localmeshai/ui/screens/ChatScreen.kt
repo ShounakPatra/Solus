@@ -1173,7 +1173,7 @@ fun ChatScreen(
                             initialXOffset = 8.dp,
                             initialRotationZ = 0.55f
                         )
-                        .animatedGlassHalo(alpha = 0.045f, durationMillis = 4_800)
+                        .animatedGlassHalo(shape = RoundedCornerShape(composerCorner), alpha = 0.045f, durationMillis = 4_800)
                         .padding(bottom = 0.dp),
                     hazeState = hazeState,
                     cornerRadius = composerCorner,
@@ -2696,7 +2696,7 @@ private fun EmptyState(title: String, subtitle: String, hazeState: HazeState) {
             .fillMaxWidth()
             .heightIn(min = 230.dp)
             .fluidReveal(delayMillis = 70, initialYOffset = 16.dp)
-            .animatedGlassHalo(alpha = 0.04f, durationMillis = 4_900)
+            .animatedGlassHalo(shape = RoundedCornerShape(28.dp), alpha = 0.04f, durationMillis = 4_900)
             .padding(horizontal = 16.dp),
         cornerRadius = 28.dp,
         tintColor = cardTint,
@@ -3202,7 +3202,7 @@ private fun ChatHistoryDialog(
                 .fillMaxWidth()
                 .wrapContentHeight()
                 .fluidReveal(initialScale = 0.94f, initialYOffset = 18.dp)
-                .animatedGlassHalo(alpha = 0.06f, durationMillis = 4_200),
+                .animatedGlassHalo(shape = RoundedCornerShape(20.dp), alpha = 0.06f, durationMillis = 4_200),
             cornerRadius = 20.dp,
             blurRadius = 34.dp,
             refractionStrength = 0.16f,

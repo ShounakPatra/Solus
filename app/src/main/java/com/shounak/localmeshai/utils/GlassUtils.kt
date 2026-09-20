@@ -52,6 +52,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -186,19 +188,24 @@ fun Modifier.fluidReveal(
             progress.snapTo(1f)
             return@LaunchedEffect
         }
+        if (quality == LiquidGlassQuality.Fallback && delayMillis > 180) {
+            progress.snapTo(1f)
+            hasRevealed = true
+            return@LaunchedEffect
+        }
         progress.snapTo(0f)
         val effectiveDelay = if (quality == LiquidGlassQuality.Fallback) {
             delayMillis.coerceAtMost(80)
         } else {
-            delayMillis
+            delayMillis.coerceAtMost(250)
         }
         if (effectiveDelay > 0) delay(effectiveDelay.toLong())
         progress.animateTo(
             targetValue = 1f,
             animationSpec = spring(
-                dampingRatio = if (quality == LiquidGlassQuality.Fallback) 0.74f else 0.76f,
-                stiffness = if (quality == LiquidGlassQuality.Fallback) 480f else 380f,
-                visibilityThreshold = 0.001f
+                dampingRatio = if (quality == LiquidGlassQuality.Fallback) 0.85f else 0.76f,
+                stiffness = if (quality == LiquidGlassQuality.Fallback) 600f else 380f,
+                visibilityThreshold = 0.005f
             )
         )
         hasRevealed = true
@@ -225,6 +232,7 @@ fun Modifier.fluidReveal(
 @Composable
 fun Modifier.animatedGlassHalo(
     enabled: Boolean = true,
+    shape: Shape? = null,
     alpha: Float = 0.085f,
     durationMillis: Int = 3_800
 ): Modifier {
@@ -246,14 +254,52 @@ fun Modifier.animatedGlassHalo(
             center = center,
             radius = radius
         )
+        val outline = shape?.createOutline(size, layoutDirection, this)
         onDrawWithContent {
             drawContent()
-            drawCircle(
-                brush = haloBrush,
-                center = center,
-                radius = radius,
-                blendMode = BlendMode.Screen
-            )
+            if (outline != null) {
+                when (outline) {
+                    is Outline.Rectangle -> clipRect(
+                        left = outline.rect.left,
+                        top = outline.rect.top,
+                        right = outline.rect.right,
+                        bottom = outline.rect.bottom
+                    ) {
+                        drawCircle(
+                            brush = haloBrush,
+                            center = center,
+                            radius = radius,
+                            blendMode = BlendMode.Screen
+                        )
+                    }
+                    is Outline.Rounded -> {
+                        val path = Path().apply { addRoundRect(outline.roundRect) }
+                        clipPath(path) {
+                            drawCircle(
+                                brush = haloBrush,
+                                center = center,
+                                radius = radius,
+                                blendMode = BlendMode.Screen
+                            )
+                        }
+                    }
+                    is Outline.Generic -> clipPath(outline.path) {
+                        drawCircle(
+                            brush = haloBrush,
+                            center = center,
+                            radius = radius,
+                            blendMode = BlendMode.Screen
+                        )
+                    }
+                }
+            } else {
+                drawCircle(
+                    brush = haloBrush,
+                    center = center,
+                    radius = radius,
+                    blendMode = BlendMode.Screen
+                )
+            }
         }
     }
 }
@@ -425,6 +471,7 @@ fun LiquidGlassButton(
         modifier = modifier
             .animatedGlassHalo(
                 enabled = enabled && isPressed,
+                shape = shape,
                 alpha = 0.14f,
                 durationMillis = 920
             )
@@ -692,15 +739,17 @@ fun GlassDispersionCard(
             }
         } else null
 
+    val boxShape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
     Box(
         modifier = modifier
             .animatedGlassHalo(
                 enabled = animatedCaustics,
+                shape = boxShape,
                 alpha = if (quality == LiquidGlassQuality.Full) 0.07f else 0.045f,
                 durationMillis = 4_600
             )
             .onSizeChanged { cardSize = it }
-            .clip(RoundedCornerShape(cornerRadius))
+            .clip(boxShape)
     ) {
 
         Box(

@@ -28,3 +28,7 @@ app/release/
 # Temporary UI inspection screenshots / exports
 /*.png
 /*.xml
+build_android_arm64/
+build_native/
+*.bin
+dump_gguf.py

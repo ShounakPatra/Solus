@@ -14,16 +14,16 @@ class DownloadRestorationPolicyTest {
     }
 
     @Test
-    fun partialFailureRemainsResumable() {
-        assertEquals(ModelStatus.Paused, DownloadRestorationPolicy.afterFailure(4_096L))
+    fun failedDownloadPreservesFailedStatus() {
+        assertEquals(ModelStatus.Failed, DownloadRestorationPolicy.afterFailure(4_096L))
         assertEquals(
-            ModelStatus.Paused,
+            ModelStatus.Failed,
             DownloadRestorationPolicy.afterProcessRestart(ModelStatus.Failed, 4_096L)
         )
     }
 
     @Test
-    fun failureWithoutPartialDataStillUsesRetry() {
+    fun failureWithoutPartialDataStillUsesFailed() {
         assertEquals(ModelStatus.Failed, DownloadRestorationPolicy.afterFailure(0L))
     }
 }
