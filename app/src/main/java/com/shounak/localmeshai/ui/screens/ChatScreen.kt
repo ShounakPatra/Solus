@@ -18,6 +18,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -457,6 +458,13 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
     val context = LocalContext.current
+
+    LaunchedEffect(Unit) {
+        chatViewModel.memoryFeedbackEvent.collect { feedback ->
+            android.widget.Toast.makeText(context, "🧠 $feedback", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val isKeyboardOpen = WindowInsets.isImeVisible
     val downloadedChatModels = mainViewModel.availableModels.filter {
         it.type in listOf(ModelType.Text, ModelType.Vision) &&
@@ -636,7 +644,7 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(selectedTextModelPath, selectedModel?.id, selectedUnsafeOverride) {
+    LaunchedEffect(selectedTextModelPath, selectedModel?.id, selectedUnsafeOverride, appSettingsData.llamaBackendPreference) {
         if (selectedTextModelPath == null) {
             chatViewModel.uninitializeModel()
         } else {
@@ -652,7 +660,7 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(selectedVisionModelPath, selectedModel?.id, selectedSupportsAudio, selectedUnsafeOverride) {
+    LaunchedEffect(selectedVisionModelPath, selectedModel?.id, selectedSupportsAudio, selectedUnsafeOverride, appSettingsData.llamaBackendPreference) {
         if (selectedVisionModelPath == null) {
             visionViewModel.uninitializeModel()
         } else {
@@ -887,10 +895,13 @@ fun ChatScreen(
                 if (appSettingsData.enableDynamicThemes) ModelTheme.getAccentColor(selectedModel?.id) else Color(0xFF3B82F6)
             }
 
+            val activeBackendFromVm by chatViewModel.activeBackend.collectAsState()
+            val effectiveBackend = activeBackendFromVm ?: selectedModel?.backend ?: "Local GPU/CPU"
+
             InferenceTelemetryBar(
                 tokensPerSecond = tokensPerSecond,
                 lastInferenceMs = lastInferenceMs,
-                activeBackend = selectedModel?.backend ?: "Local GPU/CPU",
+                activeBackend = effectiveBackend,
                 batteryTempC = batteryTempC,
                 availableRamMb = availableRamMb,
                 accentColor = modelAccentColor,
@@ -899,6 +910,7 @@ fun ChatScreen(
                     .align(Alignment.CenterHorizontally)
             )
         }
+
 
         Spacer(modifier = Modifier.height(4.dp))
 
@@ -986,6 +998,9 @@ fun ChatScreen(
                                                 hazeState = hazeState,
                                                 isStreaming = !message.isUser && isGenerating && index == textMessages.lastIndex,
                                                 entryDelayMs = if (index == textMessages.lastIndex) 25 else 0,
+                                                ragSources = message.ragSources,
+                                                ragChunkCount = message.ragChunkCount,
+                                                ragTopMatchPct = message.ragTopMatchPct,
                                                 onFullscreenClick = { fullscreenMessageIndex = index }
                                             )
                                         }
@@ -1406,7 +1421,19 @@ fun ChatScreen(
                                     selectedAudioName = null
                                     selectedAudioBytes = null
                                 } else {
-                                    chatViewModel.sendMessage(textState)
+                                    if (selectedFileUri != null) {
+                                        val uriToIngest = selectedFileUri!!
+                                        val nameToIngest = selectedFileName ?: "document"
+                                        scope.launch {
+                                            chatViewModel.ingestDocumentForRag(uriToIngest, nameToIngest)
+                                            chatViewModel.setRagActive(true)
+                                            chatViewModel.sendMessage(textState)
+                                        }
+                                        selectedFileUri = null
+                                        selectedFileName = null
+                                    } else {
+                                        chatViewModel.sendMessage(textState)
+                                    }
                                 }
                                 chatViewModel.clearDraftText()
                             },
@@ -2927,6 +2954,9 @@ private fun ChatBubble(
     hazeState: HazeState,
     isStreaming: Boolean = false,
     entryDelayMs: Int = 0,
+    ragSources: List<String> = emptyList(),
+    ragChunkCount: Int = 0,
+    ragTopMatchPct: Int = 0,
     onFullscreenClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -3044,6 +3074,26 @@ private fun ChatBubble(
                                 InlineMathListItem(
                                     parts = segment.parts,
                                     color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                    if (!isUser && ragSources.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "📚 Sourced from ${ragSources.joinToString(", ")} ($ragChunkCount chunks, $ragTopMatchPct% match)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                             }
                         }

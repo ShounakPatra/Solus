@@ -39,7 +39,34 @@ data class LlamaModelMetadata(
     val paramCount: Long = 0L,
     val trainContextLength: Int = 0,
     val vocabSize: Int = 0,
-    val hasChatTemplate: Boolean = false
+    val hasChatTemplate: Boolean = false,
+    val backend: String = "CPU",
+    val nGpuLayers: Int = 0
+)
+
+enum class LlamaBackend(val id: Int, val displayName: String) {
+    CPU(0, "CPU"),
+    VULKAN(1, "Vulkan GPU");
+
+    companion object {
+        fun fromId(id: Int): LlamaBackend = entries.firstOrNull { it.id == id } ?: CPU
+        fun fromName(name: String): LlamaBackend = entries.firstOrNull {
+            it.name.equals(name, ignoreCase = true) || it.displayName.equals(name, ignoreCase = true)
+        } ?: CPU
+    }
+}
+
+data class VulkanDeviceInfo(
+    val available: Boolean = false,
+    val deviceCount: Int = 0,
+    val devices: List<VulkanDevice> = emptyList()
+)
+
+data class VulkanDevice(
+    val index: Int = 0,
+    val name: String = "",
+    val freeMemoryMb: Long = 0L,
+    val totalMemoryMb: Long = 0L
 )
 
 data class LlamaModelInspectionResult(
@@ -66,7 +93,18 @@ internal interface LlamaNativeBridge {
     fun isAvailable(): Boolean
     fun getLastError(): String?
     fun inspectModel(modelPath: String): String?
-    fun initModel(modelPath: String, nThreads: Int, nCtx: Int, nBatch: Int, nUbatch: Int): Long
+    fun isVulkanAvailable(): Boolean = false
+    fun getVulkanDeviceInfo(): String? = null
+    fun getActiveBackend(handle: Long): String = "CPU"
+    fun initModel(
+        modelPath: String,
+        nThreads: Int,
+        nCtx: Int,
+        nBatch: Int,
+        nUbatch: Int,
+        backend: Int = 0,
+        nGpuLayers: Int = 0
+    ): Long
     fun generateStream(
         handle: Long,
         generationId: Long,
@@ -100,9 +138,32 @@ internal object DefaultLlamaNativeBridge : LlamaNativeBridge {
         return LlamaCppEngine.nativeInspectModel(modelPath)
     }
 
-    override fun initModel(modelPath: String, nThreads: Int, nCtx: Int, nBatch: Int, nUbatch: Int): Long {
+    override fun isVulkanAvailable(): Boolean {
+        if (!isAvailable()) return false
+        return LlamaCppEngine.nativeIsVulkanAvailable()
+    }
+
+    override fun getVulkanDeviceInfo(): String? {
+        if (!isAvailable()) return null
+        return LlamaCppEngine.nativeGetVulkanDeviceInfo()
+    }
+
+    override fun getActiveBackend(handle: Long): String {
+        if (!isAvailable() || handle == 0L) return "CPU"
+        return LlamaCppEngine.nativeGetActiveBackend(handle) ?: "CPU"
+    }
+
+    override fun initModel(
+        modelPath: String,
+        nThreads: Int,
+        nCtx: Int,
+        nBatch: Int,
+        nUbatch: Int,
+        backend: Int,
+        nGpuLayers: Int
+    ): Long {
         if (!isAvailable()) return 0L
-        return LlamaCppEngine.nativeInitModel(modelPath, nThreads, nCtx, nBatch, nUbatch)
+        return LlamaCppEngine.nativeInitModel(modelPath, nThreads, nCtx, nBatch, nUbatch, backend, nGpuLayers)
     }
 
     override fun generateStream(
@@ -202,6 +263,11 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         get() = synchronized(lifecycleLock) {
             engineState == EngineState.OPEN && nativeHandle != 0L
         }
+
+    @Volatile private var _activeBackend: LlamaBackend = LlamaBackend.CPU
+
+    val activeBackend: LlamaBackend
+        get() = synchronized(lifecycleLock) { _activeBackend }
 
     // ── Testable seams ────────────────────────────────────────────────────────────────────────────
 
@@ -399,8 +465,12 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
 
         @JvmStatic external fun nativeGetLastError(): String?
         @JvmStatic external fun nativeInspectModel(modelPath: String): String?
+        @JvmStatic external fun nativeIsVulkanAvailable(): Boolean
+        @JvmStatic external fun nativeGetVulkanDeviceInfo(): String?
+        @JvmStatic external fun nativeGetActiveBackend(handle: Long): String?
         @JvmStatic external fun nativeInitModel(
-            modelPath: String, nThreads: Int, nCtx: Int, nBatch: Int, nUbatch: Int
+            modelPath: String, nThreads: Int, nCtx: Int, nBatch: Int, nUbatch: Int,
+            backend: Int, nGpuLayers: Int
         ): Long
         @JvmStatic external fun nativeGenerateStream(
             handle: Long, generationId: Long, prompt: String,
@@ -412,6 +482,35 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         @JvmStatic external fun nativeStop(handle: Long, generationId: Long)
         @JvmStatic external fun nativeGetMetadata(handle: Long): String?
         @JvmStatic external fun nativeFree(handle: Long)
+
+        fun isVulkanAvailable(): Boolean = DefaultLlamaNativeBridge.isVulkanAvailable()
+
+        fun getVulkanDeviceInfo(): VulkanDeviceInfo? {
+            val jsonStr = DefaultLlamaNativeBridge.getVulkanDeviceInfo() ?: return null
+            return try {
+                val json = JSONObject(jsonStr)
+                val avail = json.optBoolean("available", false)
+                val count = json.optInt("device_count", 0)
+                val devArr = json.optJSONArray("devices")
+                val devList = mutableListOf<VulkanDevice>()
+                if (devArr != null) {
+                    for (i in 0 until devArr.length()) {
+                        val d = devArr.getJSONObject(i)
+                        devList.add(
+                            VulkanDevice(
+                                index = d.optInt("index", i),
+                                name = d.optString("name", "Unknown GPU"),
+                                freeMemoryMb = d.optLong("free_memory_mb", 0L),
+                                totalMemoryMb = d.optLong("total_memory_mb", 0L)
+                            )
+                        )
+                    }
+                }
+                VulkanDeviceInfo(available = avail, deviceCount = count, devices = devList)
+            } catch (e: Exception) {
+                null
+            }
+        }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────────────────────────
@@ -432,6 +531,8 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         contextWindow: Int = 2048,
         nBatch: Int = 256,
         nUbatch: Int = 128,
+        backend: LlamaBackend = LlamaBackend.CPU,
+        nGpuLayers: Int = 99,
         /**
          * Expected GGUF file size in bytes for artifact integrity validation. 0L = no check.
          * Logs a warning (does not block init) if the actual file size is outside ±5% of this value.
@@ -477,7 +578,15 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
             if (!nativeBridge.isAvailable()) {
                 throw IllegalStateException("Native library libsolus_llama.so is not available on this device/ABI")
             }
-            handle = nativeBridge.initModel(file.absolutePath, threads, contextWindow, nBatch, nUbatch)
+            handle = nativeBridge.initModel(
+                modelPath = file.absolutePath,
+                nThreads = threads,
+                nCtx = contextWindow,
+                nBatch = nBatch,
+                nUbatch = nUbatch,
+                backend = backend.id,
+                nGpuLayers = if (backend == LlamaBackend.VULKAN) nGpuLayers else 0
+            )
             if (handle == 0L) {
                 val nativeErr = nativeBridge.getLastError()?.takeIf { it.isNotBlank() } ?: "unknown native loader failure"
                 throw IllegalStateException("GGUF initialization failed: $nativeErr (path: $modelPath)")
@@ -494,9 +603,11 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
             if (engineState == EngineState.INITIALIZING && myEpoch == initEpoch.get() && initError == null && handle != 0L) {
                 // Success: publish handle and mark OPEN
                 nativeHandle = handle
+                val backendStr = nativeBridge.getActiveBackend(handle)
+                _activeBackend = LlamaBackend.fromName(backendStr)
                 engineState = EngineState.OPEN
                 lifecycleLock.jvmNotifyAll()
-                safeLogI("LlamaCppEngine initialized: ${file.name} (ctx=$contextWindow, threads=$threads, batch=$nBatch/$nUbatch)")
+                safeLogI("LlamaCppEngine initialized: ${file.name} on ${_activeBackend.displayName} (ctx=$contextWindow, threads=$threads, batch=$nBatch/$nUbatch, gpu_layers=$nGpuLayers)")
                 return
             }
 
@@ -646,7 +757,9 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                 paramCount = json.optLong("n_params", 0L),
                 trainContextLength = json.optInt("n_ctx_train", 0),
                 vocabSize = json.optInt("n_vocab", 0),
-                hasChatTemplate = json.optBoolean("has_chat_template", false)
+                hasChatTemplate = json.optBoolean("has_chat_template", false),
+                backend = json.optString("backend", "CPU"),
+                nGpuLayers = json.optInt("n_gpu_layers", 0)
             )
         }.getOrElse {
             fun extractString(key: String): String =
@@ -664,7 +777,9 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                 paramCount = extractLong("n_params"),
                 trainContextLength = extractInt("n_ctx_train"),
                 vocabSize = extractInt("n_vocab"),
-                hasChatTemplate = extractBoolean("has_chat_template")
+                hasChatTemplate = extractBoolean("has_chat_template"),
+                backend = extractString("backend").ifBlank { "CPU" },
+                nGpuLayers = extractInt("n_gpu_layers")
             )
         }
     }
@@ -742,6 +857,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
             engineState = EngineState.CLOSING
             handleToFree = nativeHandle
             nativeHandle = 0L
+            _activeBackend = LlamaBackend.CPU
             activeGenerationId = 0L
             initEpoch.incrementAndGet()
         }

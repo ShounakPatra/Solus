@@ -54,6 +54,34 @@ class ModelResponseQualityTest {
     }
 
     @Test
+    fun allowsMemoryAndInstructionAcknowledgements() {
+        assertFalse(
+            ModelResponseQuality.isGenericNonAnswer(
+                "I will remember that your dog's name is Cooper.",
+                "Remember that my dog's name is Cooper."
+            )
+        )
+        assertFalse(
+            ModelResponseQuality.isGenericNonAnswer(
+                "Okay, I understand. I will remember that your dog's name is Cooper.",
+                "Remember that my dog's name is Cooper."
+            )
+        )
+        assertFalse(
+            ModelResponseQuality.isGenericNonAnswer(
+                "Got it! Noted that you prefer dark theme.",
+                "Keep in mind that I prefer dark theme."
+            )
+        )
+        assertFalse(
+            ModelResponseQuality.isGenericNonAnswer(
+                "Okay, I understand. To implement binary search in Kotlin, use the following approach:\nfun binarySearch()...",
+                "explain binary search"
+            )
+        )
+    }
+
+    @Test
     fun suppressesKnownAcknowledgementAndRefusalPrefixesWhileStreaming() {
         assertTrue(ModelResponseQuality.shouldSuppressLivePartial("Okay, I under"))
         assertTrue(ModelResponseQuality.shouldSuppressLivePartial("I am unable to provide"))

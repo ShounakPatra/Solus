@@ -16,6 +16,7 @@ import com.google.mediapipe.tasks.genai.llminference.GraphOptions
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
 import com.google.mediapipe.tasks.genai.llminference.ProgressListener
+import com.shounak.localmeshai.utils.AppSettings
 import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.InferenceBackend
 import com.shounak.localmeshai.utils.InitCrashGuard
@@ -51,6 +52,8 @@ class VisionInferenceManager(private val context: Context) {
     @Volatile private var activeMediaPipeFuture: Future<String>? = null
     @Volatile private var activeMediaPipeCallbackDone: CountDownLatch? = null
     @Volatile private var stopRequested = false
+    var activeBackendDisplayName: String = ""
+        private set
     /**
      * Set to true by [close] before it destroys any native resource.
      * [streamMediaPipeVision]'s finally block checks this flag before
@@ -64,6 +67,13 @@ class VisionInferenceManager(private val context: Context) {
     private var inputWidth = 224
     private var inputHeight = 224
     private var outputSize = 1001
+
+    companion object {
+        private const val TAG = "VisionInferenceManager"
+        private const val DEFAULT_IMAGE_PROMPT = "Describe the image"
+        private const val MAX_RESPONSE_TOKENS = 1024
+        private const val DEFAULT_VISION_TEMPERATURE = 0.7f
+    }
 
     fun initialize(
         modelPath: String,
@@ -91,10 +101,18 @@ class VisionInferenceManager(private val context: Context) {
         when {
             file.extension.equals("litertlm", ignoreCase = true) -> {
                 val effectiveId = modelId.ifBlank { file.nameWithoutExtension }
-                val inferenceBackend = if (allowUnsafeOverride) {
-                    InferenceBackend.LITERT_GPU
-                } else {
-                    DeviceUtils.selectBackendForModelFile(context, file.name)
+                val appSettings = AppSettings.getInstance(context)
+                val pref = appSettings.settings.value.llamaBackendPreference.uppercase()
+                val inferenceBackend = when (pref) {
+                    "CPU" -> InferenceBackend.LITERT_CPU
+                    "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
+                    else -> {
+                        if (allowUnsafeOverride) {
+                            InferenceBackend.LITERT_GPU
+                        } else {
+                            DeviceUtils.selectBackendForModelFile(context, file.name)
+                        }
+                    }
                 }
                 val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                     context = context,
@@ -110,7 +128,7 @@ class VisionInferenceManager(private val context: Context) {
                 if (InitCrashGuard.isModelBlocked(context, effectiveId)) {
                     throw IllegalStateException(InitCrashGuard.blockedModelMessage())
                 }
-                if (!allowUnsafeOverride) {
+                if (!allowUnsafeOverride && inferenceBackend != InferenceBackend.LITERT_CPU) {
                     val (allowed, reason) = DeviceUtils.canInitializeLiteRtLm(
                         context = context,
                         modelId = effectiveId,
@@ -130,9 +148,16 @@ class VisionInferenceManager(private val context: Context) {
                     modelId = effectiveId,
                     inferenceBackend = inferenceBackend
                 )
+                activeBackendDisplayName = if (inferenceBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
             }
-            file.extension.equals("task", ignoreCase = true) -> initializeMediaPipeVision(modelPath, audioInputAvailable)
-            else -> initializeClassifier(file)
+            file.extension.equals("task", ignoreCase = true) -> {
+                initializeMediaPipeVision(modelPath, audioInputAvailable)
+                activeBackendDisplayName = "MediaPipe CPU"
+            }
+            else -> {
+                initializeClassifier(file)
+                activeBackendDisplayName = "Classifier"
+            }
         }
     }
 
@@ -207,6 +232,7 @@ class VisionInferenceManager(private val context: Context) {
         LiteRtRuntimeCache.clear(context, liteRtCacheDir)
         liteRtCacheDir = null
         runtime = RuntimeKind.None
+        activeBackendDisplayName = ""
         isBeingClosed = false
     }
 
@@ -643,11 +669,5 @@ class VisionInferenceManager(private val context: Context) {
         Classifier,
         MediaPipeVision,
         LiteRtLm
-    }
-
-    private companion object {
-        const val TAG = "VisionInferenceManager"
-        const val DEFAULT_IMAGE_PROMPT = "Describe the image"
-        const val MAX_RESPONSE_TOKENS = 1024
     }
 }

@@ -62,7 +62,59 @@ object ModelOutputSanitizer {
             lines.removeAt(0)
             dropLeadingBlankLines()
         }
-        return lines.joinToString("\n").trim()
+        val cleaned = lines.joinToString("\n").trim()
+        return sanitizeUserFacingPerspective(cleaned, latestUserText)
+    }
+
+    /**
+     * Converts first-person declarations (e.g. "I prefer Kotlin as my coding language")
+     * into direct user addressing ("You prefer Kotlin as your coding language") when the user
+     * asked about their own preferences or attributes.
+     */
+    fun sanitizeUserFacingPerspective(text: String, latestUserText: String): String {
+        if (text.isBlank() || latestUserText.isBlank()) return text
+        val lowerPrompt = latestUserText.lowercase(java.util.Locale.ROOT).trim()
+
+        val isQueryingUserSelf =
+            lowerPrompt.contains("i prefer") ||
+            lowerPrompt.contains("do i prefer") ||
+            lowerPrompt.contains("i like") ||
+            lowerPrompt.contains("do i like") ||
+            lowerPrompt.contains("what is my name") ||
+            lowerPrompt.contains("what's my name") ||
+            lowerPrompt.contains("whats my name") ||
+            lowerPrompt.contains("who am i") ||
+            lowerPrompt.contains("my favorite") ||
+            lowerPrompt.contains("my favourite") ||
+            lowerPrompt.contains("my preferred") ||
+            lowerPrompt.contains("what is my") ||
+            lowerPrompt.contains("what's my") ||
+            lowerPrompt.contains("whats my") ||
+            lowerPrompt.contains("what do i") ||
+            lowerPrompt.contains("where do i")
+
+        if (!isQueryingUserSelf) return text
+
+        var result = text
+        if (result.startsWith("I prefer ", ignoreCase = true)) {
+            result = "You prefer " + result.substring(9)
+        } else if (result.startsWith("I like ", ignoreCase = true)) {
+            result = "You like " + result.substring(7)
+        } else if (result.startsWith("I love ", ignoreCase = true)) {
+            result = "You love " + result.substring(7)
+        } else if (result.startsWith("My name is ", ignoreCase = true)) {
+            result = "Your name is " + result.substring(11)
+        } else if (result.startsWith("My full name is ", ignoreCase = true)) {
+            result = "Your full name is " + result.substring(16)
+        }
+
+        // Replace "as my coding language" -> "as your coding language", "for my" -> "for your", etc.
+        result = result.replace(Regex("""\bas my\b""", RegexOption.IGNORE_CASE), "as your")
+            .replace(Regex("""\bfor my\b""", RegexOption.IGNORE_CASE), "for your")
+            .replace(Regex("""\bin my\b""", RegexOption.IGNORE_CASE), "in your")
+            .replace(Regex("""\bof my\b""", RegexOption.IGNORE_CASE), "of your")
+
+        return result
     }
 
     private fun decodeByteLevelArtifacts(input: String): String {

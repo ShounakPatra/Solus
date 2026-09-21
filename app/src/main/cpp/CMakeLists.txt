@@ -16,6 +16,10 @@ set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "Build examples" FORCE)
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "Build server example" FORCE)
 set(LLAMA_CURL OFF CACHE BOOL "Use libcurl" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "Use OpenMP" FORCE)
+set(GGML_VULKAN ON CACHE BOOL "Use Vulkan" FORCE)
+set(Vulkan_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-headers/include" CACHE PATH "Vulkan include directory" FORCE)
+set(Vulkan_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-headers/include" CACHE PATH "Vulkan include directory" FORCE)
+include_directories(SYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-headers/include")
 
 # Add optimizations and release mode definitions for all targets including llama.cpp and ggml
 add_compile_options(-O3 -DNDEBUG)
@@ -28,12 +32,19 @@ add_library(
     llama-jni.cpp
 )
 
+find_library(
+    vulkan-lib
+    vulkan
+)
+
 target_include_directories(
     solus_llama
     PRIVATE
     llama.cpp/include
     llama.cpp/src
     llama.cpp/ggml/include
+    llama.cpp/ggml/src/ggml-vulkan
+    vulkan-headers/include
 )
 
 find_library(
@@ -47,6 +58,7 @@ target_link_libraries(
     llama
     ggml
     ${log-lib}
+    ${vulkan-lib}
 )
 
 # Native test harness executable for deterministic C++ verification
@@ -70,5 +82,6 @@ target_link_libraries(
     llama
     ggml
     ${log-lib}
+    ${vulkan-lib}
 )
 

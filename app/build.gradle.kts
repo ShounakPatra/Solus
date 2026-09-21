@@ -21,7 +21,7 @@ android {
 
     defaultConfig {
         applicationId = "com.shounak.localmeshai"
-        minSdk = 26
+        minSdk = 28
         targetSdk = 36
         versionCode = 6
         versionName = "2.0.0"
@@ -30,6 +30,12 @@ android {
 
         ndk {
             abiFilters.addAll(listOf("arm64-v8a", "x86_64"))
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments("-DANDROID_PLATFORM=android-28")
+            }
         }
     }
 

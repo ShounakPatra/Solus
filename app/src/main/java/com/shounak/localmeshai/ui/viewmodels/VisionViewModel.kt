@@ -18,6 +18,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import com.shounak.localmeshai.utils.AppSettings
+import android.util.Log
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -70,7 +75,19 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private val _isModelReady = MutableStateFlow(false)
     val isModelReady = _isModelReady.asStateFlow()
 
+    private val _activeBackend = MutableStateFlow<String?>(null)
+    val activeBackend = _activeBackend.asStateFlow()
+
+    private val appSettings = AppSettings.getInstance(application)
+
     private var currentModelPath: String? = null
+    private var currentModelId: String = ""
+    private var currentModelName: String = ""
+    private var currentModelSize: String = ""
+    private var currentContextWindowTokensTokens: Int? = null
+    private var currentSupportsAudioInput: Boolean = false
+    private var currentAllowUnsafeOverride: Boolean = false
+    private var lastLoadedBackendPreference: String? = null
     private var currentContextWindowTokens: Int = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
     private var initGeneration: Int = 0
     private var initJob: Job? = null
@@ -86,6 +103,29 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             releaseModel(clearCoordinator = false)
         }
         loadSessions()
+        // Reinitialize active vision model if user changes backend preference in settings
+        viewModelScope.launch {
+            appSettings.settings
+                .map { it.llamaBackendPreference }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { newPref ->
+                    val path = currentModelPath
+                    if (path != null && _isModelReady.value) {
+                        Log.i("VisionViewModel", "Backend preference changed to $newPref, reloading vision model: $path")
+                        initModel(
+                            path = path,
+                            modelId = currentModelId,
+                            modelName = currentModelName,
+                            modelSize = currentModelSize,
+                            contextWindowTokens = currentContextWindowTokensTokens,
+                            supportsAudioInput = currentSupportsAudioInput,
+                            allowUnsafeOverride = currentAllowUnsafeOverride,
+                            forceReload = true
+                        )
+                    }
+                }
+        }
     }
 
     fun initModel(
@@ -95,17 +135,26 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         modelSize: String = "",
         contextWindowTokens: Int? = null,
         supportsAudioInput: Boolean = false,
-        allowUnsafeOverride: Boolean = false
+        allowUnsafeOverride: Boolean = false,
+        forceReload: Boolean = false
     ) {
         val resolvedContextWindowTokens = contextWindowTokens
             ?: inferContextWindowTokens(path)
             ?: DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
 
-        // Already ready on the same path -> no-op.
-        if (path == currentModelPath && _isModelReady.value && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Vision)) {
+        val currentBackendPref = appSettings.settings.value.llamaBackendPreference
+        if (!forceReload && path == currentModelPath && _isModelReady.value && currentBackendPref == lastLoadedBackendPreference && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Vision)) {
             currentContextWindowTokens = resolvedContextWindowTokens
             return
         }
+
+        currentModelPath = path
+        currentModelId = modelId
+        currentModelName = modelName
+        currentModelSize = modelSize
+        currentContextWindowTokensTokens = contextWindowTokens
+        currentSupportsAudioInput = supportsAudioInput
+        currentAllowUnsafeOverride = allowUnsafeOverride
 
         val myGen = ++initGeneration
         initJob?.cancel()
@@ -141,13 +190,17 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         return@withLock
                     }
                     currentModelPath = path
+                    lastLoadedBackendPreference = currentBackendPref
                     currentContextWindowTokens = resolvedContextWindowTokens
                     resetRuntimeConversationBeforeNextAsk = false
+                    _activeBackend.value = inferenceManager.activeBackendDisplayName
                     _isModelReady.value = true
                 } catch (exception: Exception) {
                     if (myGen != initGeneration) return@withLock
                     _error.value = exception.message ?: "Failed to load multimodal model."
                     currentModelPath = null
+                    lastLoadedBackendPreference = null
+                    _activeBackend.value = null
                     currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
                     _isModelReady.value = false
                 }
@@ -1089,6 +1142,14 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         inferenceManager.cancelGeneration()
         inferenceManager.close()
         currentModelPath = null
+        currentModelId = ""
+        currentModelName = ""
+        currentModelSize = ""
+        currentContextWindowTokensTokens = null
+        currentSupportsAudioInput = false
+        currentAllowUnsafeOverride = false
+        lastLoadedBackendPreference = null
+        _activeBackend.value = null
         currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
         resetRuntimeConversationBeforeNextAsk = false
         _isInitializing.value = false

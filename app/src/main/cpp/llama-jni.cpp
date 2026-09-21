@@ -17,6 +17,16 @@
 #include "ggml.h"
 #include "gguf.h"
 
+#ifdef GGML_USE_VULKAN
+#include <vulkan/vulkan.h>
+#include "ggml-vulkan.h"
+#endif
+
+enum SolusBackend {
+    SOLUS_BACKEND_CPU = 0,
+    SOLUS_BACKEND_VULKAN = 1
+};
+
 #define LOG_TAG "SolusLlamaJNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
@@ -117,6 +127,10 @@ struct LlamaContextHolder {
 
     std::mutex state_mutex;
     std::condition_variable gen_cv;
+
+    int requested_backend = SOLUS_BACKEND_CPU;
+    int active_backend = SOLUS_BACKEND_CPU;
+    int n_gpu_layers = 0;
 };
 
 // GGML abort callback - executed cooperatively inside llama_decode() operations
@@ -443,7 +457,83 @@ static std::string extract_complete_utf8(std::string & buffer) {
     return result;
 }
 
+static bool is_vulkan_supported_internal() {
+#ifdef GGML_USE_VULKAN
+    ensure_logging_and_backend_initialized();
+    try {
+        int count = ggml_backend_vk_get_device_count();
+        return count > 0;
+    } catch (...) {
+        return false;
+    }
+#else
+    return false;
+#endif
+}
+
+static std::string get_vulkan_device_info_json() {
+#ifdef GGML_USE_VULKAN
+    ensure_logging_and_backend_initialized();
+    int count = 0;
+    try {
+        count = ggml_backend_vk_get_device_count();
+    } catch (...) {
+        count = 0;
+    }
+    std::ostringstream ss;
+    ss << "{";
+    ss << "\"available\":" << (count > 0 ? "true" : "false") << ",";
+    ss << "\"device_count\":" << count << ",";
+    ss << "\"devices\":[";
+    for (int i = 0; i < count; ++i) {
+        if (i > 0) ss << ",";
+        char desc[256] = {0};
+        ggml_backend_vk_get_device_description(i, desc, sizeof(desc));
+        size_t free_mem = 0, total_mem = 0;
+        ggml_backend_vk_get_device_memory(i, &free_mem, &total_mem);
+        ss << "{";
+        ss << "\"index\":" << i << ",";
+        ss << "\"name\":\"" << escape_json(desc) << "\",";
+        ss << "\"free_memory_mb\":" << (free_mem / (1024 * 1024)) << ",";
+        ss << "\"total_memory_mb\":" << (total_mem / (1024 * 1024));
+        ss << "}";
+    }
+    ss << "]}";
+    return ss.str();
+#else
+    return "{\"available\":false,\"device_count\":0,\"devices\":[]}";
+#endif
+}
+
 extern "C" {
+
+JNIEXPORT jboolean JNICALL
+Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeIsVulkanAvailable(
+        JNIEnv * /* env */,
+        jclass /* clazz */) {
+    return is_vulkan_supported_internal() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGetVulkanDeviceInfo(
+        JNIEnv *env,
+        jclass /* clazz */) {
+    std::string json = get_vulkan_device_info_json();
+    return safe_new_string(env, json);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGetActiveBackend(
+        JNIEnv *env,
+        jobject /* thiz */,
+        jlong handle) {
+    if (handle == 0) return safe_new_string(env, "NONE");
+    auto *holder = reinterpret_cast<LlamaContextHolder *>(handle);
+    if (holder->active_backend == SOLUS_BACKEND_VULKAN) {
+        return safe_new_string(env, "Vulkan");
+    }
+    return safe_new_string(env, "CPU");
+}
 
 JNIEXPORT jstring JNICALL
 Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGetLastError(
@@ -617,7 +707,9 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeInitModel(
         jint n_threads,
         jint n_ctx,
         jint n_batch,
-        jint n_ubatch) {
+        jint n_ubatch,
+        jint backend,
+        jint n_gpu_layers) {
 
     if (model_path_str == nullptr) {
         LOGE("nativeInitModel called with null model path");
@@ -636,17 +728,51 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeInitModel(
         return 0;
     }
 
-    LOGI("SolusLlamaJNI: Initializing GGUF model: %s (threads: %d, ctx: %d, batch: %d/%d)",
-         model_path, n_threads, n_ctx, n_batch, n_ubatch);
+    int requested_backend = backend;
+    int active_backend = SOLUS_BACKEND_CPU;
+    int effective_gpu_layers = 0;
+
+    LOGI("SolusLlamaJNI: Initializing GGUF model: %s (threads: %d, ctx: %d, batch: %d/%d, backend: %d, gpu_layers: %d)",
+         model_path, n_threads, n_ctx, n_batch, n_ubatch, backend, n_gpu_layers);
 
     llama_model_params mparams = llama_model_default_params();
     mparams.use_mmap = true;
 
+    if (requested_backend == SOLUS_BACKEND_VULKAN) {
+        if (is_vulkan_supported_internal()) {
+            effective_gpu_layers = (n_gpu_layers > 0) ? n_gpu_layers : 99;
+            mparams.n_gpu_layers = effective_gpu_layers;
+            LOGI("SolusLlamaJNI: Vulkan backend requested. Offloading %d layers to GPU", effective_gpu_layers);
+        } else {
+            LOGW("SolusLlamaJNI: Vulkan backend requested, but no Vulkan devices available. Safely falling back to CPU.");
+            mparams.n_gpu_layers = 0;
+            effective_gpu_layers = 0;
+            requested_backend = SOLUS_BACKEND_CPU;
+        }
+    } else {
+        mparams.n_gpu_layers = 0;
+        effective_gpu_layers = 0;
+        LOGI("SolusLlamaJNI: CPU backend requested (0 GPU layers). Preserving CPU pipeline.");
+    }
+
     llama_model * model = llama_model_load_from_file(model_path, mparams);
-    if (!model) {
+    if (!model && mparams.use_mmap) {
         LOGW("SolusLlamaJNI: Failed to load GGUF model with mmap=true, retrying with mmap=false: %s", model_path);
         mparams.use_mmap = false;
         model = llama_model_load_from_file(model_path, mparams);
+    }
+
+    // Safe Vulkan Fallback: If loading failed on Vulkan GPU, fallback to CPU!
+    if (!model && mparams.n_gpu_layers > 0) {
+        LOGW("SolusLlamaJNI: Failed to load GGUF model with Vulkan GPU backend. Safely falling back to CPU backend!");
+        mparams.n_gpu_layers = 0;
+        effective_gpu_layers = 0;
+        mparams.use_mmap = true;
+        model = llama_model_load_from_file(model_path, mparams);
+        if (!model) {
+            mparams.use_mmap = false;
+            model = llama_model_load_from_file(model_path, mparams);
+        }
     }
 
     if (!model) {
@@ -701,6 +827,9 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeInitModel(
     holder->n_ctx = effective_ctx;
     holder->n_batch = static_cast<int>(eff_batch);
     holder->n_ubatch = static_cast<int>(eff_ubatch);
+    holder->requested_backend = requested_backend;
+    holder->active_backend = active_backend;
+    holder->n_gpu_layers = effective_gpu_layers;
     holder->active_generation_id = 0;
     holder->cancelled_generation_id = 0;
     holder->stop_requested = false;
@@ -718,6 +847,27 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeInitModel(
     cparams.abort_callback_data = holder;
 
     llama_context * ctx = llama_init_from_model(model, cparams);
+    if (!ctx && mparams.n_gpu_layers > 0) {
+        LOGW("SolusLlamaJNI: Failed to create context with Vulkan backend. Safely falling back to CPU backend!");
+        llama_model_free(model);
+        model = nullptr;
+        vocab = nullptr;
+        mparams.n_gpu_layers = 0;
+        effective_gpu_layers = 0;
+        mparams.use_mmap = true;
+        model = llama_model_load_from_file(model_path, mparams);
+        if (!model) {
+            mparams.use_mmap = false;
+            model = llama_model_load_from_file(model_path, mparams);
+        }
+        if (model) {
+            vocab = llama_model_get_vocab(model);
+            holder->model = model;
+            holder->vocab = vocab;
+            ctx = llama_init_from_model(model, cparams);
+        }
+    }
+
     if (!ctx && effective_ctx > 1024) {
         LOGW("SolusLlamaJNI: Failed to allocate context size %d, retrying with safe context 1024", effective_ctx);
         effective_ctx = 1024;
@@ -746,11 +896,15 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeInitModel(
         return 0;
     }
 
+    active_backend = (mparams.n_gpu_layers > 0) ? SOLUS_BACKEND_VULKAN : SOLUS_BACKEND_CPU;
+    holder->active_backend = active_backend;
+    holder->n_gpu_layers = effective_gpu_layers;
     holder->ctx = ctx;
     llama_set_abort_callback(ctx, llama_jni_abort_callback, holder);
 
-    LOGI("SolusLlamaJNI: Successfully initialized GGUF model: %s (ctx=%d, threads=%d, batch=%d/%d, vocab_size=%d)",
-         model_path, effective_ctx, effective_threads, eff_batch, eff_ubatch, llama_vocab_n_tokens(vocab));
+    LOGI("SolusLlamaJNI: Successfully initialized GGUF model on %s backend: %s (ctx=%d, threads=%d, batch=%d/%d, gpu_layers=%d, vocab_size=%d)",
+         (active_backend == SOLUS_BACKEND_VULKAN ? "Vulkan GPU" : "CPU"),
+         model_path, effective_ctx, effective_threads, eff_batch, eff_ubatch, effective_gpu_layers, llama_vocab_n_tokens(vocab));
 
     env->ReleaseStringUTFChars(model_path_str, model_path);
     return reinterpret_cast<jlong>(holder);
@@ -1375,7 +1529,9 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGetMetadata(
          << "\"n_params\":" << n_params << ","
          << "\"n_ctx_train\":" << n_ctx_train << ","
          << "\"n_vocab\":" << n_vocab << ","
-         << "\"has_chat_template\":" << (chat_tmpl != nullptr ? "true" : "false")
+         << "\"has_chat_template\":" << (chat_tmpl != nullptr ? "true" : "false") << ","
+         << "\"backend\":\"" << (holder->active_backend == SOLUS_BACKEND_VULKAN ? "Vulkan" : "CPU") << "\","
+         << "\"n_gpu_layers\":" << holder->n_gpu_layers
          << "}";
 
     return safe_new_string(env, json.str());

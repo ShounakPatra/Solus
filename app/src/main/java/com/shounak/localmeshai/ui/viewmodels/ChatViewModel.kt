@@ -21,10 +21,23 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import android.net.Uri
+import com.shounak.localmeshai.rag.RagIngestionResult
+import com.shounak.localmeshai.rag.RagManager
+import com.shounak.localmeshai.rag.store.RagDocumentSummary
+import com.shounak.localmeshai.utils.AppSettings
+import com.shounak.localmeshai.memory.MemoryCategory
+import com.shounak.localmeshai.memory.MemoryEntry
+import com.shounak.localmeshai.memory.PersistentMemoryManager
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -33,7 +46,10 @@ import java.util.UUID
 data class ChatMessage(
     val text: String,
     val isUser: Boolean,
-    val id: String = UUID.randomUUID().toString()
+    val id: String = UUID.randomUUID().toString(),
+    val ragSources: List<String> = emptyList(),
+    val ragChunkCount: Int = 0,
+    val ragTopMatchPct: Int = 0
 )
 
 @Immutable
@@ -71,6 +87,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _thinkingMode = MutableStateFlow(false)
     val thinkingMode = _thinkingMode.asStateFlow()
 
+    val ragManager: RagManager = RagManager.getInstance(application)
+    private val appSettings = AppSettings.getInstance(application)
+
+    private val _isRagActive = MutableStateFlow(appSettings.settings.value.enableRag)
+    val isRagActive = _isRagActive.asStateFlow()
+
+    private val _indexedRagDocuments = MutableStateFlow(ragManager.indexedDocuments)
+    val indexedRagDocuments = _indexedRagDocuments.asStateFlow()
+
+    private val _ragIngestionStatus = MutableStateFlow<String?>(null)
+    val ragIngestionStatus = _ragIngestionStatus.asStateFlow()
+
+    val memoryManager: PersistentMemoryManager = PersistentMemoryManager.getInstance(application)
+
+    private val _isPersistentMemoryActive = MutableStateFlow(appSettings.settings.value.enablePersistentMemory)
+    val isPersistentMemoryActive = _isPersistentMemoryActive.asStateFlow()
+
+    private val _memories = MutableStateFlow(memoryManager.getAllMemories())
+    val memories = _memories.asStateFlow()
+
+    private val _memoryFeedbackEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val memoryFeedbackEvent = _memoryFeedbackEvent.asSharedFlow()
+
     private val _draftText = MutableStateFlow("")
     val draftText = _draftText.asStateFlow()
 
@@ -81,7 +120,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _pendingSessionId = MutableStateFlow<String?>(null)
     val pendingSessionId = _pendingSessionId.asStateFlow()
 
+    private val _activeBackend = MutableStateFlow<String?>(null)
+    val activeBackend = _activeBackend.asStateFlow()
+
     private var currentModelPath: String? = null
+    private var currentModelId: String = ""
+    private var currentModelName: String = ""
+    private var currentModelSize: String = ""
+    private var currentAllowUnsafeOverride: Boolean = false
+    private var lastLoadedBackendPreference: String? = null
     private var initGeneration: Int = 0
     private var initJob: Job? = null
     private var generationJob: Job? = null
@@ -105,6 +152,99 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 if (ready) commitPendingSession()
             }
         }
+        // Reinitialize active model if user changes backend preference in settings
+        viewModelScope.launch {
+            appSettings.settings
+                .map { it.llamaBackendPreference }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { newPref ->
+                    val path = currentModelPath
+                    if (path != null && _isModelReady.value) {
+                        Log.i("ChatViewModel", "Backend preference changed to $newPref, reloading active model: $path")
+                        initModel(
+                            path = path,
+                            modelId = currentModelId,
+                            modelName = currentModelName,
+                            modelSize = currentModelSize,
+                            allowUnsafeOverride = currentAllowUnsafeOverride,
+                            forceReload = true
+                        )
+                    }
+                }
+        }
+    }
+
+    fun setRagActive(enabled: Boolean) {
+        _isRagActive.value = enabled
+        appSettings.updateSettings { it.copy(enableRag = enabled) }
+    }
+
+    fun refreshRagDocuments() {
+        _indexedRagDocuments.value = ragManager.indexedDocuments
+    }
+
+    suspend fun ingestDocumentForRag(uri: Uri, fileName: String, mimeType: String = ""): RagIngestionResult {
+        val result = ragManager.ingestDocument(uri, fileName, mimeType)
+        refreshRagDocuments()
+        _ragIngestionStatus.value = result.message
+        return result
+    }
+
+    suspend fun ingestTextForRag(name: String, content: String): RagIngestionResult {
+        val result = ragManager.ingestText(name, content)
+        refreshRagDocuments()
+        _ragIngestionStatus.value = result.message
+        return result
+    }
+
+    fun clearRagKnowledgeBase() {
+        ragManager.clearKnowledgeBase()
+        refreshRagDocuments()
+    }
+
+    fun removeRagDocument(documentId: String) {
+        ragManager.removeDocument(documentId)
+        refreshRagDocuments()
+    }
+
+    fun setPersistentMemoryActive(enabled: Boolean) {
+        _isPersistentMemoryActive.value = enabled
+        appSettings.updateSettings { it.copy(enablePersistentMemory = enabled) }
+    }
+
+    fun refreshMemories() {
+        _memories.value = memoryManager.getAllMemories()
+    }
+
+    fun addMemory(content: String, category: MemoryCategory = MemoryCategory.GENERAL): Boolean {
+        val entry = memoryManager.addMemory(content, category)
+        if (entry != null) {
+            refreshMemories()
+            return true
+        }
+        return false
+    }
+
+    fun updateMemory(entry: MemoryEntry): Boolean {
+        val updated = memoryManager.updateMemory(entry)
+        if (updated) refreshMemories()
+        return updated
+    }
+
+    fun toggleMemory(id: String, enabled: Boolean) {
+        memoryManager.toggleMemory(id, enabled)
+        refreshMemories()
+    }
+
+    fun deleteMemory(id: String) {
+        memoryManager.deleteMemory(id)
+        refreshMemories()
+    }
+
+    fun clearAllMemories() {
+        memoryManager.clearAllMemories()
+        refreshMemories()
     }
 
     fun setThinkingMode(enabled: Boolean) {
@@ -124,11 +264,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         modelId: String = "",
         modelName: String = "",
         modelSize: String = "",
-        allowUnsafeOverride: Boolean = false
+        allowUnsafeOverride: Boolean = false,
+        forceReload: Boolean = false
     ) {
-        if (path == currentModelPath && _isModelReady.value && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Chat)) {
+        val currentBackendPref = appSettings.settings.value.llamaBackendPreference
+        if (!forceReload && path == currentModelPath && _isModelReady.value && currentBackendPref == lastLoadedBackendPreference && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Chat)) {
             return
         }
+
+        currentModelPath = path
+        currentModelId = modelId
+        currentModelName = modelName
+        currentModelSize = modelSize
+        currentAllowUnsafeOverride = allowUnsafeOverride
 
         val myGen = ++initGeneration
         initJob?.cancel()
@@ -155,16 +303,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         return@withLock
                     }
                     currentModelPath = path
+                    lastLoadedBackendPreference = currentBackendPref
                     resetRuntimeConversationBeforeNextSend = false
                     lastRuntimeThinkingMode = null
+                    _activeBackend.value = inferenceManager.activeBackendDisplayName
                     _isModelReady.value = true
-                    Log.i("ChatViewModel", "Model ready: $path")
+                    Log.i("ChatViewModel", "Model ready on ${inferenceManager.activeBackendDisplayName}: $path")
                 } catch (t: Throwable) {
                     if (myGen != initGeneration) return@withLock
                     val msg = t.message ?: "Unknown error during model load"
                     Log.e("ChatViewModel", "Model init failed", t)
                     _error.value = msg
                     currentModelPath = null
+                    lastLoadedBackendPreference = null
+                    _activeBackend.value = null
                     _isModelReady.value = false
                     launch(Dispatchers.Main) {
                         messages.add(ChatMessage("⚠️ $msg", false))
@@ -222,9 +374,44 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
+            if (_isPersistentMemoryActive.value && appSettings.settings.value.autoExtractMemories) {
+                val candidate = memoryManager.extractMemoryCandidate(userText)
+                if (candidate != null) {
+                    val added = memoryManager.addMemory(candidate.first, candidate.second)
+                    if (added != null) {
+                        refreshMemories()
+                        _memoryFeedbackEvent.tryEmit("Remembered: ${candidate.first}")
+                    }
+                }
+            }
             try {
-                val prompt = buildPrompt(userText)
-                val structuredMessages = buildStructuredHistory(userText)
+                var effectivePromptText = userText
+                var ragSources: List<String> = emptyList()
+                var ragChunkCount = 0
+                var ragTopMatchPct = 0
+
+                if (_isRagActive.value && ragManager.totalIndexedChunks > 0) {
+                    val ragSettings = appSettings.settings.value
+                    val retrieval = ragManager.retrieve(
+                        query = userText,
+                        topK = ragSettings.ragTopK,
+                        minScore = ragSettings.ragMinSimilarity
+                    )
+                    if (retrieval.hasContext) {
+                        effectivePromptText = ragManager.buildAugmentedPrompt(userText, retrieval)
+                        ragSources = retrieval.sourceNames
+                        ragChunkCount = retrieval.matches.size
+                        ragTopMatchPct = (retrieval.topMatchScore * 100f).toInt()
+                    }
+                }
+
+                val memoryContext = if (_isPersistentMemoryActive.value) {
+                    memoryManager.formatMemoryContext()
+                } else {
+                    ""
+                }
+                val prompt = buildPrompt(effectivePromptText)
+                val structuredMessages = buildStructuredHistory(effectivePromptText)
                 val modeChangedInStatefulThinkingRuntime =
                     lastRuntimeThinkingMode?.let { it != thinkingModeForRequest } == true &&
                         inferenceManager.needsResetWhenThinkingModeChanges()
@@ -238,7 +425,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     inferenceManager.generateResponseStreaming(
                         prompt = prompt,
-                        rawUserText = userText,
+                        rawUserText = effectivePromptText,
+                        memoryContext = memoryContext,
                         structuredMessages = structuredMessages,
                         restoreStatefulHistory = shouldResetRuntimeConversation,
                         thinkingMode = thinkingModeForRequest
@@ -260,7 +448,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             )
                             val currentMessage = messages[assistantIndex]
                             messages[assistantIndex] = currentMessage.copy(
-                                text = finalResponse.ifBlank { GENERATION_FAILURE_TEXT }
+                                text = finalResponse.ifBlank { GENERATION_FAILURE_TEXT },
+                                ragSources = ragSources,
+                                ragChunkCount = ragChunkCount,
+                                ragTopMatchPct = ragTopMatchPct
                             )
                             saveCurrentSession()
                         }
@@ -479,9 +670,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         val isUser = messageJson.optBoolean("isUser", false)
                         val id = messageJson.optString("id").ifBlank { UUID.randomUUID().toString() }
                         val cleanText = if (isUser) text else ModelOutputSanitizer.clean(text)
+                        val ragSourcesJson = messageJson.optJSONArray("ragSources")
+                        val ragSources = if (ragSourcesJson != null) {
+                            List(ragSourcesJson.length()) { k -> ragSourcesJson.getString(k) }
+                        } else emptyList()
+                        val ragChunkCount = messageJson.optInt("ragChunkCount", 0)
+                        val ragTopMatchPct = messageJson.optInt("ragTopMatchPct", 0)
                         // Skip stale placeholder assistant messages persisted by older versions
                         if (cleanText.isNotBlank() && !((!isUser) && cleanText in PLACEHOLDER_TEXTS)) {
-                            add(ChatMessage(text = cleanText, isUser = isUser, id = id))
+                            add(
+                                ChatMessage(
+                                    text = cleanText,
+                                    isUser = isUser,
+                                    id = id,
+                                    ragSources = ragSources,
+                                    ragChunkCount = ragChunkCount,
+                                    ragTopMatchPct = ragTopMatchPct
+                                )
+                            )
                         }
                     }
                 }.let { msgs ->
@@ -509,12 +715,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         chatSessions.forEach { session ->
             val messagesJson = JSONArray()
             session.messages.forEach { message ->
-                messagesJson.put(
-                    JSONObject()
-                        .put("text", if (message.isUser) message.text else ModelOutputSanitizer.clean(message.text))
-                        .put("isUser", message.isUser)
-                        .put("id", message.id)
-                )
+                val mObj = JSONObject()
+                    .put("text", if (message.isUser) message.text else ModelOutputSanitizer.clean(message.text))
+                    .put("isUser", message.isUser)
+                    .put("id", message.id)
+                if (message.ragSources.isNotEmpty()) {
+                    val srcArr = JSONArray()
+                    message.ragSources.forEach { srcArr.put(it) }
+                    mObj.put("ragSources", srcArr)
+                    mObj.put("ragChunkCount", message.ragChunkCount)
+                    mObj.put("ragTopMatchPct", message.ragTopMatchPct)
+                }
+                messagesJson.put(mObj)
             }
             array.put(
                 JSONObject()
@@ -529,6 +741,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun buildStructuredHistory(latestUserText: String): List<Pair<String, String>> {
         val turns = mutableListOf<Pair<String, String>>()
+        if (_isPersistentMemoryActive.value) {
+            val memoryContext = memoryManager.formatMemoryContext()
+            if (memoryContext.isNotBlank()) {
+                turns.add("system" to memoryContext)
+            }
+        }
         messages
             .dropLast(2)
             .takeLast(12)
@@ -544,6 +762,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun buildPrompt(latestUserText: String): String {
+        val memoryContext = if (_isPersistentMemoryActive.value) {
+            memoryManager.formatMemoryContext()
+        } else {
+            ""
+        }
+        val memoryPrefix = if (memoryContext.isNotBlank()) "$memoryContext\n\n" else ""
         val previousTurns = messages
             .dropLast(2)
             .takeLast(12)
@@ -558,9 +782,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             .joinToString(separator = "\n")
         return if (previousTurns.isBlank()) {
-            latestUserText
+            "$memoryPrefix$latestUserText"
         } else {
-            "$previousTurns\nUser: $latestUserText\nAssistant:"
+            "$memoryPrefix$previousTurns\nUser: $latestUserText\nAssistant:"
         }
     }
 
@@ -608,6 +832,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         inferenceManager.cancelGeneration()
         inferenceManager.close()
         currentModelPath = null
+        currentModelId = ""
+        currentModelName = ""
+        currentModelSize = ""
+        currentAllowUnsafeOverride = false
+        lastLoadedBackendPreference = null
+        _activeBackend.value = null
         resetRuntimeConversationBeforeNextSend = false
         lastRuntimeThinkingMode = null
         _isInitializing.value = false

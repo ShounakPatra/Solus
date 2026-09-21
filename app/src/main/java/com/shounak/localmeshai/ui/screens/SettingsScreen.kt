@@ -3,7 +3,9 @@ package com.shounak.localmeshai.ui.screens
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -13,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayCircle
@@ -22,10 +25,15 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import com.shounak.localmeshai.BuildConfig
+import com.shounak.localmeshai.ai.LlamaCppEngine
 import com.shounak.localmeshai.utils.AppUpdateManager
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -39,6 +47,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.shounak.localmeshai.ui.viewmodels.MainViewModel
 import com.shounak.localmeshai.utils.LiquidGlassButton
+import com.shounak.localmeshai.utils.glassEffect
 import dev.chrisbanes.haze.HazeState
 import kotlinx.coroutines.delay
 
@@ -77,7 +86,7 @@ fun SettingsDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(colors.surface)
+                .background(colors.background)
                 .statusBarsPadding()
                 .navigationBarsPadding()
         ) {
@@ -97,16 +106,16 @@ fun SettingsDialog(
                     LiquidGlassButton(
                         onClick = onDismissRequest,
                         hazeState = hazeState,
-                        modifier = Modifier.size(44.dp),
-                        shape = CircleShape,
-                        tintColor = Color(0xFF22252A),
+                        modifier = Modifier.size(42.dp),
+                        shape = RoundedCornerShape(21.dp),
+                        tintColor = colors.surfaceContainer,
                         contentPadding = PaddingValues(0.dp)
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back to main screen",
-                            tint = Color.White,
-                            modifier = Modifier.size(22.dp)
+                            tint = colors.onSurface,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                     Text(
@@ -125,7 +134,7 @@ fun SettingsDialog(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     // Category 1: Visual Themes
-                    SettingsCategory(title = "🎨 Visual Themes") {
+                    SettingsCategory(title = "🎨 Visual Themes", hazeState = hazeState) {
                         SettingsSwitchRow(
                             title = "Dark Mode",
                             subtitle = "Enable dark visual appearance throughout the app (default)",
@@ -134,7 +143,7 @@ fun SettingsDialog(
                                 appSettings.updateSettings { it.copy(enableDarkMode = enabled) }
                             }
                         )
-                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.3f))
+                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.35f))
                         SettingsSwitchRow(
                             title = "Dynamic Model Accent Themes",
                             subtitle = "Adapt UI accents for DeepSeek (Cyan), Gemma (Amber), Qwen (Violet), Llama (Green)",
@@ -146,7 +155,7 @@ fun SettingsDialog(
                     }
 
                     // Category 2: Telemetry
-                    SettingsCategory(title = "📊 Telemetry & Thermal Guard") {
+                    SettingsCategory(title = "📊 Telemetry & Thermal Guard", hazeState = hazeState) {
                         SettingsSwitchRow(
                             title = "Performance Telemetry Bar",
                             subtitle = "Show generation speed (t/s) and latency (ms) header pill",
@@ -155,7 +164,7 @@ fun SettingsDialog(
                                 appSettings.updateSettings { it.copy(enableTelemetryBar = enabled) }
                             }
                         )
-                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.3f))
+                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.35f))
                         SettingsSwitchRow(
                             title = "Battery Temperature (°C)",
                             subtitle = "Display live battery thermal reading in telemetry bar",
@@ -164,7 +173,7 @@ fun SettingsDialog(
                                 appSettings.updateSettings { it.copy(showThermalGuard = enabled) }
                             }
                         )
-                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.3f))
+                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.35f))
                         SettingsSwitchRow(
                             title = "System Memory Indicator",
                             subtitle = "Display available RAM (GB free) in telemetry bar",
@@ -176,7 +185,7 @@ fun SettingsDialog(
                     }
 
                     // Category 3: Chat UX
-                    SettingsCategory(title = "💬 Chat & Starter UX") {
+                    SettingsCategory(title = "💬 Chat & Starter UX", hazeState = hazeState) {
                         SettingsSwitchRow(
                             title = "Quick Suggestion Pills",
                             subtitle = "Show empty chat prompt suggestion chips",
@@ -185,7 +194,7 @@ fun SettingsDialog(
                                 appSettings.updateSettings { it.copy(enableSuggestionPills = enabled) }
                             }
                         )
-                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.3f))
+                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.35f))
                         SettingsSwitchRow(
                             title = "System Prompt Persona Bar",
                             subtitle = "Show persona chips (Code Auditor, ELI5, Proofreader)",
@@ -197,7 +206,7 @@ fun SettingsDialog(
                     }
 
                     // Category 4: Navigation & Layout
-                    SettingsCategory(title = "📱 Navigation & Layout") {
+                    SettingsCategory(title = "📱 Navigation & Layout", hazeState = hazeState) {
                         SettingsSwitchRow(
                             title = "Auto-Hide Bottom Navigation Bar",
                             subtitle = "Hide bottom bar for full-screen chat view. Slide left/right to navigate tabs.",
@@ -209,7 +218,7 @@ fun SettingsDialog(
                     }
 
                     // Category 5: Tools & Memory
-                    SettingsCategory(title = "⚡ Tools & Memory") {
+                    SettingsCategory(title = "⚡ Tools & Memory", hazeState = hazeState) {
                         SettingsSwitchRow(
                             title = "Solus Bench Rating Button",
                             subtitle = "Show device performance benchmark button on model cards",
@@ -218,26 +227,103 @@ fun SettingsDialog(
                                 appSettings.updateSettings { it.copy(enableSolusBench = enabled) }
                             }
                         )
-                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.3f))
-                        Text("Auto-Unload Model Timer", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                        Row(
+                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.35f))
+                        Text(
+                            "Auto-Unload Model Timer",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.onSurface
+                        )
+                        FlowRow(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             listOf(0 to "Off", 5 to "5 min", 15 to "15 min", 30 to "30 min").forEach { (mins, label) ->
+                                val isSelected = settingsData.autoUnloadMinutes == mins
                                 FilterChip(
-                                    selected = settingsData.autoUnloadMinutes == mins,
+                                    selected = isSelected,
                                     onClick = {
                                         appSettings.updateSettings { it.copy(autoUnloadMinutes = mins) }
                                     },
-                                    label = { Text(label) }
+                                    label = { Text(label, maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall) },
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = colors.primary.copy(alpha = 0.28f),
+                                        selectedLabelColor = Color.White,
+                                        containerColor = colors.surfaceContainerLow,
+                                        labelColor = colors.onSurfaceVariant
+                                    ),
+                                    border = FilterChipDefaults.filterChipBorder(
+                                        enabled = true,
+                                        selected = isSelected,
+                                        borderColor = colors.outlineVariant.copy(alpha = 0.50f),
+                                        selectedBorderColor = colors.primary.copy(alpha = 0.75f),
+                                        borderWidth = 0.8.dp,
+                                        selectedBorderWidth = 1.dp
+                                    )
+                                )
+                            }
+                        }
+                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.35f))
+                        Text(
+                            "Model Inference Backend (GGUF & LiteRT)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.onSurface
+                        )
+                        val vulkanDeviceInfo = remember { LlamaCppEngine.getVulkanDeviceInfo() }
+                        val gpuName = vulkanDeviceInfo?.devices?.firstOrNull()?.name?.takeIf { it.isNotBlank() }
+                            ?: if (LlamaCppEngine.isVulkanAvailable()) "GPU Supported" else "CPU Only"
+                        Text(
+                            text = "Detected Hardware: $gpuName",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant.copy(alpha = 0.82f)
+                        )
+                        Text(
+                            text = "Choose whether models run on GPU accelerator or CPU-safe mode. Changing this automatically re-initializes the active model on the selected chip.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurfaceVariant.copy(alpha = 0.72f)
+                        )
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                "AUTO" to "Auto (GPU/CPU)",
+                                "VULKAN" to "GPU (Vulkan / LiteRT)",
+                                "CPU" to "CPU (Safe)"
+                            ).forEach { (backendPref, label) ->
+                                val isSelected = settingsData.llamaBackendPreference.equals(backendPref, ignoreCase = true)
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = {
+                                        appSettings.updateSettings { it.copy(llamaBackendPreference = backendPref) }
+                                    },
+                                    label = { Text(label, maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall) },
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = colors.primary.copy(alpha = 0.28f),
+                                        selectedLabelColor = Color.White,
+                                        containerColor = colors.surfaceContainerLow,
+                                        labelColor = colors.onSurfaceVariant
+                                    ),
+                                    border = FilterChipDefaults.filterChipBorder(
+                                        enabled = true,
+                                        selected = isSelected,
+                                        borderColor = colors.outlineVariant.copy(alpha = 0.50f),
+                                        selectedBorderColor = colors.primary.copy(alpha = 0.75f),
+                                        borderWidth = 0.8.dp,
+                                        selectedBorderWidth = 1.dp
+                                    )
                                 )
                             }
                         }
                     }
 
                     // Category 6: Access Token
-                    SettingsCategory(title = "🔐 Hugging Face Access Token") {
+                    SettingsCategory(title = "🔐 Hugging Face Access Token", hazeState = hazeState) {
                         OutlinedTextField(
                             value = hfTokenDraft,
                             onValueChange = { hfTokenDraft = it },
@@ -257,7 +343,7 @@ fun SettingsDialog(
                                             Icon(
                                                 imageVector = Icons.Default.Clear,
                                                 contentDescription = "Clear token",
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                tint = colors.onSurfaceVariant
                                             )
                                         }
                                     }
@@ -267,7 +353,7 @@ fun SettingsDialog(
                                         Icon(
                                             imageVector = if (isTokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                                             contentDescription = if (isTokenVisible) "Hide token" else "Show token",
-                                            tint = if (isTokenVisible) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                            tint = if (isTokenVisible) colors.primary else colors.onSurfaceVariant
                                         )
                                     }
                                 }
@@ -277,7 +363,18 @@ fun SettingsDialog(
                             } else {
                                 LastCharPasswordVisualTransformation(showLastChar = showLastChar)
                             },
-                            shape = RoundedCornerShape(14.dp)
+                            shape = RoundedCornerShape(14.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedContainerColor = colors.surfaceContainerLow,
+                                unfocusedContainerColor = colors.surfaceContainerLow,
+                                focusedBorderColor = colors.primary,
+                                unfocusedBorderColor = colors.outlineVariant.copy(alpha = 0.65f),
+                                focusedLabelColor = colors.primary,
+                                unfocusedLabelColor = colors.onSurfaceVariant.copy(alpha = 0.80f),
+                                focusedTextColor = colors.onSurface,
+                                unfocusedTextColor = colors.onSurface,
+                                cursorColor = colors.primary
+                            )
                         )
 
                         Row(
@@ -292,6 +389,8 @@ fun SettingsDialog(
                                 },
                                 modifier = Modifier.weight(1.2f),
                                 shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.onSurfaceVariant),
+                                border = BorderStroke(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f)),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                             ) {
                                 Icon(Icons.Default.PlayCircle, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -316,35 +415,228 @@ fun SettingsDialog(
                         }
                     }
 
+                    // Category: Persistent Memory (Decoupled from RAG)
+                    val memoryManager = remember { com.shounak.localmeshai.memory.PersistentMemoryManager.getInstance(context) }
+                    var memoryCount by remember { mutableStateOf(memoryManager.totalMemoryCount) }
+                    var activeMemoryCount by remember { mutableStateOf(memoryManager.activeMemoryCount) }
+                    var showMemoryDialog by remember { mutableStateOf(false) }
+
+                    if (showMemoryDialog) {
+                        PersistentMemoryDialog(
+                            memoryManager = memoryManager,
+                            onDismissRequest = {
+                                showMemoryDialog = false
+                                memoryCount = memoryManager.totalMemoryCount
+                                activeMemoryCount = memoryManager.activeMemoryCount
+                            }
+                        )
+                    }
+
+                    SettingsCategory(title = "🧠 Persistent Memory", hazeState = hazeState) {
+                        SettingsSwitchRow(
+                            title = "Enable Persistent Memory",
+                            subtitle = "Remember user identity, facts, preferences, and custom rules across chats",
+                            checked = settingsData.enablePersistentMemory,
+                            onCheckedChange = { isEnabled ->
+                                appSettings.updateSettings { it.copy(enablePersistentMemory = isEnabled) }
+                            }
+                        )
+
+                        if (settingsData.enablePersistentMemory) {
+                            HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.35f))
+                            SettingsSwitchRow(
+                                title = "Auto-Extract Memories",
+                                subtitle = "Automatically detect and save facts when you say 'Remember that...'",
+                                checked = settingsData.autoExtractMemories,
+                                onCheckedChange = { isEnabled ->
+                                    appSettings.updateSettings { it.copy(autoExtractMemories = isEnabled) }
+                                }
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = colors.surfaceContainerLow,
+                                border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.40f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "Saved Memories ($memoryCount)",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = colors.onSurface
+                                        )
+                                        SuggestionChip(
+                                            onClick = { showMemoryDialog = true },
+                                            label = { Text("$activeMemoryCount active", style = MaterialTheme.typography.labelSmall) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = SuggestionChipDefaults.suggestionChipColors(
+                                                containerColor = colors.surfaceContainer,
+                                                labelColor = colors.primary
+                                            ),
+                                            border = SuggestionChipDefaults.suggestionChipBorder(
+                                                enabled = true,
+                                                borderColor = colors.outlineVariant.copy(alpha = 0.50f),
+                                                borderWidth = 0.8.dp
+                                            )
+                                        )
+                                    }
+                                    Text(
+                                        text = "Memories are automatically included in system prompt context across all models without altering documents or RAG.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colors.onSurfaceVariant.copy(alpha = 0.82f)
+                                    )
+                                    Button(
+                                        onClick = { showMemoryDialog = true },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = colors.primary.copy(alpha = 0.22f),
+                                            contentColor = colors.primary
+                                        ),
+                                        border = BorderStroke(0.8.dp, colors.primary.copy(alpha = 0.50f))
+                                    ) {
+                                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Manage Saved Memories", style = MaterialTheme.typography.labelMedium)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Category: Retrieval-Augmented Generation (RAG)
+                    val ragManager = remember { com.shounak.localmeshai.rag.RagManager.getInstance(context) }
+                    var ragDocCount by remember { mutableStateOf(ragManager.indexedDocuments.size) }
+                    var ragChunkCount by remember { mutableStateOf(ragManager.totalIndexedChunks) }
+
+                    SettingsCategory(title = "📚 Retrieval-Augmented Generation (RAG)", hazeState = hazeState) {
+                        SettingsSwitchRow(
+                            title = "Enable RAG Knowledge Base",
+                            subtitle = "Semantically search indexed documents and inject relevant context into chats",
+                            checked = settingsData.enableRag,
+                            onCheckedChange = { isEnabled ->
+                                appSettings.updateSettings { it.copy(enableRag = isEnabled) }
+                            }
+                        )
+
+                        if (settingsData.enableRag) {
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = colors.surfaceContainerLow,
+                                border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.40f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "Vector Search Status",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = colors.onSurface
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        SuggestionChip(
+                                            onClick = {},
+                                            label = { Text("$ragDocCount documents", style = MaterialTheme.typography.labelSmall) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = SuggestionChipDefaults.suggestionChipColors(
+                                                containerColor = colors.surfaceContainer,
+                                                labelColor = colors.onSurfaceVariant
+                                            ),
+                                            border = SuggestionChipDefaults.suggestionChipBorder(
+                                                enabled = true,
+                                                borderColor = colors.outlineVariant.copy(alpha = 0.50f),
+                                                borderWidth = 0.8.dp
+                                            )
+                                        )
+                                        SuggestionChip(
+                                            onClick = {},
+                                            label = { Text("$ragChunkCount vector chunks", style = MaterialTheme.typography.labelSmall) },
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = SuggestionChipDefaults.suggestionChipColors(
+                                                containerColor = colors.surfaceContainer,
+                                                labelColor = colors.onSurfaceVariant
+                                            ),
+                                            border = SuggestionChipDefaults.suggestionChipBorder(
+                                                enabled = true,
+                                                borderColor = colors.outlineVariant.copy(alpha = 0.50f),
+                                                borderWidth = 0.8.dp
+                                            )
+                                        )
+                                    }
+                                    Text(
+                                        text = "Top-K Chunks: ${settingsData.ragTopK} | Min Similarity: ${(settingsData.ragMinSimilarity * 100).toInt()}%",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colors.onSurfaceVariant.copy(alpha = 0.82f)
+                                    )
+
+                                    if (ragChunkCount > 0) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                ragManager.clearKnowledgeBase()
+                                                ragDocCount = 0
+                                                ragChunkCount = 0
+                                            },
+                                            colors = ButtonDefaults.outlinedButtonColors(
+                                                contentColor = colors.error
+                                            ),
+                                            border = BorderStroke(0.8.dp, colors.error.copy(alpha = 0.40f)),
+                                            shape = RoundedCornerShape(12.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Clear RAG Knowledge Base", style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Category 7: About Solus & Updates
                     val updateState by mainViewModel.updateState.collectAsState()
                     val isCheckingForUpdates by mainViewModel.isCheckingForUpdates.collectAsState()
 
-                    SettingsCategory(title = "ℹ️ About Solus & Updates") {
+                    SettingsCategory(title = "ℹ️ About Solus & Updates", hazeState = hazeState) {
                         Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerLowest,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)),
+                            shape = RoundedCornerShape(16.dp),
+                            color = colors.surfaceContainerLow,
+                            border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.40f)),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
-                                modifier = Modifier.padding(12.dp),
+                                modifier = Modifier.padding(14.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Text(
                                     text = "Solus — Private On-Device AI",
                                     style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    color = colors.onSurface
                                 )
                                 Text(
                                     text = "Version: ${BuildConfig.VERSION_NAME}",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = colors.onSurfaceVariant.copy(alpha = 0.82f)
                                 )
                                 Text(
                                     text = "Developer: Shounak Patra",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = colors.onSurfaceVariant.copy(alpha = 0.82f)
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 OutlinedButton(
@@ -353,7 +645,9 @@ fun SettingsDialog(
                                         context.startActivity(intent)
                                     },
                                     modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(10.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.onSurfaceVariant),
+                                    border = BorderStroke(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f)),
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                                 ) {
                                     Icon(Icons.Default.PlayCircle, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -396,19 +690,20 @@ fun SettingsDialog(
                         when (val result = updateState) {
                             is AppUpdateManager.UpdateCheckResult.UpdateAvailable -> {
                                 Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = colors.primaryContainer.copy(alpha = 0.35f),
+                                    border = BorderStroke(0.8.dp, colors.primary.copy(alpha = 0.50f)),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(
-                                        modifier = Modifier.padding(12.dp),
+                                        modifier = Modifier.padding(14.dp),
                                         verticalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Icon(
                                                 Icons.Default.Info,
                                                 contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary,
+                                                tint = colors.primary,
                                                 modifier = Modifier.size(20.dp)
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
@@ -416,13 +711,13 @@ fun SettingsDialog(
                                                 "New Version Available: v${result.updateInfo.latestVersion}",
                                                 style = MaterialTheme.typography.titleSmall,
                                                 fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                color = colors.onPrimaryContainer
                                             )
                                         }
                                         Text(
                                             result.updateInfo.releaseNotes.take(300),
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            color = colors.onPrimaryContainer
                                         )
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
@@ -451,50 +746,52 @@ fun SettingsDialog(
                             }
                             is AppUpdateManager.UpdateCheckResult.UpToDate -> {
                                 Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.surfaceContainerLowest,
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = colors.surfaceContainerLow,
+                                    border = BorderStroke(0.8.dp, colors.outlineVariant.copy(alpha = 0.40f)),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(12.dp),
+                                        modifier = Modifier.padding(14.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Icon(
                                             Icons.Default.CheckCircle,
                                             contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
+                                            tint = colors.primary,
                                             modifier = Modifier.size(20.dp)
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
                                             "You have the latest version installed (v${result.currentVersion}).",
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurface
+                                            color = colors.onSurface
                                         )
                                     }
                                 }
                             }
                             is AppUpdateManager.UpdateCheckResult.Error -> {
                                 Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.errorContainer,
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = colors.errorContainer.copy(alpha = 0.40f),
+                                    border = BorderStroke(0.8.dp, colors.error.copy(alpha = 0.40f)),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(12.dp),
+                                        modifier = Modifier.padding(14.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Icon(
                                             Icons.Default.Clear,
                                             contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.error,
+                                            tint = colors.error,
                                             modifier = Modifier.size(20.dp)
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
                                             "Update check failed: ${result.message}",
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                            color = colors.onErrorContainer
                                         )
                                     }
                                 }
@@ -513,25 +810,37 @@ fun SettingsDialog(
 @Composable
 private fun SettingsCategory(
     title: String,
+    hazeState: HazeState,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+    val colors = MaterialTheme.colorScheme
+    val cardShape = RoundedCornerShape(20.dp)
+    val cardTint = colors.surfaceContainer
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassEffect(
+                hazeState = hazeState,
+                shape = cardShape,
+                blurRadius = 16.dp,
+                tintColor = cardTint,
+                borderAlpha = 0.35f
+            ),
+        shape = cardShape,
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(horizontal = 18.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                title,
+                text = title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+                color = colors.onSurface
             )
             content()
         }
@@ -545,18 +854,27 @@ private fun SettingsSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
+    val colors = MaterialTheme.colorScheme
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = colors.onSurface)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant.copy(alpha = 0.82f))
         }
         Switch(
             checked = checked,
-            onCheckedChange = onCheckedChange
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = colors.primary,
+                checkedBorderColor = Color.Transparent,
+                uncheckedThumbColor = colors.onSurfaceVariant.copy(alpha = 0.7f),
+                uncheckedTrackColor = colors.surfaceContainerHighest.copy(alpha = 0.40f),
+                uncheckedBorderColor = colors.outlineVariant.copy(alpha = 0.50f)
+            )
         )
     }
 }

@@ -67,6 +67,12 @@ class LlamaCppEngineTest {
         @Volatile var onMetadataHook: ((handle: Long) -> Unit)? = null
         val failInitNext = AtomicBoolean(false)
 
+        val lastBackendRequested = AtomicInteger(0)
+        val lastGpuLayersRequested = AtomicInteger(0)
+        var simulateVulkanAvailable: Boolean = true
+        var simulateActiveBackend: String = "CPU"
+        var fallbackToCpuOnVulkan: Boolean = false
+
         override fun isAvailable(): Boolean = true
 
         override fun getLastError(): String? = if (failInitNext.get()) "Simulated native init failure" else null
@@ -74,6 +80,16 @@ class LlamaCppEngineTest {
         override fun inspectModel(modelPath: String): String? {
             return """{"valid":true,"architecture":"llama","name":"FakeModel","is_supported":true}"""
         }
+
+        override fun isVulkanAvailable(): Boolean = simulateVulkanAvailable
+
+        override fun getVulkanDeviceInfo(): String? = if (simulateVulkanAvailable) {
+            """{"available":true,"device_count":1,"devices":[{"index":0,"name":"Fake Mali-G57 MC2","free_memory_mb":2048,"total_memory_mb":4096}]}"""
+        } else {
+            """{"available":false,"device_count":0,"devices":[]}"""
+        }
+
+        override fun getActiveBackend(handle: Long): String = simulateActiveBackend
 
         private fun assertHandleValid(handle: Long, operation: String) {
             if (handle == 0L) throw AssertionError("$operation called with 0L handle")
@@ -90,9 +106,18 @@ class LlamaCppEngineTest {
             nThreads: Int,
             nCtx: Int,
             nBatch: Int,
-            nUbatch: Int
+            nUbatch: Int,
+            backend: Int,
+            nGpuLayers: Int
         ): Long {
             initCallCount.incrementAndGet()
+            lastBackendRequested.set(backend)
+            lastGpuLayersRequested.set(nGpuLayers)
+            if (backend == 1 && !fallbackToCpuOnVulkan) {
+                simulateActiveBackend = "Vulkan"
+            } else {
+                simulateActiveBackend = "CPU"
+            }
             onInitHook?.invoke(modelPath)
             if (failInitNext.getAndSet(false)) {
                 return 0L
@@ -143,7 +168,9 @@ class LlamaCppEngineTest {
             metadataCallCount.incrementAndGet()
             assertHandleValid(handle, "getMetadata")
             onMetadataHook?.invoke(handle)
-            return """{"desc":"Fake","architecture":"llama","n_params":1000,"n_ctx_train":2048,"n_vocab":32000,"has_chat_template":true}"""
+            val backend = simulateActiveBackend
+            val gpuLayers = if (backend == "Vulkan") lastGpuLayersRequested.get() else 0
+            return """{"desc":"Fake","architecture":"llama","n_params":1000,"n_ctx_train":2048,"n_vocab":32000,"has_chat_template":true,"backend":"$backend","n_gpu_layers":$gpuLayers}"""
         }
 
         override fun free(handle: Long) {
@@ -1429,6 +1456,95 @@ class LlamaCppEngineTest {
         // On host JVM without native lib, isLibraryLoaded is false, so it reports library not available
         // When tested via fake inspection parsing directly:
         assertNotNull(result)
+    }
+
+    @Test
+    fun testVulkanBackend_ExplicitVulkanSelection() {
+        val fakeBridge = FakeLlamaNativeBridge()
+        val engine = LlamaCppEngine(null, fakeBridge)
+        val file = createDummyModelFile("vulkan_model.gguf")
+
+        engine.initialize(
+            modelPath = file.absolutePath,
+            backend = LlamaBackend.VULKAN,
+            nGpuLayers = 99
+        )
+
+        assertTrue(engine.isInitialized)
+        assertEquals(1, fakeBridge.lastBackendRequested.get())
+        assertEquals(99, fakeBridge.lastGpuLayersRequested.get())
+        assertEquals(LlamaBackend.VULKAN, engine.activeBackend)
+
+        val metadata = engine.getMetadata()
+        assertNotNull(metadata)
+        assertEquals("Vulkan", metadata?.backend)
+        assertEquals(99, metadata?.nGpuLayers)
+
+        engine.close()
+    }
+
+    @Test
+    fun testVulkanBackend_ExplicitCpuSelection() {
+        val fakeBridge = FakeLlamaNativeBridge()
+        val engine = LlamaCppEngine(null, fakeBridge)
+        val file = createDummyModelFile("cpu_model.gguf")
+
+        engine.initialize(
+            modelPath = file.absolutePath,
+            backend = LlamaBackend.CPU,
+            nGpuLayers = 0
+        )
+
+        assertTrue(engine.isInitialized)
+        assertEquals(0, fakeBridge.lastBackendRequested.get())
+        assertEquals(0, fakeBridge.lastGpuLayersRequested.get())
+        assertEquals(LlamaBackend.CPU, engine.activeBackend)
+
+        val metadata = engine.getMetadata()
+        assertNotNull(metadata)
+        assertEquals("CPU", metadata?.backend)
+        assertEquals(0, metadata?.nGpuLayers)
+
+        engine.close()
+    }
+
+    @Test
+    fun testVulkanBackend_FallbackToCpuWhenVulkanFails() {
+        val fakeBridge = FakeLlamaNativeBridge()
+        fakeBridge.fallbackToCpuOnVulkan = true
+        val engine = LlamaCppEngine(null, fakeBridge)
+        val file = createDummyModelFile("fallback_model.gguf")
+
+        engine.initialize(
+            modelPath = file.absolutePath,
+            backend = LlamaBackend.VULKAN,
+            nGpuLayers = 99
+        )
+
+        assertTrue(engine.isInitialized)
+        // Vulkan was requested:
+        assertEquals(1, fakeBridge.lastBackendRequested.get())
+        // But native layer safely fell back to CPU:
+        assertEquals(LlamaBackend.CPU, engine.activeBackend)
+
+        val metadata = engine.getMetadata()
+        assertNotNull(metadata)
+        assertEquals("CPU", metadata?.backend)
+        assertEquals(0, metadata?.nGpuLayers)
+
+        engine.close()
+    }
+
+    @Test
+    fun testLlamaBackend_EnumMapping() {
+        assertEquals(LlamaBackend.CPU, LlamaBackend.fromId(0))
+        assertEquals(LlamaBackend.VULKAN, LlamaBackend.fromId(1))
+        assertEquals(LlamaBackend.CPU, LlamaBackend.fromId(99)) // Unknown fallback to CPU
+
+        assertEquals(LlamaBackend.CPU, LlamaBackend.fromName("CPU"))
+        assertEquals(LlamaBackend.VULKAN, LlamaBackend.fromName("VULKAN"))
+        assertEquals(LlamaBackend.VULKAN, LlamaBackend.fromName("Vulkan GPU"))
+        assertEquals(LlamaBackend.CPU, LlamaBackend.fromName("UNKNOWN"))
     }
 }
 

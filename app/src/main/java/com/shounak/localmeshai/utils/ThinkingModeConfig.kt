@@ -4,6 +4,15 @@ package com.shounak.localmeshai.utils
 object ThinkingModeConfig {
     const val ENABLE_THINKING_KEY = "enable_thinking"
 
+    fun supportsTextNoThinkingSwitch(
+        modelPath: String = "",
+        effectiveId: String = "",
+        modelName: String = ""
+    ): Boolean {
+        val search = "$modelPath|$effectiveId|$modelName".lowercase()
+        return search.contains("qwen3")
+    }
+
     fun liteRtExtraContext(
         isDefaultThinkingModel: Boolean,
         thinkingMode: Boolean

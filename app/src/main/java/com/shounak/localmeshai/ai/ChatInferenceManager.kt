@@ -13,6 +13,7 @@ import com.google.ai.edge.litertlm.Message
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
 import com.google.mediapipe.tasks.genai.llminference.ProgressListener
+import com.shounak.localmeshai.utils.AppSettings
 import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.ChatPromptPolicy
 import com.shounak.localmeshai.utils.ChatRuntimePolicy
@@ -51,6 +52,8 @@ class ChatInferenceManager(private val context: Context) {
     @Volatile private var useNativeGemmaTaskTemplate = false
     @Volatile private var mediaPipeTemperature = DEFAULT_TEMPERATURE
     @Volatile private var liteRtConversationMode = LiteRtConversationMode.Default
+    var activeBackendDisplayName: String = ""
+        private set
 
     companion object {
         private const val TAG = "ChatInferenceManager"
@@ -103,9 +106,15 @@ class ChatInferenceManager(private val context: Context) {
         isDefaultThinkingModel = listOf("qwen3", "deepseek", "reasoning", "mimo", "exaone").any {
             searchString.contains(it)
         }
-        supportsTextNoThinkingSwitch = searchString.contains("qwen3")
+        supportsTextNoThinkingSwitch = ThinkingModeConfig.supportsTextNoThinkingSwitch(
+            modelPath = modelPath,
+            effectiveId = effectiveId,
+            modelName = modelName
+        )
         val isTinyGemmaMediaPipeModel = listOf(
-            "gemma3_270m",
+            "gemma3-1b",
+            "gemma-3-1b",
+            "gemma 3 1b",
             "gemma3-270m",
             "gemma-3-270m",
             "gemma 3 270m"
@@ -120,11 +129,22 @@ class ChatInferenceManager(private val context: Context) {
         stopRequested = false
         isBeingClosed = false
 
+        val appSettings = AppSettings.getInstance(context)
+        val pref = appSettings.settings.value.llamaBackendPreference.uppercase()
+
         if (ChatRuntimePolicy.isGgufModel(file.name)) {
             val paramsB = DeviceUtils.estimateModelParametersB(modelName.ifBlank { effectiveId }, modelSize)
             val dynamicContext = DeviceUtils.recommendedContextWindow(context, paramsB)
             val dynamicThreads = DeviceUtils.recommendedThreadCount(context)
             val (nBatch, nUbatch) = DeviceUtils.recommendedBatchSize(context)
+
+            val selectedBackend = when (pref) {
+                "VULKAN", "GPU" -> LlamaBackend.VULKAN
+                "CPU" -> LlamaBackend.CPU
+                else -> {
+                    if (LlamaCppEngine.isVulkanAvailable()) LlamaBackend.VULKAN else LlamaBackend.CPU
+                }
+            }
 
             val engine = LlamaCppEngine(context)
             engine.initialize(
@@ -133,11 +153,14 @@ class ChatInferenceManager(private val context: Context) {
                 contextWindow = dynamicContext,
                 nBatch = nBatch,
                 nUbatch = nUbatch,
+                backend = selectedBackend,
+                nGpuLayers = 99,
                 expectedFileSizeBytes = expectedFileSizeBytes
             )
             llamaCppEngine = engine
             runtime = RuntimeKind.LlamaCpp
-            Log.i(TAG, "LlamaCpp GGUF engine initialized for: ${file.name} (ctx: $dynamicContext, threads: $dynamicThreads, batch: $nBatch/$nUbatch)")
+            activeBackendDisplayName = if (engine.activeBackend == LlamaBackend.VULKAN) "GGUF Vulkan GPU" else "GGUF CPU"
+            Log.i(TAG, "LlamaCpp GGUF engine initialized for: ${file.name} on ${engine.activeBackend.displayName} (ctx: $dynamicContext, threads: $dynamicThreads, batch: $nBatch/$nUbatch)")
             return
         }
 
@@ -146,10 +169,16 @@ class ChatInferenceManager(private val context: Context) {
             modelIdentity = searchString
         )
         if (shouldUseLiteRtLmConversation) {
-            val inferenceBackend = if (allowUnsafeOverride) {
-                InferenceBackend.LITERT_GPU
-            } else {
-                DeviceUtils.selectBackendForModelFile(context, file.name)
+            val inferenceBackend = when (pref) {
+                "CPU" -> InferenceBackend.LITERT_CPU
+                "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
+                else -> {
+                    if (allowUnsafeOverride) {
+                        InferenceBackend.LITERT_GPU
+                    } else {
+                        DeviceUtils.selectBackendForModelFile(context, file.name)
+                    }
+                }
             }
             val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                 context = context,
@@ -164,7 +193,7 @@ class ChatInferenceManager(private val context: Context) {
             if (InitCrashGuard.isModelBlocked(context, effectiveId)) {
                 throw IllegalStateException(InitCrashGuard.blockedModelMessage())
             }
-            if (!allowUnsafeOverride) {
+            if (!allowUnsafeOverride && inferenceBackend != InferenceBackend.LITERT_CPU) {
                 val (allowed, reason) = DeviceUtils.canInitializeLiteRtLm(
                     context = context,
                     modelId = effectiveId,
@@ -183,8 +212,10 @@ class ChatInferenceManager(private val context: Context) {
                 modelId = effectiveId,
                 inferenceBackend = inferenceBackend
             )
+            activeBackendDisplayName = if (inferenceBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
         } else {
             initMediaPipe(modelPath)
+            activeBackendDisplayName = "MediaPipe CPU"
         }
     }
 
@@ -258,6 +289,7 @@ class ChatInferenceManager(private val context: Context) {
     suspend fun generateResponseStreaming(
         prompt: String,           // Full history blob — used by MediaPipe (stateless)
         rawUserText: String,      // Bare user message — used by LiteRT-LM (Conversation owns history)
+        memoryContext: String = "", // Persistent memory context block
         structuredMessages: List<Pair<String, String>>? = null, // Structured conversation turns for GGUF
         restoreStatefulHistory: Boolean = false,
         thinkingMode: Boolean,
@@ -271,6 +303,7 @@ class ChatInferenceManager(private val context: Context) {
         // the equivalent ASCII (a+b)^2 correctly.
         val inferencePrompt = PromptMathNormalizer.normalizeForInference(prompt)
         val inferenceUserText = PromptMathNormalizer.normalizeForInference(rawUserText)
+        val memoryPrefix = if (memoryContext.isNotBlank()) "${memoryContext.trim()}\n\n" else ""
 
         // LiteRT-LM applies the chat template internally. The hard thinking switch is
         // passed as request-level template context in streamLiteRtLm. Injecting
@@ -278,6 +311,8 @@ class ChatInferenceManager(private val context: Context) {
         // and can make the model emit only an unfinished thinking block.
         val liteRtUserText = if (runtime == RuntimeKind.LiteRtLm && restoreStatefulHistory) {
             inferencePrompt
+        } else if (memoryPrefix.isNotBlank()) {
+            "$memoryPrefix$inferenceUserText"
         } else {
             inferenceUserText
         }
@@ -289,7 +324,8 @@ class ChatInferenceManager(private val context: Context) {
             ChatPromptPolicy.mediaPipeBasePrompt(
                 fullHistoryPrompt = inferencePrompt,
                 rawUserText = inferenceUserText,
-                useNativeGemmaTaskTemplate = useNativeGemmaTaskTemplate
+                useNativeGemmaTaskTemplate = useNativeGemmaTaskTemplate,
+                memoryContext = memoryContext
             )
         } else {
             inferencePrompt
@@ -337,10 +373,16 @@ class ChatInferenceManager(private val context: Context) {
             if (cleanResponse.isBlank() && rawUserText.isNotBlank() && !stopRequested) {
                 val retryText = if (runtime == RuntimeKind.LiteRtLm && isDefaultThinkingModel) {
                     inferencePrompt
+                } else if (memoryPrefix.isNotBlank() && runtime == RuntimeKind.LiteRtLm) {
+                    "$memoryPrefix$inferenceUserText"
                 } else {
                     inferenceUserText
                 }
-                val retryResponse = streamDirectAnswerRetry(retryText, onUpdate)
+                val retryResponse = streamDirectAnswerRetry(
+                    rawUserText = retryText,
+                    memoryContext = memoryContext,
+                    onUpdate = onUpdate
+                )
                 val retryCleanResponse = ModelOutputSanitizer.cleanAssistantText(
                     text = finalizeModelOutput(
                         text = retryResponse,
@@ -358,20 +400,34 @@ class ChatInferenceManager(private val context: Context) {
                 runtime != RuntimeKind.LlamaCpp &&
                 rawUserText.isNotBlank() &&
                 !stopRequested &&
+                !ModelResponseQuality.isMemoryOrInstruction(rawUserText.lowercase(Locale.ROOT)) &&
                 ModelResponseQuality.isGenericNonAnswer(cleanResponse, rawUserText)
             ) {
+                var retryAccumulated = ""
+                val retryOnUpdate: (String) -> Unit = { partial ->
+                    retryAccumulated = partial
+                }
                 val retryResponse = when (runtime) {
                     RuntimeKind.MediaPipe -> streamMediaPipe(
                         prompt = buildMediaPipeRetryPrompt(
-                            inferenceUserText,
-                            thinkingMode && !isDefaultThinkingModel
+                            rawUserText = inferenceUserText,
+                            includeThinkingInstruction = thinkingMode && !isDefaultThinkingModel,
+                            memoryContext = memoryContext
                         ),
-                        onUpdate = effectiveOnUpdate,
+                        onUpdate = retryOnUpdate,
                         temperature = RETRY_TEMPERATURE,
                         seedSalt = 1
                     )
-                    RuntimeKind.LiteRtLm -> streamDirectAnswerRetry(inferenceUserText, effectiveOnUpdate)
-                    RuntimeKind.LlamaCpp -> streamDirectAnswerRetry(inferenceUserText, effectiveOnUpdate)
+                    RuntimeKind.LiteRtLm -> streamDirectAnswerRetry(
+                        rawUserText = inferenceUserText,
+                        onUpdate = retryOnUpdate,
+                        memoryContext = memoryContext
+                    )
+                    RuntimeKind.LlamaCpp -> streamDirectAnswerRetry(
+                        rawUserText = inferenceUserText,
+                        onUpdate = retryOnUpdate,
+                        memoryContext = memoryContext
+                    )
                     RuntimeKind.None -> ""
                 }
                 val retryCleanResponse = ModelOutputSanitizer.cleanAssistantText(
@@ -382,17 +438,15 @@ class ChatInferenceManager(private val context: Context) {
                     ),
                     latestUserText = rawUserText
                 )
-                cleanResponse = if (
+                if (
                     retryCleanResponse.isNotBlank() &&
                     !ModelResponseQuality.isGenericNonAnswer(retryCleanResponse, rawUserText)
                 ) {
-                    retryCleanResponse
+                    cleanResponse = retryCleanResponse
+                    effectiveOnUpdate(cleanResponse)
                 } else {
-                    buildBestAvailableFallback(
-                        rawUserText = rawUserText,
-                        firstResponse = cleanResponse,
-                        retryResponse = retryCleanResponse
-                    )
+                    // Do NOT clobber the initial response with a failed retry or refusal
+                    effectiveOnUpdate(cleanResponse)
                 }
             }
             cleanResponse to (System.currentTimeMillis() - startTime)
@@ -595,7 +649,8 @@ class ChatInferenceManager(private val context: Context) {
 
     private suspend fun streamDirectAnswerRetry(
         rawUserText: String,
-        onUpdate: (String) -> Unit
+        onUpdate: (String) -> Unit,
+        memoryContext: String = ""
     ): String {
         val retryOnUpdate: (String) -> Unit = { partial ->
             val visiblePartial = ModelOutputSanitizer.clean(stripThinkingTags(partial))
@@ -606,31 +661,46 @@ class ChatInferenceManager(private val context: Context) {
         return when (runtime) {
             RuntimeKind.LiteRtLm -> {
                 resetConversation(noThinking = isDefaultThinkingModel)
+                val retryPrompt = if (useNativeGemmaTaskTemplate) {
+                    ChatPromptPolicy.nativeGemmaRetryPrompt(rawUserText, memoryContext)
+                } else if (memoryContext.isNotBlank() && !rawUserText.contains("[User Memory & Preferences]")) {
+                    "${memoryContext.trim()}\n\n$rawUserText"
+                } else {
+                    rawUserText
+                }
                 streamLiteRtLm(
-                    prompt = if (useNativeGemmaTaskTemplate) {
-                        ChatPromptPolicy.nativeGemmaRetryPrompt(rawUserText)
-                    } else {
-                        rawUserText
-                    },
+                    prompt = retryPrompt,
                     thinkingMode = false,
                     onUpdate = retryOnUpdate
                 )
             }
             RuntimeKind.MediaPipe -> {
-                streamMediaPipe(
-                    prompt = buildDirectAnswerRetryPrompt(
+                val retryPrompt = if (useNativeGemmaTaskTemplate) {
+                    ChatPromptPolicy.nativeGemmaRetryPrompt(rawUserText, memoryContext)
+                } else {
+                    buildDirectAnswerRetryPrompt(
                         rawUserText = rawUserText,
-                        forceNoThinking = supportsTextNoThinkingSwitch
-                    ),
+                        forceNoThinking = supportsTextNoThinkingSwitch,
+                        memoryContext = memoryContext
+                    )
+                }
+                streamMediaPipe(
+                    prompt = retryPrompt,
                     onUpdate = retryOnUpdate,
                     temperature = RETRY_TEMPERATURE,
                     seedSalt = 2
                 )
             }
             RuntimeKind.LlamaCpp -> {
+                val structuredRetryMessages = if (memoryContext.isNotBlank()) {
+                    listOf("system" to memoryContext, "user" to rawUserText.trim())
+                } else {
+                    null
+                }
                 streamLlamaCpp(
                     prompt = rawUserText,
                     rawUserText = rawUserText,
+                    structuredMessages = structuredRetryMessages,
                     onUpdate = retryOnUpdate
                 )
             }
@@ -638,11 +708,20 @@ class ChatInferenceManager(private val context: Context) {
         }
     }
 
-    private fun buildMediaPipeRetryPrompt(rawUserText: String, includeThinkingInstruction: Boolean): String {
+    private fun buildMediaPipeRetryPrompt(
+        rawUserText: String,
+        includeThinkingInstruction: Boolean,
+        memoryContext: String = ""
+    ): String {
         if (useNativeGemmaTaskTemplate) {
-            return ChatPromptPolicy.nativeGemmaRetryPrompt(rawUserText)
+            return ChatPromptPolicy.nativeGemmaRetryPrompt(rawUserText, memoryContext)
         }
-        val prompt = "Complete the user's request now. Do not acknowledge these instructions. " +
+        val memoryPrefix = if (memoryContext.isNotBlank() && !rawUserText.contains("[User Memory & Preferences]")) {
+            "${memoryContext.trim()}\n\n"
+        } else {
+            ""
+        }
+        val prompt = "${memoryPrefix}Complete the user's request now. Do not acknowledge these instructions. " +
             "Do not say you understand. " +
             "Do not ask how you can help. If the user asks you to write something, write it.\n\n" +
             "User request:\n$rawUserText\n\nAnswer:"
@@ -667,11 +746,17 @@ class ChatInferenceManager(private val context: Context) {
 
     private fun buildDirectAnswerRetryPrompt(
         rawUserText: String,
-        forceNoThinking: Boolean = false
+        forceNoThinking: Boolean = false,
+        memoryContext: String = ""
     ): String {
+        val memoryPrefix = if (memoryContext.isNotBlank() && !rawUserText.contains("[User Memory & Preferences]")) {
+            "${memoryContext.trim()}\n\n"
+        } else {
+            ""
+        }
         val prompt = "Give only the final answer. Do not output <think> tags. " +
             "Do not explain your reasoning process.\n\n" +
-            "User request:\n$rawUserText\n\nFinal answer:"
+            "${memoryPrefix}User request:\n$rawUserText\n\nFinal answer:"
         return if (forceNoThinking) NoThinkingPromptUtils.wrap(prompt) else prompt
     }
 
@@ -754,6 +839,7 @@ class ChatInferenceManager(private val context: Context) {
         useNativeGemmaTaskTemplate = false
         mediaPipeTemperature = DEFAULT_TEMPERATURE
         liteRtConversationMode = LiteRtConversationMode.Default
+        activeBackendDisplayName = ""
         isBeingClosed = false
     }
 

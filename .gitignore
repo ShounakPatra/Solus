@@ -32,3 +32,4 @@ build_android_arm64/
 build_native/
 *.bin
 dump_gguf.py
+scratch/
