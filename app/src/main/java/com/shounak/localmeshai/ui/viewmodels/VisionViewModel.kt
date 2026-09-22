@@ -142,6 +142,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             ?: inferContextWindowTokens(path)
             ?: DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
 
+        if (!forceReload || path != currentModelPath) {
+            appSettings.updateSettings { it.copy(llamaBackendPreference = "AUTO") }
+        }
         val currentBackendPref = appSettings.settings.value.llamaBackendPreference
         if (!forceReload && path == currentModelPath && _isModelReady.value && currentBackendPref == lastLoadedBackendPreference && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Vision)) {
             currentContextWindowTokens = resolvedContextWindowTokens

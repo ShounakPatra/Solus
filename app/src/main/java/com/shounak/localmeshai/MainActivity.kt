@@ -88,6 +88,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
+import com.shounak.localmeshai.utils.AppSettings
 import com.shounak.localmeshai.utils.ModelRuntimeCoordinator
 import com.shounak.localmeshai.utils.ModelRuntimeOwner
 import androidx.lifecycle.lifecycleScope
@@ -98,9 +99,24 @@ import androidx.emoji2.bundled.BundledEmojiCompatConfig
 import androidx.emoji2.text.EmojiCompat
 
 class MainActivity : ComponentActivity() {
+    private var isFirstStart = true
+
+    override fun onStart() {
+        super.onStart()
+        if (!isFirstStart) {
+            AppSettings.getInstance(this).updateSettings {
+                it.copy(llamaBackendPreference = "AUTO")
+            }
+        }
+        isFirstStart = false
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        AppSettings.getInstance(this).updateSettings {
+            it.copy(llamaBackendPreference = "AUTO")
+        }
         // Offload font bundling to background so it doesn't block the main UI thread during startup.
         lifecycleScope.launch(Dispatchers.Default) {
             runCatching {
@@ -113,6 +129,7 @@ class MainActivity : ComponentActivity() {
         InitCrashGuard.checkAndRecoverCrash(this)
         lifecycleScope.launch(Dispatchers.IO) {
             LiteRtRuntimeCache.pruneOnStartup(this@MainActivity)
+            com.shounak.localmeshai.utils.AppUpdateManager.deleteDownloadedApks(this@MainActivity)
         }
         enableEdgeToEdge()
         preferHighestRefreshRate()

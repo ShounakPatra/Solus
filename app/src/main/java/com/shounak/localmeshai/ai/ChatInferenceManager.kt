@@ -29,6 +29,9 @@ import com.shounak.localmeshai.utils.ThinkingModeConfig
 import com.shounak.localmeshai.utils.ThinkingTextUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -66,6 +69,9 @@ class ChatInferenceManager(private val context: Context) {
             Regex("""<think>[\s\S]*?</think>""", RegexOption.IGNORE_CASE)
         private val THINK_UNCLOSED_REGEX =
             Regex("""<think>[\s\S]*$""", RegexOption.IGNORE_CASE)
+
+        private val _isGgufActive = MutableStateFlow(false)
+        val isGgufActive: StateFlow<Boolean> = _isGgufActive.asStateFlow()
     }
 
     /**
@@ -159,10 +165,13 @@ class ChatInferenceManager(private val context: Context) {
             )
             llamaCppEngine = engine
             runtime = RuntimeKind.LlamaCpp
+            _isGgufActive.value = true
             activeBackendDisplayName = if (engine.activeBackend == LlamaBackend.VULKAN) "GGUF Vulkan GPU" else "GGUF CPU"
             Log.i(TAG, "LlamaCpp GGUF engine initialized for: ${file.name} on ${engine.activeBackend.displayName} (ctx: $dynamicContext, threads: $dynamicThreads, batch: $nBatch/$nUbatch)")
             return
         }
+
+        _isGgufActive.value = false
 
         val shouldUseLiteRtLmConversation = ChatRuntimePolicy.shouldUseLiteRtLmConversation(
             fileName = file.name,
@@ -834,6 +843,7 @@ class ChatInferenceManager(private val context: Context) {
         try { mediaPipeInference?.close() } catch (_: Throwable) {}
         mediaPipeInference = null
         runtime = RuntimeKind.None
+        _isGgufActive.value = false
         isDefaultThinkingModel = false
         supportsTextNoThinkingSwitch = false
         useNativeGemmaTaskTemplate = false

@@ -45,8 +45,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val availableModels = mutableStateListOf(*ModelCatalog.defaultModels.toTypedArray())
     val unsafeInitOverrideIds = mutableStateListOf<String>()
 
+    sealed class UpdateDownloadStatus {
+        object Idle : UpdateDownloadStatus()
+        data class Downloading(val progress: Float) : UpdateDownloadStatus()
+        data class ReadyToInstall(val apkFile: File) : UpdateDownloadStatus()
+        object Installing : UpdateDownloadStatus()
+        data class Error(val message: String) : UpdateDownloadStatus()
+    }
+
     private val _updateState = MutableStateFlow<com.shounak.localmeshai.utils.AppUpdateManager.UpdateCheckResult?>(null)
     val updateState = _updateState.asStateFlow()
+
+    private val _updateDownloadStatus = MutableStateFlow<UpdateDownloadStatus>(UpdateDownloadStatus.Idle)
+    val updateDownloadStatus = _updateDownloadStatus.asStateFlow()
 
     private val _isCheckingForUpdates = MutableStateFlow(false)
     val isCheckingForUpdates = _isCheckingForUpdates.asStateFlow()
@@ -83,11 +94,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (!silent || result is com.shounak.localmeshai.utils.AppUpdateManager.UpdateCheckResult.UpdateAvailable) {
                 _updateState.value = result
             }
+
+            if (result is com.shounak.localmeshai.utils.AppUpdateManager.UpdateCheckResult.UpToDate) {
+                com.shounak.localmeshai.utils.AppUpdateManager.deleteDownloadedApks(getApplication())
+            } else if (result is com.shounak.localmeshai.utils.AppUpdateManager.UpdateCheckResult.UpdateAvailable) {
+                val apkUrl = result.updateInfo.downloadUrl
+                // Auto-download only if autoCheckUpdates is enabled
+                if (appSettingsData.value.autoCheckUpdates && !apkUrl.isNullOrBlank()) {
+                    downloadAndInstallUpdate(result.updateInfo.latestVersion, apkUrl)
+                }
+            }
+        }
+    }
+
+    fun downloadAndInstallUpdate(version: String, downloadUrl: String) {
+        if (_updateDownloadStatus.value is UpdateDownloadStatus.Downloading) return
+        viewModelScope.launch {
+            _updateDownloadStatus.value = UpdateDownloadStatus.Downloading(0f)
+            val result = com.shounak.localmeshai.utils.AppUpdateManager.downloadApk(
+                context = getApplication(),
+                downloadUrl = downloadUrl,
+                version = version,
+                onProgress = { progress ->
+                    _updateDownloadStatus.value = UpdateDownloadStatus.Downloading(progress)
+                }
+            )
+            result.fold(
+                onSuccess = { apkFile ->
+                    _updateDownloadStatus.value = UpdateDownloadStatus.ReadyToInstall(apkFile)
+                    val launched = com.shounak.localmeshai.utils.AppUpdateManager.installApk(getApplication(), apkFile)
+                    if (launched) {
+                        _updateDownloadStatus.value = UpdateDownloadStatus.Installing
+                    } else {
+                        _updateDownloadStatus.value = UpdateDownloadStatus.Error("Failed to launch package installer")
+                    }
+                },
+                onFailure = { error ->
+                    _updateDownloadStatus.value = UpdateDownloadStatus.Error(error.localizedMessage ?: "Download failed")
+                }
+            )
         }
     }
 
     fun dismissUpdateState() {
         _updateState.value = null
+        _updateDownloadStatus.value = UpdateDownloadStatus.Idle
     }
 
     private suspend fun reconcilePersistedDownloads() = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -96,6 +147,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val target = modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
             if (target.exists() && (target.isDirectory || target.length() > 0L)) {
                 val validationError = localModelValidationError(model, target)
+                val fileTime = target.lastModified()
+                val dlTime = if (snapshot.downloadedAt > 0L) snapshot.downloadedAt else fileTime
                 DownloadStateStore.update(
                     snapshot.copy(
                         status = if (validationError == null) ModelStatus.Available else ModelStatus.Failed,
@@ -103,7 +156,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         downloadedBytes = if (target.isFile) target.length() else snapshot.downloadedBytes,
                         bytesPerSecond = 0L,
                         localPath = target.absolutePath,
-                        errorMessage = validationError
+                        errorMessage = validationError,
+                        downloadedAt = dlTime
                     )
                 )
                 return@forEach
@@ -150,11 +204,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         deviceBlockMessage != null -> deviceBlockMessage
                         else -> null
                     }
+                    val fileTime = target.lastModified()
+                    val existingSnapshot = DownloadStateStore.get(model.id)
+                    val dlTime = if ((existingSnapshot?.downloadedAt ?: 0L) > 0L) existingSnapshot!!.downloadedAt else fileTime
                     list.add(index to model.copy(
                         status = if (blockMessage != null) ModelStatus.Blocked else ModelStatus.Available,
                         progress = 1f,
                         localPath = target.absolutePath,
-                        errorMessage = blockMessage
+                        errorMessage = blockMessage,
+                        downloadedAt = dlTime
                     ))
                 }
             }
@@ -185,6 +243,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _selectedTextModelPath.value = null
             return
         }
+        appSettings.updateSettings { it.copy(llamaBackendPreference = "AUTO") }
         val modelType = model?.type
         if (modelType == ModelType.Vision) {
             _selectedVisionModelPath.value = path
@@ -201,6 +260,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _selectedVisionModelPath.value = null
             return
         }
+        appSettings.updateSettings { it.copy(llamaBackendPreference = "AUTO") }
         val modelType = model?.type
         if (modelType == ModelType.Text) {
             _selectedTextModelPath.value = path
@@ -416,7 +476,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 totalBytes = -1L,
                 bytesPerSecond = 0L,
                 localPath = null,
-                errorMessage = blockMessage
+                errorMessage = blockMessage,
+                downloadedAt = 0L
             )
         }
     }
@@ -549,7 +610,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 ModelStatus.NotDownloaded -> null
                                 else -> snapshot.localPath ?: it.localPath
                             },
-                            errorMessage = blockMessage ?: snapshot.errorMessage
+                            errorMessage = blockMessage ?: snapshot.errorMessage,
+                            downloadedAt = when {
+                                snapshot.status == ModelStatus.NotDownloaded -> 0L
+                                snapshot.downloadedAt > 0L -> snapshot.downloadedAt
+                                else -> it.downloadedAt
+                            }
                         )
                     }
                 }

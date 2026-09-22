@@ -644,7 +644,7 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(selectedTextModelPath, selectedModel?.id, selectedUnsafeOverride, appSettingsData.llamaBackendPreference) {
+    LaunchedEffect(selectedTextModelPath, selectedModel?.id, selectedUnsafeOverride) {
         if (selectedTextModelPath == null) {
             chatViewModel.uninitializeModel()
         } else {
@@ -660,7 +660,7 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(selectedVisionModelPath, selectedModel?.id, selectedSupportsAudio, selectedUnsafeOverride, appSettingsData.llamaBackendPreference) {
+    LaunchedEffect(selectedVisionModelPath, selectedModel?.id, selectedSupportsAudio, selectedUnsafeOverride) {
         if (selectedVisionModelPath == null) {
             visionViewModel.uninitializeModel()
         } else {

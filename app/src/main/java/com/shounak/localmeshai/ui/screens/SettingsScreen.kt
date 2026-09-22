@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import com.shounak.localmeshai.BuildConfig
+import com.shounak.localmeshai.ai.ChatInferenceManager
 import com.shounak.localmeshai.ai.LlamaCppEngine
 import com.shounak.localmeshai.utils.AppUpdateManager
 import androidx.compose.runtime.*
@@ -280,8 +281,28 @@ fun SettingsDialog(
                             style = MaterialTheme.typography.bodySmall,
                             color = colors.onSurfaceVariant.copy(alpha = 0.82f)
                         )
+                        val isGgufEngineActive by ChatInferenceManager.isGgufActive.collectAsState()
+                        val selectedTextPath by mainViewModel.selectedTextModelPath.collectAsState()
+                        val isGgufSelected = remember(selectedTextPath, mainViewModel.availableModels.toList()) {
+                            selectedTextPath?.endsWith(".gguf", ignoreCase = true) == true ||
+                                mainViewModel.availableModels.any {
+                                    it.localPath == selectedTextPath && (it.fileName.endsWith(".gguf", ignoreCase = true) || it.backend.contains("GGUF", ignoreCase = true))
+                                }
+                        }
+                        val isGgufActive = isGgufEngineActive || isGgufSelected
+
+                        LaunchedEffect(isGgufActive) {
+                            if (isGgufActive && !settingsData.llamaBackendPreference.equals("AUTO", ignoreCase = true)) {
+                                appSettings.updateSettings { it.copy(llamaBackendPreference = "AUTO") }
+                            }
+                        }
+
                         Text(
-                            text = "Choose whether models run on GPU accelerator or CPU-safe mode. Changing this automatically re-initializes the active model on the selected chip.",
+                            text = if (isGgufActive) {
+                                "Choose whether models run on GPU accelerator or CPU-safe mode. For GGUF models, Auto mode is active and optimized automatically."
+                            } else {
+                                "Choose whether models run on GPU accelerator or CPU-safe mode. Changing this automatically re-initializes the active model on the selected chip."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = colors.onSurfaceVariant.copy(alpha = 0.72f)
                         )
@@ -295,30 +316,46 @@ fun SettingsDialog(
                                 "VULKAN" to "GPU (Vulkan / LiteRT)",
                                 "CPU" to "CPU (Safe)"
                             ).forEach { (backendPref, label) ->
+                                val isAuto = backendPref.equals("AUTO", ignoreCase = true)
+                                val isChipEnabled = if (isGgufActive) isAuto else true
                                 val isSelected = settingsData.llamaBackendPreference.equals(backendPref, ignoreCase = true)
                                 FilterChip(
                                     selected = isSelected,
                                     onClick = {
-                                        appSettings.updateSettings { it.copy(llamaBackendPreference = backendPref) }
+                                        if (isChipEnabled) {
+                                            appSettings.updateSettings { it.copy(llamaBackendPreference = backendPref) }
+                                        }
                                     },
+                                    enabled = isChipEnabled,
                                     label = { Text(label, maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall) },
                                     shape = RoundedCornerShape(12.dp),
                                     colors = FilterChipDefaults.filterChipColors(
                                         selectedContainerColor = colors.primary.copy(alpha = 0.28f),
                                         selectedLabelColor = Color.White,
                                         containerColor = colors.surfaceContainerLow,
-                                        labelColor = colors.onSurfaceVariant
+                                        labelColor = colors.onSurfaceVariant,
+                                        disabledContainerColor = colors.surfaceContainerLowest.copy(alpha = 0.20f),
+                                        disabledLabelColor = colors.onSurfaceVariant.copy(alpha = 0.35f),
+                                        disabledSelectedContainerColor = colors.surfaceContainerLowest.copy(alpha = 0.20f)
                                     ),
                                     border = FilterChipDefaults.filterChipBorder(
-                                        enabled = true,
+                                        enabled = isChipEnabled,
                                         selected = isSelected,
                                         borderColor = colors.outlineVariant.copy(alpha = 0.50f),
                                         selectedBorderColor = colors.primary.copy(alpha = 0.75f),
+                                        disabledBorderColor = colors.outlineVariant.copy(alpha = 0.20f),
                                         borderWidth = 0.8.dp,
                                         selectedBorderWidth = 1.dp
                                     )
                                 )
                             }
+                        }
+                        if (isGgufActive) {
+                            Text(
+                                text = "CPU and GPU options are unavailable for GGUF models. GGUF runs in Auto mode (Vulkan GPU with automatic CPU fallback).",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.primary.copy(alpha = 0.85f)
+                            )
                         }
                     }
 
@@ -609,6 +646,7 @@ fun SettingsDialog(
 
                     // Category 7: About Solus & Updates
                     val updateState by mainViewModel.updateState.collectAsState()
+                    val updateDownloadStatus by mainViewModel.updateDownloadStatus.collectAsState()
                     val isCheckingForUpdates by mainViewModel.isCheckingForUpdates.collectAsState()
 
                     SettingsCategory(title = "ℹ️ About Solus & Updates", hazeState = hazeState) {
@@ -719,21 +757,107 @@ fun SettingsDialog(
                                             style = MaterialTheme.typography.bodySmall,
                                             color = colors.onPrimaryContainer
                                         )
+
+                                        when (val status = updateDownloadStatus) {
+                                            is MainViewModel.UpdateDownloadStatus.Downloading -> {
+                                                Column(
+                                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    LinearProgressIndicator(
+                                                        progress = { status.progress },
+                                                        modifier = Modifier.fillMaxWidth().height(6.dp),
+                                                        color = colors.primary,
+                                                        trackColor = colors.surfaceVariant
+                                                    )
+                                                    Text(
+                                                        text = "Downloading APK update: ${(status.progress * 100).toInt()}%",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = colors.onPrimaryContainer
+                                                    )
+                                                }
+                                            }
+                                            is MainViewModel.UpdateDownloadStatus.ReadyToInstall -> {
+                                                Text(
+                                                    text = "APK downloaded and ready to install.",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = colors.primary
+                                                )
+                                            }
+                                            is MainViewModel.UpdateDownloadStatus.Installing -> {
+                                                Text(
+                                                    text = "Package installer launched...",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = colors.primary
+                                                )
+                                            }
+                                            is MainViewModel.UpdateDownloadStatus.Error -> {
+                                                Text(
+                                                    text = "Download error: ${status.message}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = colors.error
+                                                )
+                                            }
+                                            else -> {}
+                                        }
+
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            Button(
-                                                onClick = {
-                                                    val url = result.updateInfo.downloadUrl ?: result.updateInfo.htmlUrl
-                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                                    context.startActivity(intent)
-                                                },
-                                                modifier = Modifier.weight(1f),
-                                                shape = RoundedCornerShape(10.dp)
-                                            ) {
-                                                Text("Download Release")
+                                            val apkUrl = result.updateInfo.downloadUrl
+                                            when (val status = updateDownloadStatus) {
+                                                is MainViewModel.UpdateDownloadStatus.Downloading -> {
+                                                    Button(
+                                                        onClick = {},
+                                                        enabled = false,
+                                                        modifier = Modifier.weight(1f),
+                                                        shape = RoundedCornerShape(10.dp)
+                                                    ) {
+                                                        Text("Downloading...")
+                                                    }
+                                                }
+                                                is MainViewModel.UpdateDownloadStatus.ReadyToInstall -> {
+                                                    Button(
+                                                        onClick = {
+                                                            AppUpdateManager.installApk(context, status.apkFile)
+                                                        },
+                                                        modifier = Modifier.weight(1f),
+                                                        shape = RoundedCornerShape(10.dp)
+                                                    ) {
+                                                        Text("Install Update")
+                                                    }
+                                                }
+                                                else -> {
+                                                    if (!apkUrl.isNullOrBlank()) {
+                                                        Button(
+                                                             onClick = {
+                                                                 mainViewModel.downloadAndInstallUpdate(
+                                                                     result.updateInfo.latestVersion,
+                                                                     apkUrl
+                                                                 )
+                                                             },
+                                                             modifier = Modifier.weight(1f),
+                                                             shape = RoundedCornerShape(10.dp)
+                                                         ) {
+                                                             Text("Download & Install")
+                                                         }
+                                                    } else {
+                                                         Button(
+                                                             onClick = {
+                                                                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(result.updateInfo.htmlUrl))
+                                                                 context.startActivity(intent)
+                                                             },
+                                                             modifier = Modifier.weight(1f),
+                                                             shape = RoundedCornerShape(10.dp)
+                                                         ) {
+                                                             Text("View Release")
+                                                         }
+                                                    }
+                                                }
                                             }
+
                                             OutlinedButton(
                                                 onClick = { mainViewModel.dismissUpdateState() },
                                                 shape = RoundedCornerShape(10.dp)

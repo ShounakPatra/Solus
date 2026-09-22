@@ -266,6 +266,7 @@ class ModelDownloader(private val context: Context) {
                     tempFile.copyTo(target, overwrite = true)
                     tempFile.delete()
                 }
+                target.setLastModified(System.currentTimeMillis())
                 target.absolutePath
             }
 
@@ -274,7 +275,9 @@ class ModelDownloader(private val context: Context) {
                 target.mkdirs()
                 unzipModel(tempFile, target)
                 tempFile.delete()
-                resolveExtractedModelDirectory(target).absolutePath
+                val extracted = resolveExtractedModelDirectory(target)
+                extracted.setLastModified(System.currentTimeMillis())
+                extracted.absolutePath
             }
         }
 

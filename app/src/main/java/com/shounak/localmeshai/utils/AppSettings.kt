@@ -30,6 +30,10 @@ data class AppSettingsData(
 class AppSettings private constructor(context: Context) {
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
 
+    init {
+        prefs.edit().putString(KEY_LLAMA_BACKEND_PREF, "AUTO").apply()
+    }
+
     private val _settings = MutableStateFlow(loadSettings())
     val settings: StateFlow<AppSettingsData> = _settings.asStateFlow()
 
@@ -47,7 +51,7 @@ class AppSettings private constructor(context: Context) {
             autoUnloadMinutes = prefs.getInt(KEY_AUTO_UNLOAD_MINS, 15),
             huggingFaceToken = prefs.getString(KEY_HF_TOKEN, "").orEmpty(),
             autoCheckUpdates = prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true),
-            llamaBackendPreference = prefs.getString(KEY_LLAMA_BACKEND_PREF, "AUTO") ?: "AUTO",
+            llamaBackendPreference = "AUTO",
             enableRag = prefs.getBoolean(KEY_ENABLE_RAG, true),
             ragTopK = prefs.getInt(KEY_RAG_TOP_K, 3),
             ragMinSimilarity = prefs.getFloat(KEY_RAG_MIN_SIMILARITY, 0.30f),

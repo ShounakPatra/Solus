@@ -81,6 +81,7 @@ import com.shounak.localmeshai.models.ModelType
 import com.shounak.localmeshai.ui.theme.ModelTheme
 import com.shounak.localmeshai.ui.viewmodels.MainViewModel
 import com.shounak.localmeshai.utils.DeviceUtils
+import java.io.File
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.sin
@@ -179,28 +180,124 @@ private fun ModelInfo.isDownloadedBlockedLiteRtLm(): Boolean {
             localPath.endsWith(".litertlm", ignoreCase = true))
 }
 
+internal fun ModelInfo.downloadTime(): Long {
+    if (downloadedAt > 0L) return downloadedAt
+    val path = localPath ?: return 0L
+    return try {
+        val file = File(path)
+        if (file.exists()) file.lastModified() else 0L
+    } catch (_: Exception) {
+        0L
+    }
+}
+
 private fun ModelInfo.downloadedSectionSortRank(): Int {
     return when (status) {
         ModelStatus.Downloading -> 0
         ModelStatus.Paused -> 1
-        ModelStatus.Failed -> 2
-        ModelStatus.Available -> 3
-        ModelStatus.Blocked -> 4
-        else -> 5
+        ModelStatus.Available -> 2
+        ModelStatus.Blocked -> 2
+        ModelStatus.Failed -> 3
+        else -> 4
     }
 }
 
 /**
  * Combined search + tier filter used to scope which models show up
- * on the Models tab.
+ * on the Models tab. Supports multi-word matching across name, id,
+ * description, filename, backend, and tags.
  */
-private fun ModelInfo.matches(query: String, tier: SizeTier): Boolean {
+internal fun ModelInfo.matches(query: String, tier: SizeTier): Boolean {
     if (!tier.contains(parametersBillions())) return false
     if (query.isBlank()) return true
     val q = query.trim().lowercase()
-    return name.lowercase().contains(q) ||
-        description.lowercase().contains(q) ||
-        id.lowercase().contains(q)
+    val words = q.split(Regex("""\s+""")).filter { it.isNotBlank() }
+    if (words.isEmpty()) return true
+
+    val cleanQuery = q.replace(Regex("""[^a-z0-9]"""), "")
+    val cleanName = name.lowercase().replace(Regex("""[^a-z0-9]"""), "")
+    val cleanId = id.lowercase().replace(Regex("""[^a-z0-9]"""), "")
+    val nameLower = name.lowercase()
+    val idLower = id.lowercase()
+    val descLower = description.lowercase()
+    val fileLower = fileName.lowercase()
+    val backendLower = backend.lowercase()
+    val typeLower = type.label.lowercase()
+
+    // Fast path: direct substring match
+    if (nameLower.contains(q) || idLower.contains(q) || descLower.contains(q) ||
+        fileLower.contains(q) || backendLower.contains(q) || typeLower.contains(q)) {
+        return true
+    }
+
+    // Normalized alphanumeric match (e.g. "llama3" matches "Llama 3")
+    if (cleanQuery.isNotEmpty() && (cleanName.contains(cleanQuery) || cleanId.contains(cleanQuery))) {
+        return true
+    }
+
+    // Match if all searched words are found across model metadata
+    return words.all { word ->
+        val cleanWord = word.replace(Regex("""[^a-z0-9]"""), "")
+        nameLower.contains(word) ||
+            idLower.contains(word) ||
+            descLower.contains(word) ||
+            fileLower.contains(word) ||
+            backendLower.contains(word) ||
+            typeLower.contains(word) ||
+            (word == "moe" && isMixtureOfExperts()) ||
+            (cleanWord.isNotEmpty() && cleanName.contains(cleanWord))
+    }
+}
+
+/**
+ * Calculates search relevance score for ordering search results.
+ * Higher score = closer match shown topmost.
+ */
+internal fun ModelInfo.searchRelevance(query: String): Int {
+    val q = query.trim().lowercase()
+    if (q.isBlank()) return 0
+    val modelName = name.lowercase()
+    val modelId = id.lowercase()
+    val cleanQuery = q.replace(Regex("""[^a-z0-9]"""), "")
+    val cleanName = modelName.replace(Regex("""[^a-z0-9]"""), "")
+    val words = q.split(Regex("""\s+""")).filter { it.isNotBlank() }
+
+    var score = 0
+
+    // Exact name match
+    if (modelName == q || (cleanQuery.isNotEmpty() && cleanName == cleanQuery)) {
+        score += 1000
+    }
+    // Name starts with query
+    else if (modelName.startsWith(q) || (cleanQuery.isNotEmpty() && cleanName.startsWith(cleanQuery))) {
+        score += 800
+    }
+    // Name contains entire query as contiguous substring
+    else if (modelName.contains(q) || (cleanQuery.isNotEmpty() && cleanName.contains(cleanQuery))) {
+        score += 600
+    }
+    // All search words in name
+    else if (words.isNotEmpty() && words.all { modelName.contains(it) }) {
+        score += 500
+    }
+    // Model ID exact or contains
+    else if (modelId == q) {
+        score += 450
+    } else if (modelId.contains(q)) {
+        score += 400
+    } else if (words.isNotEmpty() && words.all { modelId.contains(it) }) {
+        score += 350
+    }
+    // Description contains query
+    else if (description.lowercase().contains(q)) {
+        score += 200
+    } else if (words.isNotEmpty() && words.all { description.lowercase().contains(it) }) {
+        score += 150
+    } else {
+        score += 100
+    }
+
+    return score
 }
 
 @Composable
@@ -222,20 +319,43 @@ fun ModelManagerScreen(
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var selectedTier by rememberSaveable { mutableStateOf(SizeTier.All) }
 
+    val isSearching = searchQuery.isNotBlank()
+
     val allTextModels = mainViewModel.availableModels.filter { it.type == ModelType.Text }
     val allVisionModels = mainViewModel.availableModels.filter { it.type == ModelType.Vision }
     val textModels = allTextModels.filter { it.matches(searchQuery, selectedTier) }
     val visionModels = allVisionModels.filter { it.matches(searchQuery, selectedTier) }
 
-    val filterActive = searchQuery.isNotBlank() || selectedTier != SizeTier.All
-    val hasMatches = (textModels + visionModels).isNotEmpty()
+    val matchingModels = remember(mainViewModel.availableModels, searchQuery, selectedTier) {
+        if (!isSearching) {
+            emptyList()
+        } else {
+            mainViewModel.availableModels
+                .filter { it.matches(searchQuery, selectedTier) }
+                .sortedWith(
+                    compareByDescending<ModelInfo> { it.searchRelevance(searchQuery) }
+                        .thenBy { it.name }
+                )
+        }
+    }
+
+    val filterActive = isSearching || selectedTier != SizeTier.All
+    val hasMatches = if (isSearching) {
+        matchingModels.isNotEmpty()
+    } else {
+        (textModels + visionModels).isNotEmpty()
+    }
     val showEmpty = filterActive && !hasMatches
 
     // Active downloads and local files are pinned to the top so progress/status
     // does not jump around between catalog sections.
+    // Downloaded models are sorted so the most recently downloaded appears at the top.
     val downloadedModels = (allTextModels + allVisionModels)
         .filter { it.isPinnedDownloadCard() }
-        .sortedBy { it.downloadedSectionSortRank() }
+        .sortedWith(
+            compareBy<ModelInfo> { it.downloadedSectionSortRank() }
+                .thenByDescending { it.downloadTime() }
+        )
     val downloadedIds = downloadedModels.map { it.id }.toSet()
 
     val readyTextModels = textModels.filter {
@@ -301,7 +421,7 @@ fun ModelManagerScreen(
         contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 112.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item {
+        item(key = "title_header") {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -324,27 +444,8 @@ fun ModelManagerScreen(
             }
         }
 
-        item {
-            // Storage usage summary
-            val downloadedModels = mainViewModel.availableModels.filter {
-                it.localPath != null &&
-                    (it.status == ModelStatus.Available ||
-                        it.status == ModelStatus.Blocked ||
-                        it.status == ModelStatus.Failed)
-            }
-            StorageSummaryCard(downloadedModels = downloadedModels, hazeState = hazeState)
-        }
-
-        item {
-            DeviceHardwareCard(hazeState = hazeState)
-        }
-
-        item {
-            PrivacyCard(hazeState = hazeState)
-        }
-
         @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-        stickyHeader {
+        stickyHeader(key = "search_header") {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -361,19 +462,93 @@ fun ModelManagerScreen(
             }
         }
 
-        if (showEmpty) {
-            item {
-                NoModelsMatchCard(
-                    searchQuery = searchQuery,
-                    selectedTier = selectedTier,
-                    onClear = {
-                        searchQuery = ""
-                        selectedTier = SizeTier.All
-                    },
-                    hazeState = hazeState
-                )
+        if (!isSearching) {
+            item(key = "storage_summary") {
+                // Storage usage summary
+                val downloadedForSummary = mainViewModel.availableModels.filter {
+                    it.localPath != null &&
+                        (it.status == ModelStatus.Available ||
+                            it.status == ModelStatus.Blocked ||
+                            it.status == ModelStatus.Failed)
+                }
+                StorageSummaryCard(downloadedModels = downloadedForSummary, hazeState = hazeState)
+            }
+
+            item(key = "device_hardware") {
+                DeviceHardwareCard(hazeState = hazeState)
+            }
+
+            item(key = "privacy_card") {
+                PrivacyCard(hazeState = hazeState)
             }
         }
+
+        if (isSearching) {
+            if (showEmpty) {
+                item {
+                    NoModelsMatchCard(
+                        searchQuery = searchQuery,
+                        selectedTier = selectedTier,
+                        onClear = {
+                            searchQuery = ""
+                            selectedTier = SizeTier.All
+                        },
+                        hazeState = hazeState
+                    )
+                }
+            } else {
+                itemsIndexed(
+                    matchingModels,
+                    key = { _, model -> model.id },
+                    contentType = { _, _ -> "model_card" }
+                ) { _, model ->
+                    val isSelected = model.localPath != null && when (model.type) {
+                        ModelType.Text -> selectedTextModel == model.localPath
+                        ModelType.Vision -> selectedVisionModel == model.localPath
+                    }
+                    ModelItem(
+                        model = model,
+                        isSelected = isSelected,
+                        onOpenPage = model.modelPageUrl?.let { url -> { openUrl(context, url) } },
+                        onAction = {
+                            when {
+                                model.status == ModelStatus.Available && model.localPath != null -> {
+                                    when (model.type) {
+                                        ModelType.Text -> mainViewModel.selectTextModel(model.localPath)
+                                        ModelType.Vision -> mainViewModel.selectVisionModel(model.localPath)
+                                    }
+                                }
+                                model.status == ModelStatus.Paused -> mainViewModel.resumeDownload(model.id)
+                                model.status == ModelStatus.Downloading -> { /* active download */ }
+                                else -> mainViewModel.startDownload(model.id)
+                            }
+                        },
+                        onPause = { mainViewModel.pauseDownload(model.id) },
+                        onCancel = { mainViewModel.cancelDownload(model.id) },
+                        onDelete = if (model.status == ModelStatus.NeedsConversion || model.status == ModelStatus.ComingSoon) null else { { mainViewModel.deleteModel(model.id) } },
+                        onUnsafeDownload = { mainViewModel.startDownloadAnyway(model.id) },
+                        onUnsafeTry = { mainViewModel.tryModelAnyway(model.id) },
+                        isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
+                        onOpenSettings = { showSettings = true },
+                        enableDynamicThemes = enableDynamicThemes,
+                        hazeState = hazeState
+                    )
+                }
+            }
+        } else {
+            if (showEmpty) {
+                item {
+                    NoModelsMatchCard(
+                        searchQuery = searchQuery,
+                        selectedTier = selectedTier,
+                        onClear = {
+                            searchQuery = ""
+                            selectedTier = SizeTier.All
+                        },
+                        hazeState = hazeState
+                    )
+                }
+            }
 
         if (downloadedModels.isNotEmpty()) {
             item {
@@ -647,6 +822,7 @@ fun ModelManagerScreen(
         }
     }
 }
+}
 
 @Composable
 private fun SearchAndFilterRow(
@@ -664,12 +840,6 @@ private fun SearchAndFilterRow(
             onValueChange = onSearchChange,
             modifier = Modifier
                 .fillMaxWidth()
-                .fluidReveal(
-                    delayMillis = 80,
-                    initialYOffset = 10.dp,
-                    initialXOffset = (-16).dp,
-                    initialRotationZ = -0.45f
-                )
                 .animatedGlassHalo(shape = searchShape, alpha = 0.035f, durationMillis = 4_800)
                 .glassEffect(
                     hazeState = hazeState,

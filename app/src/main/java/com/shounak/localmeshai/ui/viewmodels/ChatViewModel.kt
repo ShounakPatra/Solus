@@ -267,6 +267,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         allowUnsafeOverride: Boolean = false,
         forceReload: Boolean = false
     ) {
+        if (!forceReload || path != currentModelPath) {
+            appSettings.updateSettings { it.copy(llamaBackendPreference = "AUTO") }
+        }
         val currentBackendPref = appSettings.settings.value.llamaBackendPreference
         if (!forceReload && path == currentModelPath && _isModelReady.value && currentBackendPref == lastLoadedBackendPreference && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Chat)) {
             return

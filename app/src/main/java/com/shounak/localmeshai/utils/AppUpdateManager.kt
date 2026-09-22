@@ -1,10 +1,16 @@
 package com.shounak.localmeshai.utils
 
+import android.content.Context
+import android.content.Intent
+import android.util.Log
+import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.io.File
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 object AppUpdateManager {
@@ -108,5 +114,143 @@ object AppUpdateManager {
             if (l < c) return false
         }
         return false
+    }
+
+    /**
+     * Downloads an APK from the given URL into cacheDir/updates/Solus-v[version].apk.
+     * Validates the downloaded APK file integrity using PackageManager before completing.
+     */
+    suspend fun downloadApk(
+        context: Context,
+        downloadUrl: String,
+        version: String,
+        onProgress: ((Float) -> Unit)? = null
+    ): Result<File> = withContext(Dispatchers.IO) {
+        try {
+            val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
+            val cleanVersion = version.trim().removePrefix("v").removePrefix("V")
+            val targetApk = File(updatesDir, "Solus-v$cleanVersion.apk")
+            val tempApk = File(updatesDir, "Solus-v$cleanVersion.apk.tmp")
+
+            // If already downloaded and valid, return it directly
+            if (targetApk.exists() && targetApk.length() > 0L) {
+                val pkgInfo = context.packageManager.getPackageArchiveInfo(targetApk.absolutePath, 0)
+                if (pkgInfo != null) {
+                    onProgress?.invoke(1f)
+                    return@withContext Result.success(targetApk)
+                } else {
+                    targetApk.delete()
+                }
+            }
+
+            if (tempApk.exists()) {
+                tempApk.delete()
+            }
+
+            val request = Request.Builder()
+                .url(downloadUrl)
+                .header("User-Agent", "Solus-Android-App")
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IOException("Server returned HTTP ${response.code}"))
+                }
+                val body = response.body ?: return@withContext Result.failure(IOException("Empty response body"))
+                val totalBytes = body.contentLength()
+                var downloadedBytes = 0L
+
+                body.byteStream().use { input ->
+                    tempApk.outputStream().use { output ->
+                        val buffer = ByteArray(8 * 1024)
+                        var bytesRead: Int
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            output.write(buffer, 0, bytesRead)
+                            downloadedBytes += bytesRead
+                            if (totalBytes > 0L) {
+                                val progress = (downloadedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                                onProgress?.invoke(progress)
+                            }
+                        }
+                        output.flush()
+                    }
+                }
+
+                if (targetApk.exists()) targetApk.delete()
+                if (!tempApk.renameTo(targetApk)) {
+                    tempApk.copyTo(targetApk, overwrite = true)
+                    tempApk.delete()
+                }
+
+                // Verify valid APK file
+                val pkgInfo = context.packageManager.getPackageArchiveInfo(targetApk.absolutePath, 0)
+                if (pkgInfo == null) {
+                    targetApk.delete()
+                    return@withContext Result.failure(IOException("Downloaded file is not a valid APK package"))
+                }
+
+                onProgress?.invoke(1f)
+                Result.success(targetApk)
+            }
+        } catch (e: Exception) {
+            Log.e("AppUpdateManager", "Failed to download update APK", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Launches the system Package Installer to install the downloaded APK.
+     */
+    fun installApk(context: Context, apkFile: File): Boolean {
+        return try {
+            if (!apkFile.exists()) {
+                Log.w("AppUpdateManager", "APK file does not exist: ${apkFile.absolutePath}")
+                return false
+            }
+            val appContext = context.applicationContext
+            val contentUri = FileProvider.getUriForFile(
+                appContext,
+                "${appContext.packageName}.fileprovider",
+                apkFile
+            )
+
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(contentUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            appContext.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.e("AppUpdateManager", "Failed to launch package installer", e)
+            false
+        }
+    }
+
+    /**
+     * Deletes any downloaded APK installer files and partial download temp files.
+     */
+    fun deleteDownloadedApks(context: Context) {
+        try {
+            deleteApksInDirectory(File(context.cacheDir, "updates"))
+            deleteApksInDirectory(context.cacheDir)
+        } catch (e: Exception) {
+            Log.e("AppUpdateManager", "Error deleting downloaded APKs", e)
+        }
+    }
+
+    internal fun deleteApksInDirectory(dir: File) {
+        if (dir.exists() && dir.isDirectory) {
+            dir.listFiles()?.forEach { file ->
+                if (file.name.endsWith(".apk", ignoreCase = true) ||
+                    file.name.endsWith(".tmp", ignoreCase = true)
+                ) {
+                    try {
+                        file.delete()
+                    } catch (_: Exception) {}
+                }
+            }
+        }
     }
 }

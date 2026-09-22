@@ -156,7 +156,8 @@ class ModelDownloadService : Service() {
                     status = ModelStatus.Available,
                     progress = 1f,
                     downloadedBytes = result.bytesDownloaded,
-                    localPath = result.localPath
+                    localPath = result.localPath,
+                    downloadedAt = System.currentTimeMillis()
                 )
                 DownloadStateStore.update(snapshot)
 

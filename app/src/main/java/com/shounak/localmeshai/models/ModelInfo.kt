@@ -56,7 +56,8 @@ data class ModelInfo(
     val totalBytes: Long = -1L,
     val bytesPerSecond: Long = 0L,
     val localPath: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val downloadedAt: Long = 0L
 ) {
     val hasDownloadUrl: Boolean
         get() = !url.isNullOrBlank()
