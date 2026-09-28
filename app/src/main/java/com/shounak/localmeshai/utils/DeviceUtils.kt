@@ -15,6 +15,8 @@ enum class InferenceBackend {
 
 object DeviceUtils {
     private const val MIN_RAM_GIB_FOR_8_GB_DEVICE = 7.0
+    private const val MIN_RAM_GIB_FOR_SUB_1B_LITERT_LM = 3.5
+    private const val MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM = 5.0
     private const val MIN_RAM_GIB_FOR_SMALL_LITERT_LM = 6.5
     private const val MIN_RAM_GIB_FOR_COMPACT_LITERT_LM = 10.5
     private const val MIN_RAM_GIB_FOR_LARGE_LITERT_LM = 14.5
@@ -205,6 +207,8 @@ object DeviceUtils {
             backendLabel.contains("vision", ignoreCase = true) ||
             backendLabel.contains("multimodal", ignoreCase = true)
         val requiredRam = requiredRamGiBForLiteRtLm(paramsB)
+        val isGemma4E2b = isGemma4E2bLiteRt(modelId, modelName, effectiveFileName)
+        val isSafeCompactModel = isGemma4E2b || (paramsB != null && paramsB <= 2.2f)
         val gemma4CpuFallbackAllowed = canUseGemma4LiteRtCpuFallback(
             context = context,
             modelId = modelId,
@@ -218,9 +222,10 @@ object DeviceUtils {
             ram < requiredRam -> {
                 false to "This LiteRT-LM model needs a ${nominalDeviceRamLabel(requiredRam)} Android device profile. This device has ${String.format(Locale.US, "%.1f", ram)} GiB usable RAM, so the model is blocked before native initialization to avoid crashes."
             }
+            isSafeCompactModel -> true to ""
             isLiteRtModel && isMultimodalLiteRt && !highEndForLiteRtLm -> {
                 val chip = deviceChipLabel()
-                false to "Multimodal LiteRT-LM is enabled only on verified high-end Android GPU profiles. $chip does not meet that safe profile, so this model is blocked before native initialization to avoid crashes. Use a MediaPipe .task vision model on this device instead."
+                false to "Multimodal LiteRT-LM models above 2B are enabled only on verified high-end Android GPU profiles. $chip does not meet that safe profile, so this model is blocked before native initialization to avoid crashes. Use a MediaPipe .task vision model on this device instead."
             }
             gemma4CpuFallbackAllowed -> true to ""
             highEndForLiteRtLm && selectedBackend == InferenceBackend.LITERT_GPU -> true to ""
@@ -228,7 +233,7 @@ object DeviceUtils {
                 // Known mid-range chipset: allow small models freely, compact text models with enough RAM.
                 when {
                     paramsB == null -> true to ""
-                    paramsB <= 2.0f -> true to ""
+                    paramsB <= 2.2f -> true to ""
                     !isVision && paramsB <= 4.1f && ram >= MIN_RAM_GIB_FOR_COMPACT_LITERT_LM -> true to ""
                     else -> {
                         false to "This LiteRT-LM model is above this Android device's safe profile for ${deviceChipLabel()}. Try a <=2B LiteRT-LM model or a MediaPipe .task model on this device."
@@ -238,7 +243,7 @@ object DeviceUtils {
             else -> {
                 // Unknown chipset: allow small (<=2B) models on CPU, block larger ones.
                 when {
-                    paramsB != null && paramsB <= 2.0f -> true to ""
+                    paramsB != null && paramsB <= 2.2f -> true to ""
                     else -> {
                         false to "LiteRT-LM support is unverified on ${deviceChipLabel()}. " +
                             "Small (<=2B) LiteRT-LM models can still run, but this model is too large. " +
@@ -258,11 +263,12 @@ object DeviceUtils {
         isMultimodalLiteRt: Boolean = false
     ): Boolean {
         val effectiveFileName = fileName.ifBlank { "$modelId.litertlm" }
-        if (isMultimodalLiteRt) return false
         if (!effectiveFileName.endsWith(".litertlm", ignoreCase = true)) return false
-        if (!isGemma4E2bLiteRt(modelId, modelName, effectiveFileName)) return false
+        val paramsB = estimateModelParametersB(modelName.ifBlank { modelId }, modelSize)
+        val isSafeCompact = isGemma4E2bLiteRt(modelId, modelName, effectiveFileName) || (paramsB != null && paramsB <= 2.2f)
+        if (!isSafeCompact) return false
         if (selectBackendForModelFile(context, effectiveFileName) != InferenceBackend.LITERT_CPU) return false
-        return getTotalRamGB(context) >= MIN_RAM_GIB_FOR_SMALL_LITERT_LM
+        return getTotalRamGB(context) >= MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM
     }
 
     fun supportsLiteRtLmGpu(): Boolean {
@@ -559,8 +565,9 @@ object DeviceUtils {
 
     private fun requiredRamGiBForLiteRtLm(paramsB: Float?): Double {
         return when {
-            paramsB == null -> MIN_RAM_GIB_FOR_SMALL_LITERT_LM
-            paramsB <= 2.0f -> MIN_RAM_GIB_FOR_SMALL_LITERT_LM
+            paramsB == null -> MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM
+            paramsB <= 0.8f -> MIN_RAM_GIB_FOR_SUB_1B_LITERT_LM
+            paramsB <= 2.2f -> MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM
             paramsB <= 4.1f -> MIN_RAM_GIB_FOR_COMPACT_LITERT_LM
             paramsB <= 14.5f -> MIN_RAM_GIB_FOR_LARGE_LITERT_LM
             else -> MIN_RAM_GIB_FOR_HUGE_LITERT_LM
@@ -569,6 +576,8 @@ object DeviceUtils {
 
     private fun nominalDeviceRamLabel(requiredRamGiB: Double): String {
         return when {
+            requiredRamGiB <= MIN_RAM_GIB_FOR_SUB_1B_LITERT_LM -> "4 GB"
+            requiredRamGiB <= MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM -> "6 GB"
             requiredRamGiB <= MIN_RAM_GIB_FOR_SMALL_LITERT_LM -> "8 GB"
             requiredRamGiB <= MIN_RAM_GIB_FOR_COMPACT_LITERT_LM -> "12 GB"
             requiredRamGiB <= MIN_RAM_GIB_FOR_LARGE_LITERT_LM -> "16 GB"

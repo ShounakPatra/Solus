@@ -20,9 +20,9 @@ data class AppSettingsData(
     val huggingFaceToken: String = "",
     val autoCheckUpdates: Boolean = true,
     val llamaBackendPreference: String = "AUTO",
-    val enableRag: Boolean = true,
+    val enableRag: Boolean = false,
     val ragTopK: Int = 3,
-    val ragMinSimilarity: Float = 0.30f,
+    val ragMinSimilarity: Float = 0.35f,
     val enablePersistentMemory: Boolean = true,
     val autoExtractMemories: Boolean = true
 )
@@ -52,9 +52,11 @@ class AppSettings private constructor(context: Context) {
             huggingFaceToken = prefs.getString(KEY_HF_TOKEN, "").orEmpty(),
             autoCheckUpdates = prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true),
             llamaBackendPreference = "AUTO",
-            enableRag = prefs.getBoolean(KEY_ENABLE_RAG, true),
+            enableRag = prefs.getBoolean(KEY_ENABLE_RAG, false),
             ragTopK = prefs.getInt(KEY_RAG_TOP_K, 3),
-            ragMinSimilarity = prefs.getFloat(KEY_RAG_MIN_SIMILARITY, 0.30f),
+            ragMinSimilarity = prefs.getFloat(KEY_RAG_MIN_SIMILARITY, 0.35f).let {
+                if (it < 0.30f) 0.35f else it
+            },
             enablePersistentMemory = prefs.getBoolean(KEY_ENABLE_PERSISTENT_MEMORY, true),
             autoExtractMemories = prefs.getBoolean(KEY_AUTO_EXTRACT_MEMORIES, true)
         )

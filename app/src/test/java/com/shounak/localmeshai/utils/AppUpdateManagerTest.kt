@@ -48,5 +48,12 @@ class AppUpdateManagerTest {
             tempDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun repositoryConstantsPointToSolus() {
+        assertEquals("https://github.com/ShounakPatra/Solus", AppUpdateManager.GITHUB_REPO_URL)
+        assertEquals("app_updates_high", AppUpdateManager.UPDATE_CHANNEL_ID)
+        assertEquals(9001, AppUpdateManager.UPDATE_NOTIFICATION_ID)
+    }
 }
 

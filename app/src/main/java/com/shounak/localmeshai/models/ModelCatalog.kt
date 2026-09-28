@@ -4,6 +4,23 @@ object ModelCatalog {
     val defaultModels = listOf(
         // ── ⭐ Recommended / Featured Local Models ────────────────────
         ModelInfo(
+            id = "gemma4_e2b_litertlm",
+            name = "Gemma 4 E2B IT ⭐ Recommended",
+            size = "2.14 GB",
+            status = ModelStatus.NotDownloaded,
+            type = ModelType.Vision,
+            fileName = "gemma-4-E2B-it.litertlm",
+            description = "⭐ Recommended compact LiteRT-LM multimodal package for text, image, and audio-capable chats with step-by-step thinking support on supported devices.",
+            backend = "LiteRT-LM multimodal CPU/GPU",
+            deviceTarget = "8 GB RAM, flagship GPU or CPU-safe fallback",
+            url = hf("litert-community/gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it.litertlm"),
+            modelPageUrl = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm",
+            supportsAudioInput = true,
+            supportsThinkingMode = true,
+            isRecommended = true,
+            contextWindowTokens = 32768
+        ),
+        ModelInfo(
             id = "deepseek_r1_qwen15b_q8",
             name = "DeepSeek R1 Distill Qwen 1.5B ⭐ Highly Recommended",
             size = "1.86 GB",
@@ -32,6 +49,7 @@ object ModelCatalog {
             modelPageUrl = "https://huggingface.co/google/gemma-3n-E2B-it-litert-preview",
             requiresHuggingFaceToken = true,
             isRecommended = true,
+            supportsAudioInput = true,
             contextWindowTokens = 32768
         ),
         ModelInfo(
@@ -106,22 +124,22 @@ object ModelCatalog {
             deviceTarget = "6 GB nominal RAM, all supported chipsets",
             url = hf("Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF", "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"),
             modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
-            isRecommended = true,
             contextWindowTokens = 4096,
             expectedFileSizeBytes = 1_043_220_640L  // ~994 MB Coder Q4_K_M
         ),
         ModelInfo(
             id = "qwen25_coder_3b_litertlm",
-            name = "Qwen 2.5 Coder 3B ⌨️",
+            name = "Qwen 2.5 Coder 3B ⌨️ ⭐ Recommended",
             size = "2.91 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
             fileName = "qwen2.5-coder-3b.litertlm",
-            description = "Higher-quality coding model for Android, Python, project reasoning, and longer technical explanations. Choose it over the 1.5B coder model when accuracy matters more than speed or memory use.",
+            description = "⭐ Recommended higher-quality coding model for Android, Python, project reasoning, and longer technical explanations running via LiteRT-LM GPU.",
             backend = "LiteRT-LM GPU",
             deviceTarget = "12 GB RAM recommended",
             url = hf("4ntoine/Qwen2.5-Coder-3B-Instruct-LiteRTLM", "model.litertlm"),
-            modelPageUrl = "https://huggingface.co/4ntoine/Qwen2.5-Coder-3B-Instruct-LiteRTLM"
+            modelPageUrl = "https://huggingface.co/4ntoine/Qwen2.5-Coder-3B-Instruct-LiteRTLM",
+            isRecommended = true
         ),
 
         // ── Qwen family ──────────────────────────────────────────────
@@ -137,23 +155,23 @@ object ModelCatalog {
             deviceTarget = "4 GB nominal RAM, all supported chipsets",
             url = hf("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "qwen2.5-0.5b-instruct-q4_k_m.gguf"),
             modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF",
-            isRecommended = true,
             contextWindowTokens = 4096,
             expectedFileSizeBytes = 397_206_688L  // Q4_K_M ~379 MB actual
         ),
         ModelInfo(
             id = "qwen3_17b_litertlm",
-            name = "Qwen 3 1.7B",
+            name = "Qwen 3 1.7B ⭐ Recommended",
             size = "2.1 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
             fileName = "Qwen3_1.7B.litertlm",
-            description = "Small Qwen 3 reasoning model between 0.6B and 4B, useful for general chat with better step-by-step ability than the tiny build. This public LiteRT-LM artifact is ready for direct download.",
+            description = "⭐ Recommended Qwen 3 reasoning model between 0.6B and 4B, useful for general chat with better step-by-step ability than the tiny build. This public LiteRT-LM artifact is ready for direct download.",
             backend = "LiteRT-LM GPU",
             deviceTarget = "8 GB nominal RAM",
             url = hf("litert-community/Qwen3-1.7B", "Qwen3_1.7B.litertlm"),
             modelPageUrl = "https://huggingface.co/litert-community/Qwen3-1.7B",
-            requiresHuggingFaceToken = false
+            requiresHuggingFaceToken = false,
+            isRecommended = true
         ),
         ModelInfo(
             id = "qwen25_3b_gguf",
@@ -167,7 +185,6 @@ object ModelCatalog {
             deviceTarget = "8 GB nominal RAM",
             url = hf("Qwen/Qwen2.5-3B-Instruct-GGUF", "qwen2.5-3b-instruct-q4_k_m.gguf"),
             modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF",
-            isRecommended = true,
             contextWindowTokens = 4096,
             expectedFileSizeBytes = 1_934_769_504L  // ~1.80 GB Q4_K_M
         ),
@@ -257,7 +274,6 @@ object ModelCatalog {
             deviceTarget = "8 GB nominal RAM",
             url = hf("bartowski/Llama-3.2-3B-Instruct-GGUF", "Llama-3.2-3B-Instruct-Q4_K_M.gguf"),
             modelPageUrl = "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF",
-            isRecommended = true,
             contextWindowTokens = 4096,
             expectedFileSizeBytes = 2_019_377_984L  // ~1.88 GB Q4_K_M
         ),
@@ -319,7 +335,6 @@ object ModelCatalog {
             deviceTarget = "8 GB nominal RAM",
             url = hf("bartowski/Phi-3.5-mini-instruct-GGUF", "Phi-3.5-mini-instruct-Q4_K_M.gguf"),
             modelPageUrl = "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF",
-            isRecommended = true,
             contextWindowTokens = 4096,
             expectedFileSizeBytes = 2_176_116_064L  // ~2.03 GB Q4_K_M
         ),
@@ -382,7 +397,6 @@ object ModelCatalog {
             deviceTarget = "4 GB RAM, all devices",
             url = hf("HuggingFaceTB/SmolLM2-135M-Instruct-GGUF", "smollm2-135m-instruct-q4_k_m.gguf"),
             modelPageUrl = "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct-GGUF",
-            isRecommended = true,
             contextWindowTokens = 2048,
             expectedFileSizeBytes = 94_624_352L   // ~90 MB Q4_K_M
         ),
@@ -398,7 +412,6 @@ object ModelCatalog {
             deviceTarget = "4 GB RAM, all devices",
             url = hf("HuggingFaceTB/SmolLM2-360M-Instruct-GGUF", "smollm2-360m-instruct-q4_k_m.gguf"),
             modelPageUrl = "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF",
-            isRecommended = true,
             contextWindowTokens = 2048,
             expectedFileSizeBytes = 228_691_136L  // ~218 MB Q4_K_M
         ),
@@ -414,7 +427,6 @@ object ModelCatalog {
             deviceTarget = "4 GB+ RAM, all devices",
             url = hf("TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF", "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"),
             modelPageUrl = "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
-            isRecommended = true,
             contextWindowTokens = 2048,
             expectedFileSizeBytes = 668_916_736L  // ~638 MB Q4_K_M
         ),
@@ -430,7 +442,6 @@ object ModelCatalog {
             deviceTarget = "6 GB nominal RAM",
             url = hf("HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF", "smollm2-1.7b-instruct-q4_k_m.gguf"),
             modelPageUrl = "https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF",
-            isRecommended = true,
             contextWindowTokens = 4096,
             expectedFileSizeBytes = 1_039_847_040L // ~991 MB Q4_K_M
         ),
@@ -446,23 +457,23 @@ object ModelCatalog {
             deviceTarget = "6 GB nominal RAM",
             url = hf("bartowski/gemma-2-2b-it-GGUF", "gemma-2-2b-it-Q4_K_M.gguf"),
             modelPageUrl = "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF",
-            isRecommended = true,
             contextWindowTokens = 4096,
             expectedFileSizeBytes = 1_631_906_176L  // ~1.52 GB Q4_K_M
         ),
         ModelInfo(
             id = "gemma3_270m_q8",
-            name = "Gemma 3 270M",
+            name = "Gemma 3 270M ⭐ Recommended",
             size = "304 MB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
             fileName = "gemma3-270m-it-q8.task",
-            description = "Tiny Gemma 3 instruction model for quick tests, short answers, and low-memory local chat. Its task bundle runs through LiteRT-LM's native conversation layer; the Google Gemma license and a Hugging Face read token are required.",
+            description = "⭐ Recommended tiny Gemma 3 instruction model for quick tests, short answers, and low-memory local chat. Its task bundle runs through LiteRT-LM's native conversation layer; the Google Gemma license and a Hugging Face read token are required.",
             backend = "LiteRT-LM Conversation (CPU)",
             deviceTarget = "8 GB RAM, all supported chipsets",
             url = hf("litert-community/gemma-3-270m-it", "gemma3-270m-it-q8.task"),
             modelPageUrl = "https://huggingface.co/litert-community/gemma-3-270m-it",
-            requiresHuggingFaceToken = true
+            requiresHuggingFaceToken = true,
+            isRecommended = true
         ),
         ModelInfo(
             id = "gemma3_4b_q8",
@@ -482,33 +493,18 @@ object ModelCatalog {
         // ── Vision / Image Q&A models ────────────────────────────────
         ModelInfo(
             id = "fastvlm_05b_litertlm",
-            name = "FastVLM 0.5B",
+            name = "FastVLM 0.5B ⭐ Recommended",
             size = "1.08 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Vision,
             fileName = "FastVLM-0.5B.litertlm",
-            description = "FastVLM 0.5B is a lightweight vision-language model for quick image descriptions and simple visual questions. It is smaller than Gemma vision models, but the LiteRT-LM vision runtime still depends on device GPU compatibility.",
+            description = "⭐ Recommended lightweight vision-language model for quick image descriptions and simple visual questions via LiteRT-LM Vision GPU.",
             backend = "LiteRT-LM Vision GPU",
             deviceTarget = "8 GB nominal RAM",
             url = hf("litert-community/FastVLM-0.5B", "FastVLM-0.5B.litertlm"),
             modelPageUrl = "https://huggingface.co/litert-community/FastVLM-0.5B",
+            isRecommended = true,
             contextWindowTokens = 1280
-        ),
-        ModelInfo(
-            id = "gemma4_e2b_litertlm",
-            name = "Gemma 4 E2B IT",
-            size = "2.14 GB",
-            status = ModelStatus.NotDownloaded,
-            type = ModelType.Vision,
-            fileName = "gemma-4-E2B-it.litertlm",
-            description = "Gemma 4 E2B is a compact LiteRT-LM multimodal package for text, image, and audio-capable chats when the bundle includes the needed encoders. It should be used only on verified high-end LiteRT-LM device profiles; use MediaPipe vision models on mid-range phones.",
-            backend = "LiteRT-LM multimodal CPU/GPU",
-            deviceTarget = "Flagship LiteRT-LM GPU chipset recommended",
-            url = hf("litert-community/gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it.litertlm"),
-            modelPageUrl = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm",
-            supportsAudioInput = true,
-            supportsThinkingMode = true,
-            contextWindowTokens = 32768
         ),
         ModelInfo(
             id = "gemma4_e4b_litertlm",
@@ -539,6 +535,7 @@ object ModelCatalog {
             url = hf("google/gemma-3n-E4B-it-litert-preview", "gemma-3n-E4B-it-int4.task"),
             modelPageUrl = "https://huggingface.co/google/gemma-3n-E4B-it-litert-preview",
             requiresHuggingFaceToken = true,
+            supportsAudioInput = true,
             contextWindowTokens = 32768
         )
     )

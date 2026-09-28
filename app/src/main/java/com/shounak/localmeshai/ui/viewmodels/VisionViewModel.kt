@@ -3,6 +3,10 @@ package com.shounak.localmeshai.ui.viewmodels
 import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
@@ -32,25 +36,54 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.CancellationException as FutureCancellationException
 import java.util.UUID
+import com.shounak.localmeshai.rag.RagManager
 
 data class VisionChatSession(
     val id: String,
     val title: String,
     val question: String,
     val answer: String,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val audioPath: String? = null,
+    val audioName: String? = null,
+    val audioDurationMs: Long = 0L,
+    val documentName: String? = null,
+    val documentId: String? = null,
+    val imagePath: String? = null,
+    val messages: List<VisionChatMessage> = emptyList()
 )
 
 data class VisionChatMessage(
     val text: String,
     val isUser: Boolean,
     val bitmap: Bitmap? = null,
-    val id: String = UUID.randomUUID().toString()
+    val id: String = UUID.randomUUID().toString(),
+    val ragSources: List<String> = emptyList(),
+    val ragChunkCount: Int = 0,
+    val ragTopMatchPct: Int = 0,
+    val audioPath: String? = null,
+    val audioName: String? = null,
+    val audioDurationMs: Long = 0L,
+    val documentName: String? = null,
+    val documentPath: String? = null,
+    val imagePath: String? = null
 )
 
 class VisionViewModel(application: Application) : AndroidViewModel(application) {
     private val inferenceManager = VisionInferenceManager(application)
     private val historyPrefs = application.getSharedPreferences("vision_chat_history", Context.MODE_PRIVATE)
+    private val ragManager = RagManager.getInstance(application)
+    private var pendingRagDocumentId: String? = null
+    var currentSessionDocumentId: String? = null
+        private set
+
+    fun setPendingRagDocumentId(docId: String?) {
+        pendingRagDocumentId = docId
+        if (docId != null) {
+            currentSessionDocumentId = docId
+        }
+    }
+
     val imageChatSessions = mutableStateListOf<VisionChatSession>()
     val messages = mutableStateListOf<VisionChatMessage>()
 
@@ -93,6 +126,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private var initJob: Job? = null
     private var analysisGeneration: Int = 0
     private var analysisJob: Job? = null
+    private var lastAttachedFileName: String? = null
     @Volatile private var resetRuntimeConversationBeforeNextAsk = false
 
     // Serializes vision init and ask so they cannot run at the same time.
@@ -185,7 +219,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         modelName = modelName,
                         modelSize = modelSize,
                         supportsAudioInput = supportsAudioInput,
-                        allowUnsafeOverride = allowUnsafeOverride
+                        allowUnsafeOverride = allowUnsafeOverride,
+                        contextWindowTokens = resolvedContextWindowTokens
                     )
                     // Re-check after the (potentially long) native init.
                     if (myGen != initGeneration) {
@@ -271,6 +306,62 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    private fun renderPdfPagesToBitmap(
+        context: Context,
+        uri: Uri,
+        maxPages: Int = 2,
+        maxDimension: Int = 1024
+    ): Bitmap? {
+        return try {
+            val pfd = context.contentResolver.openFileDescriptor(uri, "r") ?: return null
+            pfd.use { descriptor ->
+                PdfRenderer(descriptor).use { renderer ->
+                    val pageCount = renderer.pageCount.coerceAtMost(maxPages)
+                    if (pageCount == 0) return null
+                    val renderedPages = mutableListOf<Bitmap>()
+                    try {
+                        for (i in 0 until pageCount) {
+                            renderer.openPage(i).use { page ->
+                                val width = page.width
+                                val height = page.height
+                                val scale = (maxDimension.toFloat() / maxOf(width, height).coerceAtLeast(1)).coerceAtMost(1.5f)
+                                val destW = (width * scale).toInt().coerceAtLeast(1)
+                                val destH = (height * scale).toInt().coerceAtLeast(1)
+                                val bmp = Bitmap.createBitmap(destW, destH, Bitmap.Config.ARGB_8888)
+                                val canvas = Canvas(bmp)
+                                canvas.drawColor(Color.WHITE)
+                                page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                renderedPages.add(bmp)
+                            }
+                        }
+                        if (renderedPages.isEmpty()) return null
+                        if (renderedPages.size == 1) {
+                            return renderedPages[0]
+                        }
+                        val totalW = renderedPages.maxOf { it.width }
+                        val totalH = renderedPages.sumOf { it.height }
+                        val combined = Bitmap.createBitmap(totalW, totalH, Bitmap.Config.ARGB_8888)
+                        val canvas = Canvas(combined)
+                        canvas.drawColor(Color.WHITE)
+                        var yOffset = 0f
+                        for (bmp in renderedPages) {
+                            canvas.drawBitmap(bmp, 0f, yOffset, null)
+                            yOffset += bmp.height
+                            bmp.recycle()
+                        }
+                        combined
+                    } catch (e: Exception) {
+                        renderedPages.forEach { runCatching { if (!it.isRecycled) it.recycle() } }
+                        null
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w("VisionViewModel", "Failed to render PDF to bitmap: ${e.message}")
+            null
+        }
+    }
+
     private fun copyUriToInferenceCache(
         context: Context,
         uri: Uri,
@@ -304,6 +395,21 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             .forEach { runCatching { it.delete() } }
     }
 
+    private fun extractAudioDurationMs(file: File): Long {
+        if (!file.exists()) return 0L
+        try {
+            val retriever = android.media.MediaMetadataRetriever()
+            retriever.setDataSource(file.absolutePath)
+            val dur = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+            retriever.release()
+            if (dur != null && dur > 0L) return dur
+        } catch (_: Exception) {}
+        if (file.extension.equals("wav", ignoreCase = true) && file.length() > 44) {
+            return ((file.length() - 44) * 1000L / (16000 * 2)).coerceAtLeast(500L)
+        }
+        return 0L
+    }
+
     fun ask(
         bitmap: Bitmap?,
         question: String,
@@ -320,6 +426,16 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
         val myGen = ++analysisGeneration
         val jobSessionId = _currentSessionId.value
+
+        // When switching to a different attached document in the same chat, reset the runtime
+        // KV cache so previous document context does not overflow the token window or pollute the answer.
+        if (fileName != null && lastAttachedFileName != null && fileName != lastAttachedFileName) {
+            resetRuntimeConversationBeforeNextAsk = true
+        }
+        if (fileName != null) {
+            lastAttachedFileName = fileName
+        }
+
         val basePrompt = question.trim()
         val documentBudget = documentTextBudget(
             userPrompt = basePrompt,
@@ -337,74 +453,134 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 "Error reading file: ${e.message}"
             }
         }
-        val promptFileText = fileText.limitForPrompt(documentBudget)
 
-        // Build prompt
-        val contentPrompt = buildString {
-            if (basePrompt.isNotBlank()) {
-                append(basePrompt)
-                if (promptFileText.isNotBlank()) {
-                    append("\n\nUse the extracted attached-file content below as evidence. If this is a ZIP archive, use its file list and readable extracted contents as evidence, but follow the user's request instead of summarizing by default. Do not ask the user to attach the file again; it is already available to you as extracted text.\n\n")
-                }
-            } else if (promptFileText.isNotBlank()) {
-                if (fileName.isZipFileName()) {
-                    append("Analyze the attached ZIP archive. Summarize its folder/file structure, readable extracted contents, important files, and any useful next steps. Do not ask the user to attach the file again; it is already available to you as extracted text.\n\n")
-                } else {
-                    append("Analyze the attached file. Summarize the important contents and answer based on the extracted text below. Do not ask the user to attach the file again; it is already available to you as extracted text.\n\n")
-                }
-            }
-            if (promptFileText.isNotBlank()) {
-                append("--- EXTRACTED ATTACHED FILE: ${fileName ?: "document"} ---\n")
-                append(promptFileText)
-            }
-            if (audioUri != null || audioBytes?.isNotEmpty() == true) {
-                if (this.isNotEmpty()) append("\n\n")
-                append("--- ATTACHED AUDIO: ${audioName ?: "audio"} ---\n")
-                append(
-                    if (basePrompt.isBlank()) {
-                        "Listen to the attached audio, transcribe or summarize the important speech/sounds, then answer with the useful details."
-                    } else {
-                        "Listen to the attached audio, use its spoken or acoustic content as evidence, and answer the user's question."
-                    }
-                )
-            }
-            if (this.isEmpty()) {
-                append(DEFAULT_IMAGE_PROMPT)
+        // If no explicit image bitmap was provided, check if the attached file is a PDF that
+        // either has no extractable text or failed text extraction. Multimodal vision models
+        // can inspect rendered PDF pages visually.
+        var renderedPdfBitmap: Bitmap? = null
+        val isPdf = fileUri != null && (
+            fileName?.endsWith(".pdf", ignoreCase = true) == true ||
+            getApplication<Application>().contentResolver.getType(fileUri)?.contains("pdf", ignoreCase = true) == true
+        )
+        if (bitmap == null && isPdf && (fileText.isBlank() || fileText.isExtractionFailureText())) {
+            renderedPdfBitmap = renderPdfPagesToBitmap(getApplication(), fileUri)
+            if (renderedPdfBitmap != null) {
+                fileText = ""
             }
         }
-        val prompt = if (thinkingMode) {
-            "Reason carefully before giving the final answer.\n\n$contentPrompt"
-        } else {
-            contentPrompt
+        val effectiveBitmap = bitmap ?: renderedPdfBitmap
+        val promptFileText = fileText.limitForPrompt(documentBudget)
+        val targetDocId = pendingRagDocumentId ?: currentSessionDocumentId
+        pendingRagDocumentId = null
+        if (targetDocId != null) {
+            currentSessionDocumentId = targetDocId
+        }
+
+        val activeSessionId = jobSessionId ?: _currentSessionId.value ?: UUID.randomUUID().toString().also {
+            _currentSessionId.value = it
+        }
+
+        val sessionAttachmentsDir = getApplication<Application>().filesDir.resolve("chat_attachments").resolve(activeSessionId)
+        if (!sessionAttachmentsDir.exists()) {
+            sessionAttachmentsDir.mkdirs()
+        }
+
+        var persistentImageFile: File? = null
+        if (effectiveBitmap != null && !effectiveBitmap.isRecycled) {
+            val imgFile = sessionAttachmentsDir.resolve("image_${System.currentTimeMillis()}.png")
+            try {
+                java.io.FileOutputStream(imgFile).use { out ->
+                    effectiveBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                }
+                persistentImageFile = imgFile
+                val legacyFile = getSessionBitmapFile(activeSessionId)
+                java.io.FileOutputStream(legacyFile).use { out ->
+                    effectiveBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                }
+            } catch (e: Exception) {
+                Log.e("VisionViewModel", "Failed to persist image attachment", e)
+            }
+        }
+
+        var persistentAudioFile: File? = null
+        var resolvedAudioDurationMs = 0L
+        if (audioBytes != null && audioBytes.isNotEmpty()) {
+            val file = sessionAttachmentsDir.resolve("audio_${System.currentTimeMillis()}.wav")
+            try {
+                file.outputStream().use { it.write(audioBytes) }
+                persistentAudioFile = file
+                resolvedAudioDurationMs = extractAudioDurationMs(file)
+            } catch (e: Exception) {
+                Log.e("VisionViewModel", "Failed to write audio bytes to attachments", e)
+            }
+        } else if (audioUri != null) {
+            val ext = audioName?.substringAfterLast('.', missingDelimiterValue = "wav")?.takeIf { it.isNotBlank() } ?: "wav"
+            val file = sessionAttachmentsDir.resolve("audio_${System.currentTimeMillis()}.$ext")
+            try {
+                getApplication<Application>().contentResolver.openInputStream(audioUri)?.use { inStream ->
+                    file.outputStream().use { outStream ->
+                        inStream.copyTo(outStream)
+                    }
+                }
+                persistentAudioFile = file
+                resolvedAudioDurationMs = extractAudioDurationMs(file)
+            } catch (e: Exception) {
+                Log.e("VisionViewModel", "Failed to copy audio uri to attachments", e)
+            }
+        }
+
+        var persistentDocFile: File? = null
+        if (fileUri != null && fileName != null) {
+            val docFile = sessionAttachmentsDir.resolve(fileName)
+            if (!docFile.exists()) {
+                try {
+                    getApplication<Application>().contentResolver.openInputStream(fileUri)?.use { inStream ->
+                        docFile.outputStream().use { outStream ->
+                            inStream.copyTo(outStream)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("VisionViewModel", "Failed to copy document to attachments", e)
+                }
+            }
+            if (docFile.exists()) {
+                persistentDocFile = docFile
+            }
         }
 
         // Add message to chat list
-        val displayPrompt = buildString {
-            if (basePrompt.isNotBlank()) {
-                append(basePrompt)
-            }
-            if (fileName != null) {
-                if (this.isNotEmpty()) append("\n")
-                append("📎 Attached File: $fileName")
-            }
-            if (audioName != null || audioBytes?.isNotEmpty() == true) {
-                if (this.isNotEmpty()) append("\n")
-                append("🎧 Attached Audio: ${audioName ?: "Mic recording"}")
-            }
-            if (this.isBlank()) {
-                append(DEFAULT_IMAGE_PROMPT)
-            }
-        }
+        val displayPrompt = basePrompt.trim()
 
         // Preserve previous multimodal turns in the visible chat. New Chat is the
         // explicit path that clears this list.
-        messages.add(VisionChatMessage(displayPrompt, true, bitmap))
+        messages.add(
+            VisionChatMessage(
+                text = displayPrompt,
+                isUser = true,
+                bitmap = effectiveBitmap,
+                imagePath = persistentImageFile?.absolutePath,
+                audioPath = persistentAudioFile?.absolutePath,
+                audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
+                audioDurationMs = resolvedAudioDurationMs,
+                documentName = fileName,
+                documentPath = persistentDocFile?.absolutePath
+            )
+        )
         val assistantIndex = messages.size
         messages.add(VisionChatMessage("Reading input…", false, null))
 
         // Ensure session is created (not saved to disk yet with placeholder answer)
-        ensureCurrentSession(displayPrompt, "Reading input…", bitmap)
-        val activeSessionId = jobSessionId ?: _currentSessionId.value
+        ensureCurrentSession(
+            question = displayPrompt,
+            answer = "Reading input…",
+            bitmap = effectiveBitmap,
+            imagePath = persistentImageFile?.absolutePath,
+            audioPath = persistentAudioFile?.absolutePath,
+            audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
+            audioDurationMs = resolvedAudioDurationMs,
+            documentName = fileName,
+            documentId = targetDocId
+        )
         // Do NOT call saveCurrentSession() here — the placeholder "Reading input…"
         // must never be persisted. The session is saved only after a real response arrives.
 
@@ -423,6 +599,74 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     _error.value = null
                     _answer.value = ""
+
+                    // Check if RAG is active and query context if applicable
+                    var currentRagSources: List<String> = emptyList()
+                    var currentRagChunkCount = 0
+                    var currentRagTopMatchPct = 0
+                    var ragAugmentedContext: String? = null
+
+                    var effectiveDocId = targetDocId ?: currentSessionDocumentId
+                    if (effectiveDocId == null) {
+                        val activeSession = _currentSessionId.value?.let { id ->
+                            imageChatSessions.firstOrNull { it.id == id }
+                        }
+                        effectiveDocId = activeSession?.documentId
+                            ?: activeSession?.documentName?.let { docName ->
+                                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+                            }
+                            ?: messages.firstNotNullOfOrNull { it.documentName }?.let { docName ->
+                                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+                            }
+                            ?: ragManager.findMatchingDocumentForQuery(basePrompt)?.documentId
+                    }
+
+                    val shouldQueryRag = basePrompt.isNotBlank() && ragManager.totalIndexedChunks > 0
+                    if (shouldQueryRag) {
+                        val ragSettings = appSettings.settings.value
+                        val queryForRag = basePrompt
+                        val retrieval = ragManager.retrieve(
+                            query = queryForRag,
+                            topK = ragSettings.ragTopK,
+                            minScore = ragSettings.ragMinSimilarity,
+                            preferredDocumentId = effectiveDocId
+                        )
+                        if (retrieval.hasContext) {
+                            currentRagSources = retrieval.sourceNames
+                            currentRagChunkCount = retrieval.matches.size
+                            currentRagTopMatchPct = (retrieval.topMatchScore * 100f).toInt()
+                            ragAugmentedContext = ragManager.buildAugmentedPrompt(basePrompt, retrieval)
+
+                            val matchedDocId = retrieval.matches.firstOrNull()?.chunk?.documentId
+                            if (matchedDocId != null) {
+                                currentSessionDocumentId = matchedDocId
+                            }
+                        }
+                    }
+
+                    // Build prompt
+                    val contentPrompt = buildString {
+                        if (ragAugmentedContext != null) {
+                            append(ragAugmentedContext)
+                        } else {
+                            if (basePrompt.isNotBlank()) {
+                                append(basePrompt)
+                                if (promptFileText.isNotBlank()) {
+                                    append("\n\n--- EXTRACTED ATTACHED FILE: ${fileName ?: "document"} ---\n")
+                                    append(promptFileText)
+                                }
+                            } else if (promptFileText.isNotBlank()) {
+                                append("--- EXTRACTED ATTACHED FILE: ${fileName ?: "document"} ---\n")
+                                append(promptFileText)
+                            }
+                        }
+                    }
+                    val prompt = if (thinkingMode && contentPrompt.isNotBlank()) {
+                        "Reason carefully before giving the final answer.\n\n$contentPrompt"
+                    } else {
+                        contentPrompt
+                    }
+
                     try {
                         var lastPartialUiUpdateAt = 0L
                         fun publishPartial(partial: String) {
@@ -445,8 +689,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             inferenceManager.resetConversation()
                             resetRuntimeConversationBeforeNextAsk = false
                         }
-                        val bitmapCopy = bitmap?.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
-                        val audioFile = audioUri?.let {
+                        val bitmapCopy = effectiveBitmap?.copy(effectiveBitmap.config ?: Bitmap.Config.ARGB_8888, false)
+                        val audioFile = persistentAudioFile ?: audioUri?.let {
                             copyUriToInferenceCache(
                                 context = getApplication(),
                                 uri = it,
@@ -462,23 +706,28 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         ) { partial ->
                             publishPartial(partial)
                         }
-                        if (response.isNoAnswerGenerated() && fileText.isNotBlank() && !fileText.isExtractionFailureText()) {
-                            val retryBitmap = bitmapCopy ?: createPlaceholderBitmap()
-                            val retryPrompt = buildDocumentRetryPrompt(
-                                basePrompt = basePrompt,
-                                fileName = fileName,
-                                fileText = fileText,
-                                budget = documentBudget
-                            )
+                        val hasAudio = audioUri != null || audioBytes?.isNotEmpty() == true
+                        if (response.isNoAnswerGenerated() && bitmapCopy == null && !hasAudio) {
+                            val retryBitmap = createPlaceholderBitmap()
+                            val retryPrompt = when {
+                                ragAugmentedContext != null -> ragAugmentedContext
+                                fileText.isNotBlank() && !fileText.isExtractionFailureText() -> buildDocumentRetryPrompt(
+                                    basePrompt = basePrompt,
+                                    fileName = fileName,
+                                    fileText = fileText,
+                                    budget = documentBudget
+                                )
+                                else -> prompt
+                            }
                             response = inferenceManager.askStreaming(
                                 bitmap = retryBitmap,
                                 question = retryPrompt,
-                                audioFile = null,
-                                audioBytes = null
+                                audioFile = audioFile,
+                                audioBytes = audioBytes
                             ) { partial ->
                                 publishPartial(partial)
                             }
-                            if (bitmapCopy == null && !retryBitmap.isRecycled) {
+                            if (!retryBitmap.isRecycled) {
                                 retryBitmap.recycle()
                             }
                         }
@@ -504,14 +753,23 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                     if (assistantIndex < messages.size) {
                                         messages[assistantIndex] = messages[assistantIndex].copy(
                                             text = finalResponse.ifBlank { "No answer generated." },
-                                            bitmap = null
+                                            bitmap = null,
+                                            ragSources = currentRagSources,
+                                            ragChunkCount = currentRagChunkCount,
+                                            ragTopMatchPct = currentRagTopMatchPct
                                         )
                                     }
                                     saveCurrentSession(
                                         displayPrompt,
                                         finalResponse.ifBlank { "No answer generated." },
-                                        bitmap,
-                                        targetSessionId = activeSessionId
+                                        effectiveBitmap,
+                                        targetSessionId = activeSessionId,
+                                        imagePath = persistentImageFile?.absolutePath,
+                                        audioPath = persistentAudioFile?.absolutePath,
+                                        audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
+                                        audioDurationMs = resolvedAudioDurationMs,
+                                        documentName = fileName,
+                                        documentId = targetDocId
                                     )
                                 }
                             }
@@ -524,7 +782,18 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                         bitmap = null
                                     )
                                 }
-                                saveCurrentSession(displayPrompt, "No answer generated.", bitmap, targetSessionId = activeSessionId)
+                                saveCurrentSession(
+                                    displayPrompt,
+                                    "No answer generated.",
+                                    effectiveBitmap,
+                                    targetSessionId = activeSessionId,
+                                    imagePath = persistentImageFile?.absolutePath,
+                                    audioPath = persistentAudioFile?.absolutePath,
+                                    audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
+                                    audioDurationMs = resolvedAudioDurationMs,
+                                    documentName = fileName,
+                                    documentId = targetDocId
+                                )
                             }
                         }
                     } catch (exception: CancellationException) {
@@ -541,7 +810,18 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                     bitmap = null
                                 )
                             }
-                            saveCurrentSession(displayPrompt, finalMsg, bitmap, targetSessionId = activeSessionId)
+                            saveCurrentSession(
+                                displayPrompt,
+                                finalMsg,
+                                effectiveBitmap,
+                                targetSessionId = activeSessionId,
+                                imagePath = persistentImageFile?.absolutePath,
+                                audioPath = persistentAudioFile?.absolutePath,
+                                audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
+                                audioDurationMs = resolvedAudioDurationMs,
+                                documentName = fileName,
+                                documentId = targetDocId
+                            )
                         }
                     } catch (exception: FutureCancellationException) {
                         withContext(Dispatchers.Main.immediate) {
@@ -557,7 +837,18 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                     bitmap = null
                                 )
                             }
-                            saveCurrentSession(displayPrompt, finalMsg, bitmap, targetSessionId = activeSessionId)
+                            saveCurrentSession(
+                                displayPrompt,
+                                finalMsg,
+                                effectiveBitmap,
+                                targetSessionId = activeSessionId,
+                                imagePath = persistentImageFile?.absolutePath,
+                                audioPath = persistentAudioFile?.absolutePath,
+                                audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
+                                audioDurationMs = resolvedAudioDurationMs,
+                                documentName = fileName,
+                                documentId = targetDocId
+                            )
                         }
                     } catch (exception: Exception) {
                         _error.value = exception.message ?: "Image question failed."
@@ -569,16 +860,23 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                     bitmap = null
                                 )
                             }
-                            saveCurrentSession(displayPrompt, errorMsg, bitmap, targetSessionId = activeSessionId)
+                            saveCurrentSession(
+                                displayPrompt,
+                                errorMsg,
+                                effectiveBitmap,
+                                targetSessionId = activeSessionId,
+                                imagePath = persistentImageFile?.absolutePath,
+                                audioPath = persistentAudioFile?.absolutePath,
+                                audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
+                                audioDurationMs = resolvedAudioDurationMs,
+                                documentName = fileName,
+                                documentId = targetDocId
+                            )
                         }
                     } finally {
-                        // Always clear — stopAnalyzing() may have already
-                        // set this to false, but this is a safety net so the
-                        // flag can never get stuck at true.
+                        // Always clear both analyzing and stopping flags
                         _isAnalyzing.value = false
-                        if (myGen != analysisGeneration) {
-                            _isStopping.value = false
-                        }
+                        _isStopping.value = false
                     }
                 }
             } finally {
@@ -591,18 +889,27 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun stopAnalyzing() {
-        if (!_isAnalyzing.value) return
-        // Bump generation so the streaming lambda ignores further updates.
+        if (!_isAnalyzing.value && !_isStopping.value) return
         analysisGeneration++
-        // Signal the native runtime to stop producing tokens.
-        // This cancels the Future (interrupting future.get()) and sets the
-        // stopRequested flag.
+        resetRuntimeConversationBeforeNextAsk = true
         inferenceManager.cancelGeneration()
-        // Keep the worker coroutine alive so it can wait for MediaPipe's native
-        // done callback and close the session on the same serialized path.
+        analysisJob?.cancel()
         _isAnalyzing.value = false
-        _isStopping.value = true
-        markStoppedIfBlank()
+        _isStopping.value = false
+
+        // Immediately update UI state on the main thread so "Reading input..." changes to "Stopped."
+        val assistantIndex = messages.indexOfLast { !it.isUser }
+        if (assistantIndex >= 0 && assistantIndex < messages.size) {
+            val current = messages[assistantIndex].text
+            val finalText = if (current == "Reading input…" || current == "Reading input..." || current == "…" || current.isBlank()) {
+                "Stopped."
+            } else {
+                ModelOutputSanitizer.clean(current)
+            }
+            messages[assistantIndex] = messages[assistantIndex].copy(text = finalText)
+            saveVisibleConversationIfComplete()
+        }
+        _answer.value = "Stopped."
     }
 
     fun uninitializeModel() {
@@ -612,9 +919,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         stopAnalyzing()
         _currentSessionId.value = null
         resetRuntimeConversationBeforeNextAsk = true
+        lastAttachedFileName = null
         _answer.value = ""
         _error.value = null
         messages.clear()
+        pendingRagDocumentId = null
+        currentSessionDocumentId = null
     }
 
     private fun getSessionBitmapFile(sessionId: String): File {
@@ -658,21 +968,121 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         val session = imageChatSessions.firstOrNull { it.id == sessionId } ?: return null
         _currentSessionId.value = session.id
         resetRuntimeConversationBeforeNextAsk = true
+        lastAttachedFileName = session.documentName
+        currentSessionDocumentId = session.documentId
+            ?: session.documentName?.let { docName ->
+                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+            }
+            ?: session.messages.firstNotNullOfOrNull { it.documentName }?.let { docName ->
+                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+            }
         _answer.value = session.answer
         _error.value = null
         messages.clear()
-        val bitmap = loadSessionBitmap(session.id)
-        messages.add(VisionChatMessage(session.question, true, bitmap))
-        messages.add(VisionChatMessage(session.answer, false, null))
+
+        val defaultSessionBitmap = loadSessionBitmap(session.id)
+
+        if (session.messages.isNotEmpty()) {
+            session.messages.forEachIndexed { index, msg ->
+                val resolvedDocPath = if (!msg.documentPath.isNullOrBlank() && File(msg.documentPath).exists()) {
+                    msg.documentPath
+                } else {
+                    msg.documentName?.let { com.shounak.localmeshai.utils.AttachmentViewerUtils.findAttachmentFile(getApplication(), it)?.absolutePath }
+                }
+
+                val resolvedAudioPath = if (!msg.audioPath.isNullOrBlank() && File(msg.audioPath).exists()) {
+                    msg.audioPath
+                } else {
+                    msg.audioName?.let { com.shounak.localmeshai.utils.AttachmentViewerUtils.findAttachmentFile(getApplication(), it)?.absolutePath }
+                        ?: (if (index == 0 && !session.audioPath.isNullOrBlank() && File(session.audioPath).exists()) session.audioPath else null)
+                }
+
+                val resolvedImagePath = if (!msg.imagePath.isNullOrBlank() && File(msg.imagePath).exists()) {
+                    msg.imagePath
+                } else if (index == 0 && !session.imagePath.isNullOrBlank() && File(session.imagePath).exists()) {
+                    session.imagePath
+                } else {
+                    getSessionBitmapFile(session.id).takeIf { it.exists() }?.absolutePath
+                }
+
+                val decodedBmp = if (msg.isUser) {
+                    if (resolvedImagePath != null && File(resolvedImagePath).exists()) {
+                        try {
+                            BitmapFactory.decodeFile(resolvedImagePath)
+                        } catch (_: Exception) {
+                            null
+                        }
+                    } else if (index == 0) {
+                        defaultSessionBitmap
+                    } else null
+                } else null
+
+                messages.add(
+                    msg.copy(
+                        bitmap = decodedBmp,
+                        imagePath = resolvedImagePath,
+                        audioPath = resolvedAudioPath,
+                        documentPath = resolvedDocPath
+                    )
+                )
+            }
+        } else {
+            // Legacy session fallback (single question/answer)
+            val initialBmp = if (session.imagePath != null && File(session.imagePath).exists()) {
+                try {
+                    BitmapFactory.decodeFile(session.imagePath)
+                } catch (e: Exception) {
+                    defaultSessionBitmap
+                }
+            } else {
+                defaultSessionBitmap
+            }
+            val legacyAudioPath = if (!session.audioPath.isNullOrBlank() && File(session.audioPath).exists()) {
+                session.audioPath
+            } else {
+                session.audioName?.let { com.shounak.localmeshai.utils.AttachmentViewerUtils.findAttachmentFile(getApplication(), it)?.absolutePath }
+            }
+            val legacyDocPath = session.documentName?.let { com.shounak.localmeshai.utils.AttachmentViewerUtils.findAttachmentFile(getApplication(), it)?.absolutePath }
+            messages.add(
+                VisionChatMessage(
+                    text = session.question,
+                    isUser = true,
+                    bitmap = initialBmp,
+                    imagePath = session.imagePath,
+                    audioPath = legacyAudioPath,
+                    audioName = session.audioName,
+                    audioDurationMs = session.audioDurationMs,
+                    documentName = session.documentName,
+                    documentPath = legacyDocPath
+                )
+            )
+            messages.add(VisionChatMessage(session.answer, false, null))
+        }
         return session
     }
 
     fun deleteChatSession(sessionId: String) {
         val removingCurrent = sessionId == _currentSessionId.value
+        val session = imageChatSessions.firstOrNull { it.id == sessionId }
+        session?.documentId?.let { docId ->
+            ragManager.removeDocument(docId)
+        }
+        session?.imagePath?.let { path ->
+            val imgFile = File(path)
+            if (imgFile.exists()) imgFile.delete()
+        }
+        session?.messages?.forEach { msg ->
+            msg.imagePath?.let { path ->
+                val imgFile = File(path)
+                if (imgFile.exists()) imgFile.delete()
+            }
+        }
         imageChatSessions.removeAll { it.id == sessionId }
         if (removingCurrent) {
             _currentSessionId.value = null
             resetRuntimeConversationBeforeNextAsk = true
+            lastAttachedFileName = null
+            currentSessionDocumentId = null
             _answer.value = ""
             messages.clear()
         }
@@ -684,13 +1094,24 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         if (legacyFile.exists()) {
             legacyFile.delete()
         }
+        val sessionAttachmentsDir = getApplication<Application>().filesDir.resolve("chat_attachments").resolve(sessionId)
+        if (sessionAttachmentsDir.exists()) {
+            sessionAttachmentsDir.deleteRecursively()
+        }
         persistSessions()
     }
 
     fun clearHistory() {
+        imageChatSessions.forEach { session ->
+            session.documentId?.let { docId ->
+                ragManager.removeDocument(docId)
+            }
+        }
         imageChatSessions.clear()
         _currentSessionId.value = null
         resetRuntimeConversationBeforeNextAsk = true
+        lastAttachedFileName = null
+        currentSessionDocumentId = null
         _answer.value = ""
         messages.clear()
         val dir = getApplication<Application>().filesDir.resolve("vision_sessions")
@@ -701,24 +1122,92 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         if (legacyDir.exists()) {
             legacyDir.deleteRecursively()
         }
+        val attachmentsDir = getApplication<Application>().filesDir.resolve("chat_attachments")
+        if (attachmentsDir.exists()) {
+            attachmentsDir.deleteRecursively()
+        }
+        ragManager.clearKnowledgeBase()
         persistSessions()
     }
 
-    private fun ensureCurrentSession(question: String, answer: String, bitmap: Bitmap? = null) {
-        if (_currentSessionId.value != null) return
-        val sessionId = UUID.randomUUID().toString().also {
+    private fun ensureCurrentSession(
+        question: String,
+        answer: String,
+        bitmap: Bitmap? = null,
+        imagePath: String? = null,
+        audioPath: String? = null,
+        audioName: String? = null,
+        audioDurationMs: Long = 0L,
+        documentName: String? = null,
+        documentId: String? = null
+    ) {
+        val currentId = _currentSessionId.value
+        val now = System.currentTimeMillis()
+        if (currentId != null) {
+            val index = imageChatSessions.indexOfFirst { it.id == currentId }
+            if (index != -1) {
+                val previous = imageChatSessions[index]
+                val sessionDocId = previous.documentId
+                    ?: documentId
+                    ?: currentSessionDocumentId
+                    ?: previous.documentName?.let { docName ->
+                        ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+                    }
+                    ?: previous.messages.firstNotNullOfOrNull { it.documentName }?.let { docName ->
+                        ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+                    }
+                val updated = previous.copy(
+                    updatedAt = now,
+                    imagePath = imagePath ?: previous.imagePath,
+                    audioPath = audioPath ?: previous.audioPath,
+                    audioName = audioName ?: previous.audioName,
+                    audioDurationMs = if (audioDurationMs > 0L) audioDurationMs else previous.audioDurationMs,
+                    documentName = documentName ?: previous.documentName,
+                    documentId = sessionDocId,
+                    messages = messages.toList()
+                )
+                if (currentSessionDocumentId == null && sessionDocId != null) {
+                    currentSessionDocumentId = sessionDocId
+                }
+                imageChatSessions.removeAt(index)
+                imageChatSessions.add(0, updated)
+                if (updated.isPersistable()) {
+                    persistSessions()
+                }
+                return
+            }
+        }
+        val sessionId = currentId ?: UUID.randomUUID().toString().also {
             _currentSessionId.value = it
         }
         if (bitmap != null && !bitmap.isRecycled) {
             saveSessionBitmap(sessionId, bitmap)
         }
+        val sessionDocId = documentId
+            ?: currentSessionDocumentId
+            ?: documentName?.let { docName ->
+                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+            }
+            ?: messages.firstNotNullOfOrNull { it.documentName }?.let { docName ->
+                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+            }
         val session = VisionChatSession(
             id = sessionId,
             title = question.toImageChatTitle(),
             question = question,
             answer = answer,
-            updatedAt = System.currentTimeMillis()
+            updatedAt = now,
+            imagePath = imagePath,
+            audioPath = audioPath,
+            audioName = audioName,
+            audioDurationMs = audioDurationMs,
+            documentName = documentName,
+            documentId = sessionDocId,
+            messages = messages.toList()
         )
+        if (currentSessionDocumentId == null && sessionDocId != null) {
+            currentSessionDocumentId = sessionDocId
+        }
         imageChatSessions.add(0, session)
         if (session.isPersistable()) {
             persistSessions()
@@ -729,7 +1218,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         question: String,
         answer: String,
         bitmap: Bitmap? = null,
-        targetSessionId: String? = null
+        targetSessionId: String? = null,
+        imagePath: String? = null,
+        audioPath: String? = null,
+        audioName: String? = null,
+        audioDurationMs: Long = 0L,
+        documentName: String? = null,
+        documentId: String? = null
     ) {
         val now = System.currentTimeMillis()
         val sessionId = targetSessionId ?: _currentSessionId.value ?: UUID.randomUUID().toString().also {
@@ -742,18 +1237,69 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         val cleanAnswer = ModelOutputSanitizer.clean(answer)
+        val index = imageChatSessions.indexOfFirst { it.id == sessionId }
+        val previous = if (index >= 0) imageChatSessions[index] else null
+        val shouldUpdateTimestamp = index == -1 ||
+            previous?.question != question ||
+            previous?.answer != cleanAnswer
+        val effectiveUpdatedAt = if (shouldUpdateTimestamp || previous?.updatedAt?.let { it <= 0L } == true) {
+            now
+        } else {
+            previous?.updatedAt ?: now
+        }
+
+        val anyUserWithBitmap = messages.firstOrNull { it.isUser && (it.bitmap != null || !it.imagePath.isNullOrBlank()) }
+        val anyUserWithDoc = messages.lastOrNull { it.isUser && !it.documentName.isNullOrBlank() }
+        val anyUserWithAudio = messages.lastOrNull { it.isUser && !it.audioPath.isNullOrBlank() }
+        val firstUserMsg = messages.firstOrNull { it.isUser }
+        val effectiveTitle = previous?.title ?: firstUserMsg?.text?.toImageChatTitle(
+            documentName = firstUserMsg.documentName ?: anyUserWithDoc?.documentName,
+            audioName = firstUserMsg.audioName ?: anyUserWithAudio?.audioName,
+            hasImage = firstUserMsg.bitmap != null || !firstUserMsg.imagePath.isNullOrBlank() || anyUserWithBitmap != null
+        ) ?: question.toImageChatTitle(
+            documentName = documentName ?: anyUserWithDoc?.documentName,
+            audioName = audioName ?: anyUserWithAudio?.audioName,
+            hasImage = bitmap != null || !imagePath.isNullOrBlank() || anyUserWithBitmap != null
+        )
+
+        val sessionDocId = documentId
+            ?: previous?.documentId
+            ?: currentSessionDocumentId
+            ?: documentName?.let { docName ->
+                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+            }
+            ?: anyUserWithDoc?.documentName?.let { docName ->
+                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+            }
+            ?: previous?.documentName?.let { docName ->
+                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+            }
+
         val updated = VisionChatSession(
             id = sessionId,
-            title = question.toImageChatTitle(),
-            question = question,
+            title = effectiveTitle,
+            question = previous?.question ?: question,
             answer = cleanAnswer,
-            updatedAt = now
+            updatedAt = effectiveUpdatedAt,
+            imagePath = imagePath ?: anyUserWithBitmap?.imagePath ?: previous?.imagePath,
+            audioPath = audioPath ?: anyUserWithAudio?.audioPath ?: previous?.audioPath,
+            audioName = audioName ?: anyUserWithAudio?.audioName ?: previous?.audioName,
+            audioDurationMs = if (audioDurationMs > 0L) audioDurationMs else (anyUserWithAudio?.audioDurationMs ?: previous?.audioDurationMs ?: 0L),
+            documentName = documentName ?: anyUserWithDoc?.documentName ?: previous?.documentName,
+            documentId = sessionDocId,
+            messages = messages.toList()
         )
-        val index = imageChatSessions.indexOfFirst { it.id == sessionId }
+        if (currentSessionDocumentId == null && sessionDocId != null) {
+            currentSessionDocumentId = sessionDocId
+        }
         if (index >= 0) {
             imageChatSessions.removeAt(index)
         }
-        imageChatSessions.add(0, updated)
+        if (shouldUpdateTimestamp) {
+            imageChatSessions.add(0, updated)
+        } else {
+            imageChatSessions.add(index.coerceAtMost(imageChatSessions.size), updated)
+        }
         persistSessions()
     }
 
@@ -766,17 +1312,83 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 val answer = ModelOutputSanitizer.clean(item.optString("answer").orEmpty())
                 // Skip sessions whose answer is blank or a stale placeholder
                 if (answer.isBlank() || answer in PLACEHOLDER_ANSWERS) continue
-                val question = item.optString("question").ifBlank { DEFAULT_IMAGE_PROMPT }
+                val question = item.optString("question")
+                val imagePath = item.optString("imagePath").takeIf { it.isNotBlank() }
+                val audioPath = item.optString("audioPath").takeIf { it.isNotBlank() }
+                val audioName = item.optString("audioName").takeIf { it.isNotBlank() }
+                val audioDurationMs = item.optLong("audioDurationMs", 0L)
+                val documentName = item.optString("documentName").takeIf { it.isNotBlank() }
+                val documentId = item.optString("documentId").takeIf { it.isNotBlank() }
+
+                val sessionMessages = mutableListOf<VisionChatMessage>()
+                val messagesArray = item.optJSONArray("messages")
+                if (messagesArray != null && messagesArray.length() > 0) {
+                    for (mIdx in 0 until messagesArray.length()) {
+                        val mObj = messagesArray.getJSONObject(mIdx)
+                        val mText = mObj.optString("text")
+                        val mIsUser = mObj.optBoolean("isUser")
+                        val mId = mObj.optString("id").ifBlank { UUID.randomUUID().toString() }
+                        val mImagePath = mObj.optString("imagePath").takeIf { it.isNotBlank() }
+                        val mAudioPath = mObj.optString("audioPath").takeIf { it.isNotBlank() }
+                        val mAudioName = mObj.optString("audioName").takeIf { it.isNotBlank() }
+                        val mAudioDurationMs = mObj.optLong("audioDurationMs", 0L)
+                        val mDocumentName = mObj.optString("documentName").takeIf { it.isNotBlank() }
+                        val mDocumentPath = mObj.optString("documentPath").takeIf { it.isNotBlank() }
+                        val mRagChunkCount = mObj.optInt("ragChunkCount", 0)
+                        val mRagTopMatchPct = mObj.optInt("ragTopMatchPct", 0)
+
+                        val ragSourcesList = mutableListOf<String>()
+                        val mRagSources = mObj.optJSONArray("ragSources")
+                        if (mRagSources != null) {
+                            for (sIdx in 0 until mRagSources.length()) {
+                                ragSourcesList.add(mRagSources.getString(sIdx))
+                            }
+                        }
+
+                        sessionMessages.add(
+                            VisionChatMessage(
+                                id = mId,
+                                text = mText,
+                                isUser = mIsUser,
+                                bitmap = null, // decoded on demand in selectChatSession
+                                imagePath = mImagePath,
+                                audioPath = mAudioPath,
+                                audioName = mAudioName,
+                                audioDurationMs = mAudioDurationMs,
+                                documentName = mDocumentName,
+                                documentPath = mDocumentPath,
+                                ragSources = ragSourcesList,
+                                ragChunkCount = mRagChunkCount,
+                                ragTopMatchPct = mRagTopMatchPct
+                            )
+                        )
+                    }
+                }
+
                 imageChatSessions.add(
                     VisionChatSession(
                         id = item.optString("id").ifBlank { UUID.randomUUID().toString() },
-                        title = item.optString("title").ifBlank { question.toImageChatTitle() },
+                        title = item.optString("title").ifBlank {
+                            question.toImageChatTitle(
+                                documentName = documentName,
+                                audioName = audioName,
+                                hasImage = !imagePath.isNullOrBlank()
+                            )
+                        },
                         question = question,
                         answer = answer,
-                        updatedAt = item.optLong("updatedAt", 0L)
+                        updatedAt = item.optLong("updatedAt", 0L),
+                        imagePath = imagePath,
+                        audioPath = audioPath,
+                        audioName = audioName,
+                        audioDurationMs = audioDurationMs,
+                        documentName = documentName,
+                        documentId = documentId,
+                        messages = sessionMessages
                     )
                 )
             }
+            imageChatSessions.sortByDescending { it.updatedAt }
         }.onFailure {
             historyPrefs.edit().remove(KEY_SESSIONS).apply()
         }
@@ -785,14 +1397,43 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private fun persistSessions() {
         val array = JSONArray()
         imageChatSessions.filter { it.isPersistable() }.forEach { session ->
-            array.put(
-                JSONObject()
-                    .put("id", session.id)
-                    .put("title", session.title)
-                    .put("question", session.question)
-                    .put("answer", ModelOutputSanitizer.clean(session.answer))
-                    .put("updatedAt", session.updatedAt)
-            )
+            val obj = JSONObject()
+                .put("id", session.id)
+                .put("title", session.title)
+                .put("question", session.question)
+                .put("answer", ModelOutputSanitizer.clean(session.answer))
+                .put("updatedAt", session.updatedAt)
+                .put("imagePath", session.imagePath ?: "")
+                .put("audioPath", session.audioPath ?: "")
+                .put("audioName", session.audioName ?: "")
+                .put("audioDurationMs", session.audioDurationMs)
+                .put("documentName", session.documentName ?: "")
+                .put("documentId", session.documentId ?: "")
+
+            val messagesArray = JSONArray()
+            session.messages.forEach { msg ->
+                val msgObj = JSONObject()
+                    .put("id", msg.id)
+                    .put("text", msg.text)
+                    .put("isUser", msg.isUser)
+                    .put("imagePath", msg.imagePath ?: "")
+                    .put("audioPath", msg.audioPath ?: "")
+                    .put("audioName", msg.audioName ?: "")
+                    .put("audioDurationMs", msg.audioDurationMs)
+                    .put("documentName", msg.documentName ?: "")
+                    .put("documentPath", msg.documentPath ?: "")
+                    .put("ragChunkCount", msg.ragChunkCount)
+                    .put("ragTopMatchPct", msg.ragTopMatchPct)
+
+                val ragSourcesArray = JSONArray()
+                msg.ragSources.forEach { ragSourcesArray.put(it) }
+                msgObj.put("ragSources", ragSourcesArray)
+
+                messagesArray.put(msgObj)
+            }
+            obj.put("messages", messagesArray)
+
+            array.put(obj)
         }
         // Chat history does not require crash-guard-style synchronous durability.
         // Avoid blocking the UI thread while the JSON is written to disk.
@@ -816,18 +1457,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         fileText: String,
         budget: DocumentTextBudget
     ): String {
-        val task = basePrompt.ifBlank {
-            if (fileName.isZipFileName()) {
-                "Analyze and summarize this ZIP archive. Mention the folder/file structure, readable contents, important files, and any useful next steps."
-            } else {
-                "Analyze and summarize this attached file. Mention the main topic, important details, and any useful next steps."
-            }
-        }
         val promptFileText = fileText.limitForPrompt(budget)
         return buildString {
             append("Ignore any blank placeholder image. Use only the extracted attached-file text below.\n")
             append("Do not say that the file is missing. Do not ask the user to attach it again.\n\n")
-            append("User request: ").append(task).append("\n\n")
+            if (basePrompt.isNotBlank()) {
+                append("User request: ").append(basePrompt).append("\n\n")
+            }
             append("--- EXTRACTED FILE: ${fileName ?: "document"} ---\n")
             append(promptFileText)
         }
@@ -939,7 +1575,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         hasAudio: Boolean,
         thinkingMode: Boolean
     ): DocumentTextBudget {
-        val contextTokens = currentContextWindowTokens.coerceAtLeast(MIN_CONTEXT_WINDOW_TOKENS)
+        val contextTokens = currentContextWindowTokens.coerceIn(MIN_CONTEXT_WINDOW_TOKENS, 4096)
         val outputReserveTokens = when {
             contextTokens < 2_048 -> 256
             contextTokens < 8_192 -> 512
@@ -1111,21 +1747,39 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         val userMessage = messages.take(assistantIndex).lastOrNull { it.isUser } ?: return
         val assistantMessage = messages[assistantIndex]
         val answer = ModelOutputSanitizer.clean(assistantMessage.text).trim()
+        val anyUserWithBitmap = messages.firstOrNull { it.isUser && (it.bitmap != null || !it.imagePath.isNullOrBlank()) }
+        val anyUserWithDoc = messages.lastOrNull { it.isUser && !it.documentName.isNullOrBlank() }
+        val anyUserWithAudio = messages.lastOrNull { it.isUser && !it.audioPath.isNullOrBlank() }
         saveCurrentSession(
             question = userMessage.text,
             answer = answer,
-            bitmap = userMessage.bitmap,
-            targetSessionId = _currentSessionId.value
+            bitmap = userMessage.bitmap ?: anyUserWithBitmap?.bitmap,
+            targetSessionId = _currentSessionId.value,
+            imagePath = userMessage.imagePath ?: anyUserWithBitmap?.imagePath,
+            audioPath = userMessage.audioPath ?: anyUserWithAudio?.audioPath,
+            audioName = userMessage.audioName ?: anyUserWithAudio?.audioName,
+            audioDurationMs = if (userMessage.audioDurationMs > 0L) userMessage.audioDurationMs else (anyUserWithAudio?.audioDurationMs ?: 0L),
+            documentName = userMessage.documentName ?: anyUserWithDoc?.documentName,
+            documentId = currentSessionDocumentId
         )
     }
 
-    private fun String.toImageChatTitle(): String {
-        return lineSequence()
+    private fun String.toImageChatTitle(
+        documentName: String? = null,
+        audioName: String? = null,
+        hasImage: Boolean = false
+    ): String {
+        val firstLine = lineSequence()
             .firstOrNull { it.isNotBlank() }
-            .orEmpty()
-            .trim()
-            .take(48)
-            .ifBlank { "Image question" }
+            ?.trim()
+            ?.take(48)
+        if (!firstLine.isNullOrBlank()) return firstLine
+        return when {
+            !documentName.isNullOrBlank() -> "Document: $documentName"
+            !audioName.isNullOrBlank() -> "Audio: $audioName"
+            hasImage -> "Image question"
+            else -> "Media question"
+        }
     }
 
     override fun onCleared() {
@@ -1155,6 +1809,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         _activeBackend.value = null
         currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
         resetRuntimeConversationBeforeNextAsk = false
+        lastAttachedFileName = null
         _isInitializing.value = false
         _isAnalyzing.value = false
         _isStopping.value = false

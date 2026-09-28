@@ -114,6 +114,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        com.shounak.localmeshai.utils.CrashReportManager.install(this)
         AppSettings.getInstance(this).updateSettings {
             it.copy(llamaBackendPreference = "AUTO")
         }
@@ -126,7 +127,14 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
-        InitCrashGuard.checkAndRecoverCrash(this)
+        val crashedModel = InitCrashGuard.checkAndRecoverCrash(this)
+        if (crashedModel != null) {
+            com.shounak.localmeshai.utils.CrashReportManager.recordNativeCrash(
+                this,
+                crashedModel,
+                "Model '$crashedModel' crashed during native initialization on ${DeviceUtils.currentDeviceChipLabel()}."
+            )
+        }
         lifecycleScope.launch(Dispatchers.IO) {
             LiteRtRuntimeCache.pruneOnStartup(this@MainActivity)
             com.shounak.localmeshai.utils.AppUpdateManager.deleteDownloadedApks(this@MainActivity)
@@ -225,6 +233,20 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                 prefs.edit().putBoolean("onboarding_completed", true).apply()
                 showOnboarding = false
                 selectedIndex = 1
+            }
+        )
+    }
+
+    val pendingCrashReport by mainViewModel.pendingCrashPrompt.collectAsState()
+    pendingCrashReport?.let { report ->
+        com.shounak.localmeshai.ui.components.CrashPromptDialog(
+            report = report,
+            hazeState = hazeState,
+            onSend = {
+                mainViewModel.sendPendingCrashReport(context)
+            },
+            onCancel = {
+                mainViewModel.dismissPendingCrashPrompt()
             }
         )
     }

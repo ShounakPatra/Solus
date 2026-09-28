@@ -71,7 +71,7 @@ class VisionInferenceManager(private val context: Context) {
     companion object {
         private const val TAG = "VisionInferenceManager"
         private const val DEFAULT_IMAGE_PROMPT = "Describe the image"
-        private const val MAX_RESPONSE_TOKENS = 1024
+        private const val MAX_RESPONSE_TOKENS = 2048
         private const val DEFAULT_VISION_TEMPERATURE = 0.7f
     }
 
@@ -81,7 +81,8 @@ class VisionInferenceManager(private val context: Context) {
         modelName: String = "",
         modelSize: String = "",
         supportsAudioInput: Boolean = false,
-        allowUnsafeOverride: Boolean = false
+        allowUnsafeOverride: Boolean = false,
+        contextWindowTokens: Int? = null
     ) {
         val file = File(modelPath)
         if (!file.exists()) {
@@ -92,8 +93,18 @@ class VisionInferenceManager(private val context: Context) {
         }
 
         close()
-        val audioInputAvailable = supportsAudioInput && (
+        val isGemmaAudio = modelId.contains("gemma4", ignoreCase = true) ||
+            modelId.contains("gemma3n", ignoreCase = true) ||
+            modelName.contains("gemma 4", ignoreCase = true) ||
+            modelName.contains("gemma 3n", ignoreCase = true) ||
+            file.name.contains("gemma-4", ignoreCase = true) ||
+            file.name.contains("gemma-3n", ignoreCase = true) ||
+            file.name.contains("gemma4", ignoreCase = true) ||
+            file.name.contains("gemma3n", ignoreCase = true)
+
+        val audioInputAvailable = (supportsAudioInput || isGemmaAudio) && (
             file.extension.equals("litertlm", ignoreCase = true) ||
+                file.extension.equals("task", ignoreCase = true) ||
                 file.containsAudioModelAssets()
             )
         modelSupportsAudioInput = audioInputAvailable
@@ -146,12 +157,14 @@ class VisionInferenceManager(private val context: Context) {
                 initializeLiteRtLm(
                     modelPath = modelPath,
                     modelId = effectiveId,
-                    inferenceBackend = inferenceBackend
+                    inferenceBackend = inferenceBackend,
+                    supportsAudioInput = audioInputAvailable,
+                    contextWindowTokens = contextWindowTokens
                 )
                 activeBackendDisplayName = if (inferenceBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
             }
             file.extension.equals("task", ignoreCase = true) -> {
-                initializeMediaPipeVision(modelPath, audioInputAvailable)
+                initializeMediaPipeVision(modelPath, audioInputAvailable, contextWindowTokens)
                 activeBackendDisplayName = "MediaPipe CPU"
             }
             else -> {
@@ -173,12 +186,13 @@ class VisionInferenceManager(private val context: Context) {
         onUpdate: (String) -> Unit
     ): String = withContext(Dispatchers.IO) {
         stopRequested = false
-        val prompt = question.trim().ifBlank { DEFAULT_IMAGE_PROMPT }
+        val prompt = question.trim()
         when (runtime) {
             RuntimeKind.LiteRtLm -> streamLiteRtLmVision(bitmap, prompt, audioFile, audioBytes, onUpdate)
             RuntimeKind.MediaPipeVision -> streamMediaPipeVision(bitmap, prompt, audioFile, audioBytes, onUpdate)
             RuntimeKind.Classifier -> {
-                val result = bitmap?.let { classify(it).formatForQuestion(prompt) }
+                val classifierPrompt = prompt.ifBlank { DEFAULT_IMAGE_PROMPT }
+                val result = bitmap?.let { classify(it).formatForQuestion(classifierPrompt) }
                     ?: "Select an image for this classifier model."
                 onUpdate(result)
                 result
@@ -268,7 +282,9 @@ class VisionInferenceManager(private val context: Context) {
     private fun initializeLiteRtLm(
         modelPath: String,
         modelId: String,
-        inferenceBackend: InferenceBackend
+        inferenceBackend: InferenceBackend,
+        supportsAudioInput: Boolean = false,
+        contextWindowTokens: Int? = null
     ) {
         InitCrashGuard.markInitStarted(context, modelId)
         var engine: Engine? = null
@@ -280,21 +296,109 @@ class VisionInferenceManager(private val context: Context) {
             }
             val runtimeCacheDir = LiteRtRuntimeCache.prepare(context, modelId, inferenceBackend)
             liteRtCacheDir = runtimeCacheDir
-            engine = Engine(
-                EngineConfig(
-                    modelPath = modelPath,
-                    backend = backend,
-                    visionBackend = backend,
-                    maxNumTokens = MAX_RESPONSE_TOKENS,
-                    cacheDir = runtimeCacheDir.absolutePath
+
+            val effectiveMaxTokens = (contextWindowTokens ?: 4096).coerceIn(2048, 8192)
+            var audioBackendCandidate: Backend? = if (supportsAudioInput) backend else null
+            var initialized = false
+            var finalAudioSupported = supportsAudioInput
+
+            // Try 1: with primary audioBackend matching the main backend (GPU or CPU)
+            try {
+                val eng = Engine(
+                    EngineConfig(
+                        modelPath = modelPath,
+                        backend = backend,
+                        visionBackend = backend,
+                        audioBackend = audioBackendCandidate,
+                        maxNumTokens = effectiveMaxTokens,
+                        cacheDir = runtimeCacheDir.absolutePath
+                    )
                 )
-            )
-            engine.initialize()
+                eng.initialize()
+                engine = eng
+                initialized = true
+            } catch (t: Throwable) {
+                Log.w(TAG, "LiteRT-LM init with audioBackend=$audioBackendCandidate and maxTokens=$effectiveMaxTokens failed: ${t.message}", t)
+                runCatching { engine?.close() }
+                engine = null
+            }
+
+            // Try 2: If primary audio backend was GPU and failed, retry with CPU audioBackend
+            if (!initialized && supportsAudioInput && backend !is Backend.CPU) {
+                try {
+                    audioBackendCandidate = Backend.CPU()
+                    val eng = Engine(
+                        EngineConfig(
+                            modelPath = modelPath,
+                            backend = backend,
+                            visionBackend = backend,
+                            audioBackend = audioBackendCandidate,
+                            maxNumTokens = effectiveMaxTokens,
+                            cacheDir = runtimeCacheDir.absolutePath
+                        )
+                    )
+                    eng.initialize()
+                    engine = eng
+                    initialized = true
+                    Log.i(TAG, "LiteRT-LM audio backend fell back to CPU successfully")
+                } catch (t: Throwable) {
+                    Log.w(TAG, "LiteRT-LM init with CPU audioBackend failed: ${t.message}", t)
+                    runCatching { engine?.close() }
+                    engine = null
+                }
+            }
+
+            // Try 3: Fall back to no-audio mode so model still runs for vision/text
+            if (!initialized) {
+                finalAudioSupported = false
+                try {
+                    val eng = Engine(
+                        EngineConfig(
+                            modelPath = modelPath,
+                            backend = backend,
+                            visionBackend = backend,
+                            audioBackend = null,
+                            maxNumTokens = effectiveMaxTokens,
+                            cacheDir = runtimeCacheDir.absolutePath
+                        )
+                    )
+                    eng.initialize()
+                    engine = eng
+                    initialized = true
+                    Log.w(TAG, "LiteRT-LM initialized with audio disabled")
+                } catch (t: Throwable) {
+                    Log.w(TAG, "LiteRT-LM init with audio disabled failed: ${t.message}", t)
+                    runCatching { engine?.close() }
+                    engine = null
+                }
+            }
+
+            // Try 4: If effectiveMaxTokens > 2048 and still failed, retry with safe 2048 tokens
+            if (!initialized && effectiveMaxTokens > 2048) {
+                finalAudioSupported = false
+                val eng = Engine(
+                    EngineConfig(
+                        modelPath = modelPath,
+                        backend = backend,
+                        visionBackend = backend,
+                        audioBackend = null,
+                        maxNumTokens = 2048,
+                        cacheDir = runtimeCacheDir.absolutePath
+                    )
+                )
+                eng.initialize()
+                engine = eng
+                initialized = true
+                Log.w(TAG, "LiteRT-LM initialized with safe 2048 tokens fallback")
+            }
+
+            modelSupportsAudioInput = finalAudioSupported
             InitCrashGuard.markInitCompleted(context)
-            liteRtEngine = engine
-            liteRtConversation = engine.createConversation()
+            val readyEngine = engine ?: throw IllegalStateException("Failed to initialize LiteRT-LM engine")
+            liteRtEngine = readyEngine
+            liteRtConversation = readyEngine.createConversation()
             runtime = RuntimeKind.LiteRtLm
-            Log.i(TAG, "LiteRT-LM vision engine ready on $backend: $modelPath")
+            Log.i(TAG, "LiteRT-LM vision engine ready on $backend (audio: $finalAudioSupported): $modelPath")
         } catch (t: Throwable) {
             InitCrashGuard.markInitCompleted(context)
             runCatching { engine?.close() }
@@ -304,22 +408,42 @@ class VisionInferenceManager(private val context: Context) {
         }
     }
 
-    private fun initializeMediaPipeVision(modelPath: String, supportsAudioInput: Boolean) {
+    private fun initializeMediaPipeVision(
+        modelPath: String,
+        supportsAudioInput: Boolean,
+        contextWindowTokens: Int? = null
+    ) {
+        val targetTokens = (contextWindowTokens ?: MAX_RESPONSE_TOKENS).coerceIn(1024, 4096)
         val optionsBuilder = LlmInference.LlmInferenceOptions.builder()
             .setModelPath(modelPath)
-            .setMaxTokens(MAX_RESPONSE_TOKENS)
+            .setMaxTokens(targetTokens)
             .setMaxTopK(40)
             .setMaxNumImages(1)
             .setPreferredBackend(LlmInference.Backend.CPU)
         if (supportsAudioInput) {
-            optionsBuilder.setAudioModelOptions(
-                AudioModelOptions.builder()
-                    .setMaxAudioSequenceLength(300)
-                    .build()
-            )
+            runCatching {
+                optionsBuilder.setAudioModelOptions(
+                    AudioModelOptions.builder()
+                        .setMaxAudioSequenceLength(300)
+                        .build()
+                )
+            }.onFailure { Log.w(TAG, "AudioModelOptions not applied: ${it.message}") }
         }
         val options = optionsBuilder.build()
-        mediaPipeInference = LlmInference.createFromOptions(context, options)
+        try {
+            mediaPipeInference = LlmInference.createFromOptions(context, options)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Failed to initialize MediaPipe with $targetTokens tokens (audio=$supportsAudioInput): ${t.message}, retrying safe fallback", t)
+            val fallbackOptions = LlmInference.LlmInferenceOptions.builder()
+                .setModelPath(modelPath)
+                .setMaxTokens(1024)
+                .setMaxTopK(40)
+                .setMaxNumImages(1)
+                .setPreferredBackend(LlmInference.Backend.CPU)
+                .build()
+            mediaPipeInference = LlmInference.createFromOptions(context, fallbackOptions)
+            modelSupportsAudioInput = false
+        }
         runtime = RuntimeKind.MediaPipeVision
     }
 
@@ -351,20 +475,32 @@ class VisionInferenceManager(private val context: Context) {
         if (hasAudioInput && !modelSupportsAudioInput) return "This model does not support audio input."
         val conversation = liteRtConversation ?: return "Image model is not initialised."
         val imageFile = bitmap?.writeToCacheFile()
+        val cachedAudioFile = if (audioFile == null && hasAudioBytes) {
+            val f = File(context.cacheDir, "multimodal_inputs/audio_temp_${System.currentTimeMillis()}.wav").apply {
+                parentFile?.mkdirs()
+                writeBytes(audioBytes!!)
+            }
+            f
+        } else null
+        val effectiveAudioFile = audioFile ?: cachedAudioFile
         val response = StringBuilder()
         try {
             val audioContent: Content? = when {
+                effectiveAudioFile != null -> Content.AudioFile(effectiveAudioFile.absolutePath)
                 hasAudioBytes -> Content.AudioBytes(audioBytes!!)
-                audioFile != null -> Content.AudioFile(audioFile.absolutePath)
                 else -> null
             }
             val imageContent: Content? = imageFile?.let { Content.ImageFile(it.absolutePath) }
-            val textContent = Content.Text(prompt)
+            val textContent = if (prompt.isNotBlank()) Content.Text(prompt) else null
             val message = when {
-                imageContent != null && audioContent != null -> Message.of(imageContent, audioContent, textContent)
-                imageContent != null -> Message.of(imageContent, textContent)
-                audioContent != null -> Message.of(audioContent, textContent)
-                else -> Message.of(textContent)
+                imageContent != null && audioContent != null && textContent != null -> Message.of(imageContent, audioContent, textContent)
+                imageContent != null && audioContent != null -> Message.of(imageContent, audioContent)
+                imageContent != null && textContent != null -> Message.of(imageContent, textContent)
+                imageContent != null -> Message.of(imageContent)
+                audioContent != null && textContent != null -> Message.of(audioContent, textContent)
+                audioContent != null -> Message.of(audioContent)
+                textContent != null -> Message.of(textContent)
+                else -> Message.of(Content.Text(""))
             }
             conversation.sendMessageAsync(
                 message
@@ -394,9 +530,13 @@ class VisionInferenceManager(private val context: Context) {
             // Catch everything including native crashes that propagate as Error
             // so the caller never sees an unhandled exception.
             Log.w(TAG, "LiteRT-LM vision stream error", t)
+            if (response.isEmpty()) {
+                val errorMsg = t.localizedMessage ?: t.message ?: t.javaClass.simpleName
+                response.append("Error: ").append(errorMsg)
+            }
         } finally {
             runCatching { imageFile?.delete() }
-            runCatching { audioFile?.delete() }
+            runCatching { cachedAudioFile?.delete() }
         }
         if (stopRequested) return ModelOutputSanitizer.clean(response.toString()).ifBlank { "Stopped." }
         return ModelOutputSanitizer.clean(response.toString()).ifBlank { "No answer generated." }
@@ -465,10 +605,12 @@ class VisionInferenceManager(private val context: Context) {
                         return "Stopped."
                     }
                 }
-                session.addQueryChunk(prompt)
-                if (stopRequested) {
-                    runCatching { session.cancelGenerateResponseAsync() }
-                    return "Stopped."
+                if (prompt.isNotBlank() || (mpImage == null && mediaPipeAudioBytes == null)) {
+                    session.addQueryChunk(prompt)
+                    if (stopRequested) {
+                        runCatching { session.cancelGenerateResponseAsync() }
+                        return "Stopped."
+                    }
                 }
                 val accumulated = StringBuilder()
                 val callbackDone = CountDownLatch(1)
@@ -556,7 +698,6 @@ class VisionInferenceManager(private val context: Context) {
             runCatching { mpImage?.close() }.onFailure { t ->
                 Log.w(TAG, "MPImage close error (safe to ignore)", t)
             }
-            runCatching { audioFile?.delete() }
         }
     }
 

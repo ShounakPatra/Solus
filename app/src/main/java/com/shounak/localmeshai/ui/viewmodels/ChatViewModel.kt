@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 
 @Immutable
@@ -49,7 +50,9 @@ data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val ragSources: List<String> = emptyList(),
     val ragChunkCount: Int = 0,
-    val ragTopMatchPct: Int = 0
+    val ragTopMatchPct: Int = 0,
+    val documentName: String? = null,
+    val documentPath: String? = null
 )
 
 @Immutable
@@ -57,7 +60,8 @@ data class ChatSession(
     val id: String,
     val title: String,
     val messages: List<ChatMessage>,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val documentId: String? = null
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -127,6 +131,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var currentModelId: String = ""
     private var currentModelName: String = ""
     private var currentModelSize: String = ""
+    private var currentContextWindowTokens: Int? = null
     private var currentAllowUnsafeOverride: Boolean = false
     private var lastLoadedBackendPreference: String? = null
     private var initGeneration: Int = 0
@@ -167,13 +172,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             modelId = currentModelId,
                             modelName = currentModelName,
                             modelSize = currentModelSize,
+                            contextWindowTokens = currentContextWindowTokens,
                             allowUnsafeOverride = currentAllowUnsafeOverride,
                             forceReload = true
                         )
                     }
                 }
         }
+        viewModelScope.launch {
+            appSettings.settings
+                .map { it.enableRag }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    _isRagActive.value = enabled
+                }
+        }
+        viewModelScope.launch {
+            appSettings.settings
+                .map { it.enablePersistentMemory }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    _isPersistentMemoryActive.value = enabled
+                }
+        }
     }
+
+    private var pendingRagDocumentId: String? = null
+    var currentSessionDocumentId: String? = null
+        private set
 
     fun setRagActive(enabled: Boolean) {
         _isRagActive.value = enabled
@@ -186,6 +212,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun ingestDocumentForRag(uri: Uri, fileName: String, mimeType: String = ""): RagIngestionResult {
         val result = ragManager.ingestDocument(uri, fileName, mimeType)
+        if (result.success) {
+            appSettings.updateSettings { it.copy(enableRag = true) }
+            pendingRagDocumentId = result.documentId
+            currentSessionDocumentId = result.documentId
+            val activeSessionId = _currentSessionId.value ?: UUID.randomUUID().toString().also {
+                _currentSessionId.value = it
+            }
+            try {
+                val sessionDir = getApplication<Application>().filesDir.resolve("chat_attachments").resolve(activeSessionId)
+                sessionDir.mkdirs()
+                val targetFile = sessionDir.resolve(fileName)
+                getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
+                    targetFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ChatViewModel", "Failed to copy ingested document to session attachments", e)
+            }
+        }
         refreshRagDocuments()
         _ragIngestionStatus.value = result.message
         return result
@@ -193,6 +239,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun ingestTextForRag(name: String, content: String): RagIngestionResult {
         val result = ragManager.ingestText(name, content)
+        if (result.success) {
+            pendingRagDocumentId = result.documentId
+            currentSessionDocumentId = result.documentId
+        }
         refreshRagDocuments()
         _ragIngestionStatus.value = result.message
         return result
@@ -200,11 +250,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearRagKnowledgeBase() {
         ragManager.clearKnowledgeBase()
+        pendingRagDocumentId = null
+        currentSessionDocumentId = null
         refreshRagDocuments()
     }
 
     fun removeRagDocument(documentId: String) {
         ragManager.removeDocument(documentId)
+        if (currentSessionDocumentId == documentId) currentSessionDocumentId = null
+        if (pendingRagDocumentId == documentId) pendingRagDocumentId = null
         refreshRagDocuments()
     }
 
@@ -264,6 +318,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         modelId: String = "",
         modelName: String = "",
         modelSize: String = "",
+        contextWindowTokens: Int? = null,
         allowUnsafeOverride: Boolean = false,
         forceReload: Boolean = false
     ) {
@@ -272,6 +327,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         val currentBackendPref = appSettings.settings.value.llamaBackendPreference
         if (!forceReload && path == currentModelPath && _isModelReady.value && currentBackendPref == lastLoadedBackendPreference && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Chat)) {
+            currentContextWindowTokens = contextWindowTokens
             return
         }
 
@@ -279,6 +335,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentModelId = modelId
         currentModelName = modelName
         currentModelSize = modelSize
+        currentContextWindowTokens = contextWindowTokens
         currentAllowUnsafeOverride = allowUnsafeOverride
 
         val myGen = ++initGeneration
@@ -299,7 +356,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         modelId = modelId,
                         modelName = modelName,
                         modelSize = modelSize,
-                        allowUnsafeOverride = allowUnsafeOverride
+                        allowUnsafeOverride = allowUnsafeOverride,
+                        contextWindowTokens = contextWindowTokens
                     )
                     if (myGen != initGeneration) {
                         inferenceManager.close()
@@ -334,15 +392,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun sendMessage(text: String) {
-        if (_isGenerating.value || text.isBlank()) return
+    fun sendMessage(text: String, documentName: String? = null, documentPath: String? = null) {
+        if (_isGenerating.value) return
+        if (text.isBlank() && documentName.isNullOrBlank()) return
         if (!_isModelReady.value) {
             _error.value = "Choose and initialise a chat model first."
             return
         }
         val userText = text.trim()
-        ensureCurrentSession(userText)
-        messages.add(ChatMessage(userText, true))
+        ensureCurrentSession(userText, documentName)
+        messages.add(ChatMessage(userText, true, documentName = documentName, documentPath = documentPath))
         val assistantIndex = messages.size
         messages.add(ChatMessage("Generating…", false))
         // Do NOT saveCurrentSession() here — the placeholder "Generating…" must
@@ -393,18 +452,42 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 var ragChunkCount = 0
                 var ragTopMatchPct = 0
 
-                if (_isRagActive.value && ragManager.totalIndexedChunks > 0) {
+                var targetDocId = pendingRagDocumentId ?: currentSessionDocumentId
+                pendingRagDocumentId = null
+
+                if (targetDocId == null) {
+                    val activeSession = _currentSessionId.value?.let { id ->
+                        chatSessions.firstOrNull { it.id == id }
+                    }
+                    targetDocId = activeSession?.documentId
+                        ?: activeSession?.messages?.firstNotNullOfOrNull { it.documentName }?.let { docName ->
+                            ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+                        }
+                        ?: messages.firstNotNullOfOrNull { it.documentName }?.let { docName ->
+                            ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+                        }
+                        ?: ragManager.findMatchingDocumentForQuery(userText)?.documentId
+                }
+
+                val shouldQueryRag = ragManager.totalIndexedChunks > 0
+                if (shouldQueryRag) {
                     val ragSettings = appSettings.settings.value
                     val retrieval = ragManager.retrieve(
                         query = userText,
                         topK = ragSettings.ragTopK,
-                        minScore = ragSettings.ragMinSimilarity
+                        minScore = ragSettings.ragMinSimilarity,
+                        preferredDocumentId = targetDocId
                     )
                     if (retrieval.hasContext) {
                         effectivePromptText = ragManager.buildAugmentedPrompt(userText, retrieval)
                         ragSources = retrieval.sourceNames
                         ragChunkCount = retrieval.matches.size
                         ragTopMatchPct = (retrieval.topMatchScore * 100f).toInt()
+
+                        val matchedDocId = retrieval.matches.firstOrNull()?.chunk?.documentId
+                        if (matchedDocId != null) {
+                            currentSessionDocumentId = matchedDocId
+                        }
                     }
                 }
 
@@ -538,6 +621,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         messages.clear()
         _currentSessionId.value = null
         _pendingSessionId.value = null
+        pendingRagDocumentId = null
+        currentSessionDocumentId = null
         resetRuntimeConversationBeforeNextSend = true
         lastRuntimeThinkingMode = null
         _lastInferenceTime.value = 0L
@@ -553,7 +638,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         saveCurrentSession()
         val session = chatSessions.firstOrNull { it.id == sessionId } ?: return
         messages.clear()
-        messages.addAll(session.messages)
+        messages.addAll(session.messages.map { msg ->
+            val resolvedDocPath = if (!msg.documentPath.isNullOrBlank() && File(msg.documentPath).exists()) {
+                msg.documentPath
+            } else if (!msg.documentName.isNullOrBlank()) {
+                com.shounak.localmeshai.utils.AttachmentViewerUtils.findAttachmentFile(getApplication(), msg.documentName)?.absolutePath
+            } else {
+                null
+            }
+            if (resolvedDocPath != msg.documentPath) {
+                msg.copy(documentPath = resolvedDocPath)
+            } else {
+                msg
+            }
+        })
+        currentSessionDocumentId = session.documentId
+            ?: session.messages.firstNotNullOfOrNull { it.documentName }?.let { docName ->
+                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+            }
         resetRuntimeConversationBeforeNextSend = true
         lastRuntimeThinkingMode = null
         _lastInferenceTime.value = 0L
@@ -578,10 +680,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun commitPendingSession() {
         val pending = _pendingSessionId.value ?: return
-        if (chatSessions.none { it.id == pending }) {
+        val pendingSession = chatSessions.firstOrNull { it.id == pending }
+        if (pendingSession == null) {
             _pendingSessionId.value = null
             return
         }
+        messages.clear()
+        messages.addAll(pendingSession.messages.map { msg ->
+            val resolvedDocPath = if (!msg.documentPath.isNullOrBlank() && File(msg.documentPath).exists()) {
+                msg.documentPath
+            } else if (!msg.documentName.isNullOrBlank()) {
+                com.shounak.localmeshai.utils.AttachmentViewerUtils.findAttachmentFile(getApplication(), msg.documentName)?.absolutePath
+            } else {
+                null
+            }
+            if (resolvedDocPath != msg.documentPath) {
+                msg.copy(documentPath = resolvedDocPath)
+            } else {
+                msg
+            }
+        })
+        currentSessionDocumentId = pendingSession.documentId
+            ?: pendingSession.messages.firstNotNullOfOrNull { it.documentName }?.let { docName ->
+                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+            }
         _currentSessionId.value = pending
         _pendingSessionId.value = null
     }
@@ -589,6 +711,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteChatSession(sessionId: String) {
         if (sessionId == _currentSessionId.value && _isGenerating.value) {
             stopGenerating()
+        }
+        val session = chatSessions.firstOrNull { it.id == sessionId }
+        session?.documentId?.let { docId ->
+            ragManager.removeDocument(docId)
+        }
+        val sessionDir = getApplication<Application>().filesDir.resolve("chat_attachments").resolve(sessionId)
+        if (sessionDir.exists()) {
+            sessionDir.deleteRecursively()
         }
         val removingCurrent = sessionId == _currentSessionId.value
         val removingPending = sessionId == _pendingSessionId.value
@@ -600,6 +730,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (removingCurrent || (removingPending && _currentSessionId.value == null)) {
             messages.clear()
             _currentSessionId.value = null
+            currentSessionDocumentId = null
             resetRuntimeConversationBeforeNextSend = true
             lastRuntimeThinkingMode = null
             _lastInferenceTime.value = 0L
@@ -611,10 +742,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (_isGenerating.value) {
             stopGenerating()
         }
+        chatSessions.forEach { session ->
+            session.documentId?.let { docId ->
+                ragManager.removeDocument(docId)
+            }
+        }
+        val attachmentsDir = getApplication<Application>().filesDir.resolve("chat_attachments")
+        if (attachmentsDir.exists()) {
+            attachmentsDir.deleteRecursively()
+        }
+        ragManager.clearKnowledgeBase()
         chatSessions.clear()
         messages.clear()
         _currentSessionId.value = null
         _pendingSessionId.value = null
+        currentSessionDocumentId = null
         resetRuntimeConversationBeforeNextSend = true
         lastRuntimeThinkingMode = null
         _lastInferenceTime.value = 0L
@@ -622,13 +764,42 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         persistSessions()
     }
 
-    private fun ensureCurrentSession(firstUserText: String) {
-        if (_currentSessionId.value != null) return
+    private fun ensureCurrentSession(firstUserText: String, documentName: String? = null) {
+        val currentId = _currentSessionId.value
+        val now = System.currentTimeMillis()
+        if (currentId != null) {
+            val index = chatSessions.indexOfFirst { it.id == currentId }
+            if (index != -1) {
+                val previous = chatSessions[index]
+                val sessionDocId = previous.documentId
+                    ?: currentSessionDocumentId
+                    ?: previous.messages.firstNotNullOfOrNull { it.documentName }?.let { docName ->
+                        ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+                    }
+                val updated = previous.copy(
+                    updatedAt = now,
+                    documentId = sessionDocId
+                )
+                if (currentSessionDocumentId == null && sessionDocId != null) {
+                    currentSessionDocumentId = sessionDocId
+                }
+                chatSessions.removeAt(index)
+                chatSessions.add(0, updated)
+                persistSessions()
+                return
+            }
+        }
+        val title = if (firstUserText.isNotBlank()) {
+            firstUserText.toChatTitle()
+        } else {
+            documentName?.let { "Document: $it" } ?: "Chat"
+        }
         val session = ChatSession(
-            id = UUID.randomUUID().toString(),
-            title = firstUserText.toChatTitle(),
+            id = currentId ?: UUID.randomUUID().toString(),
+            title = title,
             messages = emptyList(),
-            updatedAt = System.currentTimeMillis()
+            updatedAt = now,
+            documentId = currentSessionDocumentId
         )
         _currentSessionId.value = session.id
         chatSessions.add(0, session)
@@ -647,13 +818,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val firstUserMessage = currentMessages.firstOrNull { it.isUser }?.text
         val previous = chatSessions[index]
+        val messagesChanged = previous.messages != currentMessages
+        if (!messagesChanged && previous.updatedAt > 0L) {
+            return
+        }
+
+        val firstUserMsg = currentMessages.firstOrNull { it.isUser }
+        val titleText = firstUserMsg?.text?.takeIf { it.isNotBlank() }?.toChatTitle()
+            ?: firstUserMsg?.documentName?.let { "Document: $it" }
+            ?: previous.title
+        val now = System.currentTimeMillis()
+        val sessionDocId = previous.documentId
+            ?: currentSessionDocumentId
+            ?: currentMessages.firstNotNullOfOrNull { it.documentName }?.let { docName ->
+                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+            }
         val updated = previous.copy(
-            title = firstUserMessage?.toChatTitle() ?: previous.title,
+            title = titleText,
             messages = currentMessages,
-            updatedAt = System.currentTimeMillis()
+            updatedAt = if (messagesChanged || previous.updatedAt <= 0L) now else previous.updatedAt,
+            documentId = sessionDocId
         )
+        if (currentSessionDocumentId == null && sessionDocId != null) {
+            currentSessionDocumentId = sessionDocId
+        }
         chatSessions.removeAt(index)
         chatSessions.add(0, updated)
         persistSessions()
@@ -679,8 +868,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         } else emptyList()
                         val ragChunkCount = messageJson.optInt("ragChunkCount", 0)
                         val ragTopMatchPct = messageJson.optInt("ragTopMatchPct", 0)
+                        val docName = messageJson.optString("documentName").takeIf { it.isNotBlank() }
+                        val docPath = messageJson.optString("documentPath").takeIf { it.isNotBlank() }
                         // Skip stale placeholder assistant messages persisted by older versions
-                        if (cleanText.isNotBlank() && !((!isUser) && cleanText in PLACEHOLDER_TEXTS)) {
+                        if ((cleanText.isNotBlank() || !docName.isNullOrBlank()) && !((!isUser) && cleanText in PLACEHOLDER_TEXTS)) {
                             add(
                                 ChatMessage(
                                     text = cleanText,
@@ -688,7 +879,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                     id = id,
                                     ragSources = ragSources,
                                     ragChunkCount = ragChunkCount,
-                                    ragTopMatchPct = ragTopMatchPct
+                                    ragTopMatchPct = ragTopMatchPct,
+                                    documentName = docName,
+                                    documentPath = docPath
                                 )
                             )
                         }
@@ -703,11 +896,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             id = item.optString("id").ifBlank { UUID.randomUUID().toString() },
                             title = item.optString("title").ifBlank { "New chat" },
                             messages = sessionMessages,
-                            updatedAt = item.optLong("updatedAt", 0L)
+                            updatedAt = item.optLong("updatedAt", 0L),
+                            documentId = item.optString("documentId").takeIf { it.isNotBlank() }
                         )
                     )
                 }
             }
+            chatSessions.sortByDescending { it.updatedAt }
         }.onFailure {
             historyPrefs.edit().remove(KEY_SESSIONS).apply()
         }
@@ -722,6 +917,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     .put("text", if (message.isUser) message.text else ModelOutputSanitizer.clean(message.text))
                     .put("isUser", message.isUser)
                     .put("id", message.id)
+                if (!message.documentName.isNullOrBlank()) {
+                    mObj.put("documentName", message.documentName)
+                }
+                if (!message.documentPath.isNullOrBlank()) {
+                    mObj.put("documentPath", message.documentPath)
+                }
                 if (message.ragSources.isNotEmpty()) {
                     val srcArr = JSONArray()
                     message.ragSources.forEach { srcArr.put(it) }
@@ -737,6 +938,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     .put("title", session.title)
                     .put("updatedAt", session.updatedAt)
                     .put("messages", messagesJson)
+                    .put("documentId", session.documentId ?: "")
             )
         }
         historyPrefs.edit().putString(KEY_SESSIONS, array.toString()).apply()

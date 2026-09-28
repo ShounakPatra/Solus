@@ -93,4 +93,37 @@ class RagVectorStoreTest {
         assertEquals(0, store.getTotalChunkCount())
         assertTrue(store.getDocuments().isEmpty())
     }
+
+    @Test
+    fun testGetChunksForDocument_ReturnsCorrectChunksOrdered() {
+        val store = InMemoryRagVectorStore(null)
+        val v = floatArrayOf(1f, 0f)
+        val chunks = listOf(
+            RagChunkRecord("1", "docA", "Report.pdf", 0, "Chunk 0", v),
+            RagChunkRecord("2", "docB", "Other.pdf", 0, "Other chunk", v),
+            RagChunkRecord("3", "docA", "Report.pdf", 1, "Chunk 1", v),
+            RagChunkRecord("4", "docA", "Report.pdf", 2, "Chunk 2", v)
+        )
+        store.addChunks(chunks)
+
+        val docAChunks = store.getChunksForDocument("docA", limit = 2)
+        assertEquals(2, docAChunks.size)
+        assertEquals("1", docAChunks[0].id)
+        assertEquals("3", docAChunks[1].id)
+    }
+
+    @Test
+    fun testGetRecentChunks_ReturnsChunksUpToLimit() {
+        val store = InMemoryRagVectorStore(null)
+        val v = floatArrayOf(1f, 0f)
+        val chunks = listOf(
+            RagChunkRecord("1", "docA", "Report.pdf", 0, "Chunk 0", v),
+            RagChunkRecord("2", "docA", "Report.pdf", 1, "Chunk 1", v),
+            RagChunkRecord("3", "docB", "Other.pdf", 0, "Other chunk", v)
+        )
+        store.addChunks(chunks)
+
+        val recent = store.getRecentChunks(limit = 2)
+        assertEquals(2, recent.size)
+    }
 }

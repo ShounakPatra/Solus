@@ -234,10 +234,11 @@ fun Modifier.animatedGlassHalo(
     enabled: Boolean = true,
     shape: Shape? = null,
     alpha: Float = 0.085f,
-    durationMillis: Int = 3_800
+    durationMillis: Int = 3_800,
+    accentColor: Color? = null
 ): Modifier {
     if (!enabled) return this
-    val accent = MaterialTheme.colorScheme.primary
+    val accent = accentColor ?: MaterialTheme.colorScheme.primary
     return this.drawWithCache {
         val center = Offset(
             x = size.width * 0.34f,
@@ -369,6 +370,7 @@ fun Modifier.glassEffect(
     blurRadius: Dp = 20.dp,
     tintColor: Color = Color.White.copy(alpha = 0.10f),
     borderAlpha: Float = 0.25f,
+    borderColor: Color? = null
 ): Modifier {
     val colors = MaterialTheme.colorScheme
     val isSurfaceLevel = tintColor == colors.surfaceContainerLowest ||
@@ -381,8 +383,13 @@ fun Modifier.glassEffect(
     val effectiveTint = if (isSurfaceLevel) {
         tintColor
     } else {
+        val resolvedAlpha = if (tintColor.alpha <= 0.40f) {
+            tintColor.alpha
+        } else {
+            (tintColor.alpha * 0.38f).coerceAtMost(0.24f)
+        }
         tintColor
-            .copy(alpha = (tintColor.alpha * 0.38f).coerceAtMost(0.14f))
+            .copy(alpha = resolvedAlpha)
             .compositeOver(colors.surfaceContainer)
     }
     // List items use cached translucent paint instead of a live background blur.
@@ -393,11 +400,12 @@ fun Modifier.glassEffect(
         .background(effectiveTint, shape)
 
     return blurred.drawWithCache {
+        val effectiveBorder = borderColor ?: colors.primary
         val surfaceBrush = Brush.linearGradient(
             colors = listOf(
                 colors.surfaceContainerHigh.copy(alpha = borderAlpha * 0.34f),
                 Color.Transparent,
-                colors.primary.copy(alpha = borderAlpha * 0.10f),
+                effectiveBorder.copy(alpha = borderAlpha * 0.10f),
                 Color.Transparent
             ),
             start = Offset(-size.width * 0.20f, -size.height * 0.10f),
@@ -406,9 +414,9 @@ fun Modifier.glassEffect(
         val outline = shape.createOutline(size, layoutDirection, this)
         val outlineBrush = Brush.linearGradient(
             listOf(
-                colors.outline.copy(alpha = borderAlpha * 1.15f),
+                (borderColor ?: colors.outline).copy(alpha = borderAlpha * 1.15f),
                 colors.outlineVariant.copy(alpha = borderAlpha * 0.72f),
-                colors.primary.copy(alpha = borderAlpha * 0.42f),
+                effectiveBorder.copy(alpha = borderAlpha * 0.42f),
                 colors.outlineVariant.copy(alpha = borderAlpha * 0.62f)
             )
         )

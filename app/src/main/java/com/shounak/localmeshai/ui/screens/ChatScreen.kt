@@ -1,5 +1,7 @@
 package com.shounak.localmeshai.ui.screens
 
+import kotlinx.coroutines.delay
+
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
@@ -10,8 +12,11 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
@@ -26,6 +31,7 @@ import androidx.compose.foundation.border
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
@@ -50,6 +56,18 @@ import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.animatedGlassHalo
 import com.shounak.localmeshai.utils.fluidReveal
 import com.shounak.localmeshai.utils.jellyOnTouch
+import com.shounak.localmeshai.utils.AudioUtils
+import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.foundation.shape.CircleShape
+import kotlin.math.pow
+import kotlin.math.roundToInt
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
@@ -85,6 +103,11 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -95,10 +118,12 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.ContentCopy
@@ -112,10 +137,15 @@ import androidx.compose.material.icons.filled.Settings
 import com.shounak.localmeshai.ui.screens.SettingsDialog
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.RocketLaunch
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Schedule
+import com.shounak.localmeshai.utils.ChatDateFormatter
+import com.shounak.localmeshai.ui.components.AudioMessagePlayer
+import com.shounak.localmeshai.utils.AttachmentViewerUtils
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -149,6 +179,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -169,10 +200,12 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -187,6 +220,7 @@ import com.shounak.localmeshai.ui.viewmodels.ChatSession
 import com.shounak.localmeshai.ui.viewmodels.ChatViewModel
 import com.shounak.localmeshai.ui.viewmodels.MainViewModel
 import com.shounak.localmeshai.ui.viewmodels.VisionChatMessage
+import com.shounak.localmeshai.ui.viewmodels.VisionChatSession
 import com.shounak.localmeshai.ui.viewmodels.VisionViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -201,6 +235,11 @@ import java.util.Locale
 import java.util.zip.ZipFile
 import kotlin.math.max
 import kotlin.math.sqrt
+
+enum class HistorySessionType {
+    Text,
+    Vision
+}
 
 private fun String.toAsteriskEmphasisText() = buildAnnotatedString {
     val source = this@toAsteriskEmphasisText
@@ -424,7 +463,11 @@ fun ChatScreen(
     var selectedAudioName by remember { mutableStateOf<String?>(null) }
     var selectedAudioBytes by remember { mutableStateOf<ByteArray?>(null) }
     var isRecordingAudio by remember { mutableStateOf(false) }
+    var isRecordingPaused by remember { mutableStateOf(false) }
     var recordingJob by remember { mutableStateOf<Job?>(null) }
+    var recordingController by remember { mutableStateOf<MicRecordingController?>(null) }
+    var recordingLoudnessHistory by remember { mutableStateOf(List(32) { 0.08f }) }
+    var isDecodingAudioFile by remember { mutableStateOf(false) }
     var recordingInputLevel by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
     var recordingSpeechActivity by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
     var recordingElapsedMs by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
@@ -453,7 +496,12 @@ fun ChatScreen(
     val isVisionStopping by visionViewModel.isStopping.collectAsState()
     val isVisionModelReady by visionViewModel.isModelReady.collectAsState()
     val visionError by visionViewModel.error.collectAsState()
-    val selectedModelPath = selectedTextModelPath ?: selectedVisionModelPath
+    var activeHistoryChatType by rememberSaveable { mutableStateOf<HistorySessionType?>(null) }
+    val selectedModelPath = when (activeHistoryChatType) {
+        HistorySessionType.Vision -> selectedVisionModelPath ?: selectedTextModelPath
+        HistorySessionType.Text -> selectedTextModelPath ?: selectedVisionModelPath
+        null -> selectedTextModelPath ?: selectedVisionModelPath
+    }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
@@ -517,18 +565,22 @@ fun ChatScreen(
     val canEditDraft = !isVisionStopping
     val textMessages = chatViewModel.messages
     val visionMessages = visionViewModel.messages
+    val effectiveSupportsAttachments = when {
+        activeHistoryChatType == HistorySessionType.Vision -> true
+        activeHistoryChatType == HistorySessionType.Text -> false
+        selectedModel?.type == ModelType.Vision -> true
+        selectedModel?.type == ModelType.Text -> false
+        else -> visionMessages.isNotEmpty() && textMessages.isEmpty()
+    }
     val hasTextHistory = textMessages.isNotEmpty() || chatViewModel.chatSessions.isNotEmpty()
     val hasVisionHistory = visionMessages.isNotEmpty() || visionViewModel.imageChatSessions.isNotEmpty()
-    val showVisionHistory = selectedSupportsAttachments ||
-        (!hasTextHistory && hasVisionHistory) ||
-        (selectedModelPath == null && hasVisionHistory)
-    val activeMessageCount = if (selectedSupportsAttachments) visionMessages.size else textMessages.size
-    val activeLastMessageText = if (selectedSupportsAttachments) {
+    val activeMessageCount = if (effectiveSupportsAttachments) visionMessages.size else textMessages.size
+    val activeLastMessageText = if (effectiveSupportsAttachments) {
         visionMessages.lastOrNull()?.text
     } else {
         textMessages.lastOrNull()?.text
     }
-    val activeError = if (selectedSupportsAttachments) visionError else error
+    val activeError = if (effectiveSupportsAttachments) visionError else error
     val audioRecordLimitMs = 30_000L
 
     LaunchedEffect(Unit) {
@@ -565,39 +617,97 @@ fun ChatScreen(
         selectedFileName = getFileName(context, uri)
         selectedBitmap = null
     }
+    val audioFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            isDecodingAudioFile = true
+            try {
+                val decoded = AudioUtils.decodeAudioToPcm16Wav(context, uri, maxDurationMs = audioRecordLimitMs)
+                selectedAudioUri = decoded.cacheUri
+                selectedAudioBytes = decoded.wavBytes
+                selectedAudioName = decoded.label
+                selectedBitmap = null
+                selectedFileUri = null
+                selectedFileName = null
+            } catch (e: Throwable) {
+                android.util.Log.e("ChatScreen", "Failed to decode audio file", e)
+                Toast.makeText(context, "Could not process audio: ${e.localizedMessage ?: "unsupported format"}", Toast.LENGTH_LONG).show()
+            } finally {
+                isDecodingAudioFile = false
+            }
+        }
+    }
+    var isIngestingDocument by remember { mutableStateOf(false) }
+    var attachmentMenuExpanded by rememberSaveable { mutableStateOf(false) }
+    var composerBounds by remember { mutableStateOf(Rect.Zero) }
+    var rootCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var cardCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+
+    fun updateComposerBounds() {
+        val root = rootCoordinates
+        val card = cardCoordinates
+        if (root != null && card != null && root.isAttached && card.isAttached) {
+            composerBounds = root.localBoundingBoxOf(card)
+        }
+    }
+
+    BackHandler(enabled = attachmentMenuExpanded) {
+        attachmentMenuExpanded = false
+    }
     fun resetRecordingMeters() {
         recordingInputLevel = 0f
         recordingSpeechActivity = 0f
         recordingElapsedMs = 0L
+        recordingLoudnessHistory = List(32) { 0.08f }
+        recordingController = null
     }
 
     fun cancelMicRecording() {
+        recordingController?.cancel()
         recordingJob?.cancel()
         recordingJob = null
         isRecordingAudio = false
+        isRecordingPaused = false
         resetRecordingMeters()
+    }
+
+    fun stopAndSaveMicRecording() {
+        recordingController?.stop()
+        isRecordingPaused = false
+    }
+
+    fun togglePauseMicRecording() {
+        val paused = recordingController?.togglePause() ?: false
+        isRecordingPaused = paused
     }
 
     fun startMicRecording() {
         if (!selectedSupportsAudio || isRecordingAudio) return
         recordingJob?.cancel()
+        val controller = MicRecordingController()
+        recordingController = controller
+        isRecordingPaused = false
         recordingJob = scope.launch {
             isRecordingAudio = true
             selectedAudioUri = null
             selectedAudioName = null
             selectedAudioBytes = null
             resetRecordingMeters()
+            recordingController = controller
             try {
                 val recording = recordPcm16Mono(
                     context = context,
+                    controller = controller,
                     durationMs = audioRecordLimitMs,
                     onLevel = { inputLevel, speechActivity, elapsedMs ->
                         recordingInputLevel = inputLevel
                         recordingSpeechActivity = speechActivity
                         recordingElapsedMs = elapsedMs
+                        recordingLoudnessHistory = (recordingLoudnessHistory.drop(1) + inputLevel)
                     }
                 )
-                selectedAudioBytes = recording.bytes
+                selectedAudioBytes = recording.wavBytes
+                selectedAudioUri = recording.cacheUri
                 selectedAudioName = recording.label
             } catch (_: CancellationException) {
                 selectedAudioUri = null
@@ -607,9 +717,10 @@ fun ChatScreen(
                 selectedAudioUri = null
                 selectedAudioBytes = null
                 selectedAudioName = null
-            chatViewModel.setDraftText(textState.ifBlank { "Audio recording failed: ${throwable.message ?: "microphone unavailable"}" })
+                chatViewModel.setDraftText(textState.ifBlank { "Audio recording failed: ${throwable.message ?: "microphone unavailable"}" })
             } finally {
                 isRecordingAudio = false
+                isRecordingPaused = false
                 resetRecordingMeters()
                 recordingJob = null
             }
@@ -654,6 +765,7 @@ fun ChatScreen(
                     modelId = selectedModel?.id ?: "",
                     modelName = selectedModel?.name ?: "",
                     modelSize = selectedModel?.size ?: "",
+                    contextWindowTokens = selectedModel?.effectiveContextWindowTokens,
                     allowUnsafeOverride = selectedUnsafeOverride
                 )
             }
@@ -697,72 +809,83 @@ fun ChatScreen(
     }
 
     // Only auto-scroll when a new message is added if we were already at bottom.
-    LaunchedEffect(activeMessageCount, selectedSupportsAttachments) {
+    LaunchedEffect(activeMessageCount, effectiveSupportsAttachments) {
         if (activeMessageCount > 0 && followLatest) {
             listState.animateScrollToItem(activeMessageCount - 1, scrollOffset = 100_000)
         }
     }
 
-    LaunchedEffect(activeLastMessageText, selectedSupportsAttachments) {
+    LaunchedEffect(activeLastMessageText, effectiveSupportsAttachments) {
         if (followLatest && activeMessageCount > 0) {
             listState.scrollToItem(activeMessageCount - 1, scrollOffset = 100_000)
         }
     }
 
     if (showHistory) {
-        if (showVisionHistory) {
-            ImageChatHistoryDialog(
-                sessions = visionViewModel.imageChatSessions,
-                currentSessionId = visionCurrentSessionId,
-                onSelect = { sessionId ->
-                    visionViewModel.selectChatSession(sessionId)
-                    chatViewModel.clearDraftText()
-                    selectedBitmap = null
-                    selectedFileUri = null
-                    selectedFileName = null
-                    selectedAudioUri = null
-                    selectedAudioName = null
-                    selectedAudioBytes = null
-                    showHistory = false
-                },
-                onNewChat = {
-                    visionViewModel.startNewChat()
-                    chatViewModel.clearDraftText()
-                    selectedBitmap = null
-                    selectedFileUri = null
-                    selectedFileName = null
-                    selectedAudioUri = null
-                    selectedAudioName = null
-                    selectedAudioBytes = null
-                    showHistory = false
-                },
-                onDelete = visionViewModel::deleteChatSession,
-                onClearAll = { showClearConfirm = true },
-                onDismiss = { showHistory = false },
-                hazeState = hazeState
-            )
-        } else {
-            ChatHistoryDialog(
-                sessions = chatViewModel.chatSessions,
-                currentSessionId = currentSessionId,
-                onSelect = { sessionId ->
-                    chatViewModel.selectChatSession(sessionId)
-                    chatViewModel.clearDraftText()
-                    showHistory = false
-                },
-                onNewChat = {
-                    chatViewModel.startNewChat()
-                    chatViewModel.clearDraftText()
-                    showHistory = false
-                },
-                onDelete = chatViewModel::deleteChatSession,
-                onClearAll = {
-                    showClearConfirm = true
-                },
-                onDismiss = { showHistory = false },
-                hazeState = hazeState
-            )
-        }
+        ChatHistoryDialog(
+            textSessions = chatViewModel.chatSessions,
+            visionSessions = visionViewModel.imageChatSessions,
+            currentTextSessionId = currentSessionId,
+            currentVisionSessionId = visionCurrentSessionId,
+            isVisionModeActive = effectiveSupportsAttachments,
+            onSelectTextSession = { sessionId ->
+                attachmentMenuExpanded = false
+                activeHistoryChatType = HistorySessionType.Text
+                chatViewModel.selectChatSession(sessionId)
+                chatViewModel.clearDraftText()
+                selectedBitmap = null
+                selectedFileUri = null
+                selectedFileName = null
+                selectedAudioUri = null
+                selectedAudioName = null
+                selectedAudioBytes = null
+                if (selectedModel?.type != ModelType.Text) {
+                    val preferredTextModel = downloadedChatModels.firstOrNull { it.type == ModelType.Text }
+                    preferredTextModel?.localPath?.let { path ->
+                        mainViewModel.selectTextModel(path)
+                    }
+                }
+                showHistory = false
+            },
+            onSelectVisionSession = { sessionId ->
+                attachmentMenuExpanded = false
+                activeHistoryChatType = HistorySessionType.Vision
+                visionViewModel.selectChatSession(sessionId)
+                chatViewModel.clearDraftText()
+                selectedBitmap = null
+                selectedFileUri = null
+                selectedFileName = null
+                selectedAudioUri = null
+                selectedAudioName = null
+                selectedAudioBytes = null
+                if (selectedModel?.type != ModelType.Vision) {
+                    val preferredVisionModel = downloadedChatModels.firstOrNull { it.type == ModelType.Vision }
+                    preferredVisionModel?.localPath?.let { path ->
+                        mainViewModel.selectVisionModel(path)
+                    }
+                }
+                showHistory = false
+            },
+            onNewChat = {
+                attachmentMenuExpanded = false
+                activeHistoryChatType = null
+                visionViewModel.startNewChat()
+                chatViewModel.startNewChat()
+                chatViewModel.clearDraftText()
+                selectedBitmap = null
+                selectedFileUri = null
+                selectedFileName = null
+                selectedAudioUri = null
+                selectedAudioName = null
+                selectedAudioBytes = null
+                showHistory = false
+            },
+            onDeleteTextSession = chatViewModel::deleteChatSession,
+            onDeleteVisionSession = visionViewModel::deleteChatSession,
+            onClearAll = { showClearConfirm = true },
+            onDismiss = { showHistory = false },
+            hazeState = hazeState
+        )
     }
 
     if (showClearConfirm) {
@@ -773,11 +896,8 @@ fun ChatScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        if (showVisionHistory) {
-                            visionViewModel.clearHistory()
-                        } else {
-                            chatViewModel.clearHistory()
-                        }
+                        chatViewModel.clearHistory()
+                        visionViewModel.clearHistory()
                         showClearConfirm = false
                         showHistory = false
                     },
@@ -818,7 +938,29 @@ fun ChatScreen(
             // This prevents window/pager surfaces from showing through while its
             // model and reveal animations initialise.
             .background(chatBackground)
-            .imePadding(),
+            .imePadding()
+            .onGloballyPositioned {
+                rootCoordinates = it
+                updateComposerBounds()
+            }
+            .pointerInput(attachmentMenuExpanded) {
+                if (!attachmentMenuExpanded) return@pointerInput
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val isTouchDown = event.type == PointerEventType.Press ||
+                            event.changes.any { it.pressed && !it.previousPressed }
+                        if (isTouchDown) {
+                            val change = event.changes.firstOrNull() ?: continue
+                            updateComposerBounds()
+                            if (composerBounds != Rect.Zero && !composerBounds.contains(change.position)) {
+                                attachmentMenuExpanded = false
+                                change.consume()
+                            }
+                        }
+                    }
+                }
+            },
         verticalArrangement = Arrangement.Top
     ) {
         Box(
@@ -839,8 +981,9 @@ fun ChatScreen(
                 models = downloadedChatModels,
                 selectedPath = selectedModelPath,
                 hasHistory = hasTextHistory || hasVisionHistory,
-                hasMessages = if (selectedSupportsAttachments) visionMessages.isNotEmpty() else textMessages.isNotEmpty(),
                 onSelectModel = { model ->
+                    attachmentMenuExpanded = false
+                    activeHistoryChatType = if (model.type == ModelType.Vision) HistorySessionType.Vision else HistorySessionType.Text
                     model.localPath?.let { path ->
                         if (model.type == ModelType.Vision) {
                             mainViewModel.selectVisionModel(path)
@@ -856,11 +999,10 @@ fun ChatScreen(
                     selectedAudioBytes = null
                 },
                 onNewChat = {
-                    if (selectedSupportsAttachments) {
-                        visionViewModel.startNewChat()
-                    } else {
-                        chatViewModel.startNewChat()
-                    }
+                    attachmentMenuExpanded = false
+                    activeHistoryChatType = null
+                    visionViewModel.startNewChat()
+                    chatViewModel.startNewChat()
                     chatViewModel.clearDraftText()
                     selectedBitmap = null
                     selectedFileUri = null
@@ -873,13 +1015,6 @@ fun ChatScreen(
                 onSettings = if (appSettingsData.enableAutoHideBottomBar) {
                     { showSettings = true }
                 } else null,
-                onShare = {
-                    if (selectedSupportsAttachments) {
-                        shareVisionConversation(context, visionMessages.toList())
-                    } else {
-                        shareConversation(context, textMessages.toList())
-                    }
-                },
                 hazeState = hazeState
             )
         }
@@ -943,7 +1078,7 @@ fun ChatScreen(
                 // Pending hold only when messages were not loaded into the list yet.
                 // Once textMessages/visionMessages are non-empty, the list branch wins.
                 val canShowChatMessages = isCurrentModelReady || currentSessionId != null
-                val isPendingChatHold = !selectedSupportsAttachments &&
+                val isPendingChatHold = !effectiveSupportsAttachments &&
                     pendingSessionId != null &&
                     !isCurrentModelReady &&
                     textMessages.isEmpty()
@@ -954,8 +1089,8 @@ fun ChatScreen(
                 ) {
                     when {
                         // 1. Prioritise showing messages if they exist (history with no model active).
-                        (selectedSupportsAttachments && visionMessages.isNotEmpty()) ||
-                            (!selectedSupportsAttachments && textMessages.isNotEmpty()) -> {
+                        (effectiveSupportsAttachments && visionMessages.isNotEmpty()) ||
+                            (!effectiveSupportsAttachments && textMessages.isNotEmpty()) -> {
                             // Wrap the entire list in SelectionContainer so text selection works
                             SelectionContainer {
                                 LazyColumn(
@@ -966,7 +1101,7 @@ fun ChatScreen(
                                     contentPadding = PaddingValues(vertical = 8.dp),
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    if (selectedSupportsAttachments) {
+                                    if (effectiveSupportsAttachments) {
                                         itemsIndexed(
                                             visionMessages,
                                             key = { _, message -> message.id },
@@ -978,9 +1113,18 @@ fun ChatScreen(
                                                 text = message.text,
                                                 isUser = message.isUser,
                                                 bitmap = message.bitmap,
+                                                imagePath = message.imagePath,
+                                                audioPath = message.audioPath,
+                                                audioName = message.audioName,
+                                                audioDurationMs = message.audioDurationMs,
+                                                documentName = message.documentName,
+                                                documentPath = message.documentPath,
                                                 hazeState = hazeState,
                                                 isStreaming = !message.isUser && isVisionAnalyzing && index == visionMessages.lastIndex,
                                                 entryDelayMs = if (index == visionMessages.lastIndex) 25 else 0,
+                                                ragSources = message.ragSources,
+                                                ragChunkCount = message.ragChunkCount,
+                                                ragTopMatchPct = message.ragTopMatchPct,
                                                 onFullscreenClick = { fullscreenVisionMessageIndex = index }
                                             )
                                         }
@@ -1001,6 +1145,8 @@ fun ChatScreen(
                                                 ragSources = message.ragSources,
                                                 ragChunkCount = message.ragChunkCount,
                                                 ragTopMatchPct = message.ragTopMatchPct,
+                                                documentName = message.documentName,
+                                                documentPath = message.documentPath,
                                                 onFullscreenClick = { fullscreenMessageIndex = index }
                                             )
                                         }
@@ -1034,7 +1180,7 @@ fun ChatScreen(
                                 hazeState = hazeState
                             )
                         }
-                        selectedSupportsAttachments && visionMessages.isEmpty() -> {
+                        effectiveSupportsAttachments && visionMessages.isEmpty() -> {
                             EmptyState(
                                 title = "Ask with images or files",
                                 subtitle = "Use the + inside the chat box to add camera, photos, or files.",
@@ -1057,7 +1203,7 @@ fun ChatScreen(
                     // Placed here — outside the when{} branches — so that .align()
                     // is called directly inside BoxScope where it is valid.
                     // Both buttons are only meaningful when the message list is shown.
-                    val hasMessages = if (selectedSupportsAttachments) {
+                    val hasMessages = if (effectiveSupportsAttachments) {
                         visionMessages.isNotEmpty()
                     } else {
                         textMessages.isNotEmpty()
@@ -1074,7 +1220,7 @@ fun ChatScreen(
                             },
                             onScrollBottom = {
                                 scope.launch {
-                                    val lastIndex = if (selectedSupportsAttachments) {
+                                    val lastIndex = if (effectiveSupportsAttachments) {
                                         visionMessages.lastIndex
                                     } else {
                                         textMessages.lastIndex
@@ -1142,7 +1288,13 @@ fun ChatScreen(
                     label = "chat_composer_corner"
                 )
                 val composerMaxHeight by animateDpAsState(
-                    targetValue = if (hasVisionAttachment) 380.dp else 280.dp,
+                    targetValue = when {
+                        isRecordingAudio -> 240.dp
+                        hasVisionAttachment && attachmentMenuExpanded -> if (isKeyboardOpen) 460.dp else 560.dp
+                        attachmentMenuExpanded -> if (isKeyboardOpen) 390.dp else 460.dp
+                        hasVisionAttachment -> if (isKeyboardOpen) 320.dp else 380.dp
+                        else -> 280.dp
+                    },
                     animationSpec = spring(dampingRatio = 0.86f, stiffness = 420f),
                     label = "chat_composer_max_height"
                 )
@@ -1150,7 +1302,7 @@ fun ChatScreen(
                 val modelAccentColor = remember(selectedModel?.id, appSettingsData.enableDynamicThemes) {
                     if (appSettingsData.enableDynamicThemes) ModelTheme.getAccentColor(selectedModel?.id) else Color(0xFF3B82F6)
                 }
-                val hasMessagesInChat = if (selectedSupportsAttachments) visionMessages.isNotEmpty() else textMessages.isNotEmpty()
+                val hasMessagesInChat = if (effectiveSupportsAttachments) visionMessages.isNotEmpty() else textMessages.isNotEmpty()
 
                 if (!hasMessagesInChat && appSettingsData.enablePersonaPresets) {
                     SystemPromptPresetsBar(
@@ -1189,7 +1341,11 @@ fun ChatScreen(
                             initialRotationZ = 0.55f
                         )
                         .animatedGlassHalo(shape = RoundedCornerShape(composerCorner), alpha = 0.045f, durationMillis = 4_800)
-                        .padding(bottom = 0.dp),
+                        .padding(bottom = if (isKeyboardOpen) 2.dp else 6.dp)
+                        .onGloballyPositioned {
+                            cardCoordinates = it
+                            updateComposerBounds()
+                        },
                     hazeState = hazeState,
                     cornerRadius = composerCorner,
                     blurRadius = 34.dp,
@@ -1197,7 +1353,7 @@ fun ChatScreen(
                     dispersionAmount = 0.030f,
                     tintColor = composerTint,
                     borderAlpha = 0.48f,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                     animatedCaustics = true
                 ) {
                     Column(modifier = Modifier.fillMaxWidth()) {
@@ -1271,12 +1427,20 @@ fun ChatScreen(
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(20.dp)
                                     )
-                                    Text(
-                                        text = selectedFileName ?: "Attached file",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = 1,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                    Column {
+                                        Text(
+                                            text = selectedFileName ?: "Attached file",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "RAG Document Knowledge Base",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
                                 }
                                 LiquidGlassButton(
                                     onClick = {
@@ -1298,41 +1462,125 @@ fun ChatScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                         }
 
+                        if (isIngestingDocument) {
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                                modifier = Modifier
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    .fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = "Indexing document into RAG Knowledge Base...",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+
+                        if (isDecodingAudioFile) {
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                                modifier = Modifier
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    .fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = "Converting audio file to 16kHz WAV...",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+
                         if ((selectedAudioUri != null || selectedAudioBytes?.isNotEmpty() == true) && !isRecordingAudio) {
+                            val audioPreviewPath = remember(selectedAudioUri, selectedAudioBytes) {
+                                val uriPath = selectedAudioUri?.path
+                                if (!uriPath.isNullOrBlank() && File(uriPath).exists()) {
+                                    uriPath
+                                } else if (selectedAudioBytes != null && selectedAudioBytes!!.isNotEmpty()) {
+                                    try {
+                                        val cacheDir = File(context.cacheDir, "multimodal_inputs").apply { mkdirs() }
+                                        val tempFile = File(cacheDir, "preview_audio_${System.currentTimeMillis()}.wav")
+                                        tempFile.writeBytes(selectedAudioBytes!!)
+                                        tempFile.absolutePath
+                                    } catch (_: Exception) {
+                                        null
+                                    }
+                                } else null
+                            }
+
                             Box(
                                 modifier = Modifier
                                     .padding(horizontal = 8.dp, vertical = 4.dp)
-                                    .fluidReveal(initialScale = 0.94f, initialYOffset = 6.dp)
-                                    .glassEffect(
-                                        hazeState = hazeState,
-                                        shape = RoundedCornerShape(18.dp),
-                                        blurRadius = 16.dp,
-                                        tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                                        borderAlpha = 0.34f
-                                    )
-                                    .padding(horizontal = 12.dp, vertical = 9.dp)
+                                    .fillMaxWidth()
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.padding(end = 28.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Audiotrack,
-                                        contentDescription = "Attached audio",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(20.dp)
+                                if (!audioPreviewPath.isNullOrBlank()) {
+                                    AudioMessagePlayer(
+                                        audioPath = audioPreviewPath,
+                                        audioName = selectedAudioName ?: "Voice recording",
+                                        initialDurationMs = 0L,
+                                        isUser = true,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(end = 28.dp)
                                     )
-                                    Text(
-                                        text = when {
-                                            isRecordingAudio -> "Recording mic audio..."
-                                            else -> selectedAudioName ?: "Attached audio"
-                                        },
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = 1,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                } else {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.padding(end = 28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Audiotrack,
+                                            contentDescription = "Attached audio",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Column {
+                                            Text(
+                                                text = selectedAudioName ?: "Attached audio",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = "Offline Audio",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
                                 }
+
                                 LiquidGlassButton(
                                     onClick = {
                                         selectedAudioUri = null
@@ -1342,7 +1590,7 @@ fun ChatScreen(
                                     hazeState = hazeState,
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
-                                        .offset(x = 8.dp, y = (-8).dp)
+                                        .offset(x = 6.dp, y = (-6).dp)
                                         .size(24.dp),
                                     shape = RoundedCornerShape(12.dp),
                                     tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.18f),
@@ -1354,143 +1602,206 @@ fun ChatScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                         }
 
-                        ChatComposerActions(
-                            thinkingMode = thinkingMode,
-                            canSend = selectedModelPath != null &&
-                                !isCurrentModelResponding &&
-                                isCurrentModelReady &&
-                                if (selectedSupportsAttachments) {
-                                    hasVisionAttachment || textState.isNotBlank()
-                                } else {
-                                    textState.isNotBlank()
+                        if (isRecordingAudio) {
+                            RecordingComposerPanel(
+                                loudnessHistory = recordingLoudnessHistory,
+                                elapsedMs = recordingElapsedMs,
+                                limitMs = audioRecordLimitMs,
+                                isPaused = isRecordingPaused,
+                                onTogglePause = { togglePauseMicRecording() },
+                                onCancel = { cancelMicRecording() },
+                                onDone = { stopAndSaveMicRecording() }
+                            )
+                        } else {
+                            ChatComposerActions(
+                                thinkingMode = thinkingMode,
+                                canSend = selectedModelPath != null &&
+                                    !isCurrentModelResponding &&
+                                    isCurrentModelReady &&
+                                    !isIngestingDocument &&
+                                    !isDecodingAudioFile &&
+                                    (hasVisionAttachment || textState.isNotBlank()),
+                                isGenerating = if (selectedSupportsAttachments) isVisionAnalyzing else isGenerating,
+                                canThink = selectedSupportsThinking && !isCurrentModelResponding,
+                                supportsAttachments = isCurrentModelReady,
+                                hasAttachment = hasVisionAttachment,
+                                supportsVision = selectedSupportsAttachments,
+                                supportsAudioInput = selectedSupportsAudio,
+                                hazeState = hazeState,
+                                attachmentMenuExpanded = attachmentMenuExpanded,
+                                onToggleAttachmentMenu = { attachmentMenuExpanded = it },
+                                onToggleThinking = { enabled -> chatViewModel.setThinkingMode(enabled) },
+                                onCameraSelect = {
+                                    val uri = getTempImageUri(context)
+                                    cameraTempUri = uri
+                                    cameraLauncher.launch(uri)
                                 },
-                            isGenerating = if (selectedSupportsAttachments) isVisionAnalyzing else isGenerating,
-                            canThink = selectedSupportsThinking && !isCurrentModelResponding,
-                            supportsAttachments = selectedSupportsAttachments,
-                            hasAttachment = hasVisionAttachment,
-                            isFileReadingSupported = selectedVisionModelSupportsFiles,
-                            supportsAudioInput = selectedSupportsAudio,
-                            isRecordingAudio = isRecordingAudio,
-                            recordingInputLevel = recordingInputLevel,
-                            recordingSpeechActivity = recordingSpeechActivity,
-                            recordingElapsedMs = recordingElapsedMs,
-                            recordingLimitMs = audioRecordLimitMs,
-                            hazeState = hazeState,
-                            onToggleThinking = { enabled -> chatViewModel.setThinkingMode(enabled) },
-                            onCameraSelect = {
-                                val uri = getTempImageUri(context)
-                                cameraTempUri = uri
-                                cameraLauncher.launch(uri)
-                            },
-                            onPhotosSelect = { imagePicker.launch("image/*") },
-                            onFilesSelect = { filePicker.launch(arrayOf("*/*")) },
-                            onMicRecord = {
-                                if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                    startMicRecording()
-                                } else {
-                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                }
-                            },
-                            onMicUnavailable = {
-                                chatViewModel.setDraftText(textState.ifBlank {
-                                    when {
-                                        selectedModelPath == null -> "Choose an audio-capable multimodal model first."
-                                        selectedModel?.type != ModelType.Vision -> "${selectedModel?.name ?: "Selected model"} is a text-only model. Raw audio input needs a multimodal model with audio encoders, such as a converted Phi 4 Multimodal or Whisper pipeline."
-                                        else -> "${selectedModel?.name ?: "Selected model"} does not include audio encoder assets in this downloaded bundle."
+                                onPhotosSelect = { imagePicker.launch("image/*") },
+                                onAudioSelect = { audioFilePicker.launch(arrayOf("audio/*", "application/ogg")) },
+                                onFilesSelect = { filePicker.launch(arrayOf("*/*")) },
+                                onMicRecord = {
+                                    if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                        startMicRecording()
+                                    } else {
+                                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                     }
-                                })
-                            },
-                            onCancelRecording = { cancelMicRecording() },
-                            onSend = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                if (selectedSupportsAttachments) {
-                                    visionViewModel.ask(
-                                        bitmap = selectedBitmap,
-                                        question = textState,
-                                        fileUri = selectedFileUri,
-                                        fileName = selectedFileName,
-                                        audioUri = selectedAudioUri,
-                                        audioName = selectedAudioName,
-                                        audioBytes = selectedAudioBytes,
-                                        thinkingMode = thinkingMode && selectedSupportsThinking
-                                    )
-                                    selectedBitmap = null
-                                    selectedFileUri = null
-                                    selectedFileName = null
-                                    selectedAudioUri = null
-                                    selectedAudioName = null
-                                    selectedAudioBytes = null
-                                } else {
-                                    if (selectedFileUri != null) {
-                                        val uriToIngest = selectedFileUri!!
-                                        val nameToIngest = selectedFileName ?: "document"
-                                        scope.launch {
-                                            chatViewModel.ingestDocumentForRag(uriToIngest, nameToIngest)
-                                            chatViewModel.setRagActive(true)
-                                            chatViewModel.sendMessage(textState)
+                                },
+                                onMicUnavailable = {
+                                    chatViewModel.setDraftText(textState.ifBlank {
+                                        when {
+                                            selectedModelPath == null -> "Choose an audio-capable multimodal model first."
+                                            selectedModel?.type != ModelType.Vision -> "${selectedModel?.name ?: "Selected model"} is a text-only model. Raw audio input needs a multimodal model with audio encoders, such as Gemma 4 or Gemma 3n."
+                                            else -> "${selectedModel?.name ?: "Selected model"} does not include audio encoder assets in this downloaded bundle."
                                         }
+                                    })
+                                },
+                                onSend = {
+                                    attachmentMenuExpanded = false
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    if (selectedSupportsAttachments) {
+                                        val uriToIngest = selectedFileUri
+                                        val nameToIngest = selectedFileName ?: "document"
+                                        val bitmapToSend = selectedBitmap
+                                        val audioUriToSend = selectedAudioUri
+                                        val audioNameToSend = selectedAudioName
+                                        val audioBytesToSend = selectedAudioBytes
+                                        val messageToSend = textState.trim()
+                                        selectedBitmap = null
                                         selectedFileUri = null
                                         selectedFileName = null
+                                        selectedAudioUri = null
+                                        selectedAudioName = null
+                                        selectedAudioBytes = null
+                                        chatViewModel.clearDraftText()
+
+                                        if (uriToIngest != null) {
+                                            scope.launch {
+                                                isIngestingDocument = true
+                                                try {
+                                                    val result = chatViewModel.ingestDocumentForRag(uriToIngest, nameToIngest)
+                                                    if (result.success) {
+                                                        visionViewModel.setPendingRagDocumentId(result.documentId)
+                                                        Toast.makeText(context, "Indexed ${result.chunkCount} chunks into RAG Knowledge Base", Toast.LENGTH_SHORT).show()
+                                                    } else {
+                                                        Toast.makeText(context, "Document indexing note: ${result.message}", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                } finally {
+                                                    isIngestingDocument = false
+                                                }
+                                                visionViewModel.ask(
+                                                    bitmap = bitmapToSend,
+                                                    question = messageToSend,
+                                                    fileUri = uriToIngest,
+                                                    fileName = nameToIngest,
+                                                    audioUri = audioUriToSend,
+                                                    audioName = audioNameToSend,
+                                                    audioBytes = audioBytesToSend,
+                                                    thinkingMode = thinkingMode && selectedSupportsThinking
+                                                )
+                                            }
+                                        } else {
+                                            visionViewModel.ask(
+                                                bitmap = bitmapToSend,
+                                                question = messageToSend,
+                                                fileUri = null,
+                                                fileName = null,
+                                                audioUri = audioUriToSend,
+                                                audioName = audioNameToSend,
+                                                audioBytes = audioBytesToSend,
+                                                thinkingMode = thinkingMode && selectedSupportsThinking
+                                            )
+                                        }
                                     } else {
-                                        chatViewModel.sendMessage(textState)
+                                        val uriToIngest = selectedFileUri
+                                        val nameToIngest = selectedFileName ?: "document"
+                                        val messageToSend = textState.trim()
+                                        selectedBitmap = null
+                                        selectedFileUri = null
+                                        selectedFileName = null
+                                        selectedAudioUri = null
+                                        selectedAudioName = null
+                                        selectedAudioBytes = null
+                                        chatViewModel.clearDraftText()
+
+                                        if (uriToIngest != null) {
+                                            scope.launch {
+                                                isIngestingDocument = true
+                                                try {
+                                                    val result = chatViewModel.ingestDocumentForRag(uriToIngest, nameToIngest)
+                                                    if (result.success) {
+                                                        Toast.makeText(context, "Indexed ${result.chunkCount} chunks into RAG Knowledge Base", Toast.LENGTH_SHORT).show()
+                                                        val resolvedDocPath = AttachmentViewerUtils.findAttachmentFile(context, nameToIngest)?.absolutePath
+                                                         chatViewModel.sendMessage(messageToSend, documentName = nameToIngest, documentPath = resolvedDocPath)
+                                                    } else {
+                                                        Toast.makeText(context, "Document indexing failed: ${result.message}", Toast.LENGTH_LONG).show()
+                                                        if (messageToSend.isNotBlank()) {
+                                                            chatViewModel.sendMessage(messageToSend)
+                                                        }
+                                                    }
+                                                } finally {
+                                                    isIngestingDocument = false
+                                                }
+                                            }
+                                        } else if (messageToSend.isNotBlank()) {
+                                            chatViewModel.sendMessage(messageToSend)
+                                        }
+                                    }
+                                },
+                                onStop = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    if (selectedSupportsAttachments) {
+                                        visionViewModel.stopAnalyzing()
+                                    } else {
+                                        chatViewModel.stopGenerating()
                                     }
                                 }
-                                chatViewModel.clearDraftText()
-                            },
-                            onStop = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                if (selectedSupportsAttachments) {
-                                    visionViewModel.stopAnalyzing()
-                                } else {
-                                    chatViewModel.stopGenerating()
-                                }
-                            }
-                        )
-                        Spacer(modifier = Modifier.height(5.dp))
+                            )
+                            Spacer(modifier = Modifier.height(5.dp))
 
-                        // Character counter below input
-                        val charCount = textState.length
+                            // Character counter below input
+                            val charCount = textState.length
 
-                        OutlinedTextField(
-                            value = textState,
-                            onValueChange = chatViewModel::setDraftText,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 68.dp, max = 176.dp),
-                            placeholder = {
-                                Text(
-                                    text = if (selectedSupportsAttachments) {
-                                        "Ask about an image, file, or audio…"
-                                    } else {
-                                        "Ask something…"
-                                    },
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            },
-                            enabled = canEditDraft,
-                            minLines = 2,
-                            maxLines = 6,
-                            shape = RoundedCornerShape(12.dp),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                color = MaterialTheme.colorScheme.onSurface
-                            ),
-                            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                                unfocusedBorderColor = androidx.compose.ui.graphics.Color.Transparent,
-                                focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
-                                unfocusedContainerColor = Color.Transparent,
-                                focusedContainerColor = Color.Transparent,
-                                focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                                unfocusedTextColor = MaterialTheme.colorScheme.onSurface
-                            ),
-                            supportingText = if (charCount > 0) ({
-                                Text(
-                                    "$charCount chars",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }) else null
-                        )
+                            OutlinedTextField(
+                                value = textState,
+                                onValueChange = chatViewModel::setDraftText,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 68.dp, max = 176.dp),
+                                placeholder = {
+                                    Text(
+                                        text = if (selectedSupportsAttachments) {
+                                            "Ask about an image, file, or audio…"
+                                        } else {
+                                            "Ask something…"
+                                        },
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                },
+                                enabled = canEditDraft,
+                                minLines = 2,
+                                maxLines = 6,
+                                shape = RoundedCornerShape(12.dp),
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                    color = MaterialTheme.colorScheme.onSurface
+                                ),
+                                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                                    unfocusedBorderColor = androidx.compose.ui.graphics.Color.Transparent,
+                                    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
+                                    unfocusedContainerColor = Color.Transparent,
+                                    focusedContainerColor = Color.Transparent,
+                                    focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                    unfocusedTextColor = MaterialTheme.colorScheme.onSurface
+                                ),
+                                supportingText = if (charCount > 0) ({
+                                    Text(
+                                        "$charCount chars",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }) else null
+                            )
+                        }
                     }
                 }
             }
@@ -1515,38 +1826,6 @@ fun ChatScreen(
     }
 }
 
-private fun shareConversation(context: android.content.Context, messages: List<ChatMessage>) {
-    if (messages.isEmpty()) return
-    val transcript = messages.joinToString(separator = "\n\n") { msg ->
-        val speaker = if (msg.isUser) "You" else "AI"
-        "$speaker:\n${msg.text}"
-    }
-    val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(android.content.Intent.EXTRA_TEXT, transcript)
-        putExtra(android.content.Intent.EXTRA_SUBJECT, "Solus conversation")
-    }
-    context.startActivity(
-        android.content.Intent.createChooser(intent, "Share conversation")
-    )
-}
-
-private fun shareVisionConversation(context: android.content.Context, messages: List<VisionChatMessage>) {
-    if (messages.isEmpty()) return
-    val transcript = messages.joinToString(separator = "\n\n") { msg ->
-        val speaker = if (msg.isUser) "You" else "AI"
-        "$speaker:\n${msg.text}"
-    }
-    val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(android.content.Intent.EXTRA_TEXT, transcript)
-        putExtra(android.content.Intent.EXTRA_SUBJECT, "Solus image conversation")
-    }
-    context.startActivity(
-        android.content.Intent.createChooser(intent, "Share conversation")
-    )
-}
-
 private tailrec fun Context.findLifecycleOwner(): LifecycleOwner? {
     return when (this) {
         is LifecycleOwner -> this
@@ -1558,12 +1837,19 @@ private tailrec fun Context.findLifecycleOwner(): LifecycleOwner? {
 private fun ModelInfo?.supportsAudioInputByMetadata(): Boolean {
     val model = this ?: return false
     if (model.type != ModelType.Vision) return false
-    val localPath = model.localPath ?: return false
-    val localFile = File(localPath)
-    if (model.supportsAudioInput && localFile.extension.equals("litertlm", ignoreCase = true)) {
+    if (model.supportsAudioInput || model.isGemmaAudioModel()) {
         return true
     }
+    val localPath = model.localPath ?: return false
+    val localFile = File(localPath)
     return localFile.containsAudioModelAssets()
+}
+
+private fun ModelInfo?.isGemmaAudioModel(): Boolean {
+    val m = this ?: return false
+    val text = "${m.id} ${m.name} ${m.fileName}".lowercase(Locale.US)
+    return text.contains("gemma 4") || text.contains("gemma4") || text.contains("gemma-4") ||
+        text.contains("gemma 3n") || text.contains("gemma3n") || text.contains("gemma-3n")
 }
 
 private fun ModelInfo?.supportsThinkingMode(): Boolean {
@@ -1640,15 +1926,52 @@ private fun ByteArray.indexOf(needle: ByteArray, length: Int): Int {
     return -1
 }
 
+private class MicRecordingController {
+    @Volatile
+    var isStopRequested: Boolean = false
+        private set
+
+    @Volatile
+    var isCancelled: Boolean = false
+        private set
+
+    @Volatile
+    var isPaused: Boolean = false
+        private set
+
+    fun stop() {
+        isStopRequested = true
+    }
+
+    fun cancel() {
+        isCancelled = true
+    }
+
+    fun pause() {
+        isPaused = true
+    }
+
+    fun resume() {
+        isPaused = false
+    }
+
+    fun togglePause(): Boolean {
+        isPaused = !isPaused
+        return isPaused
+    }
+}
+
 private data class RecordedPcmAudio(
-    val bytes: ByteArray,
+    val wavBytes: ByteArray,
     val sampleRateHz: Int,
-    val label: String
+    val label: String,
+    val cacheUri: Uri
 )
 
 @SuppressLint("MissingPermission")
 private suspend fun recordPcm16Mono(
     context: Context,
+    controller: MicRecordingController,
     durationMs: Long = 30_000L,
     onLevel: suspend (inputLevel: Float, speechActivity: Float, elapsedMs: Long) -> Unit = { _, _, _ -> }
 ): RecordedPcmAudio = withContext(Dispatchers.IO) {
@@ -1656,7 +1979,7 @@ private suspend fun recordPcm16Mono(
         throw SecurityException("Microphone permission denied.")
     }
 
-    val sampleRateHz = 16_000
+    val sampleRateHz = AudioUtils.TARGET_SAMPLE_RATE
     val minBufferSize = AudioRecord.getMinBufferSize(
         sampleRateHz,
         AudioFormat.CHANNEL_IN_MONO,
@@ -1666,13 +1989,13 @@ private suspend fun recordPcm16Mono(
         throw IllegalStateException("Microphone does not support 16 kHz PCM recording.")
     }
 
-    val bufferSize = max(minBufferSize, sampleRateHz / 2)
+    val readChunkSize = max(minBufferSize, 1600)
     val recorder = AudioRecord(
         MediaRecorder.AudioSource.VOICE_RECOGNITION,
         sampleRateHz,
         AudioFormat.CHANNEL_IN_MONO,
         AudioFormat.ENCODING_PCM_16BIT,
-        bufferSize
+        readChunkSize * 2
     )
     if (recorder.state != AudioRecord.STATE_INITIALIZED) {
         recorder.release()
@@ -1680,26 +2003,42 @@ private suspend fun recordPcm16Mono(
     }
 
     val output = ByteArrayOutputStream(sampleRateHz * 2 * (durationMs / 1_000L).toInt())
-    val buffer = ByteArray(bufferSize)
+    val buffer = ByteArray(readChunkSize)
     var speechActivity = 0f
     var lastMeterUpdateMs = 0L
+    var finalElapsedMs = 0L
+
     try {
         recorder.startRecording()
-        val startedAt = System.nanoTime()
         val durationNs = durationMs * 1_000_000L
-        while (System.nanoTime() - startedAt < durationNs) {
+        var accumulatedRecordedNs = 0L
+        var lastActiveTimestamp = System.nanoTime()
+
+        while (!controller.isStopRequested && !controller.isCancelled && accumulatedRecordedNs < durationNs) {
             currentCoroutineContext().ensureActive()
+            if (controller.isPaused) {
+                // Drain mic buffer without saving to output while paused
+                recorder.read(buffer, 0, buffer.size)
+                lastActiveTimestamp = System.nanoTime()
+                kotlinx.coroutines.delay(30L)
+                continue
+            }
             val read = recorder.read(buffer, 0, buffer.size)
             if (read > 0) {
+                val now = System.nanoTime()
+                val chunkDurationNs = now - lastActiveTimestamp
+                lastActiveTimestamp = now
+                accumulatedRecordedNs += chunkDurationNs
+                val elapsedMs = (accumulatedRecordedNs / 1_000_000L).coerceAtMost(durationMs)
                 output.write(buffer, 0, read)
-                val elapsedMs = ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtMost(durationMs)
-                val inputLevel = pcm16RmsLevel(buffer, read)
+                finalElapsedMs = elapsedMs
+                val inputLevel = AudioUtils.pcm16RmsLevel(buffer, read)
                 speechActivity = if (inputLevel > 0.08f) {
                     (speechActivity + 0.18f).coerceAtMost(1f)
                 } else {
                     (speechActivity - 0.08f).coerceAtLeast(0f)
                 }
-                if (elapsedMs - lastMeterUpdateMs >= 60L || elapsedMs >= durationMs) {
+                if (elapsedMs - lastMeterUpdateMs >= 45L || elapsedMs >= durationMs) {
                     withContext(Dispatchers.Main.immediate) {
                         onLevel(inputLevel, speechActivity, elapsedMs)
                     }
@@ -1712,33 +2051,32 @@ private suspend fun recordPcm16Mono(
         recorder.release()
     }
 
-    val bytes = output.toByteArray()
-    if (bytes.isEmpty()) {
+    if (controller.isCancelled) {
+        throw CancellationException("Recording cancelled by user.")
+    }
+
+    val rawPcmBytes = output.toByteArray()
+    if (rawPcmBytes.isEmpty()) {
         throw IllegalStateException("No microphone audio was captured.")
     }
+
+    val wavBytes = AudioUtils.createWavFromPcm16(rawPcmBytes, sampleRateHz, 1)
+    val cacheDir = File(context.cacheDir, "multimodal_inputs").apply { mkdirs() }
+    AudioUtils.pruneInferenceCache(cacheDir)
+    val wavFile = File(cacheDir, "mic_recording_${System.currentTimeMillis()}.wav")
+    wavFile.writeBytes(wavBytes)
+
+    val elapsedSeconds = (finalElapsedMs / 1000L).coerceAtLeast(1L)
     RecordedPcmAudio(
-        bytes = bytes,
+        wavBytes = wavBytes,
         sampleRateHz = sampleRateHz,
-        label = "Mic recording (${sampleRateHz / 1_000} kHz PCM)"
+        label = "Voice recording (${elapsedSeconds}s)",
+        cacheUri = Uri.fromFile(wavFile)
     )
 }
 
 private fun pcm16RmsLevel(buffer: ByteArray, read: Int): Float {
-    if (read <= 1) return 0f
-    var sum = 0.0
-    var count = 0
-    var index = 0
-    while (index + 1 < read) {
-        val low = buffer[index].toInt() and 0xFF
-        val high = buffer[index + 1].toInt()
-        val sample = (high shl 8) or low
-        val normalized = sample / 32768.0
-        sum += normalized * normalized
-        count++
-        index += 2
-    }
-    if (count == 0) return 0f
-    return (sqrt(sum / count) * 3.2).toFloat().coerceIn(0f, 1f)
+    return AudioUtils.pcm16RmsLevel(buffer, read)
 }
 
 @Composable
@@ -1818,33 +2156,29 @@ private fun ChatComposerActions(
     canThink: Boolean,
     supportsAttachments: Boolean,
     hasAttachment: Boolean,
-    isFileReadingSupported: Boolean,
+    supportsVision: Boolean,
     supportsAudioInput: Boolean,
-    isRecordingAudio: Boolean,
-    recordingInputLevel: Float,
-    recordingSpeechActivity: Float,
-    recordingElapsedMs: Long,
-    recordingLimitMs: Long,
     hazeState: HazeState,
+    attachmentMenuExpanded: Boolean,
+    onToggleAttachmentMenu: (Boolean) -> Unit,
     onToggleThinking: (Boolean) -> Unit,
     onCameraSelect: () -> Unit,
     onPhotosSelect: () -> Unit,
+    onAudioSelect: () -> Unit,
     onFilesSelect: () -> Unit,
     onMicRecord: () -> Unit,
     onMicUnavailable: () -> Unit,
-    onCancelRecording: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit
 ) {
-    var attachmentMenuExpanded by remember { mutableStateOf(false) }
     val sendAnimationScope = rememberCoroutineScope()
     val rocketFlight = remember { Animatable(0f) }
     var isRocketFlying by remember { mutableStateOf(false) }
     val sendAnimationDensity = LocalDensity.current
-    val attachmentMenuOpen = attachmentMenuExpanded && !isRecordingAudio
-    LaunchedEffect(supportsAttachments, isRecordingAudio) {
-        if (!supportsAttachments || isRecordingAudio) {
-            attachmentMenuExpanded = false
+    val attachmentMenuOpen = attachmentMenuExpanded
+    LaunchedEffect(supportsAttachments) {
+        if (!supportsAttachments) {
+            onToggleAttachmentMenu(false)
         }
     }
     val attachmentIconRotation by animateFloatAsState(
@@ -1893,17 +2227,22 @@ private fun ChatComposerActions(
         ) {
             AttachmentInlineMenu(
                 hazeState = hazeState,
-                isFileReadingSupported = isFileReadingSupported,
+                supportsVision = supportsVision,
+                supportsAudio = supportsAudioInput,
                 onCameraSelect = {
-                    attachmentMenuExpanded = false
+                    onToggleAttachmentMenu(false)
                     onCameraSelect()
                 },
                 onPhotosSelect = {
-                    attachmentMenuExpanded = false
+                    onToggleAttachmentMenu(false)
                     onPhotosSelect()
                 },
+                onAudioSelect = {
+                    onToggleAttachmentMenu(false)
+                    onAudioSelect()
+                },
                 onFilesSelect = {
-                    attachmentMenuExpanded = false
+                    onToggleAttachmentMenu(false)
                     onFilesSelect()
                 }
             )
@@ -1916,61 +2255,39 @@ private fun ChatComposerActions(
             Box {
                 LiquidGlassButton(
                     onClick = {
-                        if (isRecordingAudio) {
-                            onCancelRecording()
-                        } else {
-                            attachmentMenuExpanded = !attachmentMenuExpanded
-                        }
+                        onToggleAttachmentMenu(!attachmentMenuExpanded)
                     },
                     hazeState = hazeState,
-                    enabled = isRecordingAudio || supportsAttachments,
+                    enabled = supportsAttachments,
                     modifier = Modifier
                         .size(42.dp)
                         .dropdownTriggerBounce(attachmentMenuOpen),
                     shape = RoundedCornerShape(topStart = 14.dp, topEnd = 24.dp, bottomStart = 24.dp, bottomEnd = 14.dp),
                     tintColor = when {
-                        isRecordingAudio -> MaterialTheme.colorScheme.error.copy(alpha = 0.24f)
                         hasAttachment || attachmentMenuOpen -> MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
                         else -> MaterialTheme.colorScheme.surfaceContainerHighest
                     },
                     contentPadding = PaddingValues(0.dp)
                 ) {
                     Icon(
-                        imageVector = if (isRecordingAudio) Icons.Default.Close else Icons.Default.Add,
-                        contentDescription = if (isRecordingAudio) {
-                            "Cancel recording"
-                        } else if (attachmentMenuOpen) {
+                        imageVector = Icons.Default.Add,
+                        contentDescription = if (attachmentMenuOpen) {
                             "Close attachments"
                         } else if (supportsAttachments) {
-                            "Add image, camera, or file"
+                            "Add image, audio, or file"
                         } else {
                             "Selected model does not support attachments"
                         },
                         modifier = Modifier
                             .size(24.dp)
                             .rotate(attachmentIconRotation),
-                        tint = when {
-                            isRecordingAudio -> MaterialTheme.colorScheme.error
-                            supportsAttachments -> MaterialTheme.colorScheme.primary
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.48f)
-                        }
+                        tint = if (supportsAttachments) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.48f)
                     )
                 }
             }
-            if (isRecordingAudio) {
-                AudioRecordingWaveform(
-                    inputLevel = recordingInputLevel,
-                    speechActivity = recordingSpeechActivity,
-                    elapsedMs = recordingElapsedMs,
-                    limitMs = recordingLimitMs,
-                    hazeState = hazeState,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(58.dp)
-                )
-            } else {
-                val canRecordAudio = supportsAttachments && supportsAudioInput
-                LiquidGlassButton(
+
+            val canRecordAudio = supportsAttachments && supportsAudioInput
+            LiquidGlassButton(
                 onClick = {
                     if (canRecordAudio) {
                         onMicRecord()
@@ -2027,79 +2344,81 @@ private fun ChatComposerActions(
                 )
             }
             Spacer(modifier = Modifier.weight(1f))
-        }
-        LiquidGlassButton(
-            onClick = {
-                when {
-                    isRocketFlying -> Unit
-                    isGenerating -> onStop()
-                    canSend -> sendAnimationScope.launch {
-                        isRocketFlying = true
-                        rocketFlight.snapTo(0f)
-                        rocketFlight.animateTo(
-                            targetValue = 1f,
-                            animationSpec = tween(durationMillis = 190)
-                        )
-                        onSend()
-                        rocketFlight.animateTo(
-                            targetValue = 0f,
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioLowBouncy,
-                                stiffness = Spring.StiffnessMediumLow
+
+            LiquidGlassButton(
+                onClick = {
+                    when {
+                        isRocketFlying -> Unit
+                        isGenerating -> onStop()
+                        canSend -> sendAnimationScope.launch {
+                            isRocketFlying = true
+                            rocketFlight.snapTo(0f)
+                            rocketFlight.animateTo(
+                                targetValue = 1f,
+                                animationSpec = tween(durationMillis = 190)
                             )
-                        )
-                        isRocketFlying = false
+                            onSend()
+                            rocketFlight.animateTo(
+                                targetValue = 0f,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioLowBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                )
+                            )
+                            isRocketFlying = false
+                        }
                     }
-                }
-            },
-            hazeState = hazeState,
-            enabled = isRocketFlying || isGenerating || canSend,
-            modifier = Modifier
-                .size(48.dp)
-                .graphicsLayer {
-                    val flight = rocketFlight.value
-                    translationX = with(sendAnimationDensity) { (flight * 8f).dp.toPx() }
-                    translationY = with(sendAnimationDensity) { (-flight * 36f).dp.toPx() }
-                    rotationZ = flight * 12f
-                    scaleX = 1f - flight * 0.16f
-                    scaleY = 1f - flight * 0.16f
                 },
-            shape = RoundedCornerShape(topStart = 26.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 26.dp),
-            tintColor = MaterialTheme.colorScheme.primary.copy(alpha = if (isGenerating || canSend) 0.34f else 0.10f),
-            contentPadding = PaddingValues(0.dp)
-        ) {
-            androidx.compose.animation.Crossfade(
-                targetState = isGenerating && !isRocketFlying,
-                animationSpec = tween(180),
-                label = "chat_send_stop_icon"
-            ) { generating ->
-                if (generating) {
-                    Icon(Icons.Default.Stop, contentDescription = "Stop responding", modifier = Modifier.size(20.dp))
-                } else {
-                    Icon(
-                        Icons.Default.RocketLaunch,
-                        contentDescription = "Send",
-                        modifier = Modifier
-                            .size(21.dp)
-                            .graphicsLayer {
-                                val flight = rocketFlight.value
-                                translationY = with(sendAnimationDensity) { (-flight * 8f).dp.toPx() }
-                                rotationZ = flight * 10f
-                            }
-                    )
+                hazeState = hazeState,
+                enabled = isRocketFlying || isGenerating || canSend,
+                modifier = Modifier
+                    .size(48.dp)
+                    .graphicsLayer {
+                        val flight = rocketFlight.value
+                        translationX = with(sendAnimationDensity) { (flight * 8f).dp.toPx() }
+                        translationY = with(sendAnimationDensity) { (-flight * 36f).dp.toPx() }
+                        rotationZ = flight * 12f
+                        scaleX = 1f - flight * 0.16f
+                        scaleY = 1f - flight * 0.16f
+                    },
+                shape = RoundedCornerShape(topStart = 26.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 26.dp),
+                tintColor = MaterialTheme.colorScheme.primary.copy(alpha = if (isGenerating || canSend) 0.34f else 0.10f),
+                contentPadding = PaddingValues(0.dp)
+            ) {
+                androidx.compose.animation.Crossfade(
+                    targetState = isGenerating && !isRocketFlying,
+                    animationSpec = tween(180),
+                    label = "chat_send_stop_icon"
+                ) { generating ->
+                    if (generating) {
+                        Icon(Icons.Default.Stop, contentDescription = "Stop responding", modifier = Modifier.size(20.dp))
+                    } else {
+                        Icon(
+                            Icons.Default.RocketLaunch,
+                            contentDescription = "Send",
+                            modifier = Modifier
+                                .size(21.dp)
+                                .graphicsLayer {
+                                    val flight = rocketFlight.value
+                                    translationY = with(sendAnimationDensity) { (-flight * 8f).dp.toPx() }
+                                    rotationZ = flight * 10f
+                                }
+                        )
+                    }
                 }
             }
         }
     }
 }
-}
 
 @Composable
 private fun AttachmentInlineMenu(
     hazeState: HazeState,
-    isFileReadingSupported: Boolean,
+    supportsVision: Boolean,
+    supportsAudio: Boolean,
     onCameraSelect: () -> Unit,
     onPhotosSelect: () -> Unit,
+    onAudioSelect: () -> Unit,
     onFilesSelect: () -> Unit
 ) {
     Column(
@@ -2120,20 +2439,29 @@ private fun AttachmentInlineMenu(
             AttachmentMenuSpec(
                 icon = Icons.Default.CameraAlt,
                 title = "Camera",
-                enabled = true,
+                subtitle = if (supportsVision) null else "Multimodal model required",
+                enabled = supportsVision,
                 onClick = onCameraSelect
             ),
             AttachmentMenuSpec(
                 icon = Icons.Default.PhotoLibrary,
                 title = "Photos",
-                enabled = true,
+                subtitle = if (supportsVision) null else "Multimodal model required",
+                enabled = supportsVision,
                 onClick = onPhotosSelect
             ),
             AttachmentMenuSpec(
+                icon = Icons.Default.Audiotrack,
+                title = "Audio file",
+                subtitle = if (supportsAudio) "WAV, MP3, AAC, M4A" else "Audio-capable model required",
+                enabled = supportsAudio,
+                onClick = onAudioSelect
+            ),
+            AttachmentMenuSpec(
                 icon = Icons.AutoMirrored.Filled.InsertDriveFile,
-                title = "Files",
-                subtitle = if (isFileReadingSupported) null else "Needs multimodal file reader",
-                enabled = isFileReadingSupported,
+                title = "Files (RAG)",
+                subtitle = "PDF, DOCX, TXT, Code",
+                enabled = true,
                 onClick = onFilesSelect
             )
         ).forEachIndexed { index, item ->
@@ -2198,93 +2526,160 @@ private fun AttachmentInlineMenuItem(
 }
 
 @Composable
-private fun AudioRecordingWaveform(
-    inputLevel: Float,
-    speechActivity: Float,
+private fun RecordingComposerPanel(
+    loudnessHistory: List<Float>,
     elapsedMs: Long,
     limitMs: Long,
-    hazeState: HazeState,
+    isPaused: Boolean,
+    onTogglePause: () -> Unit,
+    onCancel: () -> Unit,
+    onDone: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val level = inputLevel.coerceIn(0f, 1f)
-    val speech = speechActivity.coerceIn(0f, 1f)
-    val seconds = (elapsedMs / 1_000L).coerceAtMost(limitMs / 1_000L)
-    val wavePrimaryColor = MaterialTheme.colorScheme.primary
-    val waveErrorColor = MaterialTheme.colorScheme.error
-    GlassDispersionCard(
-        hazeState = hazeState,
-        modifier = modifier,
-        cornerRadius = 22.dp,
-        blurRadius = 18.dp,
-        refractionStrength = 0.14f,
-        dispersionAmount = 0.025f,
-        tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.13f),
-        borderAlpha = 0.42f,
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+    val infiniteTransition = rememberInfiniteTransition(label = "recording_pulse")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(700, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse_alpha"
+    )
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(700, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse_scale"
+    )
+
+    val currentSeconds = (elapsedMs / 1000L).coerceAtMost(limitMs / 1000L)
+    val totalSeconds = limitMs / 1000L
+    val timerText = String.format(Locale.US, "%02d:%02d / %02d:%02d", currentSeconds / 60, currentSeconds % 60, totalSeconds / 60, totalSeconds % 60)
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(
+        // Status header: Pulsing recording dot + Live label + Digital monospace timer
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Recording - max ${limitMs / 1_000L}s",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.95f)
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = "${seconds}s",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Canvas(
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(17.dp)
+                    .size(10.dp)
+                    .graphicsLayer {
+                        if (!isPaused) {
+                            scaleX = pulseScale
+                            scaleY = pulseScale
+                            alpha = pulseAlpha
+                        }
+                    }
+                    .clip(CircleShape)
+                    .background(if (isPaused) Color(0xFFFFA000) else MaterialTheme.colorScheme.error)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = if (isPaused) "Recording paused" else "Recording audio…",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = if (isPaused) Color(0xFFFFA000) else MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                text = timerText,
+                style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                color = if (isPaused) Color(0xFFFFA000) else MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium
+            )
+        }
+
+        // Live Dynamic Loudness Bars Canvas
+        AudioLoudnessBarsCanvas(
+            loudnessHistory = if (isPaused) loudnessHistory.map { it * 0.35f } else loudnessHistory,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f))
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+
+        // Action controls: Discard (Cancel), Pause/Resume, and Save (Done)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            FilledTonalButton(
+                onClick = onCancel,
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
+                    contentColor = MaterialTheme.colorScheme.error
+                ),
+                shape = RoundedCornerShape(14.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
             ) {
-                val bars = 28
-                val gap = 2.2.dp.toPx()
-                val barWidth = ((size.width - gap * (bars - 1)) / bars).coerceAtLeast(2f)
-                val centerY = size.height / 2f
-                val combined = (level * 0.72f + speech * 0.28f).coerceIn(0f, 1f)
-                repeat(bars) { index ->
-                    val pulse = (((index * 17) % 11) / 10f).coerceIn(0.16f, 1f)
-                    val height = size.height * (0.18f + combined * pulse * 0.82f)
-                    val x = index * (barWidth + gap) + barWidth / 2f
-                    val tint = if (index % 3 == 0) {
-                        wavePrimaryColor
-                    } else {
-                        waveErrorColor
-                    }.copy(alpha = 0.48f + combined * 0.42f)
-                    drawLine(
-                        color = tint,
-                        start = Offset(x, centerY - height / 2f),
-                        end = Offset(x, centerY + height / 2f),
-                        strokeWidth = barWidth,
-                        cap = StrokeCap.Round
-                    )
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                AudioLevelMeter(
-                    label = "Speech",
-                    value = speech,
-                    modifier = Modifier.weight(1f),
-                    color = MaterialTheme.colorScheme.primary
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Cancel recording",
+                    modifier = Modifier.size(16.dp)
                 )
-                AudioLevelMeter(
-                    label = "Level",
-                    value = level,
-                    modifier = Modifier.weight(1f),
-                    color = MaterialTheme.colorScheme.error
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Cancel",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            FilledTonalButton(
+                onClick = onTogglePause,
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = if (isPaused) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+                    contentColor = if (isPaused) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                ),
+                shape = RoundedCornerShape(14.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Icon(
+                    imageVector = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                    contentDescription = if (isPaused) "Resume recording" else "Pause recording",
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (isPaused) "Resume" else "Pause",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            Button(
+                onClick = onDone,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                ),
+                shape = RoundedCornerShape(14.dp),
+                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = "Finish and attach recording",
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Done",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
                 )
             }
         }
@@ -2292,35 +2687,41 @@ private fun AudioRecordingWaveform(
 }
 
 @Composable
-private fun AudioLevelMeter(
-    label: String,
-    value: Float,
-    modifier: Modifier = Modifier,
-    color: Color
+private fun AudioLoudnessBarsCanvas(
+    loudnessHistory: List<Float>,
+    modifier: Modifier = Modifier
 ) {
-    val clamped = value.coerceIn(0f, 1f)
-    Column(
-        modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.76f)
-        )
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(4.dp)
-                .clip(RoundedCornerShape(99.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(clamped.coerceAtLeast(0.04f))
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(99.dp))
-                    .background(color.copy(alpha = 0.82f))
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val tertiaryColor = MaterialTheme.colorScheme.tertiary
+    val minBarHeightDp = 4.dp
+    val density = LocalDensity.current
+
+    Canvas(modifier = modifier) {
+        val barCount = loudnessHistory.size.coerceAtLeast(1)
+        val gap = 3.dp.toPx()
+        val totalGaps = gap * (barCount - 1)
+        val barWidth = ((size.width - totalGaps) / barCount).coerceAtLeast(2f)
+        val centerY = size.height / 2f
+        val minHeightPx = with(density) { minBarHeightDp.toPx() }
+        val maxHeightPx = size.height * 0.92f
+
+        for (i in 0 until barCount) {
+            val loudness = loudnessHistory.getOrElse(i) { 0.05f }.coerceIn(0f, 1f)
+            val dynamicHeight = minHeightPx + (maxHeightPx - minHeightPx) * loudness
+            val x = i * (barWidth + gap) + barWidth / 2f
+
+            val barColor = if (loudness > 0.45f) {
+                tertiaryColor.copy(alpha = (0.6f + loudness * 0.4f).coerceIn(0f, 1f))
+            } else {
+                primaryColor.copy(alpha = (0.4f + loudness * 0.6f).coerceIn(0f, 1f))
+            }
+
+            drawLine(
+                color = barColor,
+                start = Offset(x, centerY - dynamicHeight / 2f),
+                end = Offset(x, centerY + dynamicHeight / 2f),
+                strokeWidth = barWidth,
+                cap = StrokeCap.Round
             )
         }
     }
@@ -2331,12 +2732,10 @@ private fun ChatControlRow(
     models: List<ModelInfo>,
     selectedPath: String?,
     hasHistory: Boolean,
-    hasMessages: Boolean,
     onSelectModel: (ModelInfo) -> Unit,
     onNewChat: () -> Unit,
     onHistory: () -> Unit,
     onSettings: (() -> Unit)? = null,
-    onShare: () -> Unit,
     hazeState: HazeState
 ) {
     Row(
@@ -2380,16 +2779,6 @@ private fun ChatControlRow(
             ) {
                 Icon(Icons.Default.Settings, contentDescription = "Settings", modifier = Modifier.size(24.dp))
             }
-        }
-        LiquidGlassButton(
-            onClick = onShare,
-            hazeState = hazeState,
-            enabled = hasMessages,
-            modifier = Modifier.size(52.dp),
-            shape = RoundedCornerShape(26.dp),
-            contentPadding = PaddingValues(0.dp)
-        ) {
-            Icon(Icons.Default.Share, contentDescription = "Share conversation", modifier = Modifier.size(24.dp))
         }
     }
 }
@@ -2957,6 +3346,8 @@ private fun ChatBubble(
     ragSources: List<String> = emptyList(),
     ragChunkCount: Int = 0,
     ragTopMatchPct: Int = 0,
+    documentName: String? = null,
+    documentPath: String? = null,
     onFullscreenClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -2991,7 +3382,7 @@ private fun ChatBubble(
         it is ModelAnswerSegment.Code || it is ModelAnswerSegment.DisplayMath ||
             it is ModelAnswerSegment.InlineMathListItem
     }
-    val needsTopActionClearance = hasRichBlock || (!isUser && parsedContent.thinkingText != null)
+    val needsTopActionClearance = !isUser && (hasRichBlock || parsedContent.thinkingText != null)
     val entryValue = entryProgress.value
 
     Column(
@@ -3036,6 +3427,14 @@ private fun ChatBubble(
                     ),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (isUser && !documentName.isNullOrBlank()) {
+                    DocumentAttachmentCard(
+                        documentName = documentName,
+                        documentPath = documentPath,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
                 if (!isUser && parsedContent.thinkingText != null) {
                     ThinkingProcessCard(
                         thinkingText = parsedContent.thinkingText,
@@ -3101,32 +3500,34 @@ private fun ChatBubble(
                 }
             }
 
-            // Row of actions (Fullscreen + Copy) in top-right corner
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 4.dp, end = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                MessageToolButton(
-                    icon = Icons.Default.Fullscreen,
-                    contentDescription = "Fullscreen message",
-                    hazeState = hazeState,
-                    tintColor = MaterialTheme.colorScheme.primary,
-                    onClick = onFullscreenClick,
-                )
-                MessageToolButton(
-                    icon = Icons.Default.ContentCopy,
-                    contentDescription = "Copy message",
-                    hazeState = hazeState,
-                    tintColor = MaterialTheme.colorScheme.primary,
-                    onClick = {
-                        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                            as android.content.ClipboardManager
-                        val copyText = if (isUser) text else ModelOutputSanitizer.clean(text)
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("message", copyText))
-                    }
-                )
+            // Row of actions (Fullscreen + Copy) in top-right corner - only for assistant messages
+            if (!isUser) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 4.dp, end = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    MessageToolButton(
+                        icon = Icons.Default.Fullscreen,
+                        contentDescription = "Fullscreen message",
+                        hazeState = hazeState,
+                        tintColor = MaterialTheme.colorScheme.primary,
+                        onClick = onFullscreenClick,
+                    )
+                    MessageToolButton(
+                        icon = Icons.Default.ContentCopy,
+                        contentDescription = "Copy message",
+                        hazeState = hazeState,
+                        tintColor = MaterialTheme.colorScheme.primary,
+                        onClick = {
+                            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                            val copyText = if (isUser) text else ModelOutputSanitizer.clean(text)
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("message", copyText))
+                        }
+                    )
+                }
             }
         }
     }
@@ -3234,17 +3635,192 @@ private fun CodeBlock(
     }
 }
 
+private enum class HistoryFilterType {
+    All,
+    Text,
+    Vision
+}
+
+private sealed interface UnifiedChatSessionItem {
+    val id: String
+    val title: String
+    val updatedAt: Long
+    val type: HistorySessionType
+
+    data class TextSession(
+        val session: ChatSession
+    ) : UnifiedChatSessionItem {
+        override val id: String get() = session.id
+        override val title: String get() = session.title
+        override val updatedAt: Long get() = session.updatedAt
+        override val type: HistorySessionType get() = HistorySessionType.Text
+    }
+
+    data class VisionSession(
+        val session: VisionChatSession
+    ) : UnifiedChatSessionItem {
+        override val id: String get() = session.id
+        override val title: String get() = session.title
+        override val updatedAt: Long get() = session.updatedAt
+        override val type: HistorySessionType get() = HistorySessionType.Vision
+    }
+}
+
+private data class SessionTagVisuals(
+    val label: String,
+    val icon: ImageVector,
+    val containerColor: Color,
+    val contentColor: Color,
+    val borderColor: Color
+)
+
+@Composable
+private fun SessionTypeTag(
+    type: HistorySessionType,
+    modifier: Modifier = Modifier
+) {
+    val visuals = when (type) {
+        HistorySessionType.Vision -> {
+            val baseColor = MaterialTheme.colorScheme.primary
+            val container = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+            SessionTagVisuals(
+                label = "Vision",
+                icon = Icons.Default.Visibility,
+                containerColor = container,
+                contentColor = baseColor,
+                borderColor = baseColor.copy(alpha = 0.38f)
+            )
+        }
+        HistorySessionType.Text -> {
+            val baseColor = MaterialTheme.colorScheme.secondary
+            val container = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
+            SessionTagVisuals(
+                label = "Text",
+                icon = Icons.AutoMirrored.Filled.Chat,
+                containerColor = container,
+                contentColor = baseColor,
+                borderColor = baseColor.copy(alpha = 0.38f)
+            )
+        }
+    }
+
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        color = visuals.containerColor,
+        border = BorderStroke(1.dp, visuals.borderColor)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(
+                imageVector = visuals.icon,
+                contentDescription = null,
+                tint = visuals.contentColor,
+                modifier = Modifier.size(11.dp)
+            )
+            Text(
+                text = visuals.label,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 10.5.sp
+                ),
+                color = visuals.contentColor
+            )
+        }
+    }
+}
+
+@Composable
+private fun HistoryFilterTabChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    hazeState: HazeState,
+    modifier: Modifier = Modifier
+) {
+    val containerColor = if (selected) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainer
+    }
+    val contentColor = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val borderAlpha = if (selected) 0.50f else 0.20f
+
+    Box(
+        modifier = modifier
+            .clickable(onClick = onClick)
+            .glassEffect(
+                hazeState = hazeState,
+                shape = RoundedCornerShape(14.dp),
+                blurRadius = 14.dp,
+                tintColor = containerColor,
+                borderAlpha = borderAlpha
+            )
+            .padding(vertical = 8.dp, horizontal = 4.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+            ),
+            color = contentColor,
+            maxLines = 1,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
 @Composable
 private fun ChatHistoryDialog(
-    sessions: List<ChatSession>,
-    currentSessionId: String?,
-    onSelect: (String) -> Unit,
+    textSessions: List<ChatSession>,
+    visionSessions: List<VisionChatSession>,
+    currentTextSessionId: String?,
+    currentVisionSessionId: String?,
+    isVisionModeActive: Boolean,
+    onSelectTextSession: (String) -> Unit,
+    onSelectVisionSession: (String) -> Unit,
     onNewChat: () -> Unit,
-    onDelete: (String) -> Unit,
+    onDeleteTextSession: (String) -> Unit,
+    onDeleteVisionSession: (String) -> Unit,
     onClearAll: () -> Unit,
     onDismiss: () -> Unit,
     hazeState: HazeState
 ) {
+    var filterType by rememberSaveable { mutableStateOf(HistoryFilterType.All) }
+    val deletedSessionIds = remember { mutableStateListOf<String>() }
+
+    val textCount = textSessions.size
+    val visionCount = visionSessions.size
+
+    val activeTextSessions = remember(textSessions, textCount, deletedSessionIds.size) {
+        textSessions.filter { it.id !in deletedSessionIds }
+    }
+    val activeVisionSessions = remember(visionSessions, visionCount, deletedSessionIds.size) {
+        visionSessions.filter { it.id !in deletedSessionIds }
+    }
+
+    val mergedSessions = remember(activeTextSessions, activeVisionSessions, filterType) {
+        val textItems = activeTextSessions.map { UnifiedChatSessionItem.TextSession(it) }
+        val visionItems = activeVisionSessions.map { UnifiedChatSessionItem.VisionSession(it) }
+        val combined = when (filterType) {
+            HistoryFilterType.All -> textItems + visionItems
+            HistoryFilterType.Text -> textItems
+            HistoryFilterType.Vision -> visionItems
+        }
+        combined.sortedWith(
+            compareByDescending<UnifiedChatSessionItem> { it.updatedAt }
+                .thenBy { it.title }
+        )
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         GlassDispersionCard(
             hazeState = hazeState,
@@ -3280,17 +3856,55 @@ private fun ChatHistoryDialog(
                     }
                 }
 
-                if (sessions.isEmpty()) {
-                    Text("No messages yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    HistoryFilterTabChip(
+                        label = "All (${activeTextSessions.size + activeVisionSessions.size})",
+                        selected = filterType == HistoryFilterType.All,
+                        onClick = { filterType = HistoryFilterType.All },
+                        hazeState = hazeState,
+                        modifier = Modifier.weight(1f)
+                    )
+                    HistoryFilterTabChip(
+                        label = "Text (${activeTextSessions.size})",
+                        selected = filterType == HistoryFilterType.Text,
+                        onClick = { filterType = HistoryFilterType.Text },
+                        hazeState = hazeState,
+                        modifier = Modifier.weight(1f)
+                    )
+                    HistoryFilterTabChip(
+                        label = "Vision (${activeVisionSessions.size})",
+                        selected = filterType == HistoryFilterType.Vision,
+                        onClick = { filterType = HistoryFilterType.Vision },
+                        hazeState = hazeState,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                if (mergedSessions.isEmpty()) {
+                    Text(
+                        when (filterType) {
+                            HistoryFilterType.All -> "No messages yet."
+                            HistoryFilterType.Text -> "No text chats yet."
+                            HistoryFilterType.Vision -> "No vision chats yet."
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 } else {
                     LazyColumn(
                         modifier = Modifier.heightIn(max = 420.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        itemsIndexed(sessions, key = { _, session -> session.id }) { index, session ->
-                            val selected = session.id == currentSessionId
+                        itemsIndexed(mergedSessions, key = { _, item -> "${item.type}_${item.id}" }) { index, item ->
+                            val selected = when (item) {
+                                is UnifiedChatSessionItem.TextSession -> item.id == currentTextSessionId && !isVisionModeActive
+                                is UnifiedChatSessionItem.VisionSession -> item.id == currentVisionSessionId && isVisionModeActive
+                            }
                             Box(
                                 modifier = Modifier
+                                    .animateItem()
                                     .fillMaxWidth()
                                     .fluidReveal(
                                         delayMillis = (index * 35).coerceAtMost(280),
@@ -3299,7 +3913,12 @@ private fun ChatHistoryDialog(
                                         initialXOffset = if (index % 2 == 0) (-22).dp else 22.dp,
                                         initialRotationZ = if (index % 2 == 0) -1.2f else 1.2f
                                     )
-                                    .clickable { onSelect(session.id) }
+                                    .clickable {
+                                        when (item) {
+                                            is UnifiedChatSessionItem.TextSession -> onSelectTextSession(item.id)
+                                            is UnifiedChatSessionItem.VisionSession -> onSelectVisionSession(item.id)
+                                        }
+                                    }
                                     .glassEffect(
                                         hazeState = hazeState,
                                         shape = RoundedCornerShape(20.dp),
@@ -3318,20 +3937,76 @@ private fun ChatHistoryDialog(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            session.title,
-                                            style = MaterialTheme.typography.titleSmall,
-                                            maxLines = 1
-                                        )
-                                        Text(
-                                            "${session.messages.size} message${if (session.messages.size != 1) "s" else ""}${if (selected) " | Current" else ""}",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text(
+                                                text = item.title.ifBlank { "Untitled session" },
+                                                style = MaterialTheme.typography.titleSmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f, fill = false)
+                                            )
+                                            SessionTypeTag(type = item.type)
+                                        }
+
+                                        val subtitle = when (item) {
+                                            is UnifiedChatSessionItem.TextSession -> {
+                                                val msgCount = item.session.messages.size
+                                                val countLabel = "$msgCount message${if (msgCount != 1) "s" else ""}"
+                                                if (selected) "Current • $countLabel" else countLabel
+                                            }
+                                            is UnifiedChatSessionItem.VisionSession -> {
+                                                if (selected) "Current • Image conversation" else "Image conversation"
+                                            }
+                                        }
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Schedule,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(11.dp),
+                                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
+                                            )
+                                            Text(
+                                                text = ChatDateFormatter.formatChatDate(item.updatedAt),
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.Medium,
+                                                    fontSize = 11.sp
+                                                ),
+                                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.90f),
+                                                maxLines = 1
+                                            )
+                                            Text(
+                                                text = "•",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                            )
+                                            Text(
+                                                text = subtitle,
+                                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f, fill = false)
+                                            )
+                                        }
                                     }
                                     LiquidGlassButton(
-                                        onClick = { onDelete(session.id) },
+                                        onClick = {
+                                            deletedSessionIds.add(item.id)
+                                            when (item) {
+                                                is UnifiedChatSessionItem.TextSession -> onDeleteTextSession(item.id)
+                                                is UnifiedChatSessionItem.VisionSession -> onDeleteVisionSession(item.id)
+                                            }
+                                        },
                                         hazeState = hazeState,
                                         shape = RoundedCornerShape(18.dp),
                                         tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
@@ -3345,6 +4020,7 @@ private fun ChatHistoryDialog(
                     }
                 }
 
+                val hasAnySessions = activeTextSessions.isNotEmpty() || activeVisionSessions.isNotEmpty()
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
@@ -3352,7 +4028,7 @@ private fun ChatHistoryDialog(
                     LiquidGlassButton(
                         onClick = onClearAll,
                         hazeState = hazeState,
-                        enabled = sessions.isNotEmpty(),
+                        enabled = hasAnySessions,
                         shape = RoundedCornerShape(18.dp),
                         tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)

@@ -41,13 +41,19 @@ object DownloadStateStore {
                 if (!key.startsWith(KEY_PREFIX)) return@forEach
                 val json = value as? String ?: return@forEach
                 runCatching { decode(json) }.getOrNull()?.let { snapshot ->
-                    put(snapshot.modelId, snapshot)
-                    lastPersisted[snapshot.modelId] = snapshot
+                    val sanitized = snapshot.copy(errorMessage = null)
+                    put(sanitized.modelId, sanitized)
+                    lastPersisted[sanitized.modelId] = sanitized
                 }
             }
         }
         if (restored.isNotEmpty()) {
             _snapshots.value = _snapshots.value + restored
+            val editor = prefs.edit()
+            restored.values.forEach { cleaned ->
+                editor.putString(KEY_PREFIX + cleaned.modelId, encode(cleaned))
+            }
+            editor.apply()
         }
     }
 
@@ -111,11 +117,7 @@ object DownloadStateStore {
             totalBytes = json.optLong("totalBytes", -1L),
             bytesPerSecond = json.optLong("bytesPerSecond", 0L),
             localPath = if (json.isNull("localPath")) null else json.optString("localPath"),
-            errorMessage = when {
-                restoredStatus == ModelStatus.Downloading -> "Download interrupted. Tap Resume to continue."
-                json.isNull("errorMessage") -> null
-                else -> json.optString("errorMessage")
-            },
+            errorMessage = null,
             downloadedAt = json.optLong("downloadedAt", 0L)
         )
     }

@@ -13,6 +13,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.text.ClickableText
+import com.shounak.localmeshai.utils.ErrorClassifier
+import com.shounak.localmeshai.utils.CrashReportManager
 import com.shounak.localmeshai.utils.glassmorphic
 import com.shounak.localmeshai.utils.glassEffect
 import com.shounak.localmeshai.utils.GlassDispersionCard
@@ -163,21 +165,14 @@ private fun ModelInfo.isMixtureOfExperts(): Boolean {
     return Regex("""\d+(?:\.\d+)?B-A\d+(?:\.\d+)?B?""").containsMatchIn(name)
 }
 
-private fun ModelInfo.isPinnedDownloadCard(): Boolean {
+internal fun ModelInfo.isPinnedDownloadCard(): Boolean {
     return when (status) {
+        ModelStatus.Failed -> true
         ModelStatus.Downloading, ModelStatus.Paused -> true
-        ModelStatus.Failed -> downloadedBytes > 0L
         ModelStatus.Available -> true
-        ModelStatus.Blocked -> isDownloadedBlockedLiteRtLm()
+        ModelStatus.Blocked -> localPath != null
         else -> false
     }
-}
-
-private fun ModelInfo.isDownloadedBlockedLiteRtLm(): Boolean {
-    return status == ModelStatus.Blocked &&
-        localPath != null &&
-        (fileName.endsWith(".litertlm", ignoreCase = true) ||
-            localPath.endsWith(".litertlm", ignoreCase = true))
 }
 
 internal fun ModelInfo.downloadTime(): Long {
@@ -191,13 +186,13 @@ internal fun ModelInfo.downloadTime(): Long {
     }
 }
 
-private fun ModelInfo.downloadedSectionSortRank(): Int {
+internal fun ModelInfo.downloadedSectionSortRank(): Int {
     return when (status) {
-        ModelStatus.Downloading -> 0
-        ModelStatus.Paused -> 1
-        ModelStatus.Available -> 2
-        ModelStatus.Blocked -> 2
-        ModelStatus.Failed -> 3
+        ModelStatus.Failed -> 0
+        ModelStatus.Downloading -> 1
+        ModelStatus.Paused -> 2
+        ModelStatus.Available -> 3
+        ModelStatus.Blocked -> 3
         else -> 4
     }
 }
@@ -326,17 +321,15 @@ fun ModelManagerScreen(
     val textModels = allTextModels.filter { it.matches(searchQuery, selectedTier) }
     val visionModels = allVisionModels.filter { it.matches(searchQuery, selectedTier) }
 
-    val matchingModels = remember(mainViewModel.availableModels, searchQuery, selectedTier) {
-        if (!isSearching) {
-            emptyList()
-        } else {
-            mainViewModel.availableModels
-                .filter { it.matches(searchQuery, selectedTier) }
-                .sortedWith(
-                    compareByDescending<ModelInfo> { it.searchRelevance(searchQuery) }
-                        .thenBy { it.name }
-                )
-        }
+    val matchingModels = if (!isSearching) {
+        emptyList()
+    } else {
+        mainViewModel.availableModels
+            .filter { it.matches(searchQuery, selectedTier) }
+            .sortedWith(
+                compareByDescending<ModelInfo> { it.searchRelevance(searchQuery) }
+                    .thenBy { it.name }
+            )
     }
 
     val filterActive = isSearching || selectedTier != SizeTier.All
@@ -365,8 +358,24 @@ fun ModelManagerScreen(
             it.status != ModelStatus.Blocked &&
             !it.requiresHuggingFaceToken
     }
-    val recommendedTextModels = readyTextModels.filter { it.isRecommended }
-    val standardTextModels = readyTextModels.filterNot { it.isRecommended }
+    val readyVisionModels = visionModels.filter {
+        it.id !in downloadedIds &&
+            it.status != ModelStatus.NeedsConversion &&
+            it.status != ModelStatus.ComingSoon &&
+            it.status != ModelStatus.Blocked &&
+            !it.requiresHuggingFaceToken
+    }
+
+    val recommendedModels = (readyTextModels + readyVisionModels)
+        .filter { it.isRecommended }
+        .sortedWith(
+            compareBy<ModelInfo> { model ->
+                if (model.id == "gemma4_e2b_litertlm" || model.name.contains("Gemma 4 E2B", ignoreCase = true)) 0 else 1
+            }
+        )
+    val recommendedIds = recommendedModels.map { it.id }.toSet()
+    val standardTextModels = readyTextModels.filter { it.id !in recommendedIds }
+    val standardVisionModels = readyVisionModels.filter { it.id !in recommendedIds }
     val gatedTextModels = textModels.filter {
         it.id !in downloadedIds &&
             it.status != ModelStatus.NeedsConversion &&
@@ -380,13 +389,6 @@ fun ModelManagerScreen(
     }
     val futureMoeTextModels = textModels.filter {
         it.id !in downloadedIds && (it.status == ModelStatus.NeedsConversion || it.status == ModelStatus.ComingSoon) && it.isMixtureOfExperts()
-    }
-    val readyVisionModels = visionModels.filter {
-        it.id !in downloadedIds &&
-            it.status != ModelStatus.NeedsConversion &&
-            it.status != ModelStatus.ComingSoon &&
-            it.status != ModelStatus.Blocked &&
-            !it.requiresHuggingFaceToken
     }
     val gatedVisionModels = visionModels.filter {
         it.id !in downloadedIds &&
@@ -518,8 +520,18 @@ fun ModelManagerScreen(
                                         ModelType.Vision -> mainViewModel.selectVisionModel(model.localPath)
                                     }
                                 }
-                                model.status == ModelStatus.Paused -> mainViewModel.resumeDownload(model.id)
+                                model.status == ModelStatus.Paused || model.status == ModelStatus.Failed -> {
+                                    mainViewModel.resumeDownload(model.id)
+                                }
                                 model.status == ModelStatus.Downloading -> { /* active download */ }
+                                model.status == ModelStatus.Blocked -> {
+                                    if (model.localPath != null) {
+                                        mainViewModel.tryModelAnyway(model.id)
+                                        onGoToChat?.invoke()
+                                    } else {
+                                        mainViewModel.startDownloadAnyway(model.id)
+                                    }
+                                }
                                 else -> mainViewModel.startDownload(model.id)
                             }
                         },
@@ -527,7 +539,10 @@ fun ModelManagerScreen(
                         onCancel = { mainViewModel.cancelDownload(model.id) },
                         onDelete = if (model.status == ModelStatus.NeedsConversion || model.status == ModelStatus.ComingSoon) null else { { mainViewModel.deleteModel(model.id) } },
                         onUnsafeDownload = { mainViewModel.startDownloadAnyway(model.id) },
-                        onUnsafeTry = { mainViewModel.tryModelAnyway(model.id) },
+                        onUnsafeTry = {
+                            mainViewModel.tryModelAnyway(model.id)
+                            onGoToChat?.invoke()
+                        },
                         isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                         onOpenSettings = { showSettings = true },
                         enableDynamicThemes = enableDynamicThemes,
@@ -568,8 +583,10 @@ fun ModelManagerScreen(
                     isSelected = isSelected,
                     onOpenPage = model.modelPageUrl?.let { url -> { openUrl(context, url) } },
                     onAction = {
-                        if (model.status == ModelStatus.Paused) {
+                        if (model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) {
                             mainViewModel.resumeDownload(model.id)
+                        } else if (model.status == ModelStatus.Blocked && model.localPath == null) {
+                            mainViewModel.startDownloadAnyway(model.id)
                         } else if (model.localPath != null) {
                             when (model.type) {
                                 ModelType.Text -> mainViewModel.selectTextModel(model.localPath)
@@ -581,7 +598,10 @@ fun ModelManagerScreen(
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     onUnsafeDownload = { mainViewModel.startDownloadAnyway(model.id) },
-                    onUnsafeTry = { mainViewModel.tryModelAnyway(model.id) },
+                    onUnsafeTry = {
+                        mainViewModel.tryModelAnyway(model.id)
+                        onGoToChat?.invoke()
+                    },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                     onOpenSettings = { showSettings = true },
                     enableDynamicThemes = enableDynamicThemes,
@@ -590,18 +610,20 @@ fun ModelManagerScreen(
             }
         }
 
-        if (recommendedTextModels.isNotEmpty()) {
+        if (recommendedModels.isNotEmpty()) {
             item {
                 ModelSectionTitle("Recommended downloads", delayMillis = 65, enterFromEnd = true)
             }
 
             itemsIndexed(
-                recommendedTextModels,
+                recommendedModels,
                 key = { _, model -> model.id },
                 contentType = { _, _ -> "model_card" }
             ) { _, model ->
-                val isSelected = (model.localPath != null) &&
-                    selectedTextModel == model.localPath
+                val isSelected = (model.localPath != null) && when (model.type) {
+                    ModelType.Text -> selectedTextModel == model.localPath
+                    ModelType.Vision -> selectedVisionModel == model.localPath
+                }
 
                 ModelItem(
                     model = model,
@@ -611,10 +633,11 @@ fun ModelManagerScreen(
                     },
                     onAction = {
                         if (model.status == ModelStatus.Available && model.localPath != null) {
-                            if (model.type == ModelType.Text) {
-                                mainViewModel.selectTextModel(model.localPath)
+                            when (model.type) {
+                                ModelType.Text -> mainViewModel.selectTextModel(model.localPath)
+                                ModelType.Vision -> mainViewModel.selectVisionModel(model.localPath)
                             }
-                        } else if (model.status == ModelStatus.Paused) {
+                        } else if (model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) {
                             mainViewModel.resumeDownload(model.id)
                         } else {
                             mainViewModel.startDownload(model.id)
@@ -625,6 +648,7 @@ fun ModelManagerScreen(
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                     onOpenSettings = { showSettings = true },
+                    enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
             }
@@ -654,7 +678,7 @@ fun ModelManagerScreen(
                             if (model.type == ModelType.Text) {
                                 mainViewModel.selectTextModel(model.localPath)
                             }
-                        } else if (model.status == ModelStatus.Paused) {
+                        } else if (model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) {
                             mainViewModel.resumeDownload(model.id)
                         } else {
                             mainViewModel.startDownload(model.id)
@@ -665,17 +689,18 @@ fun ModelManagerScreen(
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                     onOpenSettings = { showSettings = true },
+                    enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
             }
         }
 
-        if (readyVisionModels.isNotEmpty()) {
+        if (standardVisionModels.isNotEmpty()) {
             item {
                 ModelSectionTitle("Image and audio models", delayMillis = 95, enterFromEnd = true)
             }
             itemsIndexed(
-                readyVisionModels,
+                standardVisionModels,
                 key = { _, model -> model.id },
                 contentType = { _, _ -> "model_card" }
             ) { _, model ->
@@ -688,7 +713,7 @@ fun ModelManagerScreen(
                     onAction = {
                         if (model.status == ModelStatus.Available && model.localPath != null) {
                             mainViewModel.selectVisionModel(model.localPath)
-                        } else if (model.status == ModelStatus.Paused) {
+                        } else if (model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) {
                             mainViewModel.resumeDownload(model.id)
                         } else {
                             mainViewModel.startDownload(model.id)
@@ -699,6 +724,7 @@ fun ModelManagerScreen(
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                     onOpenSettings = { showSettings = true },
+                    enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
             }
@@ -730,7 +756,7 @@ fun ModelManagerScreen(
                                     ModelType.Vision -> mainViewModel.selectVisionModel(model.localPath)
                                 }
                             }
-                            model.status == ModelStatus.Paused -> mainViewModel.resumeDownload(model.id)
+                            model.status == ModelStatus.Paused || model.status == ModelStatus.Failed -> mainViewModel.resumeDownload(model.id)
                             else -> mainViewModel.startDownload(model.id)
                         }
                     },
@@ -739,6 +765,7 @@ fun ModelManagerScreen(
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                     onOpenSettings = { showSettings = true },
+                    enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
             }
@@ -753,16 +780,33 @@ fun ModelManagerScreen(
                 key = { _, model -> model.id },
                 contentType = { _, _ -> "model_card" }
             ) { _, model ->
+                val isSelected = model.localPath != null && when (model.type) {
+                    ModelType.Text -> selectedTextModel == model.localPath
+                    ModelType.Vision -> selectedVisionModel == model.localPath
+                }
                 ModelItem(
                     model = model,
-                    isSelected = false,
+                    isSelected = isSelected,
                     onOpenPage = model.modelPageUrl?.let { url -> { openUrl(context, url) } },
-                    onAction = { mainViewModel.startDownload(model.id) },
+                    onAction = {
+                        if (model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) {
+                            mainViewModel.resumeDownload(model.id)
+                        } else if (model.localPath != null) {
+                            mainViewModel.tryModelAnyway(model.id)
+                            onGoToChat?.invoke()
+                        } else {
+                            mainViewModel.startDownloadAnyway(model.id)
+                        }
+                    },
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     onUnsafeDownload = { mainViewModel.startDownloadAnyway(model.id) },
-                    onUnsafeTry = { mainViewModel.tryModelAnyway(model.id) },
+                    onUnsafeTry = {
+                        mainViewModel.tryModelAnyway(model.id)
+                        onGoToChat?.invoke()
+                    },
+                    enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
             }
@@ -785,6 +829,7 @@ fun ModelManagerScreen(
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = null,
+                    enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
             }
@@ -807,6 +852,7 @@ fun ModelManagerScreen(
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = null,
+                    enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
             }
@@ -1613,8 +1659,8 @@ fun ModelItem(
         model.localPath != null &&
         !isCrashBlocked &&
         onUnsafeTry != null
-    val modelFamilyAccent = remember(model.id, enableDynamicThemes) {
-        if (enableDynamicThemes) ModelTheme.getAccentColor(model.id) else Color(0xFF3B82F6)
+    val modelFamilyAccent = remember(model.id, model.name, enableDynamicThemes) {
+        if (enableDynamicThemes) ModelTheme.getAccentColor(model.id, model.name) else Color(0xFF3B82F6)
     }
     val targetStatusColor = when (model.status) {
         ModelStatus.Available -> modelFamilyAccent
@@ -1634,10 +1680,18 @@ fun ModelItem(
 
     val itemShape = MaterialTheme.shapes.large
     val context = LocalContext.current
-    val targetTintColor = if (isSelected) {
-        modelFamilyAccent.copy(alpha = 0.22f)
+    val targetTintColor = if (enableDynamicThemes) {
+        if (isSelected) {
+            modelFamilyAccent.copy(alpha = 0.24f)
+        } else {
+            modelFamilyAccent.copy(alpha = 0.09f)
+        }
     } else {
-        MaterialTheme.colorScheme.surfaceContainer
+        if (isSelected) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainer
+        }
     }
     val tintColor by animateColorAsState(
         targetValue = targetTintColor,
@@ -1645,7 +1699,7 @@ fun ModelItem(
         label = "model_card_tint"
     )
     val borderAlpha by animateFloatAsState(
-        targetValue = if (isSelected) 0.65f else 0.30f,
+        targetValue = if (isSelected) 0.68f else if (enableDynamicThemes) 0.36f else 0.24f,
         animationSpec = spring(dampingRatio = 0.86f, stiffness = 430f),
         label = "model_card_border"
     )
@@ -1674,8 +1728,21 @@ fun ModelItem(
                 rotationZ = selectionMotion * -0.18f
             }
             .jellyOnTouch(sensitivity = 1.45f)
-            .glassEffect(hazeState = hazeState, shape = itemShape, blurRadius = 16.dp, tintColor = tintColor, borderAlpha = borderAlpha)
-            .animatedGlassHalo(enabled = isSelected, shape = itemShape, alpha = 0.055f, durationMillis = 4_400),
+            .glassEffect(
+                hazeState = hazeState,
+                shape = itemShape,
+                blurRadius = 16.dp,
+                tintColor = tintColor,
+                borderAlpha = borderAlpha,
+                borderColor = if (enableDynamicThemes) modelFamilyAccent else null
+            )
+            .animatedGlassHalo(
+                enabled = isSelected,
+                shape = itemShape,
+                alpha = 0.08f,
+                durationMillis = 4_400,
+                accentColor = if (enableDynamicThemes) modelFamilyAccent else null
+            ),
         shape = itemShape,
         colors = CardDefaults.cardColors(containerColor = Color.Transparent)
     ) {
@@ -1855,32 +1922,106 @@ fun ModelItem(
             }
 
             model.errorMessage?.let { error ->
-                Column(
+                val classified = remember(error) { ErrorClassifier.classify(error) }
+                Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f))
                 ) {
-                    ClickableUrlText(
-                        text = error,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.fillMaxWidth(),
-                        onOpenUrl = { url -> openUrl(context, url) }
-                    )
-                    if (
-                        onOpenSettings != null && (
-                            error.contains("Hugging Face token", ignoreCase = true) ||
-                            error.contains("read token", ignoreCase = true) ||
-                            error.contains("denied access", ignoreCase = true)
-                        )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        OutlinedButton(
-                            onClick = { onOpenSettings.invoke() },
-                            modifier = Modifier.height(34.dp),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(14.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Open Settings to add token", style = MaterialTheme.typography.labelSmall)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = classified?.category?.icon ?: Icons.Default.Info,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Text(
+                                    text = classified?.headline ?: "Error",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                            classified?.category?.categoryName?.let { catName ->
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
+                                ) {
+                                    Text(
+                                        text = catName,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        }
+
+                        ClickableUrlText(
+                            text = error,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.fillMaxWidth(),
+                            onOpenUrl = { url -> openUrl(context, url) }
+                        )
+
+                        classified?.suggestion?.let { tip ->
+                            Text(
+                                text = "💡 $tip",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (classified?.isOpenSettingsAction == true && onOpenSettings != null) {
+                                OutlinedButton(
+                                    onClick = { onOpenSettings.invoke() },
+                                    modifier = Modifier.height(34.dp),
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                ) {
+                                    Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Open Settings to add token", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                            if (classified?.isSendCrashReportAction == true) {
+                                OutlinedButton(
+                                    onClick = {
+                                        CrashReportManager.sendToGitHub(
+                                            context = context,
+                                            reportText = "Model Crash Details for ${model.name} (${model.id}):\n\n$error",
+                                            titleHint = "[Native Crash] ${model.name}"
+                                        )
+                                    },
+                                    modifier = Modifier.height(34.dp),
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                ) {
+                                    Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Report Crash on GitHub", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
                         }
                     }
                 }
@@ -2058,8 +2199,7 @@ fun ModelItem(
                 }
 
                 if (
-                    (model.status in listOf(ModelStatus.Downloading, ModelStatus.Paused) ||
-                        (model.status == ModelStatus.Failed && model.downloadedBytes > 0L)) &&
+                    (model.status in listOf(ModelStatus.Downloading, ModelStatus.Paused, ModelStatus.Failed)) &&
                     onCancel != null
                 ) {
                     LiquidGlassButton(

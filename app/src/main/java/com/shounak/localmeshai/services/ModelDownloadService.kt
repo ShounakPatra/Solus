@@ -92,6 +92,20 @@ class ModelDownloadService : Service() {
             previousSnapshot != null -> previousSnapshot.progress
             else -> 0f
         }
+
+        if (!com.shounak.localmeshai.utils.NetworkUtils.isConnected(applicationContext)) {
+            val failureSnapshot = DownloadSnapshot(
+                modelId = spec.modelId,
+                status = DownloadRestorationPolicy.afterFailure(partialBytes),
+                progress = initialProgress,
+                downloadedBytes = partialBytes,
+                totalBytes = knownTotalBytes,
+                errorMessage = "No internet connection. Please connect to Wi-Fi or mobile data to download models."
+            )
+            DownloadStateStore.update(failureSnapshot)
+            notifyEvent(spec, "Download failed ✗", "${spec.name}: No internet connection.")
+            return
+        }
         val initialText = if (partialBytes > 0L) {
             "Resuming from ${formatBytes(partialBytes)}"
         } else {
@@ -212,13 +226,21 @@ class ModelDownloadService : Service() {
                     downloader.getPartialDownloadBytes(spec.modelId)
                 )
                 val isResumable = partialBytes > 0L
+                val friendlyMessage = when {
+                    com.shounak.localmeshai.utils.NetworkUtils.isOfflineException(exception) ||
+                        !com.shounak.localmeshai.utils.NetworkUtils.isConnected(applicationContext) ->
+                        "No internet connection. Please connect to Wi-Fi or mobile data to download models."
+                    com.shounak.localmeshai.utils.NetworkUtils.isNetworkException(exception) ->
+                        "Network connection lost or timed out. Tap Resume to continue."
+                    else -> exception.message ?: "Download failed"
+                }
                 val failureSnapshot = DownloadSnapshot(
                     modelId = spec.modelId,
                     status = DownloadRestorationPolicy.afterFailure(partialBytes),
                     progress = previous?.progress ?: 0f,
                     downloadedBytes = partialBytes,
                     totalBytes = previous?.totalBytes ?: -1L,
-                    errorMessage = exception.message ?: "Download failed"
+                    errorMessage = friendlyMessage
                 )
                 DownloadStateStore.update(failureSnapshot)
                 if (isResumable) {

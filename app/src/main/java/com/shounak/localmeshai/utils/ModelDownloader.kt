@@ -75,6 +75,9 @@ class ModelDownloader(private val context: Context) {
         expectedSha256: String? = null,
         onProgress: suspend (DownloadProgress) -> Unit
     ): DownloadResult = withContext(Dispatchers.IO) {
+        if (!NetworkUtils.isConnected(context)) {
+            throw IOException("No internet connection. Please connect to Wi-Fi or mobile data to download models.")
+        }
         var retryCount = 0
         while (true) {
             try {
@@ -88,7 +91,13 @@ class ModelDownloader(private val context: Context) {
                     onProgress = onProgress
                 )
             } catch (exception: IOException) {
+                if (NetworkUtils.isOfflineException(exception)) {
+                    throw IOException("No internet connection. Please check your network and retry.")
+                }
                 if (!exception.isTransientDownloadFailure() || retryCount >= MAX_DOWNLOAD_RETRIES) {
+                    if (NetworkUtils.isNetworkException(exception)) {
+                        throw IOException("Connection timed out or network dropped while downloading. Tap Resume to continue.")
+                    }
                     throw exception
                 }
                 retryCount++
@@ -349,7 +358,9 @@ class ModelDownloader(private val context: Context) {
                     "Server denied the model download (HTTP $responseCode).$suffix"
                 }
             }
-            responseCode == 404 -> "Model file was not found at the configured URL.$suffix"
+            responseCode == 404 -> "Model file was not found at the configured URL (HTTP 404).$suffix"
+            responseCode == 429 -> "Download rate limit exceeded (HTTP 429). Please wait before trying again.$suffix"
+            responseCode in 500..599 -> "Remote model host server error (HTTP $responseCode). Please try again later.$suffix"
             else -> "Model download failed with HTTP $responseCode.$suffix"
         }
     }

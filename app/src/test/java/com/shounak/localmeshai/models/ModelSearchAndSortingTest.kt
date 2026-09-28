@@ -2,6 +2,8 @@ package com.shounak.localmeshai.models
 
 import com.shounak.localmeshai.ui.screens.SizeTier
 import com.shounak.localmeshai.ui.screens.downloadTime
+import com.shounak.localmeshai.ui.screens.downloadedSectionSortRank
+import com.shounak.localmeshai.ui.screens.isPinnedDownloadCard
 import com.shounak.localmeshai.ui.screens.matches
 import com.shounak.localmeshai.ui.screens.searchRelevance
 import org.junit.Assert.assertEquals
@@ -148,4 +150,131 @@ class ModelSearchAndSortingTest {
         assertEquals("qwen25_7b", matchingModels[0].id)
         assertEquals("deepseek_r1", matchingModels[1].id)
     }
+
+    @Test
+    fun searchMatchingModelsReflectsDownloadingStateAndProgress() {
+        val query = "qwen"
+        val models = mutableListOf(
+            createTestModel("qwen25_7b", "Qwen 2.5 7B Instruct", status = ModelStatus.NotDownloaded),
+            createTestModel("deepseek_r1", "DeepSeek R1 Distill Qwen 1.5B", status = ModelStatus.NotDownloaded)
+        )
+
+        // When download starts for qwen25_7b
+        val downloadingModel = models[0].copy(
+            status = ModelStatus.Downloading,
+            progress = 0.45f,
+            downloadedBytes = 900_000_000L,
+            totalBytes = 2_000_000_000L
+        )
+        models[0] = downloadingModel
+
+        val matchingModels = models
+            .filter { it.matches(query, SizeTier.All) }
+            .sortedWith(
+                compareByDescending<ModelInfo> { it.searchRelevance(query) }
+                    .thenBy { it.name }
+            )
+
+        val target = matchingModels.first { it.id == "qwen25_7b" }
+        assertEquals(ModelStatus.Downloading, target.status)
+        assertEquals(0.45f, target.progress, 0.001f)
+        assertEquals(900_000_000L, target.downloadedBytes)
+    }
+
+    @Test
+    fun searchMatchingModelsReflectsOfflineErrorMessage() {
+        val query = "qwen"
+        val models = mutableListOf(
+            createTestModel("qwen25_7b", "Qwen 2.5 7B Instruct", status = ModelStatus.NotDownloaded)
+        )
+
+        // When download is tapped with no internet connected
+        val offlineErrorMsg = "No internet connection. Please connect to Wi-Fi or mobile data to download models."
+        models[0] = models[0].copy(
+            status = ModelStatus.NotDownloaded,
+            errorMessage = offlineErrorMsg
+        )
+
+        val matchingModels = models
+            .filter { it.matches(query, SizeTier.All) }
+            .sortedWith(
+                compareByDescending<ModelInfo> { it.searchRelevance(query) }
+                    .thenBy { it.name }
+            )
+
+        val target = matchingModels.first { it.id == "qwen25_7b" }
+        assertEquals(offlineErrorMsg, target.errorMessage)
+
+        val classified = com.shounak.localmeshai.utils.ErrorClassifier.classify(target.errorMessage)
+        org.junit.Assert.assertNotNull(classified)
+        assertEquals(com.shounak.localmeshai.utils.ErrorCategory.NoInternet, classified?.category)
+        assertEquals("No Internet Connection", classified?.headline)
+    }
+
+    @Test
+    fun downloadedSectionSortRankFailedHasTopPriority() {
+        val failedModel = createTestModel("m_failed", "Failed Model", status = ModelStatus.Failed)
+        val downloadingModel = createTestModel("m_dl", "Downloading Model", status = ModelStatus.Downloading)
+        val pausedModel = createTestModel("m_paused", "Paused Model", status = ModelStatus.Paused)
+        val availableModel = createTestModel("m_avail", "Available Model", status = ModelStatus.Available, localPath = "/path")
+        val blockedModel = createTestModel("m_blocked", "Blocked Model", status = ModelStatus.Blocked, localPath = "/path")
+
+        assertEquals(0, failedModel.downloadedSectionSortRank())
+        assertEquals(1, downloadingModel.downloadedSectionSortRank())
+        assertEquals(2, pausedModel.downloadedSectionSortRank())
+        assertEquals(3, availableModel.downloadedSectionSortRank())
+        assertEquals(3, blockedModel.downloadedSectionSortRank())
+    }
+
+    @Test
+    fun downloadedModelsSectionPutsFailedModelAtVeryTop() {
+        val now = System.currentTimeMillis()
+        val availableModel = createTestModel(
+            id = "model_avail",
+            name = "Available Model",
+            status = ModelStatus.Available,
+            downloadedAt = now - 1000L,
+            localPath = "/data/model_avail.gguf"
+        )
+        val downloadingModel = createTestModel(
+            id = "model_dl",
+            name = "Downloading Model",
+            status = ModelStatus.Downloading
+        )
+        val pausedModel = createTestModel(
+            id = "model_paused",
+            name = "Paused Model",
+            status = ModelStatus.Paused,
+            downloadedAt = now - 5000L
+        )
+        val failedModel = createTestModel(
+            id = "model_failed",
+            name = "Failed Model",
+            status = ModelStatus.Failed,
+            downloadedAt = now - 10000L
+        )
+
+        val models = listOf(availableModel, downloadingModel, pausedModel, failedModel)
+        val downloadedModels = models
+            .filter { it.isPinnedDownloadCard() }
+            .sortedWith(
+                compareBy<ModelInfo> { it.downloadedSectionSortRank() }
+                    .thenByDescending { it.downloadTime() }
+            )
+
+        assertEquals("Failed model must be placed at the very top", "model_failed", downloadedModels[0].id)
+        assertEquals("Downloading model is second", "model_dl", downloadedModels[1].id)
+        assertEquals("Paused model is third", "model_paused", downloadedModels[2].id)
+        assertEquals("Available model is fourth", "model_avail", downloadedModels[3].id)
+    }
+
+    @Test
+    fun failedModelIsAlwaysPinnedInDownloadedSection() {
+        val failedWithBytes = createTestModel("m1", "Failed With Bytes", status = ModelStatus.Failed).copy(downloadedBytes = 1024L)
+        val failedZeroBytes = createTestModel("m2", "Failed Zero Bytes", status = ModelStatus.Failed).copy(downloadedBytes = 0L)
+
+        assertTrue(failedWithBytes.isPinnedDownloadCard())
+        assertTrue(failedZeroBytes.isPinnedDownloadCard())
+    }
 }
+

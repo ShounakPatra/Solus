@@ -14,6 +14,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
@@ -77,13 +78,21 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
+import com.shounak.localmeshai.utils.ChatDateFormatter
 import androidx.compose.material.icons.filled.QuestionAnswer
 import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Psychology
+import com.shounak.localmeshai.ui.components.AudioMessagePlayer
+import com.shounak.localmeshai.utils.AttachmentViewerUtils
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.ui.draw.rotate
 import androidx.compose.material3.AlertDialog
@@ -112,6 +121,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -134,6 +144,13 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.shape.CircleShape
+import java.io.File
+import java.util.Locale
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.shounak.localmeshai.models.ModelInfo
 import com.shounak.localmeshai.models.ModelStatus
@@ -358,6 +375,10 @@ fun ImageGenScreen(
                                             hazeState = hazeState,
                                             isStreaming = !message.isUser && isAnalyzing && index == messages.lastIndex,
                                             entryDelayMs = if (index == messages.lastIndex) 25 else 0,
+                                            audioPath = message.audioPath,
+                                            audioName = message.audioName,
+                                            audioDurationMs = message.audioDurationMs,
+                                            documentName = message.documentName,
                                             onFullscreenClick = { fullscreenMessageIndex = index }
                                         )
                                     }
@@ -669,19 +690,80 @@ fun VisionFullscreenAnswerPanel(
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        if (message.isUser && message.bitmap != null && !message.bitmap.isRecycled) {
-                            Image(
-                                bitmap = message.bitmap.asImageBitmap(),
-                                contentDescription = "Query image",
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 300.dp)
-                                    .clip(RoundedCornerShape(12.dp)),
-                                contentScale = ContentScale.Fit
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
+                        if (message.isUser && (message.bitmap != null || !message.imagePath.isNullOrBlank())) {
+                            val context = LocalContext.current
+                            val imageBmp = message.bitmap ?: message.imagePath?.let { path ->
+                                if (File(path).exists()) {
+                                    try { BitmapFactory.decodeFile(path) } catch (_: Exception) { null }
+                                } else null
+                            }
+                            if (imageBmp != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                ) {
+                                    Image(
+                                        bitmap = imageBmp.asImageBitmap(),
+                                        contentDescription = "Query image",
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 300.dp),
+                                        contentScale = ContentScale.Fit
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Color.Black.copy(alpha = 0.60f),
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .padding(8.dp)
+                                            .clickable {
+                                                AttachmentViewerUtils.openImageInExternalViewer(context, imageBmp, message.imagePath)
+                                            }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                                contentDescription = "Open in external viewer",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                            Text(
+                                                text = "Open",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                                color = Color.White
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(12.dp))
+                            }
                         }
-                        
+
+                        if (message.isUser && !message.audioPath.isNullOrBlank()) {
+                            AudioMessagePlayer(
+                                audioPath = message.audioPath,
+                                audioName = message.audioName,
+                                initialDurationMs = message.audioDurationMs,
+                                isUser = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
+
+                        if (message.isUser && !message.documentName.isNullOrBlank()) {
+                            DocumentAttachmentCard(
+                                documentName = message.documentName,
+                                documentPath = message.documentPath,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                        }
+
                         if (!message.isUser && parsedContent.thinkingText != null) {
                             ThinkingProcessCard(
                                 thinkingText = parsedContent.thinkingText,
@@ -689,7 +771,15 @@ fun VisionFullscreenAnswerPanel(
                             )
                         }
 
-                        val rawVisibleText = parsedContent.finalResponseText.ifBlank { if (message.isUser) "" else "Answers will appear here." }
+                        val rawFilteredText = if (message.isUser && (!message.audioPath.isNullOrBlank() || !message.documentName.isNullOrBlank())) {
+                            parsedContent.finalResponseText.lines().filterNot { line ->
+                                (!message.audioPath.isNullOrBlank() && line.trim().startsWith("🎧 Attached Audio:")) ||
+                                (!message.documentName.isNullOrBlank() && line.trim().startsWith("📎 Attached File:"))
+                            }.joinToString("\n").trim()
+                        } else {
+                            parsedContent.finalResponseText
+                        }
+                        val rawVisibleText = rawFilteredText.ifBlank { if (message.isUser) "" else "Answers will appear here." }
                         val visibleText = if (message.isUser) rawVisibleText else rawVisibleText.normalizeModelAnswerText()
                         val answerSegments = remember(visibleText, message.isUser) {
                             if (message.isUser) listOf(ModelAnswerSegment.Text(visibleText))
@@ -715,6 +805,27 @@ fun VisionFullscreenAnswerPanel(
                                         parts = segment.parts,
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
+                            }
+                        }
+
+                        if (!message.isUser && message.ragSources.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = "📚 Sourced from ${message.ragSources.joinToString(", ")} (${message.ragChunkCount} chunks, ${message.ragTopMatchPct}% match)",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
                             }
                         }
                     }
@@ -877,17 +988,30 @@ fun ImageChatHistoryDialog(
                     }
                 }
 
-                if (sessions.isEmpty()) {
+                val deletedSessionIds = remember { mutableStateListOf<String>() }
+                val sessionCount = sessions.size
+                val activeSessions = remember(sessions, sessionCount, deletedSessionIds.size) {
+                    sessions.filter { it.id !in deletedSessionIds }
+                }
+                val sortedSessions = remember(activeSessions) {
+                    activeSessions.sortedWith(
+                        compareByDescending<VisionChatSession> { it.updatedAt }
+                            .thenBy { it.title }
+                    )
+                }
+
+                if (sortedSessions.isEmpty()) {
                     Text("No image questions yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
                     LazyColumn(
                         modifier = Modifier.heightIn(max = 420.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        itemsIndexed(sessions, key = { _, session -> session.id }) { index, session ->
+                        itemsIndexed(sortedSessions, key = { _, session -> session.id }) { index, session ->
                             val selected = session.id == currentSessionId
                             Box(
                                 modifier = Modifier
+                                    .animateItem()
                                     .fillMaxWidth()
                                     .fluidReveal(
                                         delayMillis = (index * 35).coerceAtMost(280),
@@ -915,21 +1039,56 @@ fun ImageChatHistoryDialog(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
                                         Text(
-                                            session.title,
+                                            session.title.ifBlank { "Untitled session" },
                                             style = MaterialTheme.typography.titleSmall,
-                                            maxLines = 1
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
-                                        Text(
-                                            if (selected) "Current" else session.answer.take(72),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 2
-                                        )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Schedule,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(11.dp),
+                                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
+                                            )
+                                            Text(
+                                                text = ChatDateFormatter.formatChatDate(session.updatedAt),
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.Medium,
+                                                    fontSize = 11.sp
+                                                ),
+                                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.90f),
+                                                maxLines = 1
+                                            )
+                                            Text(
+                                                text = "•",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                            )
+                                            val preview = if (selected) "Current" else session.answer.take(64)
+                                            Text(
+                                                text = preview,
+                                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f, fill = false)
+                                            )
+                                        }
                                     }
                                     LiquidGlassButton(
-                                        onClick = { onDelete(session.id) },
+                                        onClick = {
+                                            deletedSessionIds.add(session.id)
+                                            onDelete(session.id)
+                                        },
                                         hazeState = hazeState,
                                         shape = RoundedCornerShape(18.dp),
                                         tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
@@ -950,7 +1109,7 @@ fun ImageChatHistoryDialog(
                     LiquidGlassButton(
                         onClick = onClearAll,
                         hazeState = hazeState,
-                        enabled = sessions.isNotEmpty(),
+                        enabled = activeSessions.isNotEmpty(),
                         shape = RoundedCornerShape(18.dp),
                         tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
@@ -1778,16 +1937,217 @@ private fun StreamingDotsIndicator(
 }
 
 @Composable
+fun DocumentAttachmentCard(
+    documentName: String,
+    documentPath: String? = null,
+    modifier: Modifier = Modifier,
+    onOpen: (() -> Unit)? = null
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val ext = documentName.substringAfterLast('.', "").uppercase(Locale.ROOT)
+        .takeIf { it.isNotBlank() && it.length <= 6 } ?: "FILE"
+    val badgeColor = when (ext) {
+        "PDF" -> Color(0xFFE53935)
+        "DOC", "DOCX" -> Color(0xFF1E88E5)
+        "XLS", "XLSX", "CSV" -> Color(0xFF43A047)
+        "PPT", "PPTX" -> Color(0xFFFB8C00)
+        "ZIP", "RAR", "7Z", "TAR", "GZ" -> Color(0xFFFFB300)
+        "TXT", "MD", "LOG" -> Color(0xFF8E24AA)
+        "JSON", "XML", "HTML", "YAML", "YML" -> Color(0xFF00ACC1)
+        "KT", "JAVA", "PY", "CPP", "C", "JS", "TS", "CLASS" -> Color(0xFF3949AB)
+        else -> MaterialTheme.colorScheme.primary
+    }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.60f),
+        border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.35f)),
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable {
+                if (onOpen != null) {
+                    onOpen()
+                } else {
+                    AttachmentViewerUtils.openDocumentInExternalViewer(context, documentName, documentPath)
+                }
+            }
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = badgeColor.copy(alpha = 0.16f),
+                border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.45f))
+            ) {
+                Text(
+                    text = ext,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.5.sp,
+                        letterSpacing = 0.6.sp
+                    ),
+                    color = badgeColor,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                )
+            }
+            Text(
+                text = documentName,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 13.5.sp
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+
+            IconButton(
+                onClick = {
+                    if (onOpen != null) {
+                        onOpen()
+                    } else {
+                        AttachmentViewerUtils.openDocumentInExternalViewer(context, documentName, documentPath)
+                    }
+                },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                    contentDescription = "Open file in default viewer",
+                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ImagePreviewModal(
+    bitmap: Bitmap,
+    imagePath: String? = null,
+    onDismiss: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.90f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "Full image preview",
+                modifier = Modifier
+                    .fillMaxWidth(0.95f)
+                    .fillMaxHeight(0.85f)
+                    .clip(RoundedCornerShape(12.dp)),
+                contentScale = ContentScale.Fit
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .padding(top = 40.dp, start = 16.dp, end = 16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Image Preview",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White
+                    )
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = {
+                            AttachmentViewerUtils.openImageInExternalViewer(context, bitmap, imagePath)
+                        },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(Color.White.copy(alpha = 0.2f), CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                            contentDescription = "Open in default viewer",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(Color.White.copy(alpha = 0.2f), CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close preview",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun VisionChatBubble(
     text: String,
     isUser: Boolean,
     bitmap: Bitmap? = null,
+    imagePath: String? = null,
+    audioPath: String? = null,
+    audioName: String? = null,
+    audioDurationMs: Long = 0L,
+    documentName: String? = null,
+    documentPath: String? = null,
     hazeState: HazeState,
     isStreaming: Boolean = false,
     entryDelayMs: Int = 0,
+    ragSources: List<String> = emptyList(),
+    ragChunkCount: Int = 0,
+    ragTopMatchPct: Int = 0,
     onFullscreenClick: () -> Unit
 ) {
     val context = LocalContext.current
+    var showFullImagePreview by remember { mutableStateOf(false) }
+
+    val resolvedBitmap = remember(bitmap, imagePath) {
+        if (bitmap != null && !bitmap.isRecycled) {
+            bitmap
+        } else if (!imagePath.isNullOrBlank()) {
+            runCatching {
+                val f = File(imagePath)
+                if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
+            }.getOrNull()
+        } else null
+    }
+
     val entryProgress = remember { Animatable(if (entryDelayMs > 0) 0f else 1f) }
     LaunchedEffect(entryDelayMs) {
         if (entryDelayMs <= 0) {
@@ -1807,8 +2167,18 @@ fun VisionChatBubble(
     val parsedContent = remember(text, isStreaming) {
         ThinkingTextUtils.parse(text, allowActiveThinking = isStreaming)
     }
-    val displayText = remember(parsedContent.finalResponseText, isUser) {
-        if (isUser) parsedContent.finalResponseText else parsedContent.finalResponseText.normalizeModelAnswerText()
+    val rawText = if (isUser) parsedContent.finalResponseText else parsedContent.finalResponseText.normalizeModelAnswerText()
+    val displayText = remember(rawText, isUser, audioPath, documentName) {
+        if (isUser && (!audioPath.isNullOrBlank() || !documentName.isNullOrBlank())) {
+            rawText.lines().filterNot { line ->
+                val trimmed = line.trim()
+                trimmed.startsWith("🎧 Attached Audio:") ||
+                trimmed.startsWith("📎 Attached File:") ||
+                trimmed.startsWith("--- EXTRACTED ATTACHED FILE:")
+            }.joinToString("\n").trim()
+        } else {
+            rawText
+        }
     }
     val segments = remember(displayText, isUser) {
         if (isUser) listOf(ModelAnswerSegment.Text(displayText))
@@ -1819,8 +2189,10 @@ fun VisionChatBubble(
         it is ModelAnswerSegment.Code || it is ModelAnswerSegment.DisplayMath ||
             it is ModelAnswerSegment.InlineMathListItem
     }
-    val hasTopImage = isUser && bitmap != null && !bitmap.isRecycled
-    val needsTopActionClearance = hasRichBlock || hasTopImage || (!isUser && parsedContent.thinkingText != null)
+    val hasTopImage = isUser && resolvedBitmap != null && !resolvedBitmap.isRecycled
+    val hasTopAudio = isUser && !audioPath.isNullOrBlank()
+    val hasTopDoc = isUser && !documentName.isNullOrBlank()
+    val needsTopActionClearance = !isUser && (hasRichBlock || parsedContent.thinkingText != null)
     val entryValue = entryProgress.value
 
     Column(
@@ -1866,16 +2238,109 @@ fun VisionChatBubble(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (hasTopImage) {
-                    Image(
-                        bitmap = bitmap.asImageBitmap(),
-                        contentDescription = "Query image",
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 180.dp)
-                            .clip(RoundedCornerShape(12.dp)),
-                        contentScale = ContentScale.Fit
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.5f))
+                            .border(
+                                1.dp,
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                                RoundedCornerShape(14.dp)
+                            )
+                            .clickable { showFullImagePreview = true }
+                    ) {
+                        Image(
+                            bitmap = resolvedBitmap.asImageBitmap(),
+                            contentDescription = "Query image. Tap to view full size",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 100.dp, max = 220.dp),
+                            contentScale = ContentScale.Crop
+                        )
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color.Black.copy(alpha = 0.60f),
+                                modifier = Modifier.clickable {
+                                    AttachmentViewerUtils.openImageInExternalViewer(context, resolvedBitmap, imagePath)
+                                }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                        contentDescription = "Open in external viewer",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Text(
+                                        text = "Open",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color.Black.copy(alpha = 0.60f),
+                                modifier = Modifier.clickable { showFullImagePreview = true }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Fullscreen,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Text(
+                                        text = "Preview",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (displayText.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
+                }
+
+                if (hasTopAudio) {
+                    AudioMessagePlayer(
+                        audioPath = audioPath!!,
+                        audioName = audioName,
+                        initialDurationMs = audioDurationMs,
+                        isUser = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
+                    if (displayText.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
+                }
+
+                if (hasTopDoc) {
+                    DocumentAttachmentCard(
+                        documentName = documentName!!,
+                        documentPath = documentPath,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (displayText.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
                 }
 
                 if (!isUser && parsedContent.thinkingText != null) {
@@ -1920,36 +2385,65 @@ fun VisionChatBubble(
                             }
                         }
                     }
+                    if (!isUser && ragSources.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "📚 Sourced from ${ragSources.joinToString(", ")} ($ragChunkCount chunks, $ragTopMatchPct% match)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 4.dp, end = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                MessageToolButton(
-                    icon = Icons.Default.Fullscreen,
-                    contentDescription = "Fullscreen message",
-                    hazeState = hazeState,
-                    tintColor = MaterialTheme.colorScheme.primary,
-                    onClick = onFullscreenClick,
-                )
-                MessageToolButton(
-                    icon = Icons.Default.ContentCopy,
-                    contentDescription = "Copy message",
-                    hazeState = hazeState,
-                    tintColor = MaterialTheme.colorScheme.primary,
-                    onClick = {
-                        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                            as android.content.ClipboardManager
-                        val copyText = if (isUser) text else ModelOutputSanitizer.clean(text)
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("message", copyText))
-                    }
-                )
+            if (!isUser) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 4.dp, end = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    MessageToolButton(
+                        icon = Icons.Default.Fullscreen,
+                        contentDescription = "Fullscreen message",
+                        hazeState = hazeState,
+                        tintColor = MaterialTheme.colorScheme.primary,
+                        onClick = onFullscreenClick,
+                    )
+                    MessageToolButton(
+                        icon = Icons.Default.ContentCopy,
+                        contentDescription = "Copy message",
+                        hazeState = hazeState,
+                        tintColor = MaterialTheme.colorScheme.primary,
+                        onClick = {
+                            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("message", ModelOutputSanitizer.clean(text)))
+                        }
+                    )
+                }
             }
         }
+    }
+
+    if (showFullImagePreview && resolvedBitmap != null) {
+        ImagePreviewModal(
+            bitmap = resolvedBitmap,
+            imagePath = imagePath,
+            onDismiss = { showFullImagePreview = false }
+        )
     }
 }
 

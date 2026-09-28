@@ -17,12 +17,25 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.WifiOff
+import com.shounak.localmeshai.utils.CrashReportManager
+import com.shounak.localmeshai.utils.CrashReport
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import com.shounak.localmeshai.BuildConfig
 import com.shounak.localmeshai.ai.ChatInferenceManager
@@ -508,11 +521,13 @@ fun SettingsDialog(
                                             text = "Saved Memories ($memoryCount)",
                                             style = MaterialTheme.typography.titleSmall,
                                             fontWeight = FontWeight.Bold,
-                                            color = colors.onSurface
+                                            color = colors.onSurface,
+                                            modifier = Modifier.weight(1f, fill = false)
                                         )
+                                        Spacer(modifier = Modifier.width(8.dp))
                                         SuggestionChip(
                                             onClick = { showMemoryDialog = true },
-                                            label = { Text("$activeMemoryCount active", style = MaterialTheme.typography.labelSmall) },
+                                            label = { Text("$activeMemoryCount active", maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall) },
                                             shape = RoundedCornerShape(10.dp),
                                             colors = SuggestionChipDefaults.suggestionChipColors(
                                                 containerColor = colors.surfaceContainer,
@@ -553,6 +568,18 @@ fun SettingsDialog(
                     val ragManager = remember { com.shounak.localmeshai.rag.RagManager.getInstance(context) }
                     var ragDocCount by remember { mutableStateOf(ragManager.indexedDocuments.size) }
                     var ragChunkCount by remember { mutableStateOf(ragManager.totalIndexedChunks) }
+                    var showRagDialog by remember { mutableStateOf(false) }
+
+                    if (showRagDialog) {
+                        RagKnowledgeBaseDialog(
+                            ragManager = ragManager,
+                            onDismissRequest = {
+                                showRagDialog = false
+                                ragDocCount = ragManager.indexedDocuments.size
+                                ragChunkCount = ragManager.totalIndexedChunks
+                            }
+                        )
+                    }
 
                     SettingsCategory(title = "📚 Retrieval-Augmented Generation (RAG)", hazeState = hazeState) {
                         SettingsSwitchRow(
@@ -573,39 +600,38 @@ fun SettingsDialog(
                             ) {
                                 Column(
                                     modifier = Modifier.padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Text(
-                                        text = "Vector Search Status",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = colors.onSurface
-                                    )
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        SuggestionChip(
-                                            onClick = {},
-                                            label = { Text("$ragDocCount documents", style = MaterialTheme.typography.labelSmall) },
-                                            shape = RoundedCornerShape(10.dp),
-                                            colors = SuggestionChipDefaults.suggestionChipColors(
-                                                containerColor = colors.surfaceContainer,
-                                                labelColor = colors.onSurfaceVariant
-                                            ),
-                                            border = SuggestionChipDefaults.suggestionChipBorder(
-                                                enabled = true,
-                                                borderColor = colors.outlineVariant.copy(alpha = 0.50f),
-                                                borderWidth = 0.8.dp
-                                            )
+                                        Text(
+                                            text = "Knowledge Base Status",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = colors.onSurface,
+                                            modifier = Modifier.weight(1f, fill = false)
                                         )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        val docSuffix = if (ragDocCount == 1) "doc" else "docs"
+                                        val chunkSuffix = if (ragChunkCount == 1) "chunk" else "chunks"
+                                        val ragBadgeText = if (ragDocCount == 0) "0 docs • 0 chunks" else "$ragDocCount $docSuffix • $ragChunkCount $chunkSuffix"
                                         SuggestionChip(
-                                            onClick = {},
-                                            label = { Text("$ragChunkCount vector chunks", style = MaterialTheme.typography.labelSmall) },
+                                            onClick = { showRagDialog = true },
+                                            label = {
+                                                Text(
+                                                    text = ragBadgeText,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    maxLines = 1,
+                                                    softWrap = false
+                                                )
+                                            },
                                             shape = RoundedCornerShape(10.dp),
                                             colors = SuggestionChipDefaults.suggestionChipColors(
                                                 containerColor = colors.surfaceContainer,
-                                                labelColor = colors.onSurfaceVariant
+                                                labelColor = if (ragDocCount > 0) colors.primary else colors.onSurfaceVariant
                                             ),
                                             border = SuggestionChipDefaults.suggestionChipBorder(
                                                 enabled = true,
@@ -615,10 +641,25 @@ fun SettingsDialog(
                                         )
                                     }
                                     Text(
-                                        text = "Top-K Chunks: ${settingsData.ragTopK} | Min Similarity: ${(settingsData.ragMinSimilarity * 100).toInt()}%",
+                                        text = "Top-K Chunks: ${settingsData.ragTopK} | Min Relevance: ${(settingsData.ragMinSimilarity * 100).toInt()}%",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = colors.onSurfaceVariant.copy(alpha = 0.82f)
                                     )
+
+                                    Button(
+                                        onClick = { showRagDialog = true },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = colors.primary.copy(alpha = 0.22f),
+                                            contentColor = colors.primary
+                                        ),
+                                        border = BorderStroke(0.8.dp, colors.primary.copy(alpha = 0.50f))
+                                    ) {
+                                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Manage Knowledge Base & Documents", style = MaterialTheme.typography.labelMedium)
+                                    }
 
                                     if (ragChunkCount > 0) {
                                         OutlinedButton(
@@ -637,6 +678,115 @@ fun SettingsDialog(
                                             Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(16.dp))
                                             Spacer(modifier = Modifier.width(6.dp))
                                             Text("Clear RAG Knowledge Base", style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Category: Crash Reports & Diagnostics
+                    val crashReports by mainViewModel.crashReports.collectAsState()
+                    var showCrashDialog by remember { mutableStateOf(false) }
+
+                    if (showCrashDialog) {
+                        CrashReportsDialog(
+                            reports = crashReports,
+                            onDismissRequest = { showCrashDialog = false },
+                            onClearReports = { mainViewModel.clearCrashReports() },
+                            onSendReport = { report ->
+                                CrashReportManager.sendToGitHub(context, report.details, report.title)
+                            },
+                            hazeState = hazeState
+                        )
+                    }
+
+                    SettingsCategory(title = "🛠️ Crash Reports & Diagnostics", hazeState = hazeState) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = colors.surfaceContainerLow,
+                            border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.40f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = if (crashReports.isEmpty()) Icons.Default.CheckCircle else Icons.Default.BugReport,
+                                        contentDescription = null,
+                                        tint = if (crashReports.isEmpty()) colors.primary else colors.error,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = if (crashReports.isEmpty()) {
+                                                "All systems operational ✓"
+                                            } else {
+                                                "${crashReports.size} crash report(s) saved"
+                                            },
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = colors.onSurface
+                                        )
+                                        Text(
+                                            text = if (crashReports.isEmpty()) {
+                                                "No crashes recorded. Engine runtimes are stable."
+                                            } else {
+                                                "Latest crash: ${crashReports.first().formattedDate}"
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = colors.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    if (crashReports.isNotEmpty()) {
+                                        OutlinedButton(
+                                            onClick = { showCrashDialog = true },
+                                            shape = RoundedCornerShape(12.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("See Reports")
+                                        }
+                                        Button(
+                                            onClick = {
+                                                val latest = crashReports.first()
+                                                CrashReportManager.sendToGitHub(context, latest.details, latest.title)
+                                            },
+                                            shape = RoundedCornerShape(12.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = colors.error),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Send to GitHub")
+                                        }
+                                    } else {
+                                        OutlinedButton(
+                                            onClick = {
+                                                CrashReportManager.openNewIssue(
+                                                    context,
+                                                    title = "[Report / Feedback] Solus Issue",
+                                                    body = "### Device Info\n- OS: Android ${android.os.Build.VERSION.RELEASE}\n- Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}\n- Solus Version: ${BuildConfig.VERSION_NAME}\n\n### Description\n(Describe your issue or feedback here)"
+                                                )
+                                            },
+                                            shape = RoundedCornerShape(12.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Report Bug / Issue on GitHub")
                                         }
                                     }
                                 }
@@ -701,6 +851,9 @@ fun SettingsDialog(
                             checked = settingsData.autoCheckUpdates,
                             onCheckedChange = { isEnabled ->
                                 appSettings.updateSettings { it.copy(autoCheckUpdates = isEnabled) }
+                                if (isEnabled) {
+                                    mainViewModel.checkForUpdates(silent = true)
+                                }
                             }
                         )
 
@@ -895,34 +1048,67 @@ fun SettingsDialog(
                                 }
                             }
                             is AppUpdateManager.UpdateCheckResult.Error -> {
+                                val isOffline = result.message.contains("No internet connection", ignoreCase = true) ||
+                                    result.message.contains("offline", ignoreCase = true)
                                 Surface(
                                     shape = RoundedCornerShape(16.dp),
                                     color = colors.errorContainer.copy(alpha = 0.40f),
                                     border = BorderStroke(0.8.dp, colors.error.copy(alpha = 0.40f)),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Row(
+                                    Column(
                                         modifier = Modifier.padding(14.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Icon(
-                                            Icons.Default.Clear,
-                                            contentDescription = null,
-                                            tint = colors.error,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                if (isOffline) Icons.Default.WifiOff else Icons.Default.Clear,
+                                                contentDescription = null,
+                                                tint = colors.error,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                if (isOffline) "No Internet Connection" else "Update Check Failed",
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = colors.error
+                                            )
+                                        }
                                         Text(
-                                            "Update check failed: ${result.message}",
+                                            result.message,
                                             style = MaterialTheme.typography.bodySmall,
                                             color = colors.onErrorContainer
                                         )
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            OutlinedButton(
+                                                onClick = { mainViewModel.checkForUpdates(silent = false) },
+                                                shape = RoundedCornerShape(10.dp),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                                modifier = Modifier.height(32.dp)
+                                            ) {
+                                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Retry", style = MaterialTheme.typography.labelSmall)
+                                            }
+                                            TextButton(
+                                                onClick = { mainViewModel.dismissUpdateState() },
+                                                modifier = Modifier.height(32.dp)
+                                            ) {
+                                                Text("Dismiss", style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
                                     }
                                 }
                             }
                             null -> {}
                         }
                     }
+
 
                     Spacer(modifier = Modifier.height(24.dp))
                 }
@@ -1023,3 +1209,201 @@ private class LastCharPasswordVisualTransformation(
         return TransformedText(AnnotatedString(transformedText), OffsetMapping.Identity)
     }
 }
+
+@Composable
+private fun CrashReportsDialog(
+    reports: List<CrashReport>,
+    onDismissRequest: () -> Unit,
+    onClearReports: () -> Unit,
+    onSendReport: (CrashReport) -> Unit,
+    hazeState: HazeState
+) {
+    val context = LocalContext.current
+    var selectedReport by remember { mutableStateOf(reports.firstOrNull()) }
+    val colors = MaterialTheme.colorScheme
+
+    Dialog(
+        onDismissRequest = onDismissRequest,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .fillMaxHeight(0.85f)
+                .glassEffect(
+                    hazeState = hazeState,
+                    shape = RoundedCornerShape(24.dp),
+                    blurRadius = 24.dp,
+                    tintColor = colors.surfaceContainerHigh,
+                    borderAlpha = 0.40f
+                ),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.BugReport, contentDescription = null, tint = colors.error)
+                        Text(
+                            "Crash Reports (${reports.size})",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    IconButton(onClick = onDismissRequest) {
+                        Icon(Icons.Default.Clear, contentDescription = "Close")
+                    }
+                }
+
+                if (reports.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("No crash reports available.", style = MaterialTheme.typography.bodyMedium)
+                    }
+                } else {
+                    // Selector row if multiple reports
+                    if (reports.size > 1) {
+                        Text("Select report:", style = MaterialTheme.typography.labelMedium)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            reports.forEachIndexed { index, report ->
+                                val isSel = selectedReport == report
+                                FilterChip(
+                                    selected = isSel,
+                                    onClick = { selectedReport = report },
+                                    label = { Text("#${index + 1} • ${report.formattedDate.takeLast(8)}") },
+                                    leadingIcon = if (report.isNativeCrash) {
+                                        { Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                    } else null
+                                )
+                            }
+                        }
+                    }
+
+                    // Details box for selected report
+                    (selectedReport ?: reports.firstOrNull())?.let { report ->
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            shape = RoundedCornerShape(14.dp),
+                            color = colors.surfaceContainerLow,
+                            border = BorderStroke(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f))
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(12.dp)
+                                    .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = report.title,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (report.isNativeCrash) colors.error else colors.onSurface,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = if (report.isNativeCrash) colors.error.copy(alpha = 0.15f) else colors.primary.copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = if (report.isNativeCrash) "NATIVE" else "JVM",
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (report.isNativeCrash) colors.error else colors.primary
+                                        )
+                                    }
+                                }
+
+                                Text(
+                                    text = report.details,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
+                                    color = colors.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        // Action Buttons: Copy, Send to GitHub
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                    val clip = ClipData.newPlainText("Crash Report", report.details)
+                                    clipboard?.setPrimaryClip(clip)
+                                    Toast.makeText(context, "Crash report copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Copy")
+                            }
+
+                            Button(
+                                onClick = { onSendReport(report) },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = colors.primary),
+                                modifier = Modifier.weight(1.3f)
+                            ) {
+                                Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Send to GitHub")
+                            }
+                        }
+                    }
+                }
+
+                if (reports.isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = {
+                            onClearReports()
+                            selectedReport = null
+                        },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.error),
+                        border = BorderStroke(0.8.dp, colors.error.copy(alpha = 0.40f)),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Clear All Crash Reports")
+                    }
+                }
+            }
+        }
+    }
+}
+

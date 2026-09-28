@@ -6,17 +6,17 @@
 
 ### Private, local AI — running entirely on your Android device.
 
-Chat, reason, code, and analyze documents offline with complete privacy.  
-Your conversations never leave your phone.
+Chat, reason, code, listen, and query documents offline with complete privacy.  
+Your conversations and files never leave your phone.
 
 <br/>
 
 <!-- Custom glass-gradient download CTA (docs/assets/download-solus-apk.svg) -->
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.5.0/app-release.apk" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v2.0.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v1.5.0"
+      alt="Download Solus APK — Latest v2.0.0"
       width="360"
       height="72"
     />
@@ -28,8 +28,8 @@ Your conversations never leave your phone.
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/version-1.5.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 1.5.0" />
-  <img src="https://img.shields.io/badge/APK_size-218_MB-FF6B6B?style=for-the-badge&logo=android&logoColor=white" alt="APK size 218 MB" />
+  <img src="https://img.shields.io/badge/version-2.0.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 2.0.0" />
+  <img src="https://img.shields.io/badge/APK_size-223_MB-FF6B6B?style=for-the-badge&logo=android&logoColor=white" alt="APK size 223 MB" />
   <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=for-the-badge&logo=github&label=Stars&color=FFD700" alt="GitHub stars" />
   <img src="https://img.shields.io/github/downloads/ShounakPatra/Solus/total?style=for-the-badge&label=Downloads&color=20C997" alt="Total downloads" />
 </p>
@@ -40,6 +40,8 @@ Your conversations never leave your phone.
   <img src="https://img.shields.io/badge/License-Apache_2.0-A970FF?style=for-the-badge&logo=apache&logoColor=white" alt="Apache 2.0 license" />
   <img src="https://img.shields.io/badge/Kotlin-2.3.0-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.3.0" />
   <img src="https://img.shields.io/badge/Jetpack_Compose-UI-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
+</p>
+
 <p align="center">
   <a href="https://trendshift.io/repositories/156746" target="_blank" rel="noopener noreferrer">
     <img
@@ -49,7 +51,7 @@ Your conversations never leave your phone.
   </a>
 </p>
 
-**🔒 100% Offline &nbsp;•&nbsp; 💳 No Subscriptions &nbsp;•&nbsp; 🚀 On-Device Speed &nbsp;•&nbsp; ✨ Glass UI**
+**🔒 100% Offline &nbsp;•&nbsp; ⚡ Vulkan GPU &nbsp;•&nbsp; 📚 Local RAG &nbsp;•&nbsp; 🎙️ Audio Input &nbsp;•&nbsp; 🧩 GGUF Support**
 
 </div>
 
@@ -71,40 +73,42 @@ Your conversations never leave your phone.
 
 ---
 
-## ✨ Features
+## ✨ Key Capabilities
 
 <div align="center">
 
-| | Capability |
-|---|---|
-| 💬 | **Local multi-turn chat** — inference on-device via CPU / GPU |
-| 🧠 | **Thinking mode** — full control for reasoning models (e.g. DeepSeek R1-style) |
-| 🖼️ | **Vision & documents** — images, camera, files, and rich document chat |
-| 📐 | **Math rendering** — native LaTeX, scrollable formulas, copy & selection |
-| ⏬ | **High-tech download dashboard** — live speed (MB/s), size progress, dynamic ETA, glow accents |
-| ⚙️ | **Full-screen customization** — toggle themes, telemetry, auto-hide nav, timers, personas |
-| 🎨 | **Dynamic model accent themes** — DeepSeek (Cyan), Gemma (Amber), Qwen (Violet), Llama (Emerald) |
-| 📱 | **Auto-hide bottom navigation** — full-screen chat with left/right tab swipe gesture navigation |
-| 📊 | **Telemetry & thermal guard** — real-time t/s, TTFT latency, battery temp (°C), available RAM |
-| ⚡ | **Solus Bench rating** — on-card benchmark rating dialog showing device speed ratings & profiles |
-| 🎯 | **System prompt personas** — General, Code Auditor, Simple ELI5, Proofreader, Translator |
-| ✨ | **Glassmorphism UI** — Compose + Haze blur, fluid tab motion & dark glass controls |
+| | Capability | Description |
+|---|---|---|
+| ⚡ | **Vulkan GPU Acceleration** | Native Vulkan graphics compute backend integrated via `llama.cpp JNI` for accelerated inference on modern mobile GPUs |
+| 📚 | **On-Device RAG Engine** | Retrieval-Augmented Generation with local chunking, vector embeddings, similarity matching, and cross-session document continuity |
+| 🧩 | **GGUF Model Execution** | Experimental direct GGUF inference (e.g. Qwen 2.5 0.5B GGUF; note: Llama 3.2 1B GGUF not yet supported; full GGUF suite coming in October) |
+| 🎙️ | **Full Voice & Audio Input** | 16kHz PCM audio recording with pause/resume controls, live waveform meters, pre-send audio player, and in-bubble playback |
+| 🔄 | **In-App Auto Updater** | Automatic checking, downloading, and package installation of new Solus APK releases directly from GitHub Releases |
+| 🖼️ | **Vision & Document Analysis** | Multimodal image understanding, PDF page rendering, camera capture, and color-coded document badge viewers |
+| 📂 | **External Document Viewers** | One-tap launch to open attached PDFs, images, code files, and office docs in default device viewer apps |
+| 💬 | **Local Multi-Turn Chat** | Offline inference on-device with zero network latency, persistent conversations, and complete telemetry |
+| 🧠 | **Thinking & Reasoning Mode** | Native reasoning capture for DeepSeek R1-style models with expandable thinking disclosure blocks |
+| 📐 | **Math Formula Rendering** | LaTeX parsing, display math blocks, inline KaTeX formatting, and selectable formula copy |
+| ⏬ | **High-Tech Download Manager** | Live speed (`MB/s`), size progress (`MB/GB`), dynamic ETA countdown (`⏱️ ETA`), and family glowing accents |
+| ⚙️ | **Full-Screen Customization** | Comprehensive Settings screen with theme accent pickers, telemetry toggles, and Hugging Face token manager |
+| 🎨 | **Dynamic Model Themes** | Reactive UI accents adapting to DeepSeek (Cyan), Gemma (Amber), Qwen (Violet), and Llama (Emerald) |
+| 📱 | **Fluid Liquid Glass UI** | Compose + Haze real-time glassmorphism blur, spring animations, and gesture-driven navigation |
 
 </div>
 
 ---
 
-## 🆕 What’s new in **v1.5.0**
+## 🆕 What’s New in **v2.0.0**
 
-- **Full-Screen Settings & Customization** — Comprehensive customization menu with solid opaque background and glassmorphic category cards for themes, telemetry, layout, timers, and tokens.
-- **Dynamic Model Accent Themes** — Instant reactive theme accent colors adapting automatically to DeepSeek (Cyan), Gemma (Amber), Qwen (Violet), and Llama (Emerald).
-- **Auto-Hide Bottom Navigation** — Toggleable auto-hide bottom bar mode for full-screen chat, seamlessly paired with left/right horizontal swipe tab navigation.
-- **High-Tech Downloading Model Cards** — Resumable downloads equipped with live speed (`⚡ MB/s`), percentage, downloaded vs total size (`MB/GB`), dynamic ETA countdown (`⏱️ ETA: 1m 45s`), and family accent glowing borders.
-- **Inference Telemetry & Thermal Guard** — Sleek single-line scrollable telemetry bar providing real-time speed (`t/s`), TTFT latency (`ms`), backend engine, battery temperature (`°C`), and available RAM (`GB free`).
-- **Solus Bench Performance Rating** — On-card device benchmark rating dialog showing model performance profiles and expected token speeds.
-- **System Prompt Personas** — Quick prompt presets with automatic chat input clearing when switching back to General.
-- **Circular Dark Glass Controls** — Custom dark glass back button styling in Settings.
-- **Hugging Face Token Manager** — Token management integrated directly into Settings with a direct link to the token creation video guide.
+- **⚡ Vulkan GPU Acceleration** — Native Vulkan compute pipeline integrated into `llama.cpp` JNI, unlocking hardware acceleration on supported Android GPUs alongside CPU threads.
+- **📚 Local Document RAG Engine** — In-app vector embedding search with chunking, cosine similarity, multi-document management, and source attribution badges. Ask questions about previously uploaded documents across conversations without re-uploading!
+- **🧩 Experimental GGUF Model Execution** — Run lightweight GGUF models directly on-device (e.g. Qwen 2.5 0.5B GGUF). *Note: Llama 3.2 1B GGUF is currently unsupported due to architecture constraints.* Full GGUF compatibility, additional architectures, and performance enhancements are launching in October!
+- **🎙️ Full Audio & Voice Input** — Complete microphone recording with pause/resume controls, real-time loudness meters, in-composer audio preview playback before sending, and an inline audio player inside chat bubbles.
+- **🔄 In-App OTA Update Checker & Installer** — Solus automatically checks for new releases directly from GitHub, provides update notifications, and downloads and launches APK installation seamlessly from within the app.
+- **🖼️ In-Bubble Media Previews & External Viewers** — Native image thumbnails, color-coded file extension badges (`PDF`, `DOCX`, `TXT`, `KT`, `CLASS`), and one-tap opening in your device's default viewer apps via `FileProvider`.
+- **🗑️ Zero-Latency History & Automatic Attachment Cleanup** — Chat session deletion updates immediately (0ms UI latency) with smooth exit animations, and all associated images, audio recordings, and documents are automatically deleted from internal storage.
+- **🎯 Raw Media Prompting** — Sending attachments without text no longer injects artificial summarization prompts; the model processes raw media inputs directly.
+- **✨ Animated Morphing Media Picker** — The attachment `+` button smoothly rotates by 45° with spring physics to transform into an `x` when options are open.
 
 ---
 
@@ -114,36 +118,35 @@ Your conversations never leave your phone.
 
 | Layer | Stack |
 |---|---|
-| Language | **Kotlin 2.3.0** |
-| UI | **Jetpack Compose**, Material 3, Haze glass blur |
-| Inference | **LiteRT** (TensorFlow Lite), **MediaPipe GenAI**, **llama.cpp JNI** |
-| Math | `com.hrm.latex` |
-| Local state | **SharedPreferences** (chat history, app settings, download state) |
+| Language | **Kotlin 2.3.0** & **C++20** |
+| UI Framework | **Jetpack Compose**, Material 3, Haze Glass Blur |
+| Inference Backends | **llama.cpp JNI (CPU + Vulkan)**, **LiteRT** (TensorFlow Lite), **MediaPipe GenAI** |
+| Retrieval (RAG) | Local Vector Embeddings, Cosine Similarity, In-Memory Index |
+| Math Engine | `com.hrm.latex` |
+| Media & Audio | Android `AudioRecord` (16kHz PCM16 Mono), `MediaPlayer`, `PdfRenderer` |
+| Local State | **SharedPreferences** & Private File Storage |
 
 </div>
 
 ---
 
-## 📊 Solus vs Google AI Edge Gallery
-
-Both run generative AI on-device. Solus focuses on a polished private Android assistant with documents, guided models, custom settings, and reliable downloads.
+## 📊 Solus vs Other On-Device Runners
 
 <div align="center">
 
-| Feature | Solus | Google AI Edge Gallery |
+| Feature | Solus | Generic On-Device Apps |
 |---|:---:|:---:|
-| Fully offline inference | ✅ | ✅ |
-| Open source | ✅ | ✅ |
-| Free | ✅ | ✅ |
-| Local conversation history | ✅ | ✅ |
-| Vision models | ✅ | ✅ |
-| Document chat (PDF, DOCX, PPTX, XLSX, …) | ✅ | ❌ |
-| Custom Settings & Themes | ✅ | ❌ |
-| Auto-hide bottom navigation & swipe tabs | ✅ | ❌ |
-| Resumable download manager with live ETA | ✅ | ✅ |
-| Device-aware model recommendations & bench ratings | ✅ | ❌ |
-| Response cleanup (control tokens / thinking tags) | ✅ | ❌ |
-| Real-time thermal & RAM telemetry guard | ✅ | ❌ |
+| 100% Fully Offline Inference | ✅ | ✅ |
+| Open Source (Apache 2.0) | ✅ | Varies |
+| Vulkan GPU Acceleration | ✅ | ❌ |
+| Local Document RAG (Embeddings) | ✅ | ❌ |
+| Direct GGUF Model Support | ✅ *(Expanding Oct)* | ❌ |
+| Voice Recording & In-Bubble Audio | ✅ | ❌ |
+| External App Document Viewer | ✅ | ❌ |
+| In-App GitHub OTA Auto-Updater | ✅ | ❌ |
+| Dynamic Family Accent Themes | ✅ | ❌ |
+| Real-Time Thermal & RAM Telemetry | ✅ | ❌ |
+| Resumable Download Manager with Live ETA | ✅ | ❌ |
 
 </div>
 
@@ -153,17 +156,18 @@ Both run generative AI on-device. Solus focuses on a polished private Android as
 
 <div align="center">
 
-| Need | Starting point | Size | Gated |
-|---|---|:---:|:---:|
-| Everyday chat & summaries | Qwen 2.5 Instruct / Gemma 3 | ~1.5–3 GB | No / Yes |
-| Kotlin, Python, coding | Qwen 2.5 Coder | ~2.2 GB | No |
-| Math, planning, reasoning | DeepSeek R1 Distill / Qwen 3 | ~1.8 GB | No |
-| Images & visual Q&A | Gemma 3n Vision / FastVLM | ~2.5 GB | Yes |
-| Low RAM / quick test | Qwen 2.5 0.5B / TinyLlama | ~400 MB | No |
+| Purpose | Model | Format | Recommended RAM | Backend |
+|---|---|:---:|:---:|:---:|
+| Quick test / Low RAM | **Qwen 2.5 0.5B GGUF** | `.gguf` | 3–4 GB | llama.cpp / Vulkan |
+| Everyday chat & reasoning | **Qwen 2.5 1.5B Instruct** | `.task` / `.litertlm` | 4–6 GB | LiteRT / MediaPipe |
+| Coding & Technical tasks | **Qwen 2.5 Coder 1.5B** | `.task` / `.litertlm` | 4–6 GB | LiteRT / MediaPipe |
+| Deep reasoning & Math | **DeepSeek R1 Distill Qwen 1.5B** | `.task` / `.litertlm` | 4–6 GB | LiteRT / MediaPipe |
+| Vision & Multimodal Q&A | **Gemma 3n Vision / FastVLM** | `.task` | 6–8 GB | MediaPipe Vision |
+| Balanced general assistant | **Gemma 3 1B / 4B** | `.task` | 6–8 GB | MediaPipe |
 
 </div>
 
-> Tip: use the **Models** tab filters and device cards — Solus highlights what fits your phone.
+> 💡 **Notice on GGUF Support**: Solus v2.0.0 introduces native GGUF support for selected architectures such as Qwen 2.5 0.5B. Certain models like Llama 3.2 1B GGUF are currently unsupported. Comprehensive GGUF compatibility, full architecture support, and dedicated optimizations are arriving in our major **October update**!
 
 ---
 
@@ -172,197 +176,96 @@ Both run generative AI on-device. Solus focuses on a polished private Android as
 ```text
 Solus
 ├── app/
-│   ├── src/main/java/com/shounak/localmeshai/
-│   │   ├── ai/                 # Inference managers & runtimes
-│   │   ├── models/             # Model catalog & info
-│   │   ├── ui/
-│   │   │   ├── components/     # Math cards, telemetry, preset bars, shared UI
-│   │   │   ├── screens/        # Chat, Models, Settings, Image flows
-│   │   │   ├── theme/          # Colors, typography, glass theme, model accent themes
-│   │   │   └── viewmodels/     # Chat, Vision, Main
-│   │   ├── utils/              # AppSettings, Glass effects, sanitizers, downloads
-│   │   └── MainActivity.kt
+│   ├── src/main/
+│   │   ├── cpp/                # llama.cpp native submodule & JNI bridge (CPU + Vulkan)
+│   │   ├── java/com/shounak/localmeshai/
+│   │   │   ├── ai/             # Inference managers (Chat, Vision, llama.cpp JNI)
+│   │   │   ├── models/         # Model catalog, downloaders & ratings
+│   │   │   ├── rag/            # Local RAG vector store, chunking & retrieval
+│   │   │   ├── ui/             # Compose screens, components, theme & viewmodels
+│   │   │   └── utils/          # AppUpdateManager, AudioUtils, AttachmentViewer, Glass
+│   │   └── res/                # XML layouts, file providers, icons, mipmaps
 │   └── build.gradle.kts
-├── docs/screenshots/
 ├── gradle/libs.versions.toml
 └── README.md
+```
 
 ---
 
-📥 Installation
+## 📥 Installation
 
 <p align="center">
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.5.0/app-release.apk" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v2.0.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v1.5.0"
+      alt="Download Solus APK — Latest v2.0.0"
       width="360"
       height="72"
     />
   </a>
-</p>1. Tap the Download Solus APK button (or open "Releases" (https://github.com/ShounakPatra/Solus/releases)).
-2. Download "release.apk" for v1.5.0.
-3. Install on your phone (allow Install unknown apps if prompted).
-4. Open Solus → Models → download a compatible model → start chatting.
+</p>
 
-Requirements: Android 8.0+ (API 26), ARM64 device recommended for on-device models.
+1. Tap the **Download Solus APK** button above or open [Releases](https://github.com/ShounakPatra/Solus/releases).
+2. Download **`app-release.apk`** for **v2.0.0**.
+3. Install the APK on your device (allow *Install unknown apps* if prompted).
+4. Launch Solus → open **Models** → download your preferred model → begin private chatting!
+
+> **Requirements**: Android 8.0+ (API 28+ recommended), ARM64-v8a device.
 
 ---
 
-🏗️ On-Device Architecture Pipeline
+## 🏗️ On-Device Architecture Pipeline
 
-Solus processes all text, vision, and reasoning inference 100% locally on your phone without sending any data over the internet:
+Solus processes all text, vision, audio, and documents 100% locally on your phone without sending any data to external servers:
 
+```mermaid
 flowchart LR
-    A["📱 User Input"] --> B["🔤 Local Tokenizer"]
-    B --> C["⚡ LiteRT / MediaPipe / llama.cpp"]
+    A["📱 User Input (Text / Voice / Image / Doc)"] --> B["📚 RAG Context & Tokenizer"]
+    B --> C["⚡ Vulkan / LiteRT / llama.cpp"]
     C --> D["🧠 On-Device NPU / GPU / CPU"]
-    D --> E["💬 Streamed Response"]
+    D --> E["💬 Streamed Markdown Response"]
 
     style A fill:#0EA5E9,stroke:#0284C7,color:#fff
     style B fill:#20C997,stroke:#0F766E,color:#fff
     style C fill:#A970FF,stroke:#7E22CE,color:#fff
     style D fill:#FF6B6B,stroke:#C53030,color:#fff
     style E fill:#10B981,stroke:#047857,color:#fff
+```
 
 ---
 
-🛠️ Build from Source
+## 🛠️ Build from Source
 
-Requirements: Android Studio (Ladybug or newer) · Android SDK 36 · JDK 17
+**Requirements**: Android Studio (Ladybug or newer) · Android SDK 36 · NDK (r26+ with CMake) · JDK 17
 
+```bash
 git clone https://github.com/ShounakPatra/Solus.git
 cd Solus
 
-# Debug APK
+# Build debug APK
 ./gradlew assembleDebug
 
-# Unit tests
+# Run all unit tests
 ./gradlew testDebugUnitTest
 
-Debug APK path: "app/build/outputs/apk/debug/app-debug.apk"
-
----
-
-🧪 Custom Model Integration Guide
-
-Developers can easily register custom ".task" or ".litertlm" models in "ModelCatalog.kt":
-
-ModelInfo(
-    id = "custom-model-id",
-    name = "My Custom Model 1.5B",
-    fileName = "custom_model.task",
-    url = "https://huggingface.co/user/repo/resolve/main/custom_model.task",
-    type = ModelType.Text,
-    backend = ModelBackend.LiteRtLm,
-    recommendedRamGb = 6,
-    requiresHuggingFaceToken = false
-)
-
-1. Add your "ModelInfo" entry into "app/src/main/java/com/shounak/localmeshai/models/ModelCatalog.kt".
-2. Build and run: "./gradlew assembleDebug".
-
----
-
-🔐 Privacy & Security Architecture
-
-Solus is built from the ground up with Privacy by Design:
-
-- 100% Offline Execution: After downloading model weights, Wi-Fi and cellular data can be completely turned off.
-- Zero Network Telemetry: No analytics, no tracking, no external API calls during inference.
-- Local Storage Isolation: Chat history and session state remain stored strictly inside sandbox app storage ("SharedPreferences").
-- Sandboxed Token Security: Hugging Face read tokens are stored locally on-device and transmitted only directly to Hugging Face CDN for gated weight downloads.
-- Native Crash Guard: "InitCrashGuard" protects your device by detecting native initialization faults and preventing repeated crash loops.
-
----
-
-💡 FAQ
-
-<details>
-<summary><b>Does Solus run fully offline?</b></summary>
-<br/>Yes. After a model is downloaded you can turn off Wi-Fi and mobile data. Chat and history stay local.
-
-</details><details>
-<summary><b>Why is the APK relatively large (~200MB)?</b></summary>
-<br/>Native runtimes (MediaPipe, LiteRT, llama.cpp JNI) and architecture-specific libraries ship in the APK so inference is fast out of the box.
-
-</details><details>
-<summary><b>Can I load arbitrary GGUF / ONNX files?</b></summary>
-<br/>Current runtimes support optimized Android formats (".task", ".litertlm"). Custom GGUF support via llama.cpp JNI is actively expanded.
-
-</details><details>
-<summary><b>How do I access gated models like Gemma 3?</b></summary>
-<br/>Enter your Hugging Face read token inside Settings → Hugging Face Access Token. Use the "How to create token" button for a quick video tutorial.
-
-</details>---
-
-🗺️ Roadmap
-
-<div align="center">Version| Status| Highlights
-v1.0.0 – v1.2.0| ✅ Shipped| Core local chat, thinking controls, resumable downloads, directional tab motion, Haze scroll FABs
-v1.5.0| ✅ Current| Full Settings menu, dynamic model themes, auto-hide nav, high-tech downloading cards, telemetry guard, system prompt personas
-v1.6.0| 🔜 Next| SHA-256 download checksum verification, custom HF model URL downloader, low-RAM device memory optimizations
-v2.0.0| 🛠️ Planned| Local RAG document chat indexing (PDF/DOCX embeddings), encrypted chat history backup & export, voice Q&A
-v5.0.0| 🎯 Major Milestone| Full native support for running future build "Coming Soon" models & direct ".gguf" models on-device via llama.cpp JNI
-
-</div>---
-
-👤 Author
-
-Shounak Patra
-GitHub: "@ShounakPatra" (https://github.com/ShounakPatra)
-
----
-
-📄 License
-
-Solus is licensed under the Apache License 2.0. See "LICENSE" (LICENSE) for details.
-
----
-
-<div align="center">Made for private, on-device AI.
-
-<p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.5.0/app-release.apk" title="Download the latest Solus APK">
-    <img
-      src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v1.5.0"
-      width="320"
-      height="64"
-    />
-  </a>
-</p>"★ Star on GitHub" (https://github.com/ShounakPatra/Solus)
-
-</div>
-``` easily register custom `.task` or `.litertlm` models in `ModelCatalog.kt`:
-
-```kotlin
-ModelInfo(
-    id = "custom-model-id",
-    name = "My Custom Model 1.5B",
-    fileName = "custom_model.task",
-    url = "https://huggingface.co/user/repo/resolve/main/custom_model.task",
-    type = ModelType.Text,
-    backend = ModelBackend.LiteRtLm,
-    recommendedRamGb = 6,
-    requiresHuggingFaceToken = false
-)
+# Build signed release APK
+./gradlew assembleRelease
 ```
 
-1. Add your `ModelInfo` entry into `app/src/main/java/com/shounak/localmeshai/models/ModelCatalog.kt`.
-2. Build and run: `./gradlew assembleDebug`.
+Release APK path: `app/build/outputs/apk/release/app-release.apk`  
+Debug APK path: `app/build/outputs/apk/debug/app-debug.apk`
 
 ---
 
 ## 🔐 Privacy & Security Architecture
 
-Solus is built from the ground up with **Privacy by Design**:
+Solus is engineered from inception with strict **Privacy by Design**:
 
-- **100% Offline Execution:** After downloading model weights, Wi-Fi and cellular data can be completely turned off.
-- **Zero Network Telemetry:** No analytics, no tracking, no external API calls during inference.
-- **Local Storage Isolation:** Chat history and session state remain stored strictly inside sandbox app storage (`SharedPreferences`).
-- **Sandboxed Token Security:** Hugging Face read tokens are stored locally on-device and transmitted only directly to Hugging Face CDN for gated weight downloads.
-- **Native Crash Guard:** `InitCrashGuard` protects your device by detecting native initialization faults and preventing repeated crash loops.
+- **100% Offline Execution:** After downloading model weights, Wi-Fi and cellular data can be turned off entirely.
+- **Zero Network Telemetry:** No analytics, no tracking, and no external API requests during inference.
+- **Sandboxed Storage:** Chat sessions, RAG vectors, and attachments remain strictly isolated inside internal app storage.
+- **Secure Hugging Face Auth:** API tokens are stored securely in local device preferences and only transmitted directly to official Hugging Face CDN endpoints during gated model downloads.
+- **Native Crash Guard:** `InitCrashGuard` prevents infinite crash loops by monitoring native initialization integrity.
 
 ---
 
@@ -372,23 +275,31 @@ Solus is built from the ground up with **Privacy by Design**:
 <summary><b>Does Solus run fully offline?</b></summary>
 <br/>
 
-Yes. After a model is downloaded you can turn off Wi‑Fi and mobile data. Chat and history stay local.
+Yes! Once a model is downloaded to your device, you can completely turn off Wi-Fi and mobile data. All chat inference, document querying, and audio processing occur 100% locally.
 
 </details>
 
 <details>
-<summary><b>Why is the APK relatively large (~200MB)?</b></summary>
+<summary><b>How does local Document RAG work?</b></summary>
 <br/>
 
-Native runtimes (MediaPipe, LiteRT, llama.cpp JNI) and architecture-specific libraries ship in the APK so inference is fast out of the box.
+When you attach a file (PDF, TXT, DOCX, etc.), Solus splits the document into text chunks and generates on-device embeddings. When you ask a question, Solus performs cosine similarity matching to inject relevant document chunks directly into the model's context window.
 
 </details>
 
 <details>
-<summary><b>Can I load arbitrary GGUF / ONNX files?</b></summary>
+<summary><b>Which GGUF models are currently supported?</b></summary>
 <br/>
 
-Current runtimes support optimized Android formats (`.task`, `.litertlm`). Custom GGUF support via llama.cpp JNI is actively expanded.
+Solus v2.0.0 features experimental GGUF execution for lightweight architectures such as Qwen 2.5 0.5B GGUF. Some architectures like Llama 3.2 1B GGUF are not yet supported. Full GGUF compatibility across major model families is arriving in October!
+
+</details>
+
+<details>
+<summary><b>How does the in-app updater work?</b></summary>
+<br/>
+
+Solus periodically checks the official GitHub repository releases API. When a new version is detected, you receive an in-app prompt with changelog details and can download and install the new APK directly.
 
 </details>
 
@@ -396,7 +307,7 @@ Current runtimes support optimized Android formats (`.task`, `.litertlm`). Custo
 <summary><b>How do I access gated models like Gemma 3?</b></summary>
 <br/>
 
-Enter your Hugging Face read token inside **Settings** → **Hugging Face Access Token**. Use the "How to create token" button for a quick video tutorial.
+Go to **Settings** → **Hugging Face Access Token** and enter your read token. You can use the built-in video tutorial guide button for assistance in generating one.
 
 </details>
 
@@ -408,11 +319,11 @@ Enter your Hugging Face read token inside **Settings** → **Hugging Face Access
 
 | Version | Status | Highlights |
 |---|:---:|---|
-| **v1.0.0 – v1.2.0** | ✅ Shipped | Core local chat, thinking controls, resumable downloads, directional tab motion, Haze scroll FABs |
-| **v1.5.0** | ✅ **Current** | Full Settings menu, dynamic model themes, auto-hide nav, high-tech downloading cards, telemetry guard, system prompt personas |
-| **v1.6.0** | 🔜 Next | SHA-256 download checksum verification, custom HF model URL downloader, low-RAM device memory optimizations |
-| **v2.0.0** | 🛠️ Planned | Local RAG document chat indexing (PDF/DOCX embeddings), encrypted chat history backup & export, voice Q&A |
-| **v5.0.0** | 🎯 **Major Milestone** | Full native support for running future build "Coming Soon" models & direct `.gguf` models on-device via llama.cpp JNI |
+| **v1.0.0 – v1.2.0** | ✅ Shipped | Core local chat, thinking controls, resumable downloads, directional tab motion |
+| **v1.5.0** | ✅ Shipped | Full Settings menu, dynamic model themes, auto-hide nav, high-tech downloading cards, telemetry guard |
+| **v2.0.0** | ✅ **Current** | **Vulkan GPU compute**, **Local RAG document search**, **Experimental GGUF support**, **Full Audio & Voice input**, **In-App GitHub Auto-Updater**, **External Document Viewers** |
+| **v2.1.0 (October)** | 🚀 **Coming Soon** | **Full GGUF model support** across all architectures, memory mapping optimizations, expanded context windows, and extended model catalog |
+| **v3.0.0** | 🎯 Planned | Multi-modal speech-to-text / text-to-speech pipelines, localized LoRA adapters, encrypted backup & export |
 
 </div>
 
@@ -436,10 +347,10 @@ Solus is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for d
 **Made for private, on-device AI.**
 
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v1.5.0/app-release.apk" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v2.0.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v1.5.0"
+      alt="Download Solus APK — Latest v2.0.0"
       width="320"
       height="64"
     />

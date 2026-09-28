@@ -45,7 +45,9 @@ interface VectorStore {
     fun clearAll()
     fun getDocuments(): List<RagDocumentSummary>
     fun getTotalChunkCount(): Int
-    fun search(queryEmbedding: FloatArray, topK: Int = 3, minSimilarity: Float = 0.30f): List<RagSearchResult>
+    fun search(queryEmbedding: FloatArray, topK: Int = 3, minSimilarity: Float = 0.22f): List<RagSearchResult>
+    fun getChunksForDocument(documentId: String, limit: Int = 3): List<RagChunkRecord>
+    fun getRecentChunks(limit: Int = 3): List<RagChunkRecord>
     fun persist()
     fun load()
 }
@@ -123,6 +125,18 @@ class InMemoryRagVectorStore(
 
         results.sortByDescending { it.similarity }
         return if (results.size > topK) results.take(topK) else results
+    }
+
+    override fun getChunksForDocument(documentId: String, limit: Int): List<RagChunkRecord> {
+        return records
+            .filter { it.documentId == documentId }
+            .sortedBy { it.chunkIndex }
+            .take(limit)
+    }
+
+    override fun getRecentChunks(limit: Int): List<RagChunkRecord> {
+        val latestDocId = records.maxByOrNull { it.timestamp }?.documentId ?: return emptyList()
+        return getChunksForDocument(latestDocId, limit)
     }
 
     override fun persist() {

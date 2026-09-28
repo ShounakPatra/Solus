@@ -1,9 +1,16 @@
 package com.shounak.localmeshai.utils
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
+import com.shounak.localmeshai.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -40,7 +47,10 @@ object AppUpdateManager {
         data class Error(val message: String) : UpdateCheckResult()
     }
 
-    suspend fun checkForUpdates(currentVersionName: String): UpdateCheckResult = withContext(Dispatchers.IO) {
+    suspend fun checkForUpdates(currentVersionName: String, context: Context? = null): UpdateCheckResult = withContext(Dispatchers.IO) {
+        if (context != null && !NetworkUtils.isConnected(context)) {
+            return@withContext UpdateCheckResult.Error("No internet connection. Please connect to Wi-Fi or mobile data to check for updates.")
+        }
         try {
             val request = Request.Builder()
                 .url(RELEASES_API_URL)
@@ -53,7 +63,10 @@ object AppUpdateManager {
                     if (response.code == 404) {
                         return@withContext UpdateCheckResult.UpToDate(currentVersionName)
                     }
-                    return@withContext UpdateCheckResult.Error("GitHub API responded with code ${response.code}")
+                    if (response.code == 403 || response.code == 429) {
+                        return@withContext UpdateCheckResult.Error("GitHub API rate limit reached. Please try checking again in a few minutes.")
+                    }
+                    return@withContext UpdateCheckResult.Error("GitHub server returned HTTP ${response.code}")
                 }
 
                 val body = response.body.string()
@@ -92,7 +105,14 @@ object AppUpdateManager {
                 }
             }
         } catch (e: Exception) {
-            UpdateCheckResult.Error(e.localizedMessage ?: "Failed to check for updates")
+            val message = if (NetworkUtils.isOfflineException(e) || (context != null && !NetworkUtils.isConnected(context))) {
+                "No internet connection. Please connect to Wi-Fi or mobile data to check for updates."
+            } else if (NetworkUtils.isNetworkException(e)) {
+                "Network connection lost while checking for updates. Please try again."
+            } else {
+                e.localizedMessage ?: "Failed to check for updates"
+            }
+            UpdateCheckResult.Error(message)
         }
     }
 
@@ -126,6 +146,9 @@ object AppUpdateManager {
         version: String,
         onProgress: ((Float) -> Unit)? = null
     ): Result<File> = withContext(Dispatchers.IO) {
+        if (!NetworkUtils.isConnected(context)) {
+            return@withContext Result.failure(IOException("No internet connection. Please connect to Wi-Fi or mobile data to download updates."))
+        }
         try {
             val updatesDir = File(context.cacheDir, "updates").apply { mkdirs() }
             val cleanVersion = version.trim().removePrefix("v").removePrefix("V")
@@ -252,5 +275,85 @@ object AppUpdateManager {
                 }
             }
         }
+    }
+
+    const val UPDATE_CHANNEL_ID = "app_updates_high"
+    const val UPDATE_NOTIFICATION_ID = 9001
+
+    /**
+     * Sends a high-priority heads-up notification alerting the user that a new release is available
+     * on the GitHub repository (https://github.com/shounakpatra/solus).
+     */
+    fun sendUpdateAvailableNotification(context: Context, updateInfo: UpdateInfo) {
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                UPDATE_CHANNEL_ID,
+                "App Updates",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "High priority notifications when new Solus releases are available on GitHub."
+                enableLights(true)
+                enableVibration(true)
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val targetUrl = updateInfo.htmlUrl.ifBlank { GITHUB_REPO_URL }
+        val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(targetUrl)).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            UPDATE_NOTIFICATION_ID,
+            viewIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val appIntent = Intent(context, com.shounak.localmeshai.MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val appPendingIntent = PendingIntent.getActivity(
+            context,
+            UPDATE_NOTIFICATION_ID + 1,
+            appIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val title = "Update Available: Solus v${updateInfo.latestVersion}"
+        val content = "A new release is available on GitHub ($GITHUB_REPO_OWNER/$GITHUB_REPO_NAME). Tap to view."
+        val bigText = "A new release (v${updateInfo.latestVersion}) is available on GitHub ($GITHUB_REPO_OWNER/$GITHUB_REPO_NAME).\n\n${updateInfo.releaseNotes.take(300)}"
+
+        val notification = NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(title)
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
+            .setContentIntent(pendingIntent)
+            .addAction(android.R.drawable.ic_menu_view, "View on GitHub", pendingIntent)
+            .addAction(android.R.drawable.ic_dialog_info, "Open App", appPendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .build()
+
+        try {
+            notificationManager.notify(UPDATE_NOTIFICATION_ID, notification)
+        } catch (e: SecurityException) {
+            Log.w("AppUpdateManager", "Failed to post update notification: missing permission", e)
+        } catch (e: Exception) {
+            Log.w("AppUpdateManager", "Failed to post update notification", e)
+        }
+    }
+
+    /**
+     * Cancels any pending update notification if the app is already up to date.
+     */
+    fun cancelUpdateNotification(context: Context) {
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        try {
+            notificationManager.cancel(UPDATE_NOTIFICATION_ID)
+        } catch (_: Exception) {}
     }
 }

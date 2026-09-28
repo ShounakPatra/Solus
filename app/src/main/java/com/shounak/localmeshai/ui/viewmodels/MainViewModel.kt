@@ -13,6 +13,7 @@ import com.shounak.localmeshai.models.ModelStatus
 import com.shounak.localmeshai.models.ModelType
 import com.shounak.localmeshai.services.ModelDownloadService
 import com.shounak.localmeshai.utils.DeviceUtils
+import com.shounak.localmeshai.utils.DownloadSnapshot
 import com.shounak.localmeshai.utils.DownloadStateStore
 import com.shounak.localmeshai.utils.InitCrashGuard
 import com.shounak.localmeshai.utils.ModelDownloader
@@ -62,8 +63,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isCheckingForUpdates = MutableStateFlow(false)
     val isCheckingForUpdates = _isCheckingForUpdates.asStateFlow()
 
+    private val _crashReports = MutableStateFlow<List<com.shounak.localmeshai.utils.CrashReport>>(emptyList())
+    val crashReports = _crashReports.asStateFlow()
+
+    private val _pendingCrashPrompt = MutableStateFlow<com.shounak.localmeshai.utils.CrashReport?>(null)
+    val pendingCrashPrompt = _pendingCrashPrompt.asStateFlow()
+
     init {
         DownloadStateStore.initialize(application)
+        refreshCrashReports()
+        checkPendingCrashReport()
         ModelRuntimeCoordinator.setReleasedCallback(ModelRuntimeOwner.Chat) {
             clearSelectedTextModel()
         }
@@ -83,12 +92,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun checkPendingCrashReport() {
+        _pendingCrashPrompt.value = com.shounak.localmeshai.utils.CrashReportManager.getPendingCrashReportForPrompt(getApplication())
+    }
+
+    fun dismissPendingCrashPrompt() {
+        _pendingCrashPrompt.value = null
+        com.shounak.localmeshai.utils.CrashReportManager.clearPendingCrashPrompt(getApplication())
+    }
+
+    fun sendPendingCrashReport(context: Context? = null) {
+        val report = _pendingCrashPrompt.value ?: return
+        val targetContext = context ?: getApplication()
+        dismissPendingCrashPrompt()
+        com.shounak.localmeshai.utils.CrashReportManager.sendToGitHub(
+            context = targetContext,
+            reportText = report.details,
+            titleHint = report.title
+        )
+    }
+
+    fun refreshCrashReports() {
+        _crashReports.value = com.shounak.localmeshai.utils.CrashReportManager.getAllReports(getApplication())
+    }
+
+    fun clearCrashReports() {
+        com.shounak.localmeshai.utils.CrashReportManager.clearAllReports(getApplication())
+        refreshCrashReports()
+    }
+
     fun checkForUpdates(silent: Boolean = false) {
         if (_isCheckingForUpdates.value) return
         viewModelScope.launch {
             _isCheckingForUpdates.value = true
             val result = com.shounak.localmeshai.utils.AppUpdateManager.checkForUpdates(
-                com.shounak.localmeshai.BuildConfig.VERSION_NAME
+                currentVersionName = com.shounak.localmeshai.BuildConfig.VERSION_NAME,
+                context = getApplication()
             )
             _isCheckingForUpdates.value = false
             if (!silent || result is com.shounak.localmeshai.utils.AppUpdateManager.UpdateCheckResult.UpdateAvailable) {
@@ -97,11 +136,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             if (result is com.shounak.localmeshai.utils.AppUpdateManager.UpdateCheckResult.UpToDate) {
                 com.shounak.localmeshai.utils.AppUpdateManager.deleteDownloadedApks(getApplication())
+                com.shounak.localmeshai.utils.AppUpdateManager.cancelUpdateNotification(getApplication())
             } else if (result is com.shounak.localmeshai.utils.AppUpdateManager.UpdateCheckResult.UpdateAvailable) {
-                val apkUrl = result.updateInfo.downloadUrl
-                // Auto-download only if autoCheckUpdates is enabled
-                if (appSettingsData.value.autoCheckUpdates && !apkUrl.isNullOrBlank()) {
-                    downloadAndInstallUpdate(result.updateInfo.latestVersion, apkUrl)
+                if (appSettingsData.value.autoCheckUpdates) {
+                    com.shounak.localmeshai.utils.AppUpdateManager.sendUpdateAvailableNotification(
+                        context = getApplication(),
+                        updateInfo = result.updateInfo
+                    )
                 }
             }
         }
@@ -239,7 +280,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectTextModel(path: String) {
         val model = availableModels.firstOrNull { it.localPath == path }
-        if (model != null && (model.status == ModelStatus.Failed || model.status == ModelStatus.Blocked)) {
+        val isUnsafeAllowed = model != null && unsafeInitOverrideIds.contains(model.id)
+        if (model != null && (model.status == ModelStatus.Failed || (model.status == ModelStatus.Blocked && !isUnsafeAllowed))) {
             _selectedTextModelPath.value = null
             return
         }
@@ -256,7 +298,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectVisionModel(path: String) {
         val model = availableModels.firstOrNull { it.localPath == path }
-        if (model != null && (model.status == ModelStatus.Failed || model.status == ModelStatus.Blocked)) {
+        val isUnsafeAllowed = model != null && unsafeInitOverrideIds.contains(model.id)
+        if (model != null && (model.status == ModelStatus.Failed || (model.status == ModelStatus.Blocked && !isUnsafeAllowed))) {
             _selectedVisionModelPath.value = null
             return
         }
@@ -292,6 +335,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startDownloadAnyway(modelId: String) {
+        if (!unsafeInitOverrideIds.contains(modelId)) {
+            unsafeInitOverrideIds.add(modelId)
+        }
         startDownloadInternal(modelId = modelId, ignoreDeviceGuard = true)
     }
 
@@ -300,19 +346,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (model.status == ModelStatus.Available && model.localPath != null) {
             return
         }
+        val isIgnored = ignoreDeviceGuard || unsafeInitOverrideIds.contains(modelId)
         if (InitCrashGuard.isModelBlocked(getApplication(), model.id)) {
             updateModel(modelId) {
                 it.copy(errorMessage = InitCrashGuard.blockedModelMessage())
             }
             return
         }
-        if (model.status == ModelStatus.Blocked && !ignoreDeviceGuard) {
+        if (model.status == ModelStatus.Blocked && !isIgnored) {
             updateModel(modelId) {
                 it.copy(errorMessage = model.errorMessage ?: InitCrashGuard.blockedModelMessage())
             }
             return
         }
-        if (!ignoreDeviceGuard) {
+        if (!isIgnored) {
             deviceBlockMessage(model)?.let { reason ->
                 updateModel(modelId) {
                     it.copy(status = ModelStatus.Blocked, errorMessage = reason)
@@ -341,6 +388,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     status = ModelStatus.NotDownloaded,
                     errorMessage = "This model requires a Hugging Face token. Open Settings (⚙️) → Hugging Face Access Token to paste your token."
+                )
+            }
+            return
+        }
+
+        if (!com.shounak.localmeshai.utils.NetworkUtils.isConnected(getApplication())) {
+            updateModel(modelId) {
+                it.copy(
+                    status = if (it.downloadedBytes > 0L) ModelStatus.Paused else ModelStatus.NotDownloaded,
+                    errorMessage = "No internet connection. Please connect to Wi-Fi or mobile data to download models."
                 )
             }
             return
@@ -377,17 +434,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        val localPath = model.localPath
-        if (localPath.isNullOrBlank()) {
+        val targetPath = model.localPath
+            ?: modelDownloader.getTargetFile(model.id, model.fileName, model.packageType).takeIf { it.exists() }?.absolutePath
+        if (targetPath.isNullOrBlank()) {
             startDownloadAnyway(modelId)
             return
+        }
+        if (model.localPath.isNullOrBlank()) {
+            updateModel(modelId) { it.copy(localPath = targetPath) }
         }
         if (!unsafeInitOverrideIds.contains(model.id)) {
             unsafeInitOverrideIds.add(model.id)
         }
         when (model.type) {
-            ModelType.Text -> selectTextModel(localPath)
-            ModelType.Vision -> selectVisionModel(localPath)
+            ModelType.Text -> selectTextModel(targetPath)
+            ModelType.Vision -> selectVisionModel(targetPath)
         }
     }
 
@@ -404,7 +465,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             url = model.url.orEmpty(),
             fileName = model.fileName,
             packageType = model.packageType,
-            token = _huggingFaceToken.value.ifBlank { null }
+            token = _huggingFaceToken.value.ifBlank { null },
+            sha256 = model.sha256
+        )
+        modelDownloader.deleteDownload(model.id, model.fileName, model.packageType)
+        unsafeInitOverrideIds.remove(model.id)
+        DownloadStateStore.update(
+            DownloadSnapshot(
+                modelId = model.id,
+                status = ModelStatus.NotDownloaded,
+                progress = 0f,
+                downloadedBytes = 0L,
+                totalBytes = -1L,
+                bytesPerSecond = 0L,
+                localPath = null,
+                errorMessage = null,
+                downloadedAt = 0L
+            )
         )
         val blockMessage = when {
             InitCrashGuard.isModelBlocked(getApplication(), model.id) -> InitCrashGuard.blockedModelMessage()
@@ -418,14 +495,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 totalBytes = -1L,
                 bytesPerSecond = 0L,
                 localPath = null,
-                errorMessage = blockMessage
+                errorMessage = blockMessage,
+                downloadedAt = 0L
             )
         }
     }
 
     fun resumeDownload(modelId: String) {
         val model = availableModels.firstOrNull { it.id == modelId } ?: return
+        if (!com.shounak.localmeshai.utils.NetworkUtils.isConnected(getApplication())) {
+            updateModel(modelId) {
+                it.copy(
+                    errorMessage = "No internet connection. Please connect to Wi-Fi or mobile data to resume download."
+                )
+            }
+            return
+        }
         val downloadUrl = model.url ?: return
+        updateModel(modelId) {
+            it.copy(
+                status = ModelStatus.Downloading,
+                errorMessage = null
+            )
+        }
         ModelDownloadService.resume(
             context = getApplication(),
             modelId = model.id,
@@ -433,22 +525,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             url = downloadUrl,
             fileName = model.fileName,
             packageType = model.packageType,
-            token = _huggingFaceToken.value.ifBlank { null }
+            token = _huggingFaceToken.value.ifBlank { null },
+            sha256 = model.sha256
         )
     }
 
     fun deleteModel(modelId: String) {
         val model = availableModels.firstOrNull { it.id == modelId } ?: return
         // Cancel any in-progress download first.
-        if (model.status == ModelStatus.Downloading) {
-            ModelDownloadService.pause(getApplication(), modelId)
-        }
-        // Delete the local file / directory.
-        val target = model.localPath?.let { File(it) }
-            ?: modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
-        runCatching {
-            if (target.isDirectory) target.deleteRecursively() else target.delete()
-        }
+        ModelDownloadService.cancel(
+            context = getApplication(),
+            modelId = model.id,
+            name = model.name,
+            url = model.url.orEmpty(),
+            fileName = model.fileName,
+            packageType = model.packageType,
+            token = _huggingFaceToken.value.ifBlank { null },
+            sha256 = model.sha256
+        )
+        // Delete the local file / directory and any partial download.
+        modelDownloader.deleteDownload(model.id, model.fileName, model.packageType)
+        unsafeInitOverrideIds.remove(model.id)
+        DownloadStateStore.update(
+            DownloadSnapshot(
+                modelId = model.id,
+                status = ModelStatus.NotDownloaded,
+                progress = 0f,
+                downloadedBytes = 0L,
+                totalBytes = -1L,
+                bytesPerSecond = 0L,
+                localPath = null,
+                errorMessage = null,
+                downloadedAt = 0L
+            )
+        )
         // Clear selection if this model was active.
         if (_selectedTextModelPath.value == model.localPath) {
             _selectedTextModelPath.value = null

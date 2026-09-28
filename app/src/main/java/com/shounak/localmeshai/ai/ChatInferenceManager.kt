@@ -96,7 +96,8 @@ class ChatInferenceManager(private val context: Context) {
          * Expected GGUF file size in bytes for artifact integrity validation. 0L = no check.
          * Pass [ModelInfo.expectedFileSizeBytes] from the catalog entry.
          */
-        expectedFileSizeBytes: Long = 0L
+        expectedFileSizeBytes: Long = 0L,
+        contextWindowTokens: Int? = null
     ) {
         val file = File(modelPath)
         if (!file.exists()) {
@@ -219,11 +220,12 @@ class ChatInferenceManager(private val context: Context) {
             initLiteRtLm(
                 modelPath = modelPath,
                 modelId = effectiveId,
-                inferenceBackend = inferenceBackend
+                inferenceBackend = inferenceBackend,
+                contextWindowTokens = contextWindowTokens
             )
             activeBackendDisplayName = if (inferenceBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
         } else {
-            initMediaPipe(modelPath)
+            initMediaPipe(modelPath, contextWindowTokens)
             activeBackendDisplayName = "MediaPipe CPU"
         }
     }
@@ -231,7 +233,8 @@ class ChatInferenceManager(private val context: Context) {
     private fun initLiteRtLm(
         modelPath: String,
         modelId: String,
-        inferenceBackend: InferenceBackend
+        inferenceBackend: InferenceBackend,
+        contextWindowTokens: Int? = null
     ) {
         // Mark that we're about to attempt a potentially fatal native init
         InitCrashGuard.markInitStarted(context, modelId)
@@ -239,6 +242,7 @@ class ChatInferenceManager(private val context: Context) {
         // This call may invoke native abort() and kill the entire process.
         // If that happens, InitCrashGuard.checkAndRecoverCrash() on next
         // app launch will detect it and blocklist this model.
+        val effectiveMaxTokens = (contextWindowTokens ?: 4096).coerceIn(2048, 8192)
         var engine: Engine? = null
         try {
             val backend = when (inferenceBackend) {
@@ -252,11 +256,29 @@ class ChatInferenceManager(private val context: Context) {
                 EngineConfig(
                     modelPath = modelPath,
                     backend = backend,
-                    maxNumTokens = MAX_RESPONSE_TOKENS,
+                    maxNumTokens = effectiveMaxTokens,
                     cacheDir = runtimeCacheDir.absolutePath
                 )
             )
-            engine.initialize()
+            try {
+                engine.initialize()
+            } catch (t: Throwable) {
+                if (effectiveMaxTokens > 2048) {
+                    Log.w(TAG, "LiteRT-LM init with $effectiveMaxTokens tokens failed, retrying with 2048: ${t.message}")
+                    runCatching { engine.close() }
+                    engine = Engine(
+                        EngineConfig(
+                            modelPath = modelPath,
+                            backend = backend,
+                            maxNumTokens = 2048,
+                            cacheDir = runtimeCacheDir.absolutePath
+                        )
+                    )
+                    engine.initialize()
+                } else {
+                    throw t
+                }
+            }
 
             // If we reach here, native init succeeded!
             InitCrashGuard.markInitCompleted(context)
@@ -282,10 +304,11 @@ class ChatInferenceManager(private val context: Context) {
         }
     }
 
-    private fun initMediaPipe(modelPath: String) {
+    private fun initMediaPipe(modelPath: String, contextWindowTokens: Int? = null) {
+        val effectiveTokens = (contextWindowTokens ?: 4096).coerceIn(1024, 4096)
         val options = LlmInference.LlmInferenceOptions.builder()
             .setModelPath(modelPath)
-            .setMaxTokens(MAX_RESPONSE_TOKENS)
+            .setMaxTokens(effectiveTokens)
             .setMaxTopK(40)
             .setPreferredBackend(LlmInference.Backend.CPU)
             .build()
