@@ -220,17 +220,20 @@ Solus processes all text, vision, audio, and documents 100% locally on your phon
 
 ```mermaid
 flowchart LR
-    A["📱 User Input (Text / Voice / Image / Doc)"] --> B["📚 RAG Context & Tokenizer"]
-    B --> C["⚡ Vulkan / LiteRT / llama.cpp"]
-    C --> D["🧠 On-Device NPU / GPU / CPU"]
-    D --> E["💬 Streamed Markdown Response"]
+    A["📱 User Input"] --> B["📚 RAG and Local Tokenizer"]
+    B --> C["⚡ Vulkan, LiteRT, llama.cpp"]
+    C --> D["🧠 On-Device NPU, GPU, CPU"]
+    D --> E["💬 Streamed Response"]
 
-    style A fill:#0EA5E9,stroke:#0284C7,color:#fff
-    style B fill:#20C997,stroke:#0F766E,color:#fff
-    style C fill:#A970FF,stroke:#7E22CE,color:#fff
-    style D fill:#FF6B6B,stroke:#C53030,color:#fff
-    style E fill:#10B981,stroke:#047857,color:#fff
+    style A fill:#0EA5E9,stroke:#0284C7,color:#ffffff
+    style B fill:#20C997,stroke:#0F766E,color:#ffffff
+    style C fill:#A970FF,stroke:#7E22CE,color:#ffffff
+    style D fill:#FF6B6B,stroke:#C53030,color:#ffffff
+    style E fill:#10B981,stroke:#047857,color:#ffffff
 ```
+<p align="center">
+  <sub><b>Supported Inputs:</b> Text prompts · Microphone audio · Camera & images · Local documents (PDF, DOCX, TXT)</sub>
+</p>
 
 ---
 
