@@ -98,17 +98,16 @@ Your conversations and files never leave your phone.
 
 ---
 
-## 🆕 What’s New in **v2.0.0**
+## 🆕 What’s New in **v3.0.0**
 
-- **⚡ Vulkan GPU Acceleration** — Native Vulkan compute pipeline integrated into `llama.cpp` JNI, unlocking hardware acceleration on supported Android GPUs alongside CPU threads.
-- **📚 Local Document RAG Engine** — In-app vector embedding search with chunking, cosine similarity, multi-document management, and source attribution badges. Ask questions about previously uploaded documents across conversations without re-uploading!
-- **🧩 Experimental GGUF Model Execution** — Run lightweight GGUF models directly on-device (e.g. Qwen 2.5 0.5B GGUF). *Note: Llama 3.2 1B GGUF is currently unsupported due to architecture constraints.* Full GGUF compatibility, additional architectures, and performance enhancements are launching in October!
-- **🎙️ Full Audio & Voice Input** — Complete microphone recording with pause/resume controls, real-time loudness meters, in-composer audio preview playback before sending, and an inline audio player inside chat bubbles.
-- **🔄 In-App OTA Update Checker & Installer** — Solus automatically checks for new releases directly from GitHub, provides update notifications, and downloads and launches APK installation seamlessly from within the app.
-- **🖼️ In-Bubble Media Previews & External Viewers** — Native image thumbnails, color-coded file extension badges (`PDF`, `DOCX`, `TXT`, `KT`, `CLASS`), and one-tap opening in your device's default viewer apps via `FileProvider`.
-- **🗑️ Zero-Latency History & Automatic Attachment Cleanup** — Chat session deletion updates immediately (0ms UI latency) with smooth exit animations, and all associated images, audio recordings, and documents are automatically deleted from internal storage.
-- **🎯 Raw Media Prompting** — Sending attachments without text no longer injects artificial summarization prompts; the model processes raw media inputs directly.
-- **✨ Animated Morphing Media Picker** — The attachment `+` button smoothly rotates by 45° with spring physics to transform into an `x` when options are open.
+- **🚀 16 KB Page-Size Compliance (Android 15+)** — Full native compliance for Android 15/16 devices with 16 KB memory pages. Completely eliminated legacy 4 KB-aligned runtimes; all native libraries (`llama.cpp`, `LiteRT-LM`, `MediaPipe`) are strictly 16 KB / 64 KB aligned.
+- **📉 81% APK Footprint Reduction (244 MB → 46 MB)** — Massive size optimization by stripping 73 MB of emulator `x86_64` junk, enabling native library compression (`useLegacyPackaging = true`), and enabling R8 minification and resource shrinking into a single 7.2 MB `classes.dex`.
+- **🛡️ Pure Offline Zero-Telemetry Hardening** — Completely purged legacy Firebase Crashlytics, installation tracking, and Play Services measurement connectors. Solus is 100% private with its own on-device `CrashReportManager` and zero network telemetry.
+- **🧠 Universal Persistent Memory for Vision & Text** — Enabled full persistent memory capabilities across multimodal vision models (previously limited to text models) with cross-session memory preservation.
+- **🎯 Contextual Query-Aware Memory Recall** — Added keyword and semantic intent filtering to prevent stored memories from intruding into casual greetings or unrelated questions; memories now recall only when genuinely contextually relevant.
+- **💭 Strict Thinking Mode Controls** — Completely resolved persistent `<think>` reasoning blocks appearing when Thinking Mode is turned off; added multi-layer tag normalization and unclosed block sanitization across both text and multimodal pipelines.
+- **🔄 Response Diversity & Prompt Hygiene** — Fixed repetitive model answers across distinct prompts with improved temperature calibration, sampling parameter freshness, and stream deduplication.
+- **⚡ 10x Faster Build Pipelines** — Enabled Gradle Configuration Cache, Build Cache, and Parallel execution in `gradle.properties` for near-instant build and test execution.
 
 ---
 
