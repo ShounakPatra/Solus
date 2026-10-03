@@ -24,7 +24,7 @@ Your conversations and files never leave your phone.
 </p>
 
 <p>
-  <sub>Tap the button to get the newest release · Android 8.0+</sub>
+  <sub>Tap the button to get the newest release · Android 9.0+</sub>
 </p>
 
 <p>
@@ -36,9 +36,9 @@ Your conversations and files never leave your phone.
 
 <p>
   <img src="https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg" alt="Android CI" />
-  <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android 8.0 or newer" />
+  <img src="https://img.shields.io/badge/Android-9.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android 9.0 or newer" />
   <img src="https://img.shields.io/badge/License-Apache_2.0-A970FF?style=for-the-badge&logo=apache&logoColor=white" alt="Apache 2.0 license" />
-  <img src="https://img.shields.io/badge/Kotlin-2.3.0-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.3.0" />
+  <img src="https://img.shields.io/badge/Kotlin-2.2.10-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.2.10" />
   <img src="https://img.shields.io/badge/Jetpack_Compose-UI-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 </p>
 
@@ -117,7 +117,7 @@ Your conversations and files never leave your phone.
 
 | Layer | Stack |
 |---|---|
-| Language | **Kotlin 2.3.0** & **C++20** |
+| Language | **Kotlin 2.2.10** & **C++20** |
 | UI Framework | **Jetpack Compose**, Material 3, Haze Glass Blur |
 | Inference Backends | **llama.cpp JNI (CPU + Vulkan)**, **LiteRT** (TensorFlow Lite), **MediaPipe GenAI** |
 | Retrieval (RAG) | Local Vector Embeddings, Cosine Similarity, In-Memory Index |
@@ -209,7 +209,7 @@ Solus
 3. Install the APK on your device (allow *Install unknown apps* if prompted).
 4. Launch Solus → open **Models** → download your preferred model → begin private chatting!
 
-> **Requirements**: Android 8.0+ (API 28+ recommended), ARM64-v8a device.
+> **Requirements**: Android 9.0+ (API 28+), ARM64-v8a device.
 
 ---
 
