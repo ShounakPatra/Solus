@@ -110,7 +110,7 @@ fun CrashPromptDialog(
 
                 // Prompt description
                 Text(
-                    text = "Solus captured debug and crash info from the previous session. Would you like to send this report to our GitHub repo to help fix the issue?",
+                    text = "Solus captured the full crash debug log (logcat) and complete device hardware specs. Would you like to send this full report to our GitHub repo to help fix the issue?",
                     style = MaterialTheme.typography.bodyMedium,
                     color = colors.onSurfaceVariant
                 )
@@ -163,7 +163,7 @@ fun CrashPromptDialog(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = if (showDetails) "Hide Debug Info" else "View Debug Info & Stack Trace",
+                                text = if (showDetails) "Hide Debug Log & Device Info" else "View Full Debug Log & Device Info",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = colors.primary
                             )
@@ -204,7 +204,7 @@ fun CrashPromptDialog(
                     }
                 }
 
-                // Action buttons: Cancel and Send to GitHub
+                // Action buttons: Cancel and Send to GitHub Repo
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -224,12 +224,12 @@ fun CrashPromptDialog(
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = colors.primary),
                         modifier = Modifier
-                            .weight(1.3f)
+                            .weight(1.4f)
                             .height(44.dp)
                     ) {
                         Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Send to GitHub", style = MaterialTheme.typography.labelLarge)
+                        Text("Send to Repo", style = MaterialTheme.typography.labelLarge)
                     }
                 }
             }

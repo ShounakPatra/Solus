@@ -45,4 +45,19 @@ class CrashReportManagerTest {
             CrashReportManager.GITHUB_ISSUES_URL
         )
     }
+
+    @Test
+    fun logSanitizationRedactsSensitiveTokens() {
+        val rawLog = "Loaded model with token: hf_1234567890abcdefghijklmnopqrstuvwxyz and api_key=AIzaSyA1234567890abcdefghijklmnopqrstuv and Authorization: Bearer secret_bearer_token_1234567890"
+        val sanitized = CrashReportManager.sanitizeLog(rawLog)
+
+        assertFalse(sanitized.contains("hf_1234567890abcdefghijklmnopqrstuvwxyz"))
+        assertTrue(sanitized.contains("hf_***REDACTED***"))
+
+        assertFalse(sanitized.contains("AIzaSyA1234567890abcdefghijklmnopqrstuv"))
+        assertTrue(sanitized.contains("AIza***REDACTED***"))
+
+        assertFalse(sanitized.contains("secret_bearer_token_1234567890"))
+        assertTrue(sanitized.contains("Bearer ***REDACTED***"))
+    }
 }

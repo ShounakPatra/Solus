@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.shounak.localmeshai.ai.ChatInferenceManager
+import com.shounak.localmeshai.utils.CrashReportManager
 import com.shounak.localmeshai.utils.InitCrashGuard
 import com.shounak.localmeshai.utils.ModelOutputSanitizer
 import com.shounak.localmeshai.utils.ModelResponseQuality
@@ -33,6 +34,7 @@ import com.shounak.localmeshai.rag.RagIngestionResult
 import com.shounak.localmeshai.rag.RagManager
 import com.shounak.localmeshai.rag.store.RagDocumentSummary
 import com.shounak.localmeshai.utils.AppSettings
+import com.shounak.localmeshai.utils.AttachmentViewerUtils
 import com.shounak.localmeshai.memory.MemoryCategory
 import com.shounak.localmeshai.memory.MemoryEntry
 import com.shounak.localmeshai.memory.PersistentMemoryManager
@@ -41,6 +43,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 
 @Immutable
@@ -132,6 +135,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var currentModelName: String = ""
     private var currentModelSize: String = ""
     private var currentContextWindowTokens: Int? = null
+    private var currentSupportsThinkingMode: Boolean = false
     private var currentAllowUnsafeOverride: Boolean = false
     private var lastLoadedBackendPreference: String? = null
     private var initGeneration: Int = 0
@@ -173,6 +177,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             modelName = currentModelName,
                             modelSize = currentModelSize,
                             contextWindowTokens = currentContextWindowTokens,
+                            supportsThinkingMode = currentSupportsThinkingMode,
                             allowUnsafeOverride = currentAllowUnsafeOverride,
                             forceReload = true
                         )
@@ -319,6 +324,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         modelName: String = "",
         modelSize: String = "",
         contextWindowTokens: Int? = null,
+        supportsThinkingMode: Boolean = false,
         allowUnsafeOverride: Boolean = false,
         forceReload: Boolean = false
     ) {
@@ -336,6 +342,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentModelName = modelName
         currentModelSize = modelSize
         currentContextWindowTokens = contextWindowTokens
+        currentSupportsThinkingMode = supportsThinkingMode
         currentAllowUnsafeOverride = allowUnsafeOverride
 
         val myGen = ++initGeneration
@@ -356,6 +363,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         modelId = modelId,
                         modelName = modelName,
                         modelSize = modelSize,
+                        supportsThinkingMode = supportsThinkingMode,
                         allowUnsafeOverride = allowUnsafeOverride,
                         contextWindowTokens = contextWindowTokens
                     )
@@ -423,12 +431,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
                         val current = messages[assistantIndex]
                         val cleanPartial = ModelOutputSanitizer.cleanAssistantText(partial, userText)
-                        val visiblePartial = if (
+                        val shouldSuppress = if (!thinkingModeForRequest) {
+                            ModelResponseQuality.shouldSuppressLivePartial(cleanPartial) ||
+                                (ModelResponseQuality.isReasoningLeak(cleanPartial) &&
+                                    ThinkingTextUtils.extractSpokenAnswerFromMonologue(cleanPartial).isNullOrBlank())
+                        } else {
                             ModelResponseQuality.shouldSuppressLivePartial(cleanPartial)
-                        ) {
+                        }
+                        val visiblePartial = if (shouldSuppress) {
                             "Generating…"
                         } else {
-                            cleanPartial.ifBlank { "\u2026" }
+                            if (!thinkingModeForRequest && ModelResponseQuality.isReasoningLeak(cleanPartial)) {
+                                ThinkingTextUtils.extractSpokenAnswerFromMonologue(cleanPartial) ?: cleanPartial.ifBlank { "\u2026" }
+                            } else {
+                                cleanPartial.ifBlank { "\u2026" }
+                            }
                         }
                         messages[assistantIndex] = current.copy(text = visiblePartial)
                         // Do NOT call saveCurrentSession() here — persisting JSON on every
@@ -443,6 +460,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     if (added != null) {
                         refreshMemories()
                         _memoryFeedbackEvent.tryEmit("Remembered: ${candidate.first}")
+                        resetRuntimeConversationBeforeNextSend = true
                     }
                 }
             }
@@ -492,12 +510,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val memoryContext = if (_isPersistentMemoryActive.value) {
-                    memoryManager.formatMemoryContext()
+                    memoryManager.formatMemoryContext(query = effectivePromptText)
                 } else {
                     ""
                 }
                 val prompt = buildPrompt(effectivePromptText)
-                val structuredMessages = buildStructuredHistory(effectivePromptText)
+                val structuredMessages = buildStructuredHistory(effectivePromptText, thinkingMode = thinkingModeForRequest)
                 val modeChangedInStatefulThinkingRuntime =
                     lastRuntimeThinkingMode?.let { it != thinkingModeForRequest } == true &&
                         inferenceManager.needsResetWhenThinkingModeChanges()
@@ -572,6 +590,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     Log.e("ChatViewModel", "Inference error", t)
                     resetRuntimeConversationBeforeNextSend = true
+                    val mId = currentModelId.ifBlank { "unknown_model" }
+                    val mName = currentModelName.ifBlank { "Unknown Model" }
+                    val backendPref = appSettings.settings.value.llamaBackendPreference
+                    runCatching {
+                        CrashReportManager.recordModelCrash(
+                            context = getApplication(),
+                            modelId = mId,
+                            modelName = mName,
+                            errorMessage = t.message ?: "Model inference failure",
+                            throwable = t,
+                            runtimeInfo = "Chat Session: $targetSessionId | Backend: $backendPref"
+                        )
+                    }
                     if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
                         launch(Dispatchers.Main.immediate) {
                             messages[assistantIndex] = messages[assistantIndex].copy(text = "⚠️ Error: ${t.message}")
@@ -716,13 +747,31 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         session?.documentId?.let { docId ->
             ragManager.removeDocument(docId)
         }
+        session?.messages?.forEach { msg ->
+            msg.documentPath?.let { path ->
+                val f = File(path)
+                if (f.exists()) f.delete()
+            }
+        }
         val sessionDir = getApplication<Application>().filesDir.resolve("chat_attachments").resolve(sessionId)
         if (sessionDir.exists()) {
             sessionDir.deleteRecursively()
         }
         val removingCurrent = sessionId == _currentSessionId.value
         val removingPending = sessionId == _pendingSessionId.value
+        if (removingCurrent) {
+            messages.forEach { msg ->
+                msg.documentPath?.let { path ->
+                    val f = File(path)
+                    if (f.exists()) f.delete()
+                }
+            }
+        }
         chatSessions.removeAll { it.id == sessionId }
+        AttachmentViewerUtils.cleanupOrphanAttachments(
+            getApplication(),
+            setOfNotNull(_currentSessionId.value, _pendingSessionId.value)
+        )
         persistSessions()
         if (removingPending) {
             _pendingSessionId.value = null
@@ -746,10 +795,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             session.documentId?.let { docId ->
                 ragManager.removeDocument(docId)
             }
+            session.messages.forEach { msg ->
+                msg.documentPath?.let { path ->
+                    val f = File(path)
+                    if (f.exists()) f.delete()
+                }
+            }
+            val sessionDir = getApplication<Application>().filesDir.resolve("chat_attachments").resolve(session.id)
+            if (sessionDir.exists()) {
+                sessionDir.deleteRecursively()
+            }
         }
-        val attachmentsDir = getApplication<Application>().filesDir.resolve("chat_attachments")
-        if (attachmentsDir.exists()) {
-            attachmentsDir.deleteRecursively()
+        messages.forEach { msg ->
+            msg.documentPath?.let { path ->
+                val f = File(path)
+                if (f.exists()) f.delete()
+            }
         }
         ragManager.clearKnowledgeBase()
         chatSessions.clear()
@@ -761,6 +822,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         lastRuntimeThinkingMode = null
         _lastInferenceTime.value = 0L
         _tokensPerSecond.value = 0f
+        AttachmentViewerUtils.cleanupOrphanAttachments(getApplication())
         persistSessions()
     }
 
@@ -944,13 +1006,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         historyPrefs.edit().putString(KEY_SESSIONS, array.toString()).apply()
     }
 
-    private fun buildStructuredHistory(latestUserText: String): List<Pair<String, String>> {
+    private fun buildStructuredHistory(
+        latestUserText: String,
+        thinkingMode: Boolean = true
+    ): List<Pair<String, String>> {
         val turns = mutableListOf<Pair<String, String>>()
-        if (_isPersistentMemoryActive.value) {
-            val memoryContext = memoryManager.formatMemoryContext()
-            if (memoryContext.isNotBlank()) {
-                turns.add("system" to memoryContext)
+        val memoryContext = if (_isPersistentMemoryActive.value) {
+            memoryManager.formatMemoryContext(query = latestUserText)
+        } else {
+            ""
+        }
+        if (!thinkingMode) {
+            val systemInstruction = if (memoryContext.isNotBlank()) {
+                "$memoryContext\n\nProvide direct, concise answers. Do not output internal monologue, reasoning steps, or <think> tags."
+            } else {
+                "Provide direct, concise answers. Do not output internal monologue, reasoning steps, or <think> tags."
             }
+            turns.add("system" to systemInstruction)
+        } else if (memoryContext.isNotBlank()) {
+            turns.add("system" to memoryContext)
         }
         messages
             .dropLast(2)
@@ -968,7 +1042,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun buildPrompt(latestUserText: String): String {
         val memoryContext = if (_isPersistentMemoryActive.value) {
-            memoryManager.formatMemoryContext()
+            memoryManager.formatMemoryContext(query = latestUserText)
         } else {
             ""
         }
@@ -1067,14 +1141,59 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val normalizedResponse = if (thinkingMode) {
             normalizedResponseRaw
         } else {
-            ThinkingTextUtils.finalResponseOrReasoning(normalizedResponseRaw)
+            ThinkingTextUtils.extractFinalAnswerOnly(normalizedResponseRaw)
         }
         val normalizedCurrent = ModelOutputSanitizer.clean(current).trim()
-        return when {
+        var textToUse = when {
             normalizedResponse.isUsableAssistantText() -> normalizedResponse
             normalizedCurrent.isUsableAssistantText() -> normalizedCurrent
             else -> ""
         }
+
+        // Strip repeated opening sentence if it duplicates the immediately preceding assistant message
+        val previousAssistantText = messages.dropLast(1).lastOrNull { !it.isUser }?.text
+        if (textToUse.isNotBlank() && !previousAssistantText.isNullOrBlank()) {
+            val stripped = ModelOutputSanitizer.removeRepeatedOpeningPrefix(textToUse, previousAssistantText)
+            if (stripped.isNotBlank() && !ModelResponseQuality.isGenericNonAnswer(stripped, userText)) {
+                textToUse = stripped
+            }
+        }
+
+        // If the model produced a valid, usable response that is not a generic non-answer, use it
+        if (textToUse.isNotBlank() && !ModelResponseQuality.isGenericNonAnswer(textToUse, userText)) {
+            return textToUse
+        }
+
+        // If the user requested to remember a fact, preference, or instruction, but the model
+        // returned a generic greeting (e.g. "Hello! How can I help you today?") or boilerplate non-answer,
+        // synthesize a clear, friendly confirmation.
+        if (ModelResponseQuality.isMemoryOrInstruction(userText) && !ModelResponseQuality.isMemoryRecallQuery(userText)) {
+            val candidate = memoryManager.extractMemoryCandidate(userText)
+            if (candidate != null) {
+                return memoryManager.formatConfirmationMessage(candidate.first, candidate.second)
+            }
+        }
+
+        // If the user was asking about their stored memories, and the model returned a non-answer
+        // or leaked its internal reasoning, answer directly from stored memory.
+        if (_isPersistentMemoryActive.value) {
+            val memoryAnswer = memoryManager.findAnswerForUserQuery(userText)
+            if (memoryAnswer != null) {
+                return memoryAnswer
+            }
+        }
+
+        // Fallback for greetings if model returned a generic non-answer or leaked reasoning
+        if (ModelResponseQuality.isGreeting(userText)) {
+            return "Hello! How can I help you today?"
+        }
+
+        // If the text is a reasoning leak or generic non-answer, reject it rather than displaying it
+        if (ModelResponseQuality.isReasoningLeak(textToUse) || ModelResponseQuality.isGenericNonAnswer(textToUse, userText)) {
+            return ""
+        }
+
+        return textToUse
     }
 
     private fun String.isUsableAssistantText(): Boolean {

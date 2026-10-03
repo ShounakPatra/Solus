@@ -9,7 +9,9 @@ import android.os.Build
 import android.util.Log
 import android.widget.Toast
 import com.shounak.localmeshai.BuildConfig
+import java.io.BufferedReader
 import java.io.File
+import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.io.StringWriter
 import java.net.URLEncoder
@@ -32,7 +34,7 @@ object CrashReportManager {
     const val GITHUB_REPO_OWNER = "ShounakPatra"
     const val GITHUB_REPO_NAME = "Solus"
     const val GITHUB_ISSUES_URL = "https://github.com/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/issues/new"
-    private const val MAX_SAVED_REPORTS = 10
+    private const val MAX_SAVED_REPORTS = 15
 
     private var defaultHandler: Thread.UncaughtExceptionHandler? = null
     private var isInstalled = false
@@ -53,12 +55,117 @@ object CrashReportManager {
         isInstalled = true
     }
 
+    /**
+     * Captures system & app logcat lines around the crash while redacting any sensitive tokens.
+     */
+    fun captureCrashDebugLogs(maxLines: Int = 350): String {
+        return try {
+            val pid = android.os.Process.myPid()
+            val process = Runtime.getRuntime().exec(
+                arrayOf("logcat", "-d", "-v", "time", "-t", maxLines.toString())
+            )
+            val lines = mutableListOf<String>()
+            BufferedReader(InputStreamReader(process.inputStream)).useLines { seq ->
+                seq.forEach { lines.add(it) }
+            }
+            process.waitFor()
+
+            if (lines.isEmpty()) {
+                return "No system logcat entries captured for process $pid."
+            }
+
+            val rawLog = lines.joinToString("\n")
+            sanitizeLog(rawLog)
+        } catch (e: Exception) {
+            "Unable to capture logcat debug log: ${e.message}"
+        }
+    }
+
+    /**
+     * Sanitizes sensitive tokens, API keys, and personal credentials before saving or transmitting.
+     */
+    fun sanitizeLog(raw: String): String {
+        return raw
+            // Hugging Face tokens
+            .replace(Regex("""hf_[A-Za-z0-9_]{20,}"""), "hf_***REDACTED***")
+            // Google API keys
+            .replace(Regex("""AIza[0-9A-Za-z-_]{35}"""), "AIza***REDACTED***")
+            // Bearer authorization tokens
+            .replace(Regex("""(?i)bearer\s+[A-Za-z0-9_\-\.]{20,}"""), "Bearer ***REDACTED***")
+    }
+
+    /**
+     * Builds the complete crash debug report with device specifications, stack traces, and system logcat.
+     */
+    fun buildCompleteCrashReportString(
+        context: Context,
+        title: String,
+        stackTrace: String,
+        modelInfo: String? = null,
+        extraContext: String? = null,
+        isNative: Boolean = false,
+        includeLogcat: Boolean = true
+    ): String {
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.US).format(Date())
+        val deviceSpecs = DeviceUtils.formatFullDeviceDiagnostics(context)
+        val debugLog = if (includeLogcat) captureCrashDebugLogs(350) else "Logcat capture bypassed."
+
+        return buildString {
+            appendLine("### Solus Crash Debug Report")
+            appendLine("- **Report Date/Time:** $dateFormat")
+            appendLine("- **Crash Classification:** ${if (isNative) "Native Runtime / Engine Failure" else "JVM / App Runtime Exception"}")
+            if (!extraContext.isNullOrBlank()) {
+                appendLine("- **Execution Context:** $extraContext")
+            }
+            if (!modelInfo.isNullOrBlank()) {
+                appendLine("- **Active Model Diagnostics:** $modelInfo")
+            }
+            appendLine()
+            appendLine("#### 📱 Complete Device Specifications & Hardware Info")
+            appendLine(deviceSpecs.trim())
+            appendLine()
+            appendLine("#### 💥 Error Summary & Stack Trace")
+            appendLine("```")
+            appendLine(title)
+            if (stackTrace.isNotBlank() && stackTrace != title) {
+                appendLine()
+                appendLine(stackTrace.trim())
+            }
+            appendLine("```")
+            appendLine()
+            appendLine("#### 📜 Full Crash Debug Log (System & Runtime Logcat)")
+            appendLine("```")
+            appendLine(debugLog.trim())
+            appendLine("```")
+        }
+    }
+
+    /** Legacy helper maintained for backward compatibility. */
+    fun buildReportString(
+        context: Context,
+        title: String,
+        stackTrace: String,
+        extraContext: String
+    ): String {
+        return buildCompleteCrashReportString(
+            context = context,
+            title = title,
+            stackTrace = stackTrace,
+            extraContext = extraContext,
+            isNative = false,
+            includeLogcat = true
+        )
+    }
+
     fun recordNativeCrash(context: Context, modelId: String, details: String) {
-        val report = buildReportString(
+        val report = buildCompleteCrashReportString(
             context = context,
             title = "Native Engine Crash: $modelId",
             stackTrace = details,
-            extraContext = "Native initialization crash detected by InitCrashGuard."
+            modelInfo = "Model ID: $modelId",
+            extraContext = "Native initialization crash detected by InitCrashGuard.",
+            isNative = true,
+            includeLogcat = true
         )
         saveReport(context, report, isNative = true)
     }
@@ -68,13 +175,54 @@ object CrashReportManager {
         throwable.printStackTrace(PrintWriter(sw))
         val stackTrace = sw.toString()
         val title = "${throwable.javaClass.simpleName}: ${throwable.message ?: "Uncaught Exception"}"
-        val report = buildReportString(
+        @Suppress("DEPRECATION")
+        val threadId = thread.id
+        val report = buildCompleteCrashReportString(
             context = context,
             title = title,
             stackTrace = stackTrace,
-            extraContext = "Thread: ${thread.name}"
+            extraContext = "Crashed Thread: ${thread.name} (id: $threadId)",
+            isNative = false,
+            includeLogcat = true
         )
         saveReport(context, report, isNative = false)
+    }
+
+    /**
+     * Records a model runtime crash or inference failure with complete device specs and logcat.
+     */
+    fun recordModelCrash(
+        context: Context,
+        modelId: String,
+        modelName: String,
+        errorMessage: String,
+        throwable: Throwable? = null,
+        runtimeInfo: String? = null
+    ): CrashReport {
+        val stackTrace = if (throwable != null) {
+            val sw = StringWriter()
+            throwable.printStackTrace(PrintWriter(sw))
+            sw.toString()
+        } else {
+            errorMessage
+        }
+        val title = "Model Runtime Crash: $modelName ($modelId)"
+        val reportText = buildCompleteCrashReportString(
+            context = context,
+            title = title,
+            stackTrace = stackTrace,
+            modelInfo = "Model: $modelName | ID: $modelId${if (!runtimeInfo.isNullOrBlank()) " | $runtimeInfo" else ""}",
+            extraContext = "Model execution / inference error",
+            isNative = true,
+            includeLogcat = true
+        )
+        saveReport(context, reportText, isNative = true)
+        return CrashReport(
+            timestamp = System.currentTimeMillis(),
+            title = title,
+            details = reportText,
+            isNativeCrash = true
+        )
     }
 
     private const val PREFS_NAME = "solus_crash_reports"
@@ -83,43 +231,6 @@ object CrashReportManager {
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-    private fun buildReportString(
-        context: Context,
-        title: String,
-        stackTrace: String,
-        extraContext: String
-    ): String {
-        val totalRam = String.format(Locale.US, "%.1f GB", DeviceUtils.getTotalRamGB(context))
-        val availRam = "${DeviceUtils.getAvailableRamMb(context)} MB"
-        val chip = DeviceUtils.currentDeviceChipLabel()
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss z", Locale.US).format(Date())
-        val freeStorageMb = runCatching { context.filesDir.freeSpace / (1024L * 1024L) }.getOrDefault(-1L)
-        val tempCelsius = DeviceUtils.getBatteryTemperatureCelsius(context)?.let { "$it °C" } ?: "N/A"
-
-        return buildString {
-            appendLine("### Solus Crash Report")
-            appendLine("- **Date/Time:** $dateFormat")
-            appendLine("- **Solus Version:** ${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})")
-            appendLine("- **Device:** ${Build.MANUFACTURER} ${Build.MODEL} (${Build.PRODUCT})")
-            appendLine("- **Brand / Hardware:** ${Build.BRAND} / ${Build.HARDWARE}")
-            appendLine("- **Android OS:** Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
-            appendLine("- **Chipset:** $chip")
-            appendLine("- **Supported ABIs:** ${Build.SUPPORTED_ABIS.joinToString(", ")}")
-            appendLine("- **Memory:** Total $totalRam, Available $availRam (LowRAM: ${DeviceUtils.isLowRamDevice(context)})")
-            appendLine("- **Storage Available:** ${if (freeStorageMb >= 0) "$freeStorageMb MB" else "Unknown"}")
-            appendLine("- **Battery Temp:** $tempCelsius")
-            appendLine("- **Context:** $extraContext")
-            appendLine()
-            appendLine("### Error Summary")
-            appendLine(title)
-            appendLine()
-            appendLine("### Stack Trace / Details")
-            appendLine("```")
-            appendLine(stackTrace.trim())
-            appendLine("```")
-        }
-    }
 
     private fun getReportsDir(context: Context): File {
         return File(context.filesDir, "crash_reports").apply { mkdirs() }
@@ -179,9 +290,9 @@ object CrashReportManager {
         return runCatching {
             val text = file.readText()
             val lines = text.lines()
-            val errorSummaryIdx = lines.indexOfFirst { it.startsWith("### Error Summary") }
-            val titleLine = if (errorSummaryIdx >= 0 && errorSummaryIdx + 1 < lines.size) {
-                lines[errorSummaryIdx + 1].trim().ifBlank { file.name }
+            val errorSummaryIdx = lines.indexOfFirst { it.startsWith("#### 💥 Error Summary") || it.startsWith("### Error Summary") }
+            val titleLine = if (errorSummaryIdx >= 0 && errorSummaryIdx + 2 < lines.size) {
+                lines[errorSummaryIdx + 2].trim().ifBlank { file.name }
             } else {
                 file.name
             }
@@ -217,25 +328,39 @@ object CrashReportManager {
         }
     }
 
+    /**
+     * Reports the crash to the GitHub repository:
+     * 1. Copies the ENTIRE crash debug log and device specifications to the Android clipboard.
+     * 2. Opens the repository's new issue page with prefilled title and formatted markdown body.
+     */
     fun sendToGitHub(context: Context, reportText: String, titleHint: String? = null) {
-        // 1. Copy full crash report to system clipboard
+        // 1. Copy the WHOLE crash debug log and device info to system clipboard
         try {
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-            val clip = ClipData.newPlainText("Solus Crash Report", reportText)
+            val clip = ClipData.newPlainText("Solus Crash Debug Report", reportText)
             clipboard?.setPrimaryClip(clip)
-            Toast.makeText(context, "Full crash report copied to clipboard!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Full crash debug log & device info copied to clipboard!", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
             Log.w(TAG, "Could not copy crash report to clipboard", e)
         }
 
-        // 2. Open GitHub issue with pre-filled title and markdown body
+        // 2. Open GitHub issue with pre-filled title and structured markdown body
         try {
-            val issueTitle = titleHint?.take(80) ?: "[Crash Report] Solus Issue"
-            val safeBody = if (reportText.length > 2000) {
-                reportText.take(1800) + "\n\n... *(Report truncated for URL length. Full report has been copied to your clipboard — please paste it here)*"
+            val issueTitle = (titleHint ?: "[Crash Report] Solus Issue").take(100)
+
+            // Safe budget for Android Intent URL query parameters (~4000 characters)
+            val maxUrlLength = 4000
+            val safeBody = if (reportText.length > maxUrlLength) {
+                val banner = "> [!IMPORTANT]\n" +
+                    "> 📋 **The complete crash debug log, system logcat, and complete device specs were copied to your clipboard.**\n" +
+                    "> *Please paste (Ctrl+V / Long-press -> Paste) in this issue box below to ensure all details are included.*\n\n"
+                val budget = maxUrlLength - banner.length - 200
+                val snippet = reportText.take(budget.coerceAtLeast(600))
+                banner + snippet + "\n\n... *(Log truncated for URL query limit. Paste clipboard here for the full log)*"
             } else {
                 reportText
             }
+
             val encodedTitle = URLEncoder.encode(issueTitle, "UTF-8")
             val encodedBody = URLEncoder.encode(safeBody, "UTF-8")
             val issueUrl = "$GITHUB_ISSUES_URL?title=$encodedTitle&body=$encodedBody"
@@ -245,11 +370,37 @@ object CrashReportManager {
             context.startActivity(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to open GitHub issues page", e)
-            Toast.makeText(context, "Unable to open browser. Crash report was copied to clipboard.", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "Unable to open browser. The complete crash report & device info were copied to your clipboard.", Toast.LENGTH_LONG).show()
         }
     }
 
     fun openNewIssue(context: Context, title: String = "[Issue / Crash Report]", body: String = "") {
-        sendToGitHub(context, body, title)
+        val fullBody = if (body.isNotBlank()) {
+            body
+        } else {
+            val deviceSpecs = DeviceUtils.formatFullDeviceDiagnostics(context)
+            "### Description\n(Describe your issue here)\n\n### Device Info\n$deviceSpecs"
+        }
+        sendToGitHub(context, fullBody, title)
+    }
+
+    /**
+     * Shares the complete crash debug log and device specs using Android's system share sheet.
+     */
+    fun shareCrashReport(context: Context, report: CrashReport) {
+        try {
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, report.title)
+                putExtra(Intent.EXTRA_TEXT, report.details)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val chooser = Intent.createChooser(sendIntent, "Share Crash Debug Log & Device Info").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(chooser)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to share crash report", e)
+        }
     }
 }

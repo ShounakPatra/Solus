@@ -29,6 +29,8 @@ import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.WifiOff
 import com.shounak.localmeshai.utils.CrashReportManager
 import com.shounak.localmeshai.utils.CrashReport
+import com.shounak.localmeshai.utils.DeviceUtils
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
@@ -770,7 +772,7 @@ fun SettingsDialog(
                                         ) {
                                             Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
                                             Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Send to GitHub")
+                                            Text("Send to Repo")
                                         }
                                     } else {
                                         OutlinedButton(
@@ -778,7 +780,7 @@ fun SettingsDialog(
                                                 CrashReportManager.openNewIssue(
                                                     context,
                                                     title = "[Report / Feedback] Solus Issue",
-                                                    body = "### Device Info\n- OS: Android ${android.os.Build.VERSION.RELEASE}\n- Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}\n- Solus Version: ${BuildConfig.VERSION_NAME}\n\n### Description\n(Describe your issue or feedback here)"
+                                                    body = "### Description\n(Describe your issue or feedback here)\n\n### Complete Device Specifications\n${DeviceUtils.formatFullDeviceDiagnostics(context)}"
                                                 )
                                             },
                                             shape = RoundedCornerShape(12.dp),
@@ -786,7 +788,7 @@ fun SettingsDialog(
                                         ) {
                                             Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
                                             Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Report Bug / Issue on GitHub")
+                                            Text("Report Bug / Issue to Repo")
                                         }
                                     }
                                 }
@@ -1352,7 +1354,7 @@ private fun CrashReportsDialog(
                             }
                         }
 
-                        // Action Buttons: Copy, Send to GitHub
+                        // Action Buttons: Copy, Share, Send to Repo
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1362,14 +1364,26 @@ private fun CrashReportsDialog(
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                                     val clip = ClipData.newPlainText("Crash Report", report.details)
                                     clipboard?.setPrimaryClip(clip)
-                                    Toast.makeText(context, "Crash report copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Full crash debug log copied to clipboard!", Toast.LENGTH_SHORT).show()
                                 },
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.weight(1f)
                             ) {
                                 Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
                                 Text("Copy")
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    CrashReportManager.shareCrashReport(context, report)
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Share")
                             }
 
                             Button(
@@ -1379,8 +1393,8 @@ private fun CrashReportsDialog(
                                 modifier = Modifier.weight(1.3f)
                             ) {
                                 Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Send to GitHub")
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Send to Repo")
                             }
                         }
                     }

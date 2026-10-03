@@ -84,4 +84,45 @@ class ModelOutputSanitizerTest {
             ModelOutputSanitizer.cleanAssistantText("Answer $emojiText", "Show emoji")
         )
     }
+
+    @Test
+    fun cleanAssistantTextStripsImYourHallucination() {
+        val raw1 = "Hi! I'm Your. You like ice cream, and your dog's name is Lambda."
+        assertEquals(
+            "Hi! You like ice cream, and your dog's name is Lambda.",
+            ModelOutputSanitizer.cleanAssistantText(raw1, "hi")
+        )
+
+        val raw2 = "Hi! I'm Your. You prefer Kotlin, and your dog's name is Lambda. Let me know if there's something I can help with! 🍦🐾"
+        assertEquals(
+            "Hi! You prefer Kotlin, and your dog's name is Lambda. Let me know if there's something I can help with! 🍦🐾",
+            ModelOutputSanitizer.cleanAssistantText(raw2, "hi")
+        )
+
+        val raw3 = "Hi! I'm Your."
+        assertEquals(
+            "Hi!",
+            ModelOutputSanitizer.cleanAssistantText(raw3, "hi")
+        )
+
+        val raw4 = "I'm Your. You prefer Kotlin."
+        assertEquals(
+            "You prefer Kotlin.",
+            ModelOutputSanitizer.cleanAssistantText(raw4, "hi")
+        )
+
+        val rawLegitimate = "Hi! I'm your assistant."
+        assertEquals(
+            "Hi! I'm your assistant.",
+            ModelOutputSanitizer.cleanAssistantText(rawLegitimate, "hi")
+        )
+    }
+
+    @Test
+    fun removeRepeatedOpeningPrefixStripsDuplicateOpeningAcrossTurns() {
+        val prev = "Hi! I love pizza too! 🍕 Let me know if you'd like a pizza recipe or something!"
+        val curr = "Hi! I love pizza too! 🍕 What other things do you like to eat?"
+        val stripped = ModelOutputSanitizer.removeRepeatedOpeningPrefix(curr, prev)
+        assertEquals("What other things do you like to eat?", stripped)
+    }
 }

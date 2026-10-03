@@ -2007,10 +2007,17 @@ fun ModelItem(
                             if (classified?.isSendCrashReportAction == true) {
                                 OutlinedButton(
                                     onClick = {
+                                        val fullReport = CrashReportManager.recordModelCrash(
+                                            context = context,
+                                            modelId = model.id,
+                                            modelName = model.name,
+                                            errorMessage = error,
+                                            runtimeInfo = "Status: ${model.status} | File: ${model.fileName} | Size: ${model.size}"
+                                        )
                                         CrashReportManager.sendToGitHub(
                                             context = context,
-                                            reportText = "Model Crash Details for ${model.name} (${model.id}):\n\n$error",
-                                            titleHint = "[Native Crash] ${model.name}"
+                                            reportText = fullReport.details,
+                                            titleHint = "[Model Crash] ${model.name}"
                                         )
                                     },
                                     modifier = Modifier.height(34.dp),
@@ -2019,7 +2026,7 @@ fun ModelItem(
                                 ) {
                                     Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(14.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Report Crash on GitHub", style = MaterialTheme.typography.labelSmall)
+                                    Text("Report Crash to Repo", style = MaterialTheme.typography.labelSmall)
                                 }
                             }
                         }

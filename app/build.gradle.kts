@@ -4,8 +4,6 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.google.gms.google.services)
-    alias(libs.plugins.google.firebase.crashlytics)
 }
 
 val keystorePropertiesFile = rootProject.file("keystore.properties")
@@ -17,19 +15,20 @@ val keystoreProperties = Properties().apply {
 
 android {
     namespace = "com.shounak.localmeshai"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.shounak.localmeshai"
         minSdk = 28
-        targetSdk = 36
-        versionCode = 6
-        versionName = "2.0.0"
+        targetSdk = 37
+        versionCode = 7
+        versionName = "3.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            abiFilters.addAll(listOf("arm64-v8a", "x86_64"))
+            abiFilters.clear()
+            abiFilters.add("arm64-v8a")
         }
 
         externalNativeBuild {
@@ -69,7 +68,8 @@ android {
             if (keystorePropertiesFile.isFile) {
                 signingConfig = signingConfigs.getByName("release")
             }
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -103,12 +103,39 @@ android {
             }
         }
     }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            excludes += listOf(
+                "**/x86/**",
+                "**/x86_64/**",
+                "**/armeabi-v7a/**",
+                "**/armeabi/**",
+                "**/mips/**",
+                "**/mips64/**"
+            )
+        }
+    }
 }
 
 kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)
     }
+}
+
+configurations.all {
+    exclude(group = "com.google.firebase", module = "firebase-measurement-connector")
+    exclude(group = "com.google.firebase", module = "firebase-analytics")
+    exclude(group = "com.google.firebase", module = "firebase-sessions")
+    exclude(group = "com.google.firebase", module = "firebase-installations")
+    exclude(group = "com.google.android.gms", module = "play-services-measurement")
+    exclude(group = "com.google.android.gms", module = "play-services-measurement-base")
+    exclude(group = "com.google.android.gms", module = "play-services-measurement-api")
+    exclude(group = "com.google.android.gms", module = "play-services-measurement-sdk")
+    exclude(group = "com.google.android.gms", module = "play-services-measurement-sdk-api")
+    exclude(group = "com.google.android.datatransport", module = "transport-backend-cct")
 }
 
 dependencies {
@@ -125,7 +152,6 @@ dependencies {
     implementation(libs.androidx.material.icons.extended)
     implementation(libs.androidx.emoji2)
     implementation(libs.androidx.emoji2.bundled)
-    implementation(libs.firebase.crashlytics)
     implementation(libs.latex.base)
     implementation(libs.latex.parser)
     implementation(libs.latex.renderer)
@@ -135,8 +161,6 @@ dependencies {
     implementation(libs.mediapipe.tasks.genai)
     implementation(libs.mediapipe.tasks.core)
     implementation(libs.litert.lm)
-    implementation(libs.tensorflow.lite)
-    implementation(libs.tensorflow.lite.metadata)
     implementation(libs.pdfbox.android)
     implementation(libs.haze)
     implementation(libs.haze.materials)

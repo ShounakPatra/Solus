@@ -7,9 +7,13 @@ import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.Message
+import com.shounak.localmeshai.utils.ThinkingModeConfig
+import com.shounak.localmeshai.utils.ThinkingTextUtils
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.genai.llminference.AudioModelOptions
 import com.google.mediapipe.tasks.genai.llminference.GraphOptions
@@ -26,11 +30,8 @@ import com.shounak.localmeshai.utils.ModelDownloader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
-import org.tensorflow.lite.Interpreter
 import java.io.File
 import java.io.FileOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CancellationException as FutureCancellationException
 import java.util.concurrent.Future
@@ -42,7 +43,6 @@ data class VisionLabel(
 )
 
 class VisionInferenceManager(private val context: Context) {
-    private var classifier: Interpreter? = null
     private var mediaPipeInference: LlmInference? = null
     private var liteRtEngine: Engine? = null
     private var liteRtConversation: Conversation? = null
@@ -64,15 +64,21 @@ class VisionInferenceManager(private val context: Context) {
      */
     @Volatile private var isBeingClosed = false
     @Volatile private var modelSupportsAudioInput = false
-    private var inputWidth = 224
-    private var inputHeight = 224
-    private var outputSize = 1001
+    @Volatile private var isDefaultThinkingModel = false
+    @Volatile private var supportsThinkingMode = false
 
     companion object {
         private const val TAG = "VisionInferenceManager"
         private const val DEFAULT_IMAGE_PROMPT = "Describe the image"
         private const val MAX_RESPONSE_TOKENS = 2048
         private const val DEFAULT_VISION_TEMPERATURE = 0.7f
+
+        private val THINK_BLOCK_REGEX =
+            Regex("""<\s*(?:think|thought|reasoning)\s*>[\s\S]*?<\s*/\s*(?:think|thought|reasoning)\s*>""", RegexOption.IGNORE_CASE)
+        private val THINK_UNCLOSED_REGEX =
+            Regex("""<\s*(?:think|thought|reasoning)\s*>[\s\S]*$""", RegexOption.IGNORE_CASE)
+        private val THINK_PREFILLED_CLOSE_REGEX =
+            Regex("""^[\s\S]*?<\s*/\s*(?:think|thought|reasoning)\s*>""", RegexOption.IGNORE_CASE)
     }
 
     fun initialize(
@@ -81,6 +87,7 @@ class VisionInferenceManager(private val context: Context) {
         modelName: String = "",
         modelSize: String = "",
         supportsAudioInput: Boolean = false,
+        supportsThinkingMode: Boolean = false,
         allowUnsafeOverride: Boolean = false,
         contextWindowTokens: Int? = null
     ) {
@@ -93,6 +100,14 @@ class VisionInferenceManager(private val context: Context) {
         }
 
         close()
+        this.supportsThinkingMode = supportsThinkingMode
+        val effectiveId = modelId.ifBlank { file.nameWithoutExtension }
+        isDefaultThinkingModel = ThinkingModeConfig.isThinkingSupported(
+            modelPath = modelPath,
+            effectiveId = effectiveId,
+            modelName = modelName,
+            supportsThinkingFlag = supportsThinkingMode
+        )
         val isGemmaAudio = modelId.contains("gemma4", ignoreCase = true) ||
             modelId.contains("gemma3n", ignoreCase = true) ||
             modelName.contains("gemma 4", ignoreCase = true) ||
@@ -168,8 +183,7 @@ class VisionInferenceManager(private val context: Context) {
                 activeBackendDisplayName = "MediaPipe CPU"
             }
             else -> {
-                initializeClassifier(file)
-                activeBackendDisplayName = "Classifier"
+                throw IllegalArgumentException("Unsupported vision model format (${file.extension}). Solus multimodal models require LiteRT (.litertlm) or MediaPipe (.task) bundles.")
             }
         }
     }
@@ -183,34 +197,44 @@ class VisionInferenceManager(private val context: Context) {
         question: String,
         audioFile: File? = null,
         audioBytes: ByteArray? = null,
+        thinkingMode: Boolean = false,
         onUpdate: (String) -> Unit
     ): String = withContext(Dispatchers.IO) {
         stopRequested = false
         val prompt = question.trim()
-        when (runtime) {
-            RuntimeKind.LiteRtLm -> streamLiteRtLmVision(bitmap, prompt, audioFile, audioBytes, onUpdate)
-            RuntimeKind.MediaPipeVision -> streamMediaPipeVision(bitmap, prompt, audioFile, audioBytes, onUpdate)
-            RuntimeKind.Classifier -> {
-                val classifierPrompt = prompt.ifBlank { DEFAULT_IMAGE_PROMPT }
-                val result = bitmap?.let { classify(it).formatForQuestion(classifierPrompt) }
-                    ?: "Select an image for this classifier model."
-                onUpdate(result)
-                result
-            }
+        val shouldStripThinking = !thinkingMode
+        val effectiveOnUpdate: (String) -> Unit = if (shouldStripThinking) {
+            { partial -> onUpdate(stripThinkingTags(partial)) }
+        } else {
+            onUpdate
+        }
+        val rawResponse = when (runtime) {
+            RuntimeKind.LiteRtLm -> streamLiteRtLmVision(
+                bitmap = bitmap,
+                prompt = prompt,
+                audioFile = audioFile,
+                audioBytes = audioBytes,
+                thinkingMode = thinkingMode,
+                onUpdate = effectiveOnUpdate
+            )
+            RuntimeKind.MediaPipeVision -> streamMediaPipeVision(
+                bitmap = bitmap,
+                prompt = prompt,
+                audioFile = audioFile,
+                audioBytes = audioBytes,
+                onUpdate = effectiveOnUpdate
+            )
             RuntimeKind.None -> "Choose and initialise a multimodal model first."
         }
+        finalizeModelOutput(
+            text = rawResponse,
+            thinkingMode = thinkingMode,
+            shouldStripThinking = shouldStripThinking
+        )
     }
 
     suspend fun classify(bitmap: Bitmap): List<VisionLabel> = withContext(Dispatchers.IO) {
-        if (bitmap.isRecycled) return@withContext emptyList()
-        val model = classifier ?: return@withContext emptyList()
-        val input = bitmap.toInputBuffer(inputWidth, inputHeight)
-        val output = Array(1) { FloatArray(outputSize) }
-        model.run(input, output)
-        output.first()
-            .mapIndexed { index, score -> VisionLabel("Class $index", score) }
-            .sortedByDescending { it.score }
-            .take(5)
+        emptyList()
     }
 
     fun close() {
@@ -231,8 +255,6 @@ class VisionInferenceManager(private val context: Context) {
         } else if (wasMediaPipeVision && sessionToClose != null) {
             Log.w(TAG, "Skipping MediaPipe vision session.close(); native close is unstable on this device")
         }
-        runCatching { classifier?.close() }
-        classifier = null
         if (wasMediaPipeVision) {
             Log.w(TAG, "Skipping MediaPipe vision inference.close(); native close is unstable on this device")
         } else {
@@ -247,6 +269,8 @@ class VisionInferenceManager(private val context: Context) {
         liteRtCacheDir = null
         runtime = RuntimeKind.None
         activeBackendDisplayName = ""
+        isDefaultThinkingModel = false
+        supportsThinkingMode = false
         isBeingClosed = false
     }
 
@@ -269,13 +293,21 @@ class VisionInferenceManager(private val context: Context) {
         // simultaneously causes a native crash.
     }
 
-    fun resetConversation() {
+    fun resetConversation(thinkingMode: Boolean = false) {
         if (runtime != RuntimeKind.LiteRtLm) return
         val engine = liteRtEngine ?: return
         runCatching { liteRtConversation?.close() }.onFailure { t ->
             Log.w(TAG, "LiteRT-LM vision conversation close during reset failed", t)
         }
-        liteRtConversation = engine.createConversation()
+        val config = if (isDefaultThinkingModel) {
+            ConversationConfig(
+                extraContext = ThinkingModeConfig.liteRtExtraContext(
+                    isDefaultThinkingModel = true,
+                    thinkingMode = thinkingMode
+                )
+            )
+        } else null
+        liteRtConversation = if (config != null) engine.createConversation(config) else engine.createConversation()
         stopRequested = false
     }
 
@@ -396,7 +428,15 @@ class VisionInferenceManager(private val context: Context) {
             InitCrashGuard.markInitCompleted(context)
             val readyEngine = engine ?: throw IllegalStateException("Failed to initialize LiteRT-LM engine")
             liteRtEngine = readyEngine
-            liteRtConversation = readyEngine.createConversation()
+            val initialConfig = if (isDefaultThinkingModel) {
+                ConversationConfig(
+                    extraContext = ThinkingModeConfig.liteRtExtraContext(
+                        isDefaultThinkingModel = true,
+                        thinkingMode = false
+                    )
+                )
+            } else null
+            liteRtConversation = if (initialConfig != null) readyEngine.createConversation(initialConfig) else readyEngine.createConversation()
             runtime = RuntimeKind.LiteRtLm
             Log.i(TAG, "LiteRT-LM vision engine ready on $backend (audio: $finalAudioSupported): $modelPath")
         } catch (t: Throwable) {
@@ -447,26 +487,14 @@ class VisionInferenceManager(private val context: Context) {
         runtime = RuntimeKind.MediaPipeVision
     }
 
-    private fun initializeClassifier(file: File) {
-        val options = Interpreter.Options().setNumThreads(4)
-        classifier = Interpreter(file, options)
-        classifier?.let { model ->
-            val inputShape = model.getInputTensor(0).shape()
-            if (inputShape.size >= 4) {
-                inputHeight = inputShape[1]
-                inputWidth = inputShape[2]
-            }
-            val outputShape = model.getOutputTensor(0).shape()
-            outputSize = outputShape.lastOrNull() ?: outputSize
-        }
-        runtime = RuntimeKind.Classifier
-    }
 
+    @OptIn(ExperimentalApi::class)
     private suspend fun streamLiteRtLmVision(
         bitmap: Bitmap?,
         prompt: String,
         audioFile: File?,
         audioBytes: ByteArray?,
+        thinkingMode: Boolean,
         onUpdate: (String) -> Unit
     ): String {
         if (bitmap?.isRecycled == true) return "Error: Image was recycled before analysis."
@@ -484,6 +512,15 @@ class VisionInferenceManager(private val context: Context) {
         } else null
         val effectiveAudioFile = audioFile ?: cachedAudioFile
         val response = StringBuilder()
+        val requestContext = ThinkingModeConfig.liteRtExtraContext(
+            isDefaultThinkingModel = isDefaultThinkingModel,
+            thinkingMode = thinkingMode
+        )
+        Log.i(
+            TAG,
+            "LiteRT-LM vision request mode=${if (thinkingMode) "thinking" else "direct"} " +
+                "defaultThinking=$isDefaultThinkingModel contextKeys=${requestContext.keys}"
+        )
         try {
             val audioContent: Content? = when {
                 effectiveAudioFile != null -> Content.AudioFile(effectiveAudioFile.absolutePath)
@@ -503,7 +540,8 @@ class VisionInferenceManager(private val context: Context) {
                 else -> Message.of(Content.Text(""))
             }
             conversation.sendMessageAsync(
-                message
+                message,
+                requestContext
             ).collect { message ->
                 if (stopRequested) {
                     // Throwing here breaks out of the Flow collector cleanly.
@@ -783,31 +821,27 @@ class VisionInferenceManager(private val context: Context) {
             .forEach { runCatching { it.delete() } }
     }
 
-    private fun List<VisionLabel>.formatForQuestion(question: String): String {
-        if (isEmpty()) return "I could not read labels from this image."
-        val labels = joinToString(separator = ", ") { label ->
-            "${label.label} ${String.format(java.util.Locale.US, "%.1f", label.score * 100)}%"
+    private fun finalizeModelOutput(
+        text: String,
+        thinkingMode: Boolean,
+        shouldStripThinking: Boolean
+    ): String {
+        return if (shouldStripThinking || !thinkingMode) {
+            ThinkingTextUtils.extractFinalAnswerOnly(text)
+        } else {
+            ThinkingTextUtils.normalizeFinalOutput(text)
         }
-        return "This selected model is an image-label classifier, so it cannot answer '$question' freely. Top labels: $labels."
     }
 
-    private fun Bitmap.toInputBuffer(width: Int, height: Int): ByteBuffer {
-        val scaled = Bitmap.createScaledBitmap(this, width, height, true)
-        val buffer = ByteBuffer.allocateDirect(4 * width * height * 3).order(ByteOrder.nativeOrder())
-        val pixels = IntArray(width * height)
-        scaled.getPixels(pixels, 0, width, 0, 0, width, height)
-        pixels.forEach { pixel ->
-            buffer.putFloat(((pixel shr 16) and 0xFF) / 255f)
-            buffer.putFloat(((pixel shr 8) and 0xFF) / 255f)
-            buffer.putFloat((pixel and 0xFF) / 255f)
-        }
-        buffer.rewind()
-        return buffer
+    private fun stripThinkingTags(text: String): String {
+        var result = THINK_BLOCK_REGEX.replace(text, "")
+        result = THINK_UNCLOSED_REGEX.replace(result, "")
+        result = THINK_PREFILLED_CLOSE_REGEX.replace(result, "")
+        return result.trimStart()
     }
 
     private enum class RuntimeKind {
         None,
-        Classifier,
         MediaPipeVision,
         LiteRtLm
     }

@@ -28,6 +28,14 @@ object ModelOutputSanitizer {
         Regex("""([.!?…。！？\n\r]\s*)[\u0100-\u0143]{1,8}(?=\s|$)""")
     private val isolatedByteLevelClusterRegex =
         Regex("""(?<![\p{L}\p{N}])[\u0100-\u0143]{2,}(?![\p{L}\p{N}])""")
+    private val imYourGreetingPrefixRegex = Regex(
+        pattern = """\b(hi[!,]?|hello[!,]?|hey[!,]?)\s+i(?:'m| am)\s+your[.,!]\s*""",
+        option = RegexOption.IGNORE_CASE
+    )
+    private val imYourIsolatedPrefixRegex = Regex(
+        pattern = """\bi(?:'m| am)\s+your[.,!]\s*""",
+        option = RegexOption.IGNORE_CASE
+    )
 
     fun clean(text: String): String {
         if (text.isEmpty()) return ""
@@ -35,7 +43,8 @@ object ModelOutputSanitizer {
         val withoutSpecialTokens = specialTokenRegex.replace(text, "")
         val decoded = decodeByteLevelArtifacts(withoutSpecialTokens)
         val withoutReplacementChars = decoded.replace("\uFFFD", "")
-        return stripDanglingArtifacts(withoutReplacementChars).trimEnd()
+        val stripped = stripDanglingArtifacts(withoutReplacementChars).trimEnd()
+        return sanitizeImYourArtifact(stripped)
     }
 
     /**
@@ -63,7 +72,29 @@ object ModelOutputSanitizer {
             dropLeadingBlankLines()
         }
         val cleaned = lines.joinToString("\n").trim()
-        return sanitizeUserFacingPerspective(cleaned, latestUserText)
+        val perspectiveSanitized = sanitizeUserFacingPerspective(cleaned, latestUserText)
+        return sanitizeImYourArtifact(perspectiveSanitized)
+    }
+
+    /**
+     * Strips prompt-leak artifacts like "Hi! I'm Your." or "I'm Your." where small models
+     * confused the system memory instruction "address the user as 'Your'" with their own name/greeting.
+     */
+    fun sanitizeImYourArtifact(text: String): String {
+        if (text.isBlank()) return text
+        var result = imYourGreetingPrefixRegex.replace(text, "$1 ")
+        result = imYourIsolatedPrefixRegex.replace(result, "")
+        val trimmed = result.trim()
+        if (trimmed.equals("Hi!", ignoreCase = true) ||
+            trimmed.equals("Hello!", ignoreCase = true) ||
+            trimmed.equals("Hey!", ignoreCase = true) ||
+            trimmed.equals("Hi,", ignoreCase = true) ||
+            trimmed.equals("Hello,", ignoreCase = true) ||
+            trimmed.equals("Hey,", ignoreCase = true)
+        ) {
+            return trimmed.trimEnd(',')
+        }
+        return if (trimmed.isEmpty()) "Hello! How can I help you today?" else result.trimStart()
     }
 
     /**
@@ -96,17 +127,21 @@ object ModelOutputSanitizer {
         if (!isQueryingUserSelf) return text
 
         var result = text
-        if (result.startsWith("I prefer ", ignoreCase = true)) {
-            result = "You prefer " + result.substring(9)
-        } else if (result.startsWith("I like ", ignoreCase = true)) {
-            result = "You like " + result.substring(7)
-        } else if (result.startsWith("I love ", ignoreCase = true)) {
-            result = "You love " + result.substring(7)
-        } else if (result.startsWith("My name is ", ignoreCase = true)) {
-            result = "Your name is " + result.substring(11)
-        } else if (result.startsWith("My full name is ", ignoreCase = true)) {
-            result = "Your full name is " + result.substring(16)
+        val greetingPrefixMatch = Regex("""^(?:hi|hello|hey|greetings)[!,.]*\s+""", RegexOption.IGNORE_CASE).find(result)
+        val prefix = greetingPrefixMatch?.value ?: ""
+        var body = if (prefix.isNotEmpty()) result.substring(prefix.length) else result
+        if (body.startsWith("I prefer ", ignoreCase = true)) {
+            body = "You prefer " + body.substring(9)
+        } else if (body.startsWith("I like ", ignoreCase = true)) {
+            body = "You like " + body.substring(7)
+        } else if (body.startsWith("I love ", ignoreCase = true)) {
+            body = "You love " + body.substring(7)
+        } else if (body.startsWith("My name is ", ignoreCase = true)) {
+            body = "Your name is " + body.substring(11)
+        } else if (body.startsWith("My full name is ", ignoreCase = true)) {
+            body = "Your full name is " + body.substring(16)
         }
+        result = prefix + body
 
         // Replace "as my coding language" -> "as your coding language", "for my" -> "for your", etc.
         result = result.replace(Regex("""\bas my\b""", RegexOption.IGNORE_CASE), "as your")
@@ -115,6 +150,41 @@ object ModelOutputSanitizer {
             .replace(Regex("""\bof my\b""", RegexOption.IGNORE_CASE), "of your")
 
         return result
+    }
+
+    /**
+     * Removes an exact or near-identical greeting/opening sentence that the model repeated
+     * from the immediately preceding assistant message in the conversation.
+     * Prevents small models from prefixing every response with e.g. "Hi! I love pizza too! 🍕".
+     */
+    fun removeRepeatedOpeningPrefix(
+        currentText: String,
+        previousAssistantText: String?
+    ): String {
+        if (previousAssistantText.isNullOrBlank() || currentText.isBlank()) return currentText
+        val prevClean = clean(previousAssistantText).trim()
+        val currClean = currentText.trim()
+
+        val commonPrefixLength = prevClean.commonPrefixWith(currClean, ignoreCase = true).length
+        if (commonPrefixLength >= 10) {
+            val commonPrefix = currClean.substring(0, commonPrefixLength)
+            // Strip when the common prefix contains a sentence end or conversational greeting/small-talk
+            val isConversationalPrefix = commonPrefix.contains("!") || commonPrefix.contains(".") ||
+                commonPrefix.contains("?") || commonPrefix.contains("\n") ||
+                listOf("hi", "hello", "hey", "i love", "i like", "i'm", "i am", "okay").any { commonPrefix.contains(it, ignoreCase = true) }
+
+            if (isConversationalPrefix) {
+                val lastBoundary = commonPrefix.lastIndexOfAny(charArrayOf(' ', '.', '!', '?', ',', '\n'))
+                val splitIndex = if (lastBoundary >= 8) lastBoundary + 1 else commonPrefixLength
+                val remainder = currClean.substring(splitIndex).trimStart {
+                    it == '.' || it == '!' || it == '?' || it.isWhitespace() || Character.isSurrogate(it) || !it.isLetterOrDigit()
+                }
+                if (remainder.isNotBlank()) {
+                    return remainder.trim()
+                }
+            }
+        }
+        return currentText
     }
 
     private fun decodeByteLevelArtifacts(input: String): String {

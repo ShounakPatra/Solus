@@ -34,7 +34,7 @@ Ensure you have the following installed on your development machine:
 
 - **Android Studio:** Ladybug (2024.2.1+) or newer recommended.
 - **JDK:** Java Development Kit 17 (Java 17).
-- **Android SDK:** API Level 36 (`compileSdk = 36`, `targetSdk = 36`, `minSdk = 26`).
+- **Android SDK:** API Level 37 (`compileSdk = 37`, `targetSdk = 37`, `minSdk = 28`).
 - **Android NDK:** NDK version `26.x` or newer (for C++ JNI CMake builds).
 - **CMake:** Version 3.22.1+.
 - **Git:** Latest version.

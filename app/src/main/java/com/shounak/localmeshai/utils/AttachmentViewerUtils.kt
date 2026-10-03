@@ -12,6 +12,7 @@ import androidx.core.content.FileProvider
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import org.json.JSONArray
 
 object AttachmentViewerUtils {
     private const val TAG = "AttachmentViewerUtils"
@@ -95,6 +96,45 @@ object AttachmentViewerUtils {
         if (cacheInputs.exists() && cacheInputs.isFile) return cacheInputs
 
         return null
+    }
+
+    /**
+     * Cleans up orphaned attachment directories in chat_attachments that do not belong
+     * to any existing text session or vision session.
+     */
+    fun cleanupOrphanAttachments(context: Context, extraKeepSessionIds: Set<String> = emptySet()) {
+        val attachmentsDir = context.filesDir.resolve("chat_attachments")
+        if (!attachmentsDir.exists() || !attachmentsDir.isDirectory) return
+        val validIds = mutableSetOf<String>()
+        validIds.addAll(extraKeepSessionIds.filter { it.isNotBlank() })
+
+        val chatPrefs = context.getSharedPreferences("chat_history", Context.MODE_PRIVATE)
+        chatPrefs.getString("sessions", null)?.let { raw ->
+            runCatching {
+                val array = JSONArray(raw)
+                for (i in 0 until array.length()) {
+                    val id = array.getJSONObject(i).optString("id")
+                    if (id.isNotBlank()) validIds.add(id)
+                }
+            }
+        }
+
+        val visionPrefs = context.getSharedPreferences("vision_chat_history", Context.MODE_PRIVATE)
+        visionPrefs.getString("sessions", null)?.let { raw ->
+            runCatching {
+                val array = JSONArray(raw)
+                for (i in 0 until array.length()) {
+                    val id = array.getJSONObject(i).optString("id")
+                    if (id.isNotBlank()) validIds.add(id)
+                }
+            }
+        }
+
+        attachmentsDir.listFiles()?.filter { it.isDirectory }?.forEach { sub ->
+            if (!validIds.contains(sub.name)) {
+                runCatching { sub.deleteRecursively() }
+            }
+        }
     }
 
     /**

@@ -13,10 +13,10 @@ Your conversations and files never leave your phone.
 
 <!-- Custom glass-gradient download CTA (docs/assets/download-solus-apk.svg) -->
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v2.0.0/app-release.apk" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v3.0.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v2.0.0"
+      alt="Download Solus APK — Latest v3.0.0"
       width="360"
       height="72"
     />
@@ -28,8 +28,8 @@ Your conversations and files never leave your phone.
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/version-2.0.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 2.0.0" />
-  <img src="https://img.shields.io/badge/APK_size-223_MB-FF6B6B?style=for-the-badge&logo=android&logoColor=white" alt="APK size 223 MB" />
+  <img src="https://img.shields.io/badge/version-3.0.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 3.0.0" />
+  <img src="https://img.shields.io/badge/APK_size-46_MB-22C55E?style=for-the-badge&logo=android&logoColor=white" alt="APK size ~46 MB" />
   <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=for-the-badge&logo=github&label=Stars&color=FFD700" alt="GitHub stars" />
   <img src="https://img.shields.io/github/downloads/ShounakPatra/Solus/total?style=for-the-badge&label=Downloads&color=20C997" alt="Total downloads" />
 </p>
@@ -195,10 +195,10 @@ Solus
 ## 📥 Installation
 
 <p align="center">
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v2.0.0/app-release.apk" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v3.0.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v2.0.0"
+      alt="Download Solus APK — Latest v3.0.0"
       width="360"
       height="72"
     />
@@ -206,7 +206,7 @@ Solus
 </p>
 
 1. Tap the **Download Solus APK** button above or open [Releases](https://github.com/ShounakPatra/Solus/releases).
-2. Download **`app-release.apk`** for **v2.0.0**.
+2. Download **`app-release.apk`** for **v3.0.0**.
 3. Install the APK on your device (allow *Install unknown apps* if prompted).
 4. Launch Solus → open **Models** → download your preferred model → begin private chatting!
 
@@ -239,7 +239,7 @@ flowchart LR
 
 ## 🛠️ Build from Source
 
-**Requirements**: Android Studio (Ladybug or newer) · Android SDK 36 · NDK (r26+ with CMake) · JDK 17
+**Requirements**: Android Studio (Ladybug or newer) · Android SDK 37 (Android 17) · NDK (r26+ with CMake) · JDK 17
 
 ```bash
 git clone https://github.com/ShounakPatra/Solus.git
@@ -324,9 +324,8 @@ Go to **Settings** → **Hugging Face Access Token** and enter your read token. 
 |---|:---:|---|
 | **v1.0.0 – v1.2.0** | ✅ Shipped | Core local chat, thinking controls, resumable downloads, directional tab motion |
 | **v1.5.0** | ✅ Shipped | Full Settings menu, dynamic model themes, auto-hide nav, high-tech downloading cards, telemetry guard |
-| **v2.0.0** | ✅ **Current** | **Vulkan GPU compute**, **Local RAG document search**, **Experimental GGUF support**, **Full Audio & Voice input**, **In-App GitHub Auto-Updater**, **External Document Viewers** |
-| **v2.1.0 (October)** | 🚀 **Coming Soon** | **Full GGUF model support** across all architectures, memory mapping optimizations, expanded context windows, and extended model catalog |
-| **v3.0.0** | 🎯 Planned | Multi-modal speech-to-text / text-to-speech pipelines, localized LoRA adapters, encrypted backup & export |
+| **v2.0.0** | ✅ Shipped | **Vulkan GPU compute**, **Local RAG document search**, **Audio & Voice input**, **In-App GitHub Auto-Updater** |
+| **v3.0.0** | ✅ **Current** | **16 KB page-size compliance (Android 15+)**, **Optimized 46 MB footprint**, **Zero telemetry/analytics**, **Compressed ARM64 native runtime**, **Full GGUF model support** |
 
 </div>
 
@@ -350,10 +349,10 @@ Solus is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for d
 **Made for private, on-device AI.**
 
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v2.0.0/app-release.apk" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v3.0.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v2.0.0"
+      alt="Download Solus APK — Latest v3.0.0"
       width="320"
       height="64"
     />

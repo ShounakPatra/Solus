@@ -19,7 +19,48 @@ class PersistentMemoryManagerTest {
         assertTrue(context.contains("[Fact] User is building an Android app called Solus"))
         assertTrue(context.contains("[Preference] I prefer concise responses"))
         assertTrue(context.contains("[Instruction] Always write code in Kotlin"))
+        assertTrue(context.contains("5. Remembering Information:"))
+        assertFalse(context.contains("such as 'Hello! How can I help you today?'"))
         assertTrue(context.contains("[End of User Memory]"))
+    }
+
+    @Test
+    fun testFormatConfirmationMessage() {
+        val manager = PersistentMemoryManager(context = null, memoryStore = PersistentMemoryStore(null))
+
+        val confirmation1 = manager.formatConfirmationMessage("My dog name is lambda", MemoryCategory.FACT)
+        assertEquals("Got it! I will remember that your dog name is lambda.", confirmation1)
+
+        val confirmation2 = manager.formatConfirmationMessage("I love to eat ice-cream", MemoryCategory.PREFERENCE)
+        assertEquals("Got it! I will remember that you love to eat ice-cream.", confirmation2)
+
+        val confirmation3 = manager.formatConfirmationMessage("Speak in French", MemoryCategory.INSTRUCTION)
+        assertEquals("Got it! I will remember to speak in French.", confirmation3)
+
+        val confirmation4 = manager.formatConfirmationMessage("Call me Alex", MemoryCategory.FACT)
+        assertEquals("Got it! I will remember to call you Alex.", confirmation4)
+    }
+
+    @Test
+    fun testFindAnswerForUserQuery() {
+        val manager = PersistentMemoryManager(context = null, memoryStore = PersistentMemoryStore(null))
+        manager.addMemory("I love to eat ice-cream", MemoryCategory.PREFERENCE)
+        manager.addMemory("My dog name is lambda", MemoryCategory.FACT)
+
+        val answer1 = manager.findAnswerForUserQuery("what I like to eat")
+        assertEquals("Based on what you told me, you love to eat ice-cream.", answer1)
+
+        val answer2 = manager.findAnswerForUserQuery("what is my dog name")
+        assertEquals("Based on what you told me, your dog name is lambda.", answer2)
+    }
+
+    @Test
+    fun testFindAnswerForUserQuery_PizzaMemory() {
+        val manager = PersistentMemoryManager(context = null, memoryStore = PersistentMemoryStore(null))
+        manager.addMemory("I like pizza", MemoryCategory.PREFERENCE)
+
+        val answer = manager.findAnswerForUserQuery("what things I like to eat")
+        assertEquals("Based on what you told me, you like pizza.", answer)
     }
 
     @Test
@@ -201,19 +242,52 @@ class PersistentMemoryManagerTest {
     }
 
     @Test
-    fun testDecouplingFromRag_ZeroRagDependencies() {
-        // Assert memory classes exist independently and can be instantiated without RAG
+    fun testFormatMemoryContext_OmitsFactsOnGreetings() {
         val store = PersistentMemoryStore(null)
         val manager = PersistentMemoryManager(context = null, memoryStore = store)
 
-        val entry = manager.addMemory("Completely independent of RAG", MemoryCategory.FACT)
-        assertNotNull(entry)
-        assertEquals(1, manager.totalMemoryCount)
-        assertEquals(1, manager.activeMemoryCount)
+        manager.addMemory("I like to go to delhi", MemoryCategory.FACT)
+        manager.addMemory("Always write code in Kotlin", MemoryCategory.INSTRUCTION)
 
-        // Verify package naming is strictly com.shounak.localmeshai.memory
-        assertEquals("com.shounak.localmeshai.memory", manager::class.java.packageName)
-        assertEquals("com.shounak.localmeshai.memory", store::class.java.packageName)
-        assertEquals("com.shounak.localmeshai.memory", entry?.let { it::class.java.packageName })
+        val greetingContextHi = manager.formatMemoryContext("hi")
+        assertTrue(greetingContextHi.contains("Always write code in Kotlin"))
+        assertFalse(greetingContextHi.contains("delhi"))
+
+        val greetingContextWhatsUp = manager.formatMemoryContext("what's up")
+        assertTrue(greetingContextWhatsUp.contains("Always write code in Kotlin"))
+        assertFalse(greetingContextWhatsUp.contains("delhi"))
+    }
+
+    @Test
+    fun testFormatMemoryContext_IncludesRelevantFactsOnTopicQuery() {
+        val store = PersistentMemoryStore(null)
+        val manager = PersistentMemoryManager(context = null, memoryStore = store)
+
+        manager.addMemory("I like to go to delhi", MemoryCategory.FACT)
+        manager.addMemory("My dog name is lambda", MemoryCategory.FACT)
+
+        val relevantContext = manager.formatMemoryContext("where do I like to go")
+        assertTrue(relevantContext.contains("delhi"))
+        assertFalse(relevantContext.contains("lambda"))
+    }
+
+    @Test
+    fun testFormatMemoryContext_OmitsIrrelevantFactsOnUnrelatedQuery() {
+        val store = PersistentMemoryStore(null)
+        val manager = PersistentMemoryManager(context = null, memoryStore = store)
+
+        manager.addMemory("I like to go to delhi", MemoryCategory.FACT)
+
+        val irrelevantContext = manager.formatMemoryContext("what is photosynthesis")
+        assertEquals("", irrelevantContext)
+    }
+
+    @Test
+    fun testFindAnswerForUserQuery_DestinationQuery() {
+        val manager = PersistentMemoryManager(context = null, memoryStore = PersistentMemoryStore(null))
+        manager.addMemory("I like to go to delhi", MemoryCategory.FACT)
+
+        val answer = manager.findAnswerForUserQuery("where do I like to go")
+        assertEquals("Based on what you told me, you like to go to delhi.", answer)
     }
 }

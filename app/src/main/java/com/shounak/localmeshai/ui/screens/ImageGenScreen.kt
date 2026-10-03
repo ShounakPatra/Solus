@@ -23,6 +23,10 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material3.OutlinedButton
+import com.shounak.localmeshai.utils.CrashReportManager
+import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.glassmorphic
 import com.shounak.localmeshai.utils.glassEffect
 import com.shounak.localmeshai.utils.GlassDispersionCard
@@ -60,8 +64,10 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.material3.ripple
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -160,7 +166,9 @@ import com.shounak.localmeshai.ui.viewmodels.MainViewModel
 import com.shounak.localmeshai.ui.viewmodels.VisionChatMessage
 import com.shounak.localmeshai.ui.viewmodels.VisionChatSession
 import com.shounak.localmeshai.ui.viewmodels.VisionViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -170,6 +178,7 @@ fun ImageGenScreen(
     hazeState: HazeState
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
     val isKeyboardOpen = WindowInsets.isImeVisible
     var question by remember { mutableStateOf("") }
@@ -208,7 +217,12 @@ fun ImageGenScreen(
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
-        selectedBitmap = loadBitmap(context, uri)
+        scope.launch(Dispatchers.IO) {
+            val bmp = loadBitmap(context, uri)
+            withContext(Dispatchers.Main) {
+                selectedBitmap = bmp
+            }
+        }
     }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
@@ -219,7 +233,12 @@ fun ImageGenScreen(
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success) {
             cameraTempUri?.let { uri ->
-                selectedBitmap = loadBitmap(context, uri)
+                scope.launch(Dispatchers.IO) {
+                    val bmp = loadBitmap(context, uri)
+                    withContext(Dispatchers.Main) {
+                        selectedBitmap = bmp
+                    }
+                }
             }
         }
     }
@@ -271,6 +290,7 @@ fun ImageGenScreen(
                     modelName = selectedVisionModel?.name ?: "",
                     modelSize = selectedVisionModel?.size ?: "",
                     contextWindowTokens = selectedVisionModel?.effectiveContextWindowTokens,
+                    supportsThinkingMode = selectedVisionModel?.supportsThinkingMode == true,
                     allowUnsafeOverride = selectedUnsafeOverride
                 )
             }
@@ -835,14 +855,39 @@ fun VisionFullscreenAnswerPanel(
     }
 }
 
-fun loadBitmap(context: android.content.Context, uri: Uri): Bitmap {
+fun loadBitmap(context: android.content.Context, uri: Uri, maxDimension: Int = 2048): Bitmap {
     val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-        ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, _, _ ->
+        ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, info, _ ->
             decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            val srcW = info.size.width
+            val srcH = info.size.height
+            val maxEdge = maxOf(srcW, srcH)
+            if (maxEdge > maxDimension) {
+                val scale = maxDimension.toFloat() / maxEdge
+                val targetW = (srcW * scale).toInt().coerceAtLeast(1)
+                val targetH = (srcH * scale).toInt().coerceAtLeast(1)
+                decoder.setTargetSize(targetW, targetH)
+            }
         }
     } else {
-        @Suppress("DEPRECATION")
-        MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
+        val options = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        context.contentResolver.openInputStream(uri)?.use { inStream ->
+            BitmapFactory.decodeStream(inStream, null, options)
+        }
+        val maxEdge = maxOf(options.outWidth, options.outHeight)
+        var sampleSize = 1
+        while (maxEdge / (sampleSize * 2) >= maxDimension) {
+            sampleSize *= 2
+        }
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        context.contentResolver.openInputStream(uri)?.use { inStream ->
+            BitmapFactory.decodeStream(inStream, null, decodeOptions)
+        } ?: throw IllegalStateException("Could not open bitmap stream")
     }
     return bitmap.copy(Bitmap.Config.ARGB_8888, false)
 }
@@ -2066,7 +2111,8 @@ fun ImagePreviewModal(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.TopCenter)
-                    .padding(top = 40.dp, start = 16.dp, end = 16.dp),
+                    .statusBarsPadding()
+                    .padding(top = 16.dp, start = 16.dp, end = 16.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -2078,16 +2124,23 @@ fun ImagePreviewModal(
                     )
                 )
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(
-                        onClick = {
-                            AttachmentViewerUtils.openImageInExternalViewer(context, bitmap, imagePath)
-                        },
+                    Box(
                         modifier = Modifier
-                            .size(36.dp)
-                            .background(Color.White.copy(alpha = 0.2f), CircleShape)
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.20f))
+                            .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = ripple(bounded = true, color = Color.White),
+                                onClick = {
+                                    AttachmentViewerUtils.openImageInExternalViewer(context, bitmap, imagePath)
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.OpenInNew,
@@ -2096,11 +2149,18 @@ fun ImagePreviewModal(
                             modifier = Modifier.size(18.dp)
                         )
                     }
-                    IconButton(
-                        onClick = onDismiss,
+                    Box(
                         modifier = Modifier
-                            .size(36.dp)
-                            .background(Color.White.copy(alpha = 0.2f), CircleShape)
+                            .size(38.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.20f))
+                            .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = ripple(bounded = true, color = Color.White),
+                                onClick = onDismiss
+                            ),
+                        contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
@@ -2180,9 +2240,14 @@ fun VisionChatBubble(
             rawText
         }
     }
-    val segments = remember(displayText, isUser) {
-        if (isUser) listOf(ModelAnswerSegment.Text(displayText))
-        else ModelAnswerFormatter.parseSafely(displayText)
+    val segments = remember(displayText, isUser, isStreaming) {
+        if (isUser) {
+            listOf(ModelAnswerSegment.Text(displayText))
+        } else if (isStreaming && !displayText.contains("```") && !displayText.contains("$") && !displayText.contains("\\")) {
+            listOf(ModelAnswerSegment.Text(displayText))
+        } else {
+            ModelAnswerFormatter.parseSafely(displayText)
+        }
     }
     val showStreamingDots = isStreaming && displayText.isStreamingPlaceholderText()
     val hasRichBlock = segments.any {
@@ -2360,10 +2425,21 @@ fun VisionChatBubble(
                             is ModelAnswerSegment.Text -> {
                                 if (segment.text.isNotBlank()) {
                                     val visibleText = segment.text.trim('\n')
-                                    AdaptiveMessageText(
-                                        text = visibleText,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
+                                    if (isStreaming) {
+                                        Text(
+                                            text = visibleText,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(end = if (needsTopActionClearance) 0.dp else MessageActionButtonReserveWidth),
+                                            textAlign = TextAlign.Start
+                                        )
+                                    } else {
+                                        AdaptiveMessageText(
+                                            text = visibleText,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
                                 }
                             }
                             is ModelAnswerSegment.Code -> {
@@ -2403,6 +2479,34 @@ fun VisionChatBubble(
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                             }
+                        }
+                    }
+
+                    if (!isUser && displayText.startsWith("⚠️ Error:")) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                val reports = CrashReportManager.getAllReports(context)
+                                val matching = reports.firstOrNull { it.isNativeCrash } ?: reports.firstOrNull()
+                                if (matching != null) {
+                                    CrashReportManager.sendToGitHub(context, matching.details, matching.title)
+                                } else {
+                                    CrashReportManager.openNewIssue(
+                                        context = context,
+                                        title = "[Vision Model Inference Error] ${displayText.take(60)}",
+                                        body = "### Error Summary\n$displayText\n\n### Complete Device Specifications\n${DeviceUtils.formatFullDeviceDiagnostics(context)}"
+                                    )
+                                }
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            modifier = Modifier.height(30.dp)
+                        ) {
+                            Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(13.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Report Crash to Repo", style = MaterialTheme.typography.labelSmall)
                         }
                     }
                 }

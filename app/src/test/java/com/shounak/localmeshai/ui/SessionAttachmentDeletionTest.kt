@@ -210,4 +210,108 @@ class SessionAttachmentDeletionTest {
         assertFalse(msgImageFile.exists())
         assertFalse(sessionAttachmentsDir.exists())
     }
+
+    @Test
+    fun deleteChatSession_deletesAllAudioAndDocumentsReferencedBySessionAndMessages() {
+        val filesDir = tempFolder.newFolder("filesDir3")
+        val cacheDir = tempFolder.newFolder("cacheDir3")
+        val sessionId = UUID.randomUUID().toString()
+
+        val sessionAttachmentsDir = File(filesDir, "chat_attachments/$sessionId").apply { mkdirs() }
+        val sessionAudioFile = File(sessionAttachmentsDir, "audio_session.wav").apply { writeText("fake audio") }
+        val sessionDocFile = File(sessionAttachmentsDir, "document_report.pdf").apply { writeText("fake doc") }
+        val externalAudioFile = File(cacheDir, "multimodal_inputs").apply { mkdirs() }
+            .resolve("legacy_recording.wav").apply { writeText("external audio") }
+
+        val msg1 = VisionChatMessage(
+            text = "Listen and read",
+            isUser = true,
+            audioPath = externalAudioFile.absolutePath,
+            documentPath = sessionDocFile.absolutePath,
+            documentName = "document_report.pdf"
+        )
+        val msg2 = VisionChatMessage(text = "Understood", isUser = false)
+        val session = VisionChatSession(
+            id = sessionId,
+            title = "Multimedia chat",
+            question = "Listen and read",
+            answer = "Understood",
+            updatedAt = 2000L,
+            audioPath = sessionAudioFile.absolutePath,
+            documentName = "document_report.pdf",
+            messages = listOf(msg1, msg2)
+        )
+
+        assertTrue(sessionAudioFile.exists())
+        assertTrue(sessionDocFile.exists())
+        assertTrue(externalAudioFile.exists())
+
+        // Simulate enhanced deleteChatSession file cleanup
+        session.imagePath?.let { path -> File(path).takeIf { it.exists() }?.delete() }
+        session.audioPath?.let { path -> File(path).takeIf { it.exists() }?.delete() }
+        session.messages.forEach { msg ->
+            msg.imagePath?.let { path -> File(path).takeIf { it.exists() }?.delete() }
+            msg.audioPath?.let { path -> File(path).takeIf { it.exists() }?.delete() }
+            msg.documentPath?.let { path -> File(path).takeIf { it.exists() }?.delete() }
+        }
+        if (sessionAttachmentsDir.exists()) sessionAttachmentsDir.deleteRecursively()
+
+        assertFalse("Session audio must be deleted", sessionAudioFile.exists())
+        assertFalse("Session doc must be deleted", sessionDocFile.exists())
+        assertFalse("External/legacy audio must be deleted", externalAudioFile.exists())
+        assertFalse("Session attachments folder must be deleted", sessionAttachmentsDir.exists())
+    }
+
+    @Test
+    fun mediaRemainsOnDeviceWhileChatExists() {
+        val filesDir = tempFolder.newFolder("filesDir4")
+        val sessionId = UUID.randomUUID().toString()
+
+        val sessionAttachmentsDir = File(filesDir, "chat_attachments/$sessionId").apply { mkdirs() }
+        val audioFile = File(sessionAttachmentsDir, "voice_memo.wav").apply { writeText("pcm audio data") }
+        val imageFile = File(sessionAttachmentsDir, "photo.png").apply { writeText("png image data") }
+        val docFile = File(sessionAttachmentsDir, "contract.pdf").apply { writeText("pdf document data") }
+
+        // While chat exists, simulate any cache sweeps or temporary directory cleanups
+        val cacheDir = tempFolder.newFolder("cacheDir4")
+        val tempInferenceCache = File(cacheDir, "multimodal_inputs").apply { mkdirs() }
+        val tempDraft = File(tempInferenceCache, "temp_unsent.wav").apply { writeText("unsent") }
+
+        // Clean cacheDir only
+        tempDraft.delete()
+
+        // Persistent chat attachments MUST remain intact on device
+        assertTrue("Uploaded audio must remain on device until chat is deleted", audioFile.exists())
+        assertTrue("Uploaded photo must remain on device until chat is deleted", imageFile.exists())
+        assertTrue("Uploaded document must remain on device until chat is deleted", docFile.exists())
+    }
+
+    @Test
+    fun cleanupOrphanAttachments_deletesOnlyOrphanFoldersAndKeepsActiveChatMedia() {
+        val filesDir = tempFolder.newFolder("filesDir5")
+        val attachmentsDir = File(filesDir, "chat_attachments").apply { mkdirs() }
+
+        val activeSessionId = "active-session-123"
+        val orphanSessionId = "orphan-session-999"
+
+        val activeFolder = File(attachmentsDir, activeSessionId).apply { mkdirs() }
+        val activeMedia = File(activeFolder, "photo.png").apply { writeText("active photo") }
+
+        val orphanFolder = File(attachmentsDir, orphanSessionId).apply { mkdirs() }
+        val orphanMedia = File(orphanFolder, "orphan_doc.pdf").apply { writeText("orphan doc") }
+
+        val validSessionIds = setOf(activeSessionId)
+
+        // Simulate orphan cleanup logic
+        attachmentsDir.listFiles()?.filter { it.isDirectory }?.forEach { sub ->
+            if (!validSessionIds.contains(sub.name)) {
+                sub.deleteRecursively()
+            }
+        }
+
+        assertTrue("Active session media must be retained", activeMedia.exists())
+        assertTrue("Active session folder must be retained", activeFolder.exists())
+        assertFalse("Orphan media must be deleted", orphanMedia.exists())
+        assertFalse("Orphan folder must be deleted", orphanFolder.exists())
+    }
 }

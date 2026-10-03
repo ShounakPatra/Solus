@@ -37,6 +37,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material3.OutlinedButton
+import com.shounak.localmeshai.utils.CrashReportManager
 import com.shounak.localmeshai.utils.glassmorphic
 import com.shounak.localmeshai.utils.glassEffect
 import com.shounak.localmeshai.utils.GlassDispersionCard
@@ -72,7 +75,6 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
-import dev.chrisbanes.haze.hazeSource
 import androidx.compose.ui.draw.rotate
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
@@ -222,10 +224,11 @@ import com.shounak.localmeshai.ui.viewmodels.MainViewModel
 import com.shounak.localmeshai.ui.viewmodels.VisionChatMessage
 import com.shounak.localmeshai.ui.viewmodels.VisionChatSession
 import com.shounak.localmeshai.ui.viewmodels.VisionViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -508,8 +511,15 @@ fun ChatScreen(
     val context = LocalContext.current
 
     LaunchedEffect(Unit) {
-        chatViewModel.memoryFeedbackEvent.collect { feedback ->
-            android.widget.Toast.makeText(context, "🧠 $feedback", android.widget.Toast.LENGTH_SHORT).show()
+        launch {
+            chatViewModel.memoryFeedbackEvent.collect { feedback ->
+                android.widget.Toast.makeText(context, "🧠 $feedback", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+        launch {
+            visionViewModel.memoryFeedbackEvent.collect { feedback ->
+                android.widget.Toast.makeText(context, "🧠 $feedback", android.widget.Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -575,11 +585,6 @@ fun ChatScreen(
     val hasTextHistory = textMessages.isNotEmpty() || chatViewModel.chatSessions.isNotEmpty()
     val hasVisionHistory = visionMessages.isNotEmpty() || visionViewModel.imageChatSessions.isNotEmpty()
     val activeMessageCount = if (effectiveSupportsAttachments) visionMessages.size else textMessages.size
-    val activeLastMessageText = if (effectiveSupportsAttachments) {
-        visionMessages.lastOrNull()?.text
-    } else {
-        textMessages.lastOrNull()?.text
-    }
     val activeError = if (effectiveSupportsAttachments) visionError else error
     val audioRecordLimitMs = 30_000L
 
@@ -607,9 +612,14 @@ fun ChatScreen(
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
-        selectedBitmap = loadBitmap(context, uri)
-        selectedFileUri = null
-        selectedFileName = null
+        scope.launch(Dispatchers.IO) {
+            val bmp = loadBitmap(context, uri)
+            withContext(Dispatchers.Main) {
+                selectedBitmap = bmp
+                selectedFileUri = null
+                selectedFileName = null
+            }
+        }
     }
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
@@ -736,9 +746,35 @@ fun ChatScreen(
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success) {
             cameraTempUri?.let { uri ->
-                selectedBitmap = loadBitmap(context, uri)
-                selectedFileUri = null
-                selectedFileName = null
+                scope.launch(Dispatchers.IO) {
+                    val bmp = loadBitmap(context, uri)
+                    withContext(Dispatchers.Main) {
+                        selectedBitmap = bmp
+                        selectedFileUri = null
+                        selectedFileName = null
+                    }
+                    runCatching {
+                        context.cacheDir.resolve("camera_inputs").listFiles()?.forEach { file ->
+                            if (file.isFile) file.delete()
+                        }
+                    }
+                    withContext(Dispatchers.Main) {
+                        cameraTempUri = null
+                    }
+                }
+            }
+        } else {
+            cameraTempUri?.let { _ ->
+                scope.launch(Dispatchers.IO) {
+                    runCatching {
+                        context.cacheDir.resolve("camera_inputs").listFiles()?.forEach { file ->
+                            if (file.isFile) file.delete()
+                        }
+                    }
+                    withContext(Dispatchers.Main) {
+                        cameraTempUri = null
+                    }
+                }
             }
         }
     }
@@ -755,7 +791,7 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(selectedTextModelPath, selectedModel?.id, selectedUnsafeOverride) {
+    LaunchedEffect(selectedTextModelPath, selectedModel?.id, selectedSupportsThinking, selectedUnsafeOverride) {
         if (selectedTextModelPath == null) {
             chatViewModel.uninitializeModel()
         } else {
@@ -766,13 +802,14 @@ fun ChatScreen(
                     modelName = selectedModel?.name ?: "",
                     modelSize = selectedModel?.size ?: "",
                     contextWindowTokens = selectedModel?.effectiveContextWindowTokens,
+                    supportsThinkingMode = selectedSupportsThinking,
                     allowUnsafeOverride = selectedUnsafeOverride
                 )
             }
         }
     }
 
-    LaunchedEffect(selectedVisionModelPath, selectedModel?.id, selectedSupportsAudio, selectedUnsafeOverride) {
+    LaunchedEffect(selectedVisionModelPath, selectedModel?.id, selectedSupportsAudio, selectedSupportsThinking, selectedUnsafeOverride) {
         if (selectedVisionModelPath == null) {
             visionViewModel.uninitializeModel()
         } else {
@@ -784,6 +821,7 @@ fun ChatScreen(
                     modelSize = selectedModel?.size ?: "",
                     contextWindowTokens = selectedModel?.effectiveContextWindowTokens,
                     supportsAudioInput = selectedSupportsAudio,
+                    supportsThinkingMode = selectedSupportsThinking,
                     allowUnsafeOverride = selectedUnsafeOverride
                 )
             }
@@ -815,9 +853,24 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(activeLastMessageText, effectiveSupportsAttachments) {
-        if (followLatest && activeMessageCount > 0) {
-            listState.scrollToItem(activeMessageCount - 1, scrollOffset = 100_000)
+    val isAnyStreaming = if (effectiveSupportsAttachments) isVisionAnalyzing else isGenerating
+    LaunchedEffect(isAnyStreaming, followLatest) {
+        if (!isAnyStreaming || !followLatest) return@LaunchedEffect
+        while (true) {
+            delay(120L)
+            val count = if (effectiveSupportsAttachments) visionMessages.size else textMessages.size
+            if (count > 0 && followLatest) {
+                listState.scrollToItem(count - 1, scrollOffset = 100_000)
+            }
+        }
+    }
+
+    LaunchedEffect(isAnyStreaming) {
+        if (!isAnyStreaming && followLatest) {
+            val count = if (effectiveSupportsAttachments) visionMessages.size else textMessages.size
+            if (count > 0) {
+                listState.scrollToItem(count - 1, scrollOffset = 100_000)
+            }
         }
     }
 
@@ -875,9 +928,21 @@ fun ChatScreen(
                 selectedBitmap = null
                 selectedFileUri = null
                 selectedFileName = null
+                selectedAudioUri?.path?.let { p ->
+                    val f = File(p)
+                    if (f.exists() && f.parentFile?.name == "multimodal_inputs") {
+                        runCatching { f.delete() }
+                    }
+                }
                 selectedAudioUri = null
                 selectedAudioName = null
                 selectedAudioBytes = null
+                cameraTempUri = null
+                runCatching {
+                    context.cacheDir.resolve("camera_inputs").listFiles()?.forEach { file ->
+                        if (file.isFile) file.delete()
+                    }
+                }
                 showHistory = false
             },
             onDeleteTextSession = chatViewModel::deleteChatSession,
@@ -892,12 +957,25 @@ fun ChatScreen(
         AlertDialog(
             onDismissRequest = { showClearConfirm = false },
             title = { Text("Clear all history?") },
-            text = { Text("This will permanently delete all chat sessions. This cannot be undone.") },
+            text = { Text("This will permanently delete all chat sessions and all uploaded media. This cannot be undone.") },
             confirmButton = {
                 Button(
                     onClick = {
                         chatViewModel.clearHistory()
                         visionViewModel.clearHistory()
+                        val attachmentsDir = context.filesDir.resolve("chat_attachments")
+                        if (attachmentsDir.exists()) {
+                            attachmentsDir.deleteRecursively()
+                            attachmentsDir.mkdirs()
+                        }
+                        val multimodalDir = context.cacheDir.resolve("multimodal_inputs")
+                        if (multimodalDir.exists()) {
+                            multimodalDir.deleteRecursively()
+                        }
+                        val cameraDir = context.cacheDir.resolve("camera_inputs")
+                        if (cameraDir.exists()) {
+                            cameraDir.deleteRecursively()
+                        }
                         showClearConfirm = false
                         showHistory = false
                     },
@@ -1095,9 +1173,7 @@ fun ChatScreen(
                             SelectionContainer {
                                 LazyColumn(
                                     state = listState,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .hazeSource(state = hazeState),
+                                    modifier = Modifier.fillMaxSize(),
                                     contentPadding = PaddingValues(vertical = 8.dp),
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
@@ -1386,7 +1462,15 @@ fun ChatScreen(
                                     contentScale = ContentScale.Crop
                                 )
                                 LiquidGlassButton(
-                                    onClick = { selectedBitmap = null },
+                                    onClick = {
+                                        selectedBitmap = null
+                                        cameraTempUri = null
+                                        runCatching {
+                                            context.cacheDir.resolve("camera_inputs").listFiles()?.forEach { file ->
+                                                if (file.isFile) file.delete()
+                                            }
+                                        }
+                                    },
                                     hazeState = hazeState,
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
@@ -1583,6 +1667,12 @@ fun ChatScreen(
 
                                 LiquidGlassButton(
                                     onClick = {
+                                        selectedAudioUri?.path?.let { p ->
+                                            val f = File(p)
+                                            if (f.exists() && f.parentFile?.name == "multimodal_inputs") {
+                                                runCatching { f.delete() }
+                                            }
+                                        }
                                         selectedAudioUri = null
                                         selectedAudioName = null
                                         selectedAudioBytes = null
@@ -1678,9 +1768,8 @@ fun ChatScreen(
                                             scope.launch {
                                                 isIngestingDocument = true
                                                 try {
-                                                    val result = chatViewModel.ingestDocumentForRag(uriToIngest, nameToIngest)
+                                                    val result = visionViewModel.ingestDocumentForRag(uriToIngest, nameToIngest)
                                                     if (result.success) {
-                                                        visionViewModel.setPendingRagDocumentId(result.documentId)
                                                         Toast.makeText(context, "Indexed ${result.chunkCount} chunks into RAG Knowledge Base", Toast.LENGTH_SHORT).show()
                                                     } else {
                                                         Toast.makeText(context, "Document indexing note: ${result.message}", Toast.LENGTH_SHORT).show()
@@ -3373,9 +3462,14 @@ private fun ChatBubble(
     val displayText = remember(parsedContent.finalResponseText, isUser) {
         if (isUser) parsedContent.finalResponseText else parsedContent.finalResponseText.normalizeModelAnswerText()
     }
-    val segments = remember(displayText, isUser) {
-        if (isUser) listOf(ModelAnswerSegment.Text(displayText))
-        else ModelAnswerFormatter.parseSafely(displayText)
+    val segments = remember(displayText, isUser, isStreaming) {
+        if (isUser) {
+            listOf(ModelAnswerSegment.Text(displayText))
+        } else if (isStreaming && !displayText.contains("```") && !displayText.contains("$") && !displayText.contains("\\")) {
+            listOf(ModelAnswerSegment.Text(displayText))
+        } else {
+            ModelAnswerFormatter.parseSafely(displayText)
+        }
     }
     val showStreamingDots = isStreaming && displayText.isStreamingPlaceholderText()
     val hasRichBlock = segments.any {
@@ -3452,10 +3546,21 @@ private fun ChatBubble(
                             is ModelAnswerSegment.Text -> {
                                 if (segment.text.isNotBlank()) {
                                     val visibleText = segment.text.trim('\n')
-                                    AdaptiveMessageText(
-                                        text = visibleText,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
+                                    if (isStreaming) {
+                                        Text(
+                                            text = visibleText,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(end = if (needsTopActionClearance) 0.dp else MessageActionButtonReserveWidth),
+                                            textAlign = TextAlign.Start
+                                        )
+                                    } else {
+                                        AdaptiveMessageText(
+                                            text = visibleText,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
                                 }
                             }
                             is ModelAnswerSegment.Code -> {
@@ -3495,6 +3600,34 @@ private fun ChatBubble(
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                             }
+                        }
+                    }
+
+                    if (!isUser && displayText.startsWith("⚠️ Error:")) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                val reports = CrashReportManager.getAllReports(context)
+                                val matching = reports.firstOrNull { it.isNativeCrash } ?: reports.firstOrNull()
+                                if (matching != null) {
+                                    CrashReportManager.sendToGitHub(context, matching.details, matching.title)
+                                } else {
+                                    CrashReportManager.openNewIssue(
+                                        context = context,
+                                        title = "[Model Inference Error] ${displayText.take(60)}",
+                                        body = "### Error Summary\n$displayText\n\n### Complete Device Specifications\n${DeviceUtils.formatFullDeviceDiagnostics(context)}"
+                                    )
+                                }
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                            modifier = Modifier.height(30.dp)
+                        ) {
+                            Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(13.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Report Crash to Repo", style = MaterialTheme.typography.labelSmall)
                         }
                     }
                 }

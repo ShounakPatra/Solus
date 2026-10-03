@@ -102,16 +102,48 @@ class PersistentMemoryManager(
 
     /**
      * Formats all active memories into a structured context block for injection into chat prompts.
-     * Returns an empty string if there are no active memories.
+     * When [query] is provided:
+     * - If [query] is a greeting or casual opening, factual memories are NEVER injected to prevent
+     *   models from blurting out stored facts unprompted during greetings.
+     * - If [query] asks about stored memories, matching memories (or all if open-ended) are included.
+     * - For general queries, behavioral instructions are preserved, but facts/preferences are only
+     *   injected if they are relevant to the query topic.
+     * Returns an empty string if there are no matching or active memories.
      */
-    fun formatMemoryContext(): String {
+    fun formatMemoryContext(query: String = ""): String {
         val active = memoryStore.getActive()
         if (active.isEmpty()) return ""
+
+        val trimmedQuery = query.trim()
+        val isGreeting = isGreetingOrChitChat(trimmedQuery)
+
+        val relevantEntries = if (trimmedQuery.isBlank()) {
+            active
+        } else if (isGreeting) {
+            // For greetings, NEVER inject user facts, preferences, or notes!
+            // Only behavioral instructions (e.g. "always reply in Spanish") may apply.
+            active.filter { it.category == MemoryCategory.INSTRUCTION }
+        } else if (isOpenEndedRecallQuery(trimmedQuery)) {
+            active
+        } else if (isMemoryRecallQuery(trimmedQuery)) {
+            val matched = findRelevantMemories(trimmedQuery, active)
+            if (matched.isNotEmpty()) matched else active
+        } else {
+            // For general queries, keep instructions and only include facts relevant to the query topic
+            val instructions = active.filter { it.category == MemoryCategory.INSTRUCTION }
+            val relevantFacts = findRelevantMemories(
+                trimmedQuery,
+                active.filter { it.category != MemoryCategory.INSTRUCTION }
+            )
+            instructions + relevantFacts
+        }
+
+        if (relevantEntries.isEmpty()) return ""
 
         val sb = StringBuilder()
         sb.append("[User Memory & Preferences]\n")
         sb.append("The following are persistent memories, facts, and instructions describing the USER chatting with you:\n")
-        for (entry in active) {
+        for (entry in relevantEntries) {
             val label = when (entry.category) {
                 MemoryCategory.FACT -> "Fact"
                 MemoryCategory.PREFERENCE -> "Preference"
@@ -120,7 +152,12 @@ class PersistentMemoryManager(
             }
             sb.append("- [$label] ${entry.content}\n")
         }
-        sb.append("IMPORTANT INSTRUCTION FOR ASSISTANT: These memories describe the USER chatting with you. When answering questions regarding the user's identity, preferences, or facts, always address the user directly as \"You\" / \"Your\" (for example: \"You prefer Kotlin\", \"Your name is Lola\"). NEVER say \"I prefer\" or claim the user's preferences, memories, or identity as your own.\n")
+        sb.append("IMPORTANT INSTRUCTIONS FOR ASSISTANT:\n")
+        sb.append("1. Identity: You are Solus, a helpful and friendly on-device AI assistant. Never refer to yourself as 'Your' or take 'Your' as your name.\n")
+        sb.append("2. Perspective: The facts and preferences above describe the USER, not you. Never claim the user's preferences, memories, or identity as your own.\n")
+        sb.append("3. Greetings: When the user simply greets you (e.g. 'hi', 'hello', 'hey'), respond naturally with a brief, friendly greeting. Do NOT list, recite, or blurt out the user's stored memories unprompted during greetings.\n")
+        sb.append("4. Relevant Use: Only refer to these stored memories when directly relevant to what the user asks or requests.\n")
+        sb.append("5. Remembering Information: When the user asks or tells you to remember, save, or note down any fact, preference, or instruction, acknowledge it warmly and confirm that you have remembered it. Do NOT respond with a generic greeting.\n")
         sb.append("[End of User Memory]")
         return sb.toString()
     }
@@ -431,7 +468,204 @@ class PersistentMemoryManager(
         }
     }
 
+    /**
+     * Converts a first-person user statement into a natural second-person phrasing.
+     * E.g. "My dog name is lambda" -> "your dog name is lambda"
+     *      "I love to eat ice-cream" -> "you love to eat ice-cream"
+     */
+    fun toSecondPerson(text: String): String {
+        var result = text.trim()
+        if (result.isBlank()) return ""
+
+        result = result.replace(Regex("""\b(?:i\s+am|i'm|im)\b""", RegexOption.IGNORE_CASE), "you are")
+        result = result.replace(Regex("""\bmy\b""", RegexOption.IGNORE_CASE), "your")
+        result = result.replace(Regex("""\bmine\b""", RegexOption.IGNORE_CASE), "yours")
+        result = result.replace(Regex("""\bmyself\b""", RegexOption.IGNORE_CASE), "yourself")
+        result = result.replace(Regex("""\bme\b""", RegexOption.IGNORE_CASE), "you")
+        result = result.replace(Regex("""\bi\b""", RegexOption.IGNORE_CASE), "you")
+
+        return result.replaceFirstChar { it.lowercase(Locale.ROOT) }
+    }
+
+    /**
+     * Formats a friendly confirmation message acknowledging that a memory or instruction has been recorded.
+     */
+    fun formatConfirmationMessage(rawContent: String, category: MemoryCategory): String {
+        val trimmed = rawContent.trim()
+        val secondPerson = toSecondPerson(trimmed)
+        return when {
+            category == MemoryCategory.INSTRUCTION -> {
+                val cleanedInstruction = trimmed.trimStart().replaceFirstChar { it.lowercase(Locale.ROOT) }
+                if (cleanedInstruction.startsWith("to ")) {
+                    "Got it! I will remember $cleanedInstruction."
+                } else {
+                    "Got it! I will remember to $cleanedInstruction."
+                }
+            }
+            secondPerson.startsWith("call you", ignoreCase = true) -> {
+                "Got it! I will remember to $secondPerson."
+            }
+            else -> {
+                "Got it! I will remember that $secondPerson."
+            }
+        }
+    }
+
+    fun isGreetingOrChitChat(text: String): Boolean {
+        if (text.isBlank()) return false
+        val lower = text.lowercase(Locale.ROOT).trim().removeSuffix("!").removeSuffix(".").removeSuffix("?").trim()
+        val exactGreetings = setOf(
+            "hi", "hello", "hey", "hii", "heyy", "hiii", "yo", "sup",
+            "what's up", "whats up", "what's new", "whats new",
+            "howdy", "how are you", "how are you doing", "how r u",
+            "good morning", "good evening", "good afternoon", "good day",
+            "greetings", "hey there", "hello there", "hi there",
+            "ok", "okay", "cool", "thanks", "thank you"
+        )
+        if (lower in exactGreetings) return true
+        val starters = listOf(
+            "hi ", "hello ", "hey ", "howdy ", "good morning ", "good afternoon ", "good evening ", "greetings "
+        )
+        return starters.any { lower.startsWith(it) } && lower.length < 30
+    }
+
+    fun isOpenEndedRecallQuery(query: String): Boolean {
+        if (query.isBlank()) return false
+        val lower = query.lowercase(Locale.ROOT).trim()
+        val openRecallTriggers = listOf(
+            "what do you know about me",
+            "what do you remember about me",
+            "what do you remember",
+            "what did i tell you to remember",
+            "what are my memories",
+            "what memories do you have",
+            "tell me what you know about me",
+            "tell me about myself",
+            "what have you stored about me",
+            "show my memories",
+            "list my memories"
+        )
+        return openRecallTriggers.any { lower.contains(it) }
+    }
+
+    fun isMemoryRecallQuery(query: String): Boolean {
+        if (query.isBlank()) return false
+        val lower = query.lowercase(Locale.ROOT).trim()
+        val queryStarters = listOf(
+            "what things i like", "what things do i like", "what food i like", "what foods i like",
+            "what do i like", "what i like", "what do i love", "what i love",
+            "what do i prefer", "what i prefer", "what is my preference", "what are my preferences",
+            "what do i eat", "what i eat", "what do i drink", "what i drink",
+            "what is my name", "what's my name", "whats my name", "who am i",
+            "where do i live", "where do i reside", "where do i work",
+            "where do i like to go", "where i like to go", "where do i like", "where i like",
+            "where do i go", "where do i travel",
+            "what is my dog", "what's my dog", "what is my cat", "what's my cat",
+            "what do you know about me", "what do you remember about me",
+            "what did i tell you to remember", "what did i tell you", "what did i say earlier",
+            "do you remember what i", "do you know what i", "tell me what i like", "tell me about myself"
+        )
+        return queryStarters.any { lower.startsWith(it) || lower.contains(it) }
+    }
+
+    fun findRelevantMemories(query: String, entries: List<MemoryEntry>): List<MemoryEntry> {
+        val trimmedQuery = query.trim().lowercase(Locale.ROOT)
+        if (trimmedQuery.length < 3 || entries.isEmpty()) return emptyList()
+
+        val stopWords = setOf(
+            "what", "is", "my", "i", "do", "to", "the", "a", "an", "can", "you",
+            "tell", "me", "how", "who", "where", "when", "why", "are", "about",
+            "remember", "know", "recall", "say", "said", "and", "or", "in", "on", "at", "for"
+        )
+        val queryKeywords = trimmedQuery
+            .split(Regex("""[^a-zA-Z0-9]+"""))
+            .filter { it.length > 2 && it !in stopWords }
+
+        if (queryKeywords.isEmpty()) return emptyList()
+
+        val expandedQuery = expandWithSynonyms(queryKeywords)
+
+        return entries.mapNotNull { entry ->
+            val contentWords = entry.content.lowercase(Locale.ROOT)
+                .split(Regex("""[^a-zA-Z0-9]+"""))
+                .filter { it.length > 2 && it !in stopWords }
+                .toSet()
+            val expandedContent = expandWithSynonyms(contentWords)
+            val overlap = expandedQuery.count { it in expandedContent }
+            if (overlap > 0) entry to overlap else null
+        }.sortedByDescending { it.second }.map { it.first }
+    }
+
+    /**
+     * Answers questions about the user's stored memories, facts, and preferences (e.g. "what I like to eat",
+     * "what is my dog's name", "where do I live", "what is my favorite food").
+     * Returns a clear, natural second-person answer if a matching memory is found.
+     */
+    fun findAnswerForUserQuery(query: String): String? {
+        val trimmedQuery = query.trim().lowercase(Locale.ROOT)
+        if (trimmedQuery.length < 3) return null
+        val active = memoryStore.getActive()
+        if (active.isEmpty()) return null
+
+        val stopWords = setOf(
+            "what", "is", "my", "i", "do", "to", "the", "a", "an", "can", "you",
+            "tell", "me", "how", "who", "where", "when", "why", "are", "about",
+            "remember", "know", "recall", "say", "said"
+        )
+        val queryKeywords = trimmedQuery
+            .split(Regex("""[^a-zA-Z0-9]+"""))
+            .filter { it.length > 2 && it !in stopWords }
+
+        if (queryKeywords.isEmpty()) return null
+
+        val expandedQuery = expandWithSynonyms(queryKeywords)
+
+        val matches = active.mapNotNull { entry ->
+            val contentWords = entry.content.lowercase(Locale.ROOT)
+                .split(Regex("""[^a-zA-Z0-9]+"""))
+                .filter { it.length > 2 && it !in stopWords }
+                .toSet()
+            val expandedContent = expandWithSynonyms(contentWords)
+            val overlap = expandedQuery.count { it in expandedContent }
+            if (overlap > 0) entry to overlap else null
+        }.sortedByDescending { it.second }
+
+        if (matches.isEmpty()) return null
+
+        val topScore = matches.first().second
+        val topMatches = matches.filter { it.second == topScore }.take(3)
+        val descriptions = if (topMatches.size == 1) {
+            toSecondPerson(topMatches.first().first.content)
+        } else {
+            topMatches.joinToString(" and ") { toSecondPerson(it.first.content) }
+        }
+
+        return "Based on what you told me, $descriptions."
+    }
+
+    private fun expandWithSynonyms(words: Collection<String>): Set<String> {
+        val expanded = words.toMutableSet()
+        for (word in words) {
+            for (group in SYNONYM_GROUPS) {
+                if (word in group) {
+                    expanded.addAll(group)
+                }
+            }
+        }
+        return expanded
+    }
+
     companion object {
+        private val SYNONYM_GROUPS = listOf(
+            setOf("eat", "food", "foods", "eating", "dish", "dishes", "meal", "meals", "snack", "snacks"),
+            setOf("drink", "drinks", "drinking", "beverage", "beverages"),
+            setOf("like", "likes", "love", "loves", "prefer", "prefers", "preference", "preferences", "favorite", "favourite"),
+            setOf("live", "lives", "living", "reside", "resides", "stay", "stays", "city", "country", "home", "town"),
+            setOf("name", "names", "called", "call"),
+            setOf("dog", "dogs", "puppy", "puppies", "cat", "cats", "kitten", "kittens", "pet", "pets"),
+            setOf("work", "job", "profession", "career", "company", "occupation"),
+            setOf("go", "going", "visit", "visiting", "travel", "traveling", "trip", "destination", "place", "places", "tour", "touring")
+        )
         @Volatile
         private var INSTANCE: PersistentMemoryManager? = null
 

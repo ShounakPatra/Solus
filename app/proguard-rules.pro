@@ -1,21 +1,67 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# ====================================================================
+# Solus ProGuard / R8 Configuration for Release Builds
+# ====================================================================
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Preserve line numbers and source files for Crashlytics stack traces
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Preserve all native methods across the app
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# --------------------------------------------------------------------
+# Solus Llama.cpp & Native Engine JNI bindings
+# --------------------------------------------------------------------
+-keep class com.shounak.localmeshai.ai.LlamaCppEngine { *; }
+-keep class com.shounak.localmeshai.ai.LlamaCppEngine$* { *; }
+-keep class com.shounak.localmeshai.ai.LlamaTokenCallback { *; }
+-keepclassmembers class * implements com.shounak.localmeshai.ai.LlamaTokenCallback {
+    public void onToken(java.lang.String);
+    public void onComplete();
+    public void onStop();
+    public void onError(java.lang.String);
+}
+-keep class com.shounak.localmeshai.ai.LlamaSamplingParams { *; }
+-keep class com.shounak.localmeshai.ai.LlamaModelMetadata { *; }
+-keep class com.shounak.localmeshai.ai.VulkanDeviceInfo { *; }
+-keep class com.shounak.localmeshai.ai.VulkanDevice { *; }
+-keep class com.shounak.localmeshai.ai.LlamaBackend { *; }
+
+# --------------------------------------------------------------------
+# Google LiteRT-LM & MediaPipe Tasks
+# --------------------------------------------------------------------
+-keep class com.google.ai.edge.litertlm.** { *; }
+-keep class com.google.mediapipe.tasks.genai.** { *; }
+-keep class com.google.mediapipe.framework.** { *; }
+-dontwarn com.google.auto.value.extension.memoized.**
+-dontwarn com.google.mediapipe.proto.**
+-dontwarn com.google.mediapipe.framework.**
+
+# --------------------------------------------------------------------
+# Data & Model Classes (JSON / State / Memory)
+# --------------------------------------------------------------------
+-keep class com.shounak.localmeshai.models.** { *; }
+-keep class com.shounak.localmeshai.memory.** { *; }
+
+# --------------------------------------------------------------------
+# PDFBox Android & FontBox (uses reflection for CMap / Font loading)
+# --------------------------------------------------------------------
+-keep class com.tom_roush.pdfbox.** { *; }
+-keep class com.tom_roush.fontbox.** { *; }
+-dontwarn com.tom_roush.pdfbox.**
+-dontwarn com.tom_roush.fontbox.**
+
+# --------------------------------------------------------------------
+# LaTeX & Math Renderer
+# --------------------------------------------------------------------
+-keep class ru.noties.jlatexmath.** { *; }
+-dontwarn ru.noties.jlatexmath.**
+
+# --------------------------------------------------------------------
+# OkHttp & Okio
+# --------------------------------------------------------------------
+-dontwarn okhttp3.**
+-dontwarn okio.**

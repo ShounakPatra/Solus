@@ -10,8 +10,7 @@ object LiteRtRuntimeCache {
     private val transientCacheDirs = setOf(
         ROOT_DIR_NAME,
         "vision_questions",
-        "multimodal_inputs",
-        "camera_inputs"
+        "image_previews"
     )
 
     fun prepare(context: Context, modelId: String, backend: InferenceBackend): File {
@@ -35,8 +34,17 @@ object LiteRtRuntimeCache {
         transientCacheDirs.forEach { name ->
             runCatching { cacheRoot.resolve(name).deleteRecursively() }
         }
+        // Staging directories: only prune unreferenced temporary files older than 24h
+        listOf("camera_inputs", "multimodal_inputs").forEach { dirName ->
+            val dir = cacheRoot.resolve(dirName)
+            if (dir.exists()) {
+                val now = System.currentTimeMillis()
+                dir.listFiles()?.filter { it.isFile && now - it.lastModified() > 24L * 60L * 60L * 1000L }
+                    ?.forEach { runCatching { it.delete() } }
+            }
+        }
         cacheRoot.listFiles()
-            ?.filter { it.name != "vision_sessions" }
+            ?.filter { it.name != "vision_sessions" && it.name != "chat_attachments" && it.name != "multimodal_inputs" && it.name != "camera_inputs" }
             ?.filter { child ->
                 child.name.contains("litert", ignoreCase = true) ||
                     child.name.contains("llm", ignoreCase = true) ||

@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.22.1)
 
 project("solus_llama" C CXX)
 
+# Require 64-bit architecture - drop armeabi-v7a support
+if(ANDROID_ABI STREQUAL "armeabi-v7a" OR ANDROID_ABI STREQUAL "armeabi")
+    message(FATAL_ERROR "armeabi-v7a (32-bit ARM) is not supported in Solus. On-device LLM inference strictly requires 64-bit architectures (arm64-v8a or x86_64).")
+endif()
+
 # Set C and C++ standards
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -23,6 +28,9 @@ include_directories(SYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-headers/include")
 
 # Add optimizations and release mode definitions for all targets including llama.cpp and ggml
 add_compile_options(-O3 -DNDEBUG)
+
+# Ensure 16 KB page-size alignment for Android 15+ devices
+add_link_options("-Wl,-z,max-page-size=16384")
 
 add_subdirectory(llama.cpp)
 

@@ -2,7 +2,11 @@ package com.shounak.localmeshai.utils
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Debug
+import android.os.PowerManager
+import com.shounak.localmeshai.BuildConfig
 import com.shounak.localmeshai.models.ModelInfo
 import com.shounak.localmeshai.models.ModelType
 import java.util.Locale
@@ -53,6 +57,22 @@ object DeviceUtils {
     fun recommendedThreadCount(context: Context): Int {
         val cores = Runtime.getRuntime().availableProcessors()
         return recommendedThreadCountForCoresAndRam(cores, getTotalRamGB(context))
+    }
+
+    /**
+     * Checks if the current app process is running in 64-bit mode.
+     * Solus dropped armeabi-v7a (32-bit ARM) and requires 64-bit architectures (arm64-v8a, x86_64).
+     */
+    fun is64BitDevice(): Boolean {
+        return android.os.Process.is64Bit()
+    }
+
+    /**
+     * Validates that the device provides supported 64-bit native ABIs.
+     */
+    fun isSupportedAbi(): Boolean {
+        val primaryAbi = Build.SUPPORTED_ABIS.firstOrNull() ?: ""
+        return (primaryAbi == "arm64-v8a" || primaryAbi == "x86_64") && is64BitDevice()
     }
 
     fun recommendedThreadCountForCoresAndRam(cores: Int, totalRamGB: Double): Int {
@@ -302,6 +322,128 @@ object DeviceUtils {
             totalGb = totalGb,
             usedPercentage = usedRatio
         )
+    }
+
+    /**
+     * Gathers comprehensive hardware, OS, memory, storage, and runtime diagnostics for crash reporting.
+     */
+    fun getFullDeviceDiagnostics(context: Context): Map<String, String> {
+        val map = linkedMapOf<String, String>()
+
+        // 1. Device Identification
+        map["Manufacturer"] = Build.MANUFACTURER
+        map["Model"] = Build.MODEL
+        map["Brand"] = Build.BRAND
+        map["Product"] = Build.PRODUCT
+        map["Device"] = Build.DEVICE
+        map["Board"] = Build.BOARD
+        map["Hardware"] = Build.HARDWARE
+        map["Bootloader"] = Build.BOOTLOADER
+        map["Display Build"] = Build.DISPLAY
+        map["Fingerprint"] = Build.FINGERPRINT
+
+        // 2. Android OS & Kernel
+        map["Android OS"] = "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})"
+        map["Security Patch"] = runCatching { Build.VERSION.SECURITY_PATCH }.getOrDefault("Unknown")
+        map["Supported ABIs"] = Build.SUPPORTED_ABIS.joinToString(", ")
+        map["Is 64-Bit Process"] = is64BitDevice().toString()
+        map["Supported 64-Bit ABI"] = isSupportedAbi().toString()
+
+        // 3. Processor & SoC
+        val soc = getDeviceSoCInfo(context)
+        map["Chipset / SoC"] = "${soc.title} (${soc.details})"
+        if (soc.modelNumber.isNotBlank()) {
+            map["SoC Model Number"] = soc.modelNumber
+        }
+        map["CPU Architecture"] = System.getProperty("os.arch") ?: "Unknown"
+        map["CPU Cores"] = Runtime.getRuntime().availableProcessors().toString()
+
+        // 4. Memory (RAM)
+        val ram = getRamMemoryInfo(context)
+        map["Total RAM"] = String.format(Locale.US, "%.2f GiB (%,d bytes)", ram.totalGb, ram.totalBytes)
+        map["Available RAM"] = String.format(Locale.US, "%.2f GiB (%,d bytes)", ram.availableGb, ram.availableBytes)
+        map["RAM Usage"] = String.format(Locale.US, "%.1f%%", ram.usedPercentage * 100f)
+        map["Low-RAM Device Flag"] = isLowRamDevice(context).toString()
+
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        if (am != null) {
+            val memInfo = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(memInfo)
+            map["System Low Memory State"] = memInfo.lowMemory.toString()
+            map["Low Memory Threshold"] = "${memInfo.threshold / (1024L * 1024L)} MB"
+            map["Large Heap Limit"] = "${am.largeMemoryClass} MB"
+            map["Standard Heap Limit"] = "${am.memoryClass} MB"
+        }
+
+        // 5. Runtime & Native Heap
+        val rt = Runtime.getRuntime()
+        map["JVM Heap Max"] = "${rt.maxMemory() / (1024L * 1024L)} MB"
+        map["JVM Heap Total"] = "${rt.totalMemory() / (1024L * 1024L)} MB"
+        map["JVM Heap Free"] = "${rt.freeMemory() / (1024L * 1024L)} MB"
+        map["Native Heap Allocated"] = "${Debug.getNativeHeapAllocatedSize() / (1024L * 1024L)} MB"
+        map["Native Heap Free"] = "${Debug.getNativeHeapFreeSize() / (1024L * 1024L)} MB"
+        map["Native Heap Total"] = "${Debug.getNativeHeapSize() / (1024L * 1024L)} MB"
+
+        // 6. Storage
+        val freeStorageMb = runCatching { context.filesDir.freeSpace / (1024L * 1024L) }.getOrDefault(-1L)
+        val totalStorageMb = runCatching { context.filesDir.totalSpace / (1024L * 1024L) }.getOrDefault(-1L)
+        map["Internal Storage Free"] = if (freeStorageMb >= 0) "$freeStorageMb MB" else "Unknown"
+        map["Internal Storage Total"] = if (totalStorageMb >= 0) "${totalStorageMb / 1024} GB ($totalStorageMb MB)" else "Unknown"
+
+        // 7. Battery & Thermal
+        runCatching {
+            val batteryIntent = context.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+            if (batteryIntent != null) {
+                val level = batteryIntent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+                val scale = batteryIntent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
+                if (level >= 0 && scale > 0) {
+                    map["Battery Level"] = "${(level * 100) / scale}%"
+                }
+                val temp = batteryIntent.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, -1)
+                if (temp > 0) {
+                    map["Battery Temperature"] = "${temp / 10f} °C"
+                }
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            val thermal = pm?.currentThermalStatus ?: -1
+            val thermalLabel = when (thermal) {
+                PowerManager.THERMAL_STATUS_NONE -> "None (Normal)"
+                PowerManager.THERMAL_STATUS_LIGHT -> "Light Throttling"
+                PowerManager.THERMAL_STATUS_MODERATE -> "Moderate Throttling"
+                PowerManager.THERMAL_STATUS_SEVERE -> "Severe Throttling"
+                PowerManager.THERMAL_STATUS_CRITICAL -> "Critical Throttling"
+                PowerManager.THERMAL_STATUS_EMERGENCY -> "Emergency Shutdown Warning"
+                PowerManager.THERMAL_STATUS_SHUTDOWN -> "Thermal Shutdown"
+                else -> "Status $thermal"
+            }
+            map["Thermal Status"] = thermalLabel
+        }
+
+        // 8. Graphics & AI Capabilities
+        val glEsVersion = am?.deviceConfigurationInfo?.glEsVersion ?: "Unknown"
+        map["OpenGL ES Version"] = glEsVersion
+        val hasVulkan = context.packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL)
+        map["Vulkan Hardware Level Supported"] = hasVulkan.toString()
+
+        // 9. Solus App Info
+        map["Solus Version"] = "${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})"
+        map["Build Type"] = BuildConfig.BUILD_TYPE
+
+        return map
+    }
+
+    /**
+     * Formats full device diagnostics into a markdown list for reports and issues.
+     */
+    fun formatFullDeviceDiagnostics(context: Context): String {
+        val diag = getFullDeviceDiagnostics(context)
+        return buildString {
+            diag.forEach { (k, v) ->
+                appendLine("- **$k:** $v")
+            }
+        }
     }
 
     /** Structured SoC information for display in UI. */
