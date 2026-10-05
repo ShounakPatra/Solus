@@ -333,7 +333,8 @@ Go to **Settings** → **Hugging Face Access Token** and enter your read token. 
 ## 👤 Author
 
 **Shounak Patra**  
-GitHub: [@ShounakPatra](https://github.com/ShounakPatra)
+GitHub: [@ShounakPatra](https://github.com/ShounakPatra)  
+Email: [shounakpatra68@gmail.com](mailto:shounakpatra68@gmail.com)
 
 ---
 
