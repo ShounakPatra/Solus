@@ -33,7 +33,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build glslang-tools libvulkan-dev
-          yes | sdkmanager --install "ndk;28.2.13676358" "cmake;3.22.1"
+          ANDROID_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          echo "${ANDROID_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          export PATH="${ANDROID_ROOT}/cmdline-tools/latest/bin:${PATH}"
+          SDKMANAGER="${ANDROID_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(which sdkmanager 2>/dev/null || echo sdkmanager)"
+          fi
+          yes | "$SDKMANAGER" --install "ndk;28.2.13676358" "cmake;3.22.1"
 
       - name: Run host C++ native tests
         run: |
