@@ -37,7 +37,7 @@ static bool test_ascii_conversion() {
     }
 
     // Empty string
-    TEST_ASSERT(solus::utf16_to_utf8(nullptr, 0) == "", "Null u16 should produce empty string");
+    TEST_ASSERT(solus::utf16_to_utf8(static_cast<const uint16_t*>(nullptr), 0) == "", "Null u16 should produce empty string");
     TEST_ASSERT(solus::utf8_to_utf16(nullptr, 0).empty(), "Null utf8 should produce empty vector");
 
     TEST_PASS("ASCII conversion passed");
@@ -222,7 +222,7 @@ static bool test_embedded_nul_rejection_in_paths() {
     // Empty path
     {
         std::string out;
-        bool ok = solus::utf16_to_path_utf8(nullptr, 0, out);
+        bool ok = solus::utf16_to_path_utf8(static_cast<const uint16_t*>(nullptr), 0, out);
         TEST_ASSERT(ok, "Empty path should return true with empty out");
         TEST_ASSERT(out.empty(), "Empty path output should be empty");
     }
