@@ -29,7 +29,7 @@ Your conversations and files never leave your phone.
 
 <p>
   <img src="https://img.shields.io/badge/version-5.0.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 5.0.0" />
-  <img src="https://img.shields.io/badge/APK_size-33.14_MB_(31.61_MiB)-22C55E?style=for-the-badge&logo=android&logoColor=white" alt="APK size 33.14 MB (31.61 MiB)" />
+  <img src="https://img.shields.io/badge/APK_size-33.16_MB_(31.62_MiB)-22C55E?style=for-the-badge&logo=android&logoColor=white" alt="APK size 33.16 MB (31.62 MiB)" />
   <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=for-the-badge&logo=github&label=Stars&color=FFD700" alt="GitHub stars" />
   <img src="https://img.shields.io/github/downloads/ShounakPatra/Solus/total?style=for-the-badge&label=Downloads&color=20C997" alt="Total downloads" />
 </p>
@@ -112,7 +112,7 @@ Your conversations and files never leave your phone.
 - **📑 Document Extraction & Decompression Bomb Protection** — Strict aggregate memory and recursion protection for attached files (PDF, Office DOCX/PPTX/XLSX, ODT, archives) with a 20 MB uncompressed limit and nested archive blocking.
 - **🔒 Cryptographic APK Update Verification** — Strict certificate identity checking preventing updates signed by untrusted certificates, HTTPS enforcement, and path traversal protection.
 - **🎙️ Audio Memory Optimization & Safe Recorder Lifecycle** — Drastic reduction of PCM recording memory overhead (<1 MB vs 32 MB) with sample-derived duration accounting and guaranteed hardware release.
-- **📉 31% Release APK Footprint Reduction (48.2 MB → 33.1 MB)** — Stripped bundled emoji font in favor of system fonts (Android 9.0+), enabled compressed release DEX, native symbol stripping, and ThinLTO, beating the 36 MB budget by nearly 3 MB.
+- **📉 31% Release APK Footprint Reduction (48.2 MB → 33.16 MB)** — Stripped bundled emoji font in favor of system fonts (Android 9.0+), enabled compressed release DEX, native symbol stripping, and ThinLTO, beating the 36 MB budget by nearly 3 MB.
 
 ---
 
