@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Edit
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.WifiOff
 import com.shounak.localmeshai.utils.CrashReportManager
 import com.shounak.localmeshai.utils.CrashReport
 import com.shounak.localmeshai.utils.DeviceUtils
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayCircle
@@ -43,6 +45,8 @@ import com.shounak.localmeshai.BuildConfig
 import com.shounak.localmeshai.ai.ChatInferenceManager
 import com.shounak.localmeshai.ai.LlamaCppEngine
 import com.shounak.localmeshai.utils.AppUpdateManager
+import com.shounak.localmeshai.utils.UpdateNotesFormatter
+import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +70,13 @@ import com.shounak.localmeshai.utils.LiquidGlassButton
 import com.shounak.localmeshai.utils.glassEffect
 import dev.chrisbanes.haze.HazeState
 import kotlinx.coroutines.delay
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
+import kotlin.math.roundToInt
 
 private const val HF_TOKEN_TUTORIAL_URL = "https://youtu.be/il58zFv0tmU?si=5o_gE8p-JqwWkekY"
 
@@ -73,6 +84,7 @@ private const val HF_TOKEN_TUTORIAL_URL = "https://youtu.be/il58zFv0tmU?si=5o_gE
 fun SettingsDialog(
     mainViewModel: MainViewModel,
     hazeState: HazeState,
+    scrollToAbout: Boolean = false,
     onDismissRequest: () -> Unit
 ) {
     val settingsData by mainViewModel.appSettingsData.collectAsState()
@@ -82,6 +94,30 @@ fun SettingsDialog(
     var showLastChar by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
+
+    val scrollState = rememberScrollState()
+    var scrollContainerCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var aboutSectionOffsetY by remember { mutableIntStateOf(-1) }
+
+    LaunchedEffect(scrollToAbout) {
+        if (scrollToAbout) {
+            try {
+                withTimeout(1500L) {
+                    snapshotFlow {
+                        if (aboutSectionOffsetY > 0 && scrollState.maxValue > 0) aboutSectionOffsetY else -1
+                    }.filter { it > 0 }.first()
+                }
+                delay(150L)
+                scrollState.animateScrollTo(aboutSectionOffsetY.coerceIn(0, scrollState.maxValue))
+            } catch (_: Exception) {
+                if (scrollState.maxValue > 0) {
+                    scrollState.animateScrollTo(scrollState.maxValue)
+                }
+            } finally {
+                mainViewModel.onScrolledToAbout()
+            }
+        }
+    }
 
     LaunchedEffect(hfTokenDraft) {
         if (hfTokenDraft.isNotEmpty() && !isTokenVisible) {
@@ -146,7 +182,10 @@ fun SettingsDialog(
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .verticalScroll(rememberScrollState()),
+                        .onGloballyPositioned { coordinates ->
+                            scrollContainerCoordinates = coordinates
+                        }
+                        .verticalScroll(scrollState),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     // Category 1: Visual Themes
@@ -255,7 +294,7 @@ fun SettingsDialog(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            listOf(0 to "Off", 5 to "5 min", 15 to "15 min", 30 to "30 min").forEach { (mins, label) ->
+                            listOf(0 to "Off", 1 to "1 min", 5 to "5 min", 15 to "15 min", 30 to "30 min").forEach { (mins, label) ->
                                 val isSelected = settingsData.autoUnloadMinutes == mins
                                 FilterChip(
                                     selected = isSelected,
@@ -288,9 +327,13 @@ fun SettingsDialog(
                             fontWeight = FontWeight.SemiBold,
                             color = colors.onSurface
                         )
-                        val vulkanDeviceInfo = remember { LlamaCppEngine.getVulkanDeviceInfo() }
-                        val gpuName = vulkanDeviceInfo?.devices?.firstOrNull()?.name?.takeIf { it.isNotBlank() }
-                            ?: if (LlamaCppEngine.isVulkanAvailable()) "GPU Supported" else "CPU Only"
+                        val gpuName by produceState(initialValue = "Detecting…") {
+                            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                val vulkanDeviceInfo = LlamaCppEngine.getVulkanDeviceInfo()
+                                vulkanDeviceInfo?.devices?.firstOrNull()?.name?.takeIf { it.isNotBlank() }
+                                    ?: if (LlamaCppEngine.isVulkanAvailable()) "GPU Supported" else "CPU Only"
+                            }
+                        }
                         Text(
                             text = "Detected Hardware: $gpuName",
                             style = MaterialTheme.typography.bodySmall,
@@ -306,18 +349,8 @@ fun SettingsDialog(
                         }
                         val isGgufActive = isGgufEngineActive || isGgufSelected
 
-                        LaunchedEffect(isGgufActive) {
-                            if (isGgufActive && !settingsData.llamaBackendPreference.equals("AUTO", ignoreCase = true)) {
-                                appSettings.updateSettings { it.copy(llamaBackendPreference = "AUTO") }
-                            }
-                        }
-
                         Text(
-                            text = if (isGgufActive) {
-                                "Choose whether models run on GPU accelerator or CPU-safe mode. For GGUF models, Auto mode is active and optimized automatically."
-                            } else {
-                                "Choose whether models run on GPU accelerator or CPU-safe mode. Changing this automatically re-initializes the active model on the selected chip."
-                            },
+                            text = "Choose whether models run on GPU accelerator, CPU-safe mode, or Auto mode (prefers validated GPU with automatic CPU fallback). Changing this automatically re-initializes the active model on the selected chip.",
                             style = MaterialTheme.typography.bodySmall,
                             color = colors.onSurfaceVariant.copy(alpha = 0.72f)
                         )
@@ -331,15 +364,12 @@ fun SettingsDialog(
                                 "VULKAN" to "GPU (Vulkan / LiteRT)",
                                 "CPU" to "CPU (Safe)"
                             ).forEach { (backendPref, label) ->
-                                val isAuto = backendPref.equals("AUTO", ignoreCase = true)
-                                val isChipEnabled = if (isGgufActive) isAuto else true
+                                val isChipEnabled = true
                                 val isSelected = settingsData.llamaBackendPreference.equals(backendPref, ignoreCase = true)
                                 FilterChip(
                                     selected = isSelected,
                                     onClick = {
-                                        if (isChipEnabled) {
-                                            appSettings.updateSettings { it.copy(llamaBackendPreference = backendPref) }
-                                        }
+                                        appSettings.updateSettings { it.copy(llamaBackendPreference = backendPref) }
                                     },
                                     enabled = isChipEnabled,
                                     label = { Text(label, maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall) },
@@ -367,7 +397,7 @@ fun SettingsDialog(
                         }
                         if (isGgufActive) {
                             Text(
-                                text = "CPU and GPU options are unavailable for GGUF models. GGUF runs in Auto mode (Vulkan GPU with automatic CPU fallback).",
+                                text = "GGUF models support Auto (prefers validated GPU with automatic CPU fallback), explicit Vulkan GPU, and explicit CPU mode.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.primary.copy(alpha = 0.85f)
                             )
@@ -434,35 +464,73 @@ fun SettingsDialog(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            OutlinedButton(
+                            LiquidGlassButton(
                                 onClick = {
                                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(HF_TOKEN_TUTORIAL_URL))
                                     context.startActivity(intent)
                                 },
-                                modifier = Modifier.weight(1.2f),
+                                hazeState = hazeState,
+                                modifier = Modifier
+                                    .weight(1.2f)
+                                    .height(42.dp)
+                                    .border(
+                                        width = 0.8.dp,
+                                        color = colors.outlineVariant.copy(alpha = 0.50f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ),
                                 shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.onSurfaceVariant),
-                                border = BorderStroke(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f)),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                             ) {
-                                Icon(Icons.Default.PlayCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(
+                                    Icons.Default.PlayCircle,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = colors.onSurfaceVariant
+                                )
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("How to create token", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    "How to create token",
+                                    maxLines = 1,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = colors.onSurfaceVariant
+                                )
                             }
 
-                            Button(
+                            val saveEnabled = hfTokenDraft.trim() != settingsData.huggingFaceToken
+                            LiquidGlassButton(
                                 onClick = {
                                     appSettings.updateSettings { it.copy(huggingFaceToken = hfTokenDraft.trim()) }
                                     mainViewModel.setHuggingFaceToken(hfTokenDraft.trim())
                                 },
-                                enabled = hfTokenDraft.trim() != settingsData.huggingFaceToken,
-                                modifier = Modifier.weight(1f),
+                                enabled = saveEnabled,
+                                hazeState = hazeState,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(42.dp)
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (saveEnabled) colors.primary.copy(alpha = 0.60f) else colors.outlineVariant.copy(alpha = 0.30f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ),
                                 shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                                tintColor = if (saveEnabled) colors.primary.copy(alpha = 0.25f) else colors.surfaceContainerHighest.copy(alpha = 0.20f),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                             ) {
-                                Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(
+                                    Icons.Default.Save,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = if (saveEnabled) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.5f)
+                                )
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Save Token", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                                Text(
+                                    "Save Token",
+                                    maxLines = 1,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (saveEnabled) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.5f)
+                                )
                             }
                         }
                     }
@@ -547,19 +615,34 @@ fun SettingsDialog(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = colors.onSurfaceVariant.copy(alpha = 0.82f)
                                     )
-                                    Button(
+                                    LiquidGlassButton(
                                         onClick = { showMemoryDialog = true },
-                                        modifier = Modifier.fillMaxWidth(),
+                                        hazeState = hazeState,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(44.dp)
+                                            .border(
+                                                width = 0.9.dp,
+                                                color = colors.primary.copy(alpha = 0.50f),
+                                                shape = RoundedCornerShape(12.dp)
+                                            ),
                                         shape = RoundedCornerShape(12.dp),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = colors.primary.copy(alpha = 0.22f),
-                                            contentColor = colors.primary
-                                        ),
-                                        border = BorderStroke(0.8.dp, colors.primary.copy(alpha = 0.50f))
+                                        tintColor = colors.primary.copy(alpha = 0.20f),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                                     ) {
-                                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Manage Saved Memories", style = MaterialTheme.typography.labelMedium)
+                                        Icon(
+                                            Icons.Default.Edit,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp),
+                                            tint = colors.primary
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            "Manage Saved Memories",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = colors.primary
+                                        )
                                     }
                                 }
                             }
@@ -648,38 +731,69 @@ fun SettingsDialog(
                                         color = colors.onSurfaceVariant.copy(alpha = 0.82f)
                                     )
 
-                                    Button(
+                                    LiquidGlassButton(
                                         onClick = { showRagDialog = true },
-                                        modifier = Modifier.fillMaxWidth(),
+                                        hazeState = hazeState,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(44.dp)
+                                            .border(
+                                                width = 0.9.dp,
+                                                color = colors.primary.copy(alpha = 0.50f),
+                                                shape = RoundedCornerShape(12.dp)
+                                            ),
                                         shape = RoundedCornerShape(12.dp),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = colors.primary.copy(alpha = 0.22f),
-                                            contentColor = colors.primary
-                                        ),
-                                        border = BorderStroke(0.8.dp, colors.primary.copy(alpha = 0.50f))
+                                        tintColor = colors.primary.copy(alpha = 0.20f),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                                     ) {
-                                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Manage Knowledge Base & Documents", style = MaterialTheme.typography.labelMedium)
+                                        Icon(
+                                            Icons.Default.Tune,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp),
+                                            tint = colors.primary
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            "Manage Knowledge Base & Documents",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = colors.primary
+                                        )
                                     }
 
                                     if (ragChunkCount > 0) {
-                                        OutlinedButton(
+                                        LiquidGlassButton(
                                             onClick = {
                                                 ragManager.clearKnowledgeBase()
                                                 ragDocCount = 0
                                                 ragChunkCount = 0
                                             },
-                                            colors = ButtonDefaults.outlinedButtonColors(
-                                                contentColor = colors.error
-                                            ),
-                                            border = BorderStroke(0.8.dp, colors.error.copy(alpha = 0.40f)),
+                                            hazeState = hazeState,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(42.dp)
+                                                .border(
+                                                    width = 0.8.dp,
+                                                    color = colors.error.copy(alpha = 0.45f),
+                                                    shape = RoundedCornerShape(12.dp)
+                                                ),
                                             shape = RoundedCornerShape(12.dp),
-                                            modifier = Modifier.fillMaxWidth()
+                                            tintColor = colors.error.copy(alpha = 0.16f),
+                                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                                         ) {
-                                            Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Icon(
+                                                Icons.Default.Clear,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp),
+                                                tint = colors.error
+                                            )
                                             Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Clear RAG Knowledge Base", style = MaterialTheme.typography.labelMedium)
+                                            Text(
+                                                "Clear RAG Knowledge Base",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = colors.error
+                                            )
                                         }
                                     }
                                 }
@@ -752,30 +866,68 @@ fun SettingsDialog(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     if (crashReports.isNotEmpty()) {
-                                        OutlinedButton(
+                                        LiquidGlassButton(
                                             onClick = { showCrashDialog = true },
+                                            hazeState = hazeState,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(42.dp)
+                                                .border(
+                                                    width = 0.8.dp,
+                                                    color = colors.outlineVariant.copy(alpha = 0.50f),
+                                                    shape = RoundedCornerShape(12.dp)
+                                                ),
                                             shape = RoundedCornerShape(12.dp),
-                                            modifier = Modifier.weight(1f)
+                                            tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                                         ) {
-                                            Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Icon(
+                                                Icons.Default.Visibility,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp),
+                                                tint = colors.onSurfaceVariant
+                                            )
                                             Spacer(modifier = Modifier.width(6.dp))
-                                            Text("See Reports")
+                                            Text(
+                                                "See Reports",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = colors.onSurfaceVariant
+                                            )
                                         }
-                                        Button(
+                                        LiquidGlassButton(
                                             onClick = {
                                                 val latest = crashReports.first()
                                                 CrashReportManager.sendToGitHub(context, latest.details, latest.title)
                                             },
+                                            hazeState = hazeState,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(42.dp)
+                                                .border(
+                                                    width = 0.9.dp,
+                                                    color = colors.error.copy(alpha = 0.50f),
+                                                    shape = RoundedCornerShape(12.dp)
+                                                ),
                                             shape = RoundedCornerShape(12.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = colors.error),
-                                            modifier = Modifier.weight(1f)
+                                            tintColor = colors.error.copy(alpha = 0.22f),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                                         ) {
-                                            Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Icon(
+                                                Icons.Default.BugReport,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp),
+                                                tint = colors.error
+                                            )
                                             Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Send to Repo")
+                                            Text(
+                                                "Send to Repo",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = colors.error
+                                            )
                                         }
                                     } else {
-                                        OutlinedButton(
+                                        LiquidGlassButton(
                                             onClick = {
                                                 CrashReportManager.openNewIssue(
                                                     context,
@@ -783,12 +935,31 @@ fun SettingsDialog(
                                                     body = "### Description\n(Describe your issue or feedback here)\n\n### Complete Device Specifications\n${DeviceUtils.formatFullDeviceDiagnostics(context)}"
                                                 )
                                             },
+                                            hazeState = hazeState,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(42.dp)
+                                                .border(
+                                                    width = 0.8.dp,
+                                                    color = colors.outlineVariant.copy(alpha = 0.50f),
+                                                    shape = RoundedCornerShape(12.dp)
+                                                ),
                                             shape = RoundedCornerShape(12.dp),
-                                            modifier = Modifier.fillMaxWidth()
+                                            tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                                         ) {
-                                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Icon(
+                                                Icons.Default.OpenInBrowser,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp),
+                                                tint = colors.onSurfaceVariant
+                                            )
                                             Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Report Bug / Issue to Repo")
+                                            Text(
+                                                "Report Bug / Issue to Repo",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = colors.onSurfaceVariant
+                                            )
                                         }
                                     }
                                 }
@@ -801,7 +972,20 @@ fun SettingsDialog(
                     val updateDownloadStatus by mainViewModel.updateDownloadStatus.collectAsState()
                     val isCheckingForUpdates by mainViewModel.isCheckingForUpdates.collectAsState()
 
-                    SettingsCategory(title = "ℹ️ About Solus & Updates", hazeState = hazeState) {
+                    SettingsCategory(
+                        title = "ℹ️ About Solus & Updates",
+                        hazeState = hazeState,
+                        modifier = Modifier.onGloballyPositioned { aboutCoords ->
+                            val container = scrollContainerCoordinates
+                            if (container != null && container.isAttached && aboutCoords.isAttached) {
+                                val localPos = container.localPositionOf(aboutCoords, Offset.Zero)
+                                val targetScroll = scrollState.value + localPos.y.roundToInt()
+                                if (targetScroll > 0) {
+                                    aboutSectionOffsetY = targetScroll
+                                }
+                            }
+                        }
+                    ) {
                         Surface(
                             shape = RoundedCornerShape(16.dp),
                             color = colors.surfaceContainerLow,
@@ -829,59 +1013,108 @@ fun SettingsDialog(
                                     color = colors.onSurfaceVariant.copy(alpha = 0.82f)
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
-                                OutlinedButton(
+                                LiquidGlassButton(
                                     onClick = {
                                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AppUpdateManager.GITHUB_REPO_URL))
                                         context.startActivity(intent)
                                     },
-                                    modifier = Modifier.fillMaxWidth(),
+                                    hazeState = hazeState,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(42.dp)
+                                        .border(
+                                            width = 0.8.dp,
+                                            color = colors.outlineVariant.copy(alpha = 0.50f),
+                                            shape = RoundedCornerShape(12.dp)
+                                        ),
                                     shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.onSurfaceVariant),
-                                    border = BorderStroke(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f)),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                    tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
                                 ) {
-                                    Icon(Icons.Default.PlayCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Icon(
+                                        Icons.Default.PlayCircle,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = colors.onSurfaceVariant
+                                    )
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("GitHub: ShounakPatra/Solus", style = MaterialTheme.typography.labelMedium)
+                                    Text(
+                                        "GitHub: ShounakPatra/Solus",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = colors.onSurfaceVariant
+                                    )
                                 }
                             }
                         }
 
                         SettingsSwitchRow(
                             title = "Automatic Check for Updates",
-                            subtitle = "Check for newer GitHub releases on app startup",
+                            subtitle = "Periodically check for newer GitHub releases in background and send notifications",
                             checked = settingsData.autoCheckUpdates,
                             onCheckedChange = { isEnabled ->
                                 appSettings.updateSettings { it.copy(autoCheckUpdates = isEnabled) }
                                 if (isEnabled) {
+                                    AppUpdateManager.scheduleBackgroundUpdateCheck(context, force = true)
                                     mainViewModel.checkForUpdates(silent = true)
+                                } else {
+                                    AppUpdateManager.cancelBackgroundUpdateCheck(context)
+                                    AppUpdateManager.cancelUpdateNotification(context)
                                 }
                             }
                         )
 
-                        Button(
+                        LiquidGlassButton(
                             onClick = { mainViewModel.checkForUpdates(silent = false) },
                             enabled = !isCheckingForUpdates,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp)
+                            hazeState = hazeState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp)
+                                .border(
+                                    width = 1.dp,
+                                    color = if (!isCheckingForUpdates) colors.primary.copy(alpha = 0.60f) else colors.outlineVariant.copy(alpha = 0.30f),
+                                    shape = RoundedCornerShape(12.dp)
+                                ),
+                            shape = RoundedCornerShape(12.dp),
+                            tintColor = if (!isCheckingForUpdates) colors.primary.copy(alpha = 0.25f) else colors.surfaceContainerHighest.copy(alpha = 0.20f),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
                         ) {
                             if (isCheckingForUpdates) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(18.dp),
-                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    color = colors.primary,
                                     strokeWidth = 2.dp
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Checking for updates...", style = MaterialTheme.typography.labelLarge)
+                                Text(
+                                    "Checking for updates...",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = colors.onSurfaceVariant
+                                )
                             } else {
-                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(
+                                    Icons.Default.Refresh,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = colors.primary
+                                )
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Check for Updates", style = MaterialTheme.typography.labelLarge)
+                                Text(
+                                    "Check for Updates",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colors.primary
+                                )
                             }
                         }
 
                         when (val result = updateState) {
                             is AppUpdateManager.UpdateCheckResult.UpdateAvailable -> {
+                                val parsedNotes = remember(result.updateInfo.releaseNotes) {
+                                    UpdateNotesFormatter.parse(result.updateInfo.releaseNotes)
+                                }
+                                var showFullChangelogDialog by remember { mutableStateOf(false) }
+
                                 Surface(
                                     shape = RoundedCornerShape(16.dp),
                                     color = colors.primaryContainer.copy(alpha = 0.35f),
@@ -890,28 +1123,125 @@ fun SettingsDialog(
                                 ) {
                                     Column(
                                         modifier = Modifier.padding(14.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                Icons.Default.Info,
-                                                contentDescription = null,
-                                                tint = colors.primary,
-                                                modifier = Modifier.size(20.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                "New Version Available: v${result.updateInfo.latestVersion}",
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = colors.onPrimaryContainer
-                                            )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.weight(1f, fill = false)
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.NewReleases,
+                                                    contentDescription = null,
+                                                    tint = colors.primary,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    "New Version Available: v${result.updateInfo.latestVersion}",
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = colors.onPrimaryContainer
+                                                )
+                                            }
                                         }
-                                        Text(
-                                            result.updateInfo.releaseNotes.take(300),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = colors.onPrimaryContainer
-                                        )
+
+                                        if (!parsedNotes.subtitle.isNullOrBlank()) {
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = colors.primary.copy(alpha = 0.12f),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text(
+                                                    text = parsedNotes.subtitle,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = colors.primary,
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                                )
+                                            }
+                                        }
+
+                                        // Highlights section formatted cleanly without raw HTML or markdown
+                                        Column(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            val displayBullets = if (parsedNotes.highlights.isNotEmpty()) {
+                                                parsedNotes.highlights.take(4)
+                                            } else {
+                                                parsedNotes.cleanSummary.lines().filter { it.isNotBlank() }.take(4)
+                                            }
+
+                                            if (displayBullets.isNotEmpty()) {
+                                                displayBullets.forEach { bulletText ->
+                                                    val bulletFormatted = if (bulletText.trim().startsWith("•")) {
+                                                        bulletText.trim()
+                                                    } else {
+                                                        "• ${bulletText.trim()}"
+                                                    }
+                                                    Text(
+                                                        text = UpdateNotesFormatter.formatToAnnotatedString(
+                                                            bulletFormatted,
+                                                            primaryColor = colors.primary,
+                                                            textColor = colors.onPrimaryContainer
+                                                        ),
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = colors.onPrimaryContainer
+                                                    )
+                                                }
+                                            } else {
+                                                Text(
+                                                    text = UpdateNotesFormatter.formatToAnnotatedString(
+                                                        parsedNotes.cleanSummary.ifBlank { "A new update is available with improvements and fixes." },
+                                                        primaryColor = colors.primary,
+                                                        textColor = colors.onPrimaryContainer
+                                                    ),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = colors.onPrimaryContainer
+                                                )
+                                            }
+                                        }
+
+                                        if (parsedNotes.fullChangelog.isNotBlank()) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.End
+                                            ) {
+                                                LiquidGlassButton(
+                                                    onClick = { showFullChangelogDialog = true },
+                                                    hazeState = hazeState,
+                                                    modifier = Modifier
+                                                        .height(28.dp)
+                                                        .border(
+                                                            width = 0.8.dp,
+                                                            color = colors.primary.copy(alpha = 0.40f),
+                                                            shape = RoundedCornerShape(8.dp)
+                                                        ),
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    tintColor = colors.primary.copy(alpha = 0.15f),
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.AutoMirrored.Filled.Article,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(13.dp),
+                                                        tint = colors.primary
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text(
+                                                        "View Full Changelog",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = colors.primary
+                                                    )
+                                                }
+                                            }
+                                        }
 
                                         when (val status = updateDownloadStatus) {
                                             is MainViewModel.UpdateDownloadStatus.Downloading -> {
@@ -964,63 +1294,267 @@ fun SettingsDialog(
                                             val apkUrl = result.updateInfo.downloadUrl
                                             when (val status = updateDownloadStatus) {
                                                 is MainViewModel.UpdateDownloadStatus.Downloading -> {
-                                                    Button(
+                                                    LiquidGlassButton(
                                                         onClick = {},
                                                         enabled = false,
-                                                        modifier = Modifier.weight(1f),
-                                                        shape = RoundedCornerShape(10.dp)
+                                                        hazeState = hazeState,
+                                                        modifier = Modifier
+                                                            .weight(1f)
+                                                            .height(42.dp)
+                                                            .border(
+                                                                width = 0.8.dp,
+                                                                color = colors.outlineVariant.copy(alpha = 0.30f),
+                                                                shape = RoundedCornerShape(12.dp)
+                                                            ),
+                                                        shape = RoundedCornerShape(12.dp),
+                                                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.20f),
+                                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                                                     ) {
-                                                        Text("Downloading...")
+                                                        CircularProgressIndicator(
+                                                            modifier = Modifier.size(16.dp),
+                                                            strokeWidth = 2.dp,
+                                                            color = colors.primary
+                                                        )
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Text(
+                                                            "Downloading...",
+                                                            style = MaterialTheme.typography.labelMedium,
+                                                            color = colors.onSurfaceVariant
+                                                        )
                                                     }
                                                 }
                                                 is MainViewModel.UpdateDownloadStatus.ReadyToInstall -> {
-                                                    Button(
+                                                    LiquidGlassButton(
                                                         onClick = {
                                                             AppUpdateManager.installApk(context, status.apkFile)
                                                         },
-                                                        modifier = Modifier.weight(1f),
-                                                        shape = RoundedCornerShape(10.dp)
+                                                        hazeState = hazeState,
+                                                        modifier = Modifier
+                                                            .weight(1f)
+                                                            .height(42.dp)
+                                                            .border(
+                                                                width = 1.dp,
+                                                                color = colors.primary.copy(alpha = 0.60f),
+                                                                shape = RoundedCornerShape(12.dp)
+                                                            ),
+                                                        shape = RoundedCornerShape(12.dp),
+                                                        tintColor = colors.primary.copy(alpha = 0.25f),
+                                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                                                     ) {
-                                                        Text("Install Update")
+                                                        Icon(
+                                                            Icons.Default.Download,
+                                                            contentDescription = null,
+                                                            modifier = Modifier.size(16.dp),
+                                                            tint = colors.primary
+                                                        )
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Text(
+                                                            "Install Update",
+                                                            style = MaterialTheme.typography.labelMedium,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                            color = colors.primary
+                                                        )
                                                     }
                                                 }
                                                 else -> {
                                                     if (!apkUrl.isNullOrBlank()) {
-                                                        Button(
-                                                             onClick = {
-                                                                 mainViewModel.downloadAndInstallUpdate(
-                                                                     result.updateInfo.latestVersion,
-                                                                     apkUrl
-                                                                 )
-                                                             },
-                                                             modifier = Modifier.weight(1f),
-                                                             shape = RoundedCornerShape(10.dp)
-                                                         ) {
-                                                             Text("Download & Install")
-                                                         }
+                                                        LiquidGlassButton(
+                                                            onClick = {
+                                                                mainViewModel.downloadAndInstallUpdate(
+                                                                    result.updateInfo.latestVersion,
+                                                                    apkUrl
+                                                                )
+                                                            },
+                                                            hazeState = hazeState,
+                                                            modifier = Modifier
+                                                                .weight(1f)
+                                                                .height(42.dp)
+                                                                .border(
+                                                                    width = 1.dp,
+                                                                    color = colors.primary.copy(alpha = 0.60f),
+                                                                    shape = RoundedCornerShape(12.dp)
+                                                                ),
+                                                            shape = RoundedCornerShape(12.dp),
+                                                            tintColor = colors.primary.copy(alpha = 0.25f),
+                                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                                        ) {
+                                                            Icon(
+                                                                Icons.Default.Download,
+                                                                contentDescription = null,
+                                                                modifier = Modifier.size(16.dp),
+                                                                tint = colors.primary
+                                                            )
+                                                            Spacer(modifier = Modifier.width(6.dp))
+                                                            Text(
+                                                                "Download & Install",
+                                                                style = MaterialTheme.typography.labelMedium,
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                color = colors.primary
+                                                            )
+                                                        }
                                                     } else {
-                                                         Button(
-                                                             onClick = {
-                                                                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(result.updateInfo.htmlUrl))
-                                                                 context.startActivity(intent)
-                                                             },
-                                                             modifier = Modifier.weight(1f),
-                                                             shape = RoundedCornerShape(10.dp)
-                                                         ) {
-                                                             Text("View Release")
-                                                         }
+                                                        LiquidGlassButton(
+                                                            onClick = {
+                                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(result.updateInfo.htmlUrl))
+                                                                context.startActivity(intent)
+                                                            },
+                                                            hazeState = hazeState,
+                                                            modifier = Modifier
+                                                                .weight(1f)
+                                                                .height(42.dp)
+                                                                .border(
+                                                                    width = 1.dp,
+                                                                    color = colors.primary.copy(alpha = 0.60f),
+                                                                    shape = RoundedCornerShape(12.dp)
+                                                                ),
+                                                            shape = RoundedCornerShape(12.dp),
+                                                            tintColor = colors.primary.copy(alpha = 0.25f),
+                                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                                        ) {
+                                                            Icon(
+                                                                Icons.Default.OpenInBrowser,
+                                                                contentDescription = null,
+                                                                modifier = Modifier.size(16.dp),
+                                                                tint = colors.primary
+                                                            )
+                                                            Spacer(modifier = Modifier.width(6.dp))
+                                                            Text(
+                                                                "View Release",
+                                                                style = MaterialTheme.typography.labelMedium,
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                color = colors.primary
+                                                            )
+                                                        }
                                                     }
                                                 }
                                             }
 
-                                            OutlinedButton(
+                                            LiquidGlassButton(
                                                 onClick = { mainViewModel.dismissUpdateState() },
-                                                shape = RoundedCornerShape(10.dp)
+                                                hazeState = hazeState,
+                                                modifier = Modifier
+                                                    .height(42.dp)
+                                                    .border(
+                                                        width = 0.8.dp,
+                                                        color = colors.outlineVariant.copy(alpha = 0.50f),
+                                                        shape = RoundedCornerShape(12.dp)
+                                                    ),
+                                                shape = RoundedCornerShape(12.dp),
+                                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
                                             ) {
-                                                Text("Dismiss")
+                                                Text(
+                                                    "Dismiss",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = colors.onSurfaceVariant
+                                                )
                                             }
                                         }
                                     }
+                                }
+
+                                if (showFullChangelogDialog) {
+                                    AlertDialog(
+                                        onDismissRequest = { showFullChangelogDialog = false },
+                                        icon = {
+                                            Icon(Icons.Default.NewReleases, contentDescription = null, tint = colors.primary)
+                                        },
+                                        title = {
+                                            Text(
+                                                "Solus v${result.updateInfo.latestVersion} Changelog",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        },
+                                        text = {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .verticalScroll(rememberScrollState()),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                if (!parsedNotes.subtitle.isNullOrBlank()) {
+                                                    Surface(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        color = colors.primary.copy(alpha = 0.12f),
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) {
+                                                        Text(
+                                                            text = parsedNotes.subtitle,
+                                                            style = MaterialTheme.typography.labelMedium,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                            color = colors.primary,
+                                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                                        )
+                                                    }
+                                                }
+                                                Text(
+                                                    text = UpdateNotesFormatter.formatToAnnotatedString(
+                                                        parsedNotes.fullChangelog,
+                                                        primaryColor = colors.primary,
+                                                        textColor = MaterialTheme.colorScheme.onSurface
+                                                    ),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
+                                        },
+                                        confirmButton = {
+                                            LiquidGlassButton(
+                                                onClick = { showFullChangelogDialog = false },
+                                                hazeState = hazeState,
+                                                modifier = Modifier
+                                                    .height(38.dp)
+                                                    .border(
+                                                        width = 0.8.dp,
+                                                        color = colors.primary.copy(alpha = 0.50f),
+                                                        shape = RoundedCornerShape(10.dp)
+                                                    ),
+                                                shape = RoundedCornerShape(10.dp),
+                                                tintColor = colors.primary.copy(alpha = 0.20f),
+                                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
+                                            ) {
+                                                Text(
+                                                    "Close",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = colors.primary
+                                                )
+                                            }
+                                        },
+                                        dismissButton = {
+                                            LiquidGlassButton(
+                                                onClick = {
+                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(result.updateInfo.htmlUrl))
+                                                    context.startActivity(intent)
+                                                },
+                                                hazeState = hazeState,
+                                                modifier = Modifier
+                                                    .height(38.dp)
+                                                    .border(
+                                                        width = 0.8.dp,
+                                                        color = colors.outlineVariant.copy(alpha = 0.50f),
+                                                        shape = RoundedCornerShape(10.dp)
+                                                    ),
+                                                shape = RoundedCornerShape(10.dp),
+                                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.OpenInBrowser,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(14.dp),
+                                                    tint = colors.onSurfaceVariant
+                                                )
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text(
+                                                    "GitHub",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = colors.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    )
                                 }
                             }
                             is AppUpdateManager.UpdateCheckResult.UpToDate -> {
@@ -1087,21 +1621,53 @@ fun SettingsDialog(
                                         Row(
                                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            OutlinedButton(
+                                            LiquidGlassButton(
                                                 onClick = { mainViewModel.checkForUpdates(silent = false) },
+                                                hazeState = hazeState,
+                                                modifier = Modifier
+                                                    .height(34.dp)
+                                                    .border(
+                                                        width = 0.8.dp,
+                                                        color = colors.error.copy(alpha = 0.50f),
+                                                        shape = RoundedCornerShape(10.dp)
+                                                    ),
                                                 shape = RoundedCornerShape(10.dp),
-                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                                                modifier = Modifier.height(32.dp)
+                                                tintColor = colors.error.copy(alpha = 0.20f),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                                             ) {
-                                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Icon(
+                                                    Icons.Default.Refresh,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(14.dp),
+                                                    tint = colors.error
+                                                )
                                                 Spacer(modifier = Modifier.width(4.dp))
-                                                Text("Retry", style = MaterialTheme.typography.labelSmall)
+                                                Text(
+                                                    "Retry",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = colors.error
+                                                )
                                             }
-                                            TextButton(
+                                            LiquidGlassButton(
                                                 onClick = { mainViewModel.dismissUpdateState() },
-                                                modifier = Modifier.height(32.dp)
+                                                hazeState = hazeState,
+                                                modifier = Modifier
+                                                    .height(34.dp)
+                                                    .border(
+                                                        width = 0.8.dp,
+                                                        color = colors.outlineVariant.copy(alpha = 0.40f),
+                                                        shape = RoundedCornerShape(10.dp)
+                                                    ),
+                                                shape = RoundedCornerShape(10.dp),
+                                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                                             ) {
-                                                Text("Dismiss", style = MaterialTheme.typography.labelSmall)
+                                                Text(
+                                                    "Dismiss",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = colors.onSurfaceVariant
+                                                )
                                             }
                                         }
                                     }
@@ -1123,6 +1689,7 @@ fun SettingsDialog(
 private fun SettingsCategory(
     title: String,
     hazeState: HazeState,
+    modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
@@ -1130,7 +1697,7 @@ private fun SettingsCategory(
     val cardTint = colors.surfaceContainer
 
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .glassEffect(
                 hazeState = hazeState,
@@ -1265,8 +1832,20 @@ private fun CrashReportsDialog(
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    IconButton(onClick = onDismissRequest) {
-                        Icon(Icons.Default.Clear, contentDescription = "Close")
+                    LiquidGlassButton(
+                        onClick = onDismissRequest,
+                        hazeState = hazeState,
+                        modifier = Modifier.size(36.dp),
+                        shape = RoundedCornerShape(18.dp),
+                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Clear,
+                            contentDescription = "Close",
+                            modifier = Modifier.size(18.dp),
+                            tint = colors.onSurfaceVariant
+                        )
                     }
                 }
 
@@ -1359,61 +1938,136 @@ private fun CrashReportsDialog(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            OutlinedButton(
+                            LiquidGlassButton(
                                 onClick = {
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                                     val clip = ClipData.newPlainText("Crash Report", report.details)
                                     clipboard?.setPrimaryClip(clip)
                                     Toast.makeText(context, "Full crash debug log copied to clipboard!", Toast.LENGTH_SHORT).show()
                                 },
+                                hazeState = hazeState,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(42.dp)
+                                    .border(
+                                        width = 0.8.dp,
+                                        color = colors.outlineVariant.copy(alpha = 0.50f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ),
                                 shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.weight(1f)
+                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                             ) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(
+                                    Icons.Default.ContentCopy,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = colors.onSurfaceVariant
+                                )
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Copy")
+                                Text(
+                                    "Copy",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = colors.onSurfaceVariant
+                                )
                             }
 
-                            OutlinedButton(
+                            LiquidGlassButton(
                                 onClick = {
                                     CrashReportManager.shareCrashReport(context, report)
                                 },
+                                hazeState = hazeState,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(42.dp)
+                                    .border(
+                                        width = 0.8.dp,
+                                        color = colors.outlineVariant.copy(alpha = 0.50f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ),
                                 shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.weight(1f)
+                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                             ) {
-                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(
+                                    Icons.Default.Share,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = colors.onSurfaceVariant
+                                )
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Share")
+                                Text(
+                                    "Share",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = colors.onSurfaceVariant
+                                )
                             }
 
-                            Button(
+                            LiquidGlassButton(
                                 onClick = { onSendReport(report) },
+                                hazeState = hazeState,
+                                modifier = Modifier
+                                    .weight(1.3f)
+                                    .height(42.dp)
+                                    .border(
+                                        width = 1.dp,
+                                        color = colors.primary.copy(alpha = 0.60f),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ),
                                 shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = colors.primary),
-                                modifier = Modifier.weight(1.3f)
+                                tintColor = colors.primary.copy(alpha = 0.25f),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                             ) {
-                                Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(
+                                    Icons.Default.OpenInBrowser,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = colors.primary
+                                )
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Send to Repo")
+                                Text(
+                                    "Send to Repo",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colors.primary
+                                )
                             }
                         }
                     }
                 }
 
                 if (reports.isNotEmpty()) {
-                    OutlinedButton(
+                    LiquidGlassButton(
                         onClick = {
                             onClearReports()
                             selectedReport = null
                         },
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.error),
-                        border = BorderStroke(0.8.dp, colors.error.copy(alpha = 0.40f)),
+                        hazeState = hazeState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(42.dp)
+                            .border(
+                                width = 0.9.dp,
+                                color = colors.error.copy(alpha = 0.50f),
+                                shape = RoundedCornerShape(12.dp)
+                            ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        tintColor = colors.error.copy(alpha = 0.22f),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                     ) {
-                        Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(
+                            Icons.Default.Clear,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = colors.error
+                        )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Clear All Crash Reports")
+                        Text(
+                            "Clear All Crash Reports",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.error
+                        )
                     }
                 }
             }

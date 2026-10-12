@@ -13,7 +13,10 @@ import com.shounak.localmeshai.rag.store.RagSearchResult
 import com.shounak.localmeshai.rag.store.VectorStore
 import com.shounak.localmeshai.utils.DocumentTextExtractor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.security.MessageDigest
 import java.util.Locale
 import java.util.UUID
 
@@ -47,9 +50,22 @@ data class RagRetrievalResult(
 class RagManager(
     private val context: Context? = null,
     val embeddingEngine: SemanticEmbeddingEngine = UniversalSemanticEmbeddingEngine(),
-    val vectorStore: VectorStore = InMemoryRagVectorStore(context),
+    val vectorStore: VectorStore = InMemoryRagVectorStore(context, expectedDimension = embeddingEngine.dimension),
     val chunker: TextChunker = TextChunker()
 ) {
+
+    val loadState: kotlinx.coroutines.flow.StateFlow<com.shounak.localmeshai.data.StoreLoadState>
+        get() = vectorStore.loadState
+
+    suspend fun loadAsync(): com.shounak.localmeshai.data.StoreLoadState {
+        val state = vectorStore.loadAsync()
+        context?.let { ctx ->
+            com.shounak.localmeshai.data.StartupCoordinator.getInstance(ctx).updateRagStoreState(state)
+        }
+        return state
+    }
+
+    private val ingestionMutex = Mutex()
 
     val totalIndexedChunks: Int
         get() = vectorStore.getTotalChunkCount()
@@ -57,17 +73,24 @@ class RagManager(
     val indexedDocuments: List<RagDocumentSummary>
         get() = vectorStore.getDocuments()
 
+    private fun computeContentFingerprint(text: String): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        val bytes = md.digest(text.toByteArray(Charsets.UTF_8))
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
     /**
      * Ingests a document from an Android content [uri] using [DocumentTextExtractor].
      */
     suspend fun ingestDocument(
         uri: Uri,
         fileName: String,
-        mimeType: String = ""
+        mimeType: String = "",
+        targetDocumentId: String? = null
     ): RagIngestionResult = withContext(Dispatchers.IO) {
         val ctx = context ?: return@withContext RagIngestionResult(
             success = false,
-            documentId = "",
+            documentId = targetDocumentId ?: "",
             documentName = fileName,
             chunkCount = 0,
             totalCharacters = 0,
@@ -99,7 +122,7 @@ class RagManager(
                 }
                 return@withContext RagIngestionResult(
                     success = false,
-                    documentId = "",
+                    documentId = targetDocumentId ?: "",
                     documentName = fileName,
                     chunkCount = 0,
                     totalCharacters = 0,
@@ -107,11 +130,15 @@ class RagManager(
                 )
             }
 
-            ingestTextInternal(documentName = fileName, content = extractedText)
+            ingestTextInternal(
+                documentName = fileName,
+                content = extractedText,
+                targetDocumentId = targetDocumentId
+            )
         } catch (e: Throwable) {
             RagIngestionResult(
                 success = false,
-                documentId = "",
+                documentId = targetDocumentId ?: "",
                 documentName = fileName,
                 chunkCount = 0,
                 totalCharacters = 0,
@@ -125,20 +152,22 @@ class RagManager(
      */
     suspend fun ingestText(
         documentName: String,
-        content: String
+        content: String,
+        targetDocumentId: String? = null
     ): RagIngestionResult = withContext(Dispatchers.Default) {
-        ingestTextInternal(documentName, content)
+        ingestTextInternal(documentName, content, targetDocumentId)
     }
 
     private suspend fun ingestTextInternal(
         documentName: String,
-        content: String
-    ): RagIngestionResult {
+        content: String,
+        targetDocumentId: String? = null
+    ): RagIngestionResult = ingestionMutex.withLock {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) {
             return RagIngestionResult(
                 success = false,
-                documentId = "",
+                documentId = targetDocumentId ?: "",
                 documentName = documentName,
                 chunkCount = 0,
                 totalCharacters = 0,
@@ -146,13 +175,23 @@ class RagManager(
             )
         }
 
-        // Remove any prior version of the document with the same name to prevent duplicates
-        val existingDocs = vectorStore.getDocuments().filter { it.documentName.equals(documentName, ignoreCase = true) }
-        for (doc in existingDocs) {
-            vectorStore.removeDocument(doc.documentId)
+        val fingerprint = computeContentFingerprint(trimmed)
+
+        // Check if identical content is already indexed under same or different name
+        val existingDocs = vectorStore.getDocuments()
+        val matchingDoc = existingDocs.firstOrNull { it.contentFingerprint == fingerprint }
+        if (matchingDoc != null && (targetDocumentId == null || matchingDoc.documentId == targetDocumentId)) {
+            return RagIngestionResult(
+                success = true,
+                documentId = matchingDoc.documentId,
+                documentName = matchingDoc.documentName,
+                chunkCount = matchingDoc.chunkCount,
+                totalCharacters = matchingDoc.totalChars,
+                message = "Reused existing index for identical content ($documentName)"
+            )
         }
 
-        val docId = UUID.randomUUID().toString()
+        val docId = targetDocumentId ?: UUID.randomUUID().toString()
         val textChunks = chunker.chunk(trimmed)
         if (textChunks.isEmpty()) {
             return RagIngestionResult(
@@ -169,7 +208,43 @@ class RagManager(
         val textsToEmbed = textChunks.map { chunk ->
             if (docContextPrefix.isNotBlank()) "$docContextPrefix: ${chunk.text}" else chunk.text
         }
-        val embeddings = embeddingEngine.embedBatch(textsToEmbed)
+        val embeddings = try {
+            embeddingEngine.embedBatch(textsToEmbed)
+        } catch (e: Throwable) {
+            return RagIngestionResult(
+                success = false,
+                documentId = docId,
+                documentName = documentName,
+                chunkCount = 0,
+                totalCharacters = 0,
+                message = "Embedding generation failed: ${e.message}"
+            )
+        }
+
+        if (embeddings.size != textChunks.size) {
+            return RagIngestionResult(
+                success = false,
+                documentId = docId,
+                documentName = documentName,
+                chunkCount = 0,
+                totalCharacters = 0,
+                message = "Embedding batch size mismatch"
+            )
+        }
+
+        // Validate dimension against vectorStore expected dimension
+        val expectedDim = vectorStore.dimension
+        val mismatched = embeddings.firstOrNull { it.size != expectedDim }
+        if (mismatched != null) {
+            return RagIngestionResult(
+                success = false,
+                documentId = docId,
+                documentName = documentName,
+                chunkCount = 0,
+                totalCharacters = 0,
+                message = "Incompatible vector dimension: expected $expectedDim, got ${mismatched.size}"
+            )
+        }
 
         val records = textChunks.mapIndexed { idx, chunk ->
             RagChunkRecord(
@@ -179,11 +254,28 @@ class RagManager(
                 chunkIndex = chunk.index,
                 text = chunk.text,
                 embedding = embeddings[idx],
-                timestamp = System.currentTimeMillis()
+                timestamp = System.currentTimeMillis(),
+                contentFingerprint = fingerprint
             )
         }
 
-        vectorStore.addChunks(records)
+        val persisted = if (targetDocumentId != null) {
+            vectorStore.replaceDocument(targetDocumentId, records)
+        } else {
+            vectorStore.addChunks(records)
+        }
+
+        if (!persisted) {
+            val errorMsg = (vectorStore as? InMemoryRagVectorStore)?.lastError ?: "Failed to persist document to storage"
+            return RagIngestionResult(
+                success = false,
+                documentId = docId,
+                documentName = documentName,
+                chunkCount = 0,
+                totalCharacters = 0,
+                message = errorMsg
+            )
+        }
 
         return RagIngestionResult(
             success = true,
@@ -305,10 +397,11 @@ class RagManager(
         query: String,
         topK: Int = 3,
         minScore: Float = 0.35f,
-        preferredDocumentId: String? = null
+        preferredDocumentId: String? = null,
+        allowGlobalSearch: Boolean = true
     ): RagRetrievalResult = withContext(Dispatchers.Default) {
         val trimmedQuery = query.trim()
-        if (vectorStore.getTotalChunkCount() == 0) {
+        if (vectorStore.getTotalChunkCount() == 0 || (!allowGlobalSearch && preferredDocumentId == null)) {
             return@withContext RagRetrievalResult(
                 query = trimmedQuery,
                 matches = emptyList(),
@@ -379,7 +472,7 @@ class RagManager(
         // If a specific document is attached or resolved from query, prioritize with adaptive tolerance
         val filteredMatches = if (effectiveDocId != null) {
             val directDocThreshold = maxOf(0.20f, minScore * 0.60f)
-            val directDocMatches = vectorStore.getChunksForDocument(effectiveDocId, 100)
+            val directDocMatches = vectorStore.getChunksForDocument(effectiveDocId, Int.MAX_VALUE)
                 .map { chunk ->
                     val sim1 = VectorEmbedding.cosineSimilarity(queryEmb, chunk.embedding)
                     val sim2 = if (cleanedQueryEmb != null) VectorEmbedding.cosineSimilarity(cleanedQueryEmb, chunk.embedding) else 0f
@@ -391,6 +484,8 @@ class RagManager(
 
             if (directDocMatches.isNotEmpty()) {
                 directDocMatches
+            } else if (!allowGlobalSearch) {
+                emptyList()
             } else {
                 // Fallback to searching all indexed chunks if direct document match was empty
                 vectorStore.search(queryEmb, topK = topK, minSimilarity = minScore)
@@ -422,7 +517,7 @@ class RagManager(
             append("[Relevant Document Context]\n")
             retrieval.matches.forEachIndexed { i, match ->
                 val scorePct = (match.similarity * 100f).toInt()
-                append("--- Document: \"${match.chunk.documentName}\" (Section #${match.chunk.chunkIndex + 1}, Relevance: $scorePct%) ---\n")
+                append("--- Document: \"${match.chunk.documentName}\" (Section #${match.chunk.chunkIndex + 1}, Match heuristic: $scorePct%) ---\n")
                 append(match.chunk.text.trim())
                 append("\n\n")
             }

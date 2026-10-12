@@ -7,62 +7,79 @@ data class ParsedThinkingContent(
 )
 
 object ThinkingTextUtils {
-    private val completeThinkBlockRegex =
-        Regex("""<\s*(?:think|thought|reasoning)\s*>([\s\S]*?)</\s*(?:think|thought|reasoning)\s*>""", RegexOption.IGNORE_CASE)
+    /** Hold a possible control-tag suffix until the next delta disambiguates it. */
+    fun holdIncompleteTag(text: String): String {
+        val lastAngle = text.lastIndexOf('<')
+        val lastBracket = text.lastIndexOf('[')
+        val start = maxOf(lastAngle, lastBracket)
+        if (start < 0) return text
+        val suffix = text.substring(start).lowercase()
+        val tags = listOf(
+            "<think>", "</think>", "<thought>", "</thought>", "<reasoning>", "</reasoning>",
+            "[think]", "[/think]", "[thought]", "[/thought]", "[reasoning]", "[/reasoning]"
+        )
+        return if (tags.any { it.startsWith(suffix) && it != suffix }) text.substring(0, start) else text
+    }
+
     private val openThinkTagRegex =
-        Regex("""<\s*(?:think|thought|reasoning)\s*>""", RegexOption.IGNORE_CASE)
+        Regex("""<\s*(?:think|thought|reasoning)\s*>|\[\s*(?:think|thought|reasoning)\s*\]""", RegexOption.IGNORE_CASE)
     private val closeThinkTagRegex =
-        Regex("""</\s*(?:think|thought|reasoning)\s*>""", RegexOption.IGNORE_CASE)
-    private val unclosedThinkTagRegex =
-        Regex("""<\s*(?:think|thought|reasoning)\s*>[\s\S]*$""", RegexOption.IGNORE_CASE)
+        Regex("""<\s*/\s*(?:think|thought|reasoning)\s*>|\[\s*/\s*(?:think|thought|reasoning)\s*\]""", RegexOption.IGNORE_CASE)
+    private val combinedTagRegex =
+        Regex("""(<\s*(?:think|thought|reasoning)\s*>|\[\s*(?:think|thought|reasoning)\s*\])|(<\s*/\s*(?:think|thought|reasoning)\s*>|\[\s*/\s*(?:think|thought|reasoning)\s*\])""", RegexOption.IGNORE_CASE)
 
     fun parse(text: String, allowActiveThinking: Boolean): ParsedThinkingContent {
-        val completedThinking = completeThinkBlockRegex
-            .findAll(text)
-            .mapNotNull { match ->
-                match.groups[1]?.value?.trimLineBreaks()?.takeIf { it.isNotBlank() }
-            }
-            .toMutableList()
+        if (text.isBlank()) return ParsedThinkingContent(null, "", false)
 
-        val withoutCompleteBlocks = completeThinkBlockRegex.replace(text, "\n")
-        val openMatch = openThinkTagRegex.find(withoutCompleteBlocks)
-
-        if (openMatch != null) {
-            val before = withoutCompleteBlocks
-                .substring(0, openMatch.range.first)
-                .removeLooseThinkTags()
-                .trimLineBreaks()
-            val tail = withoutCompleteBlocks
-                .substring(openMatch.range.last + 1)
-                .removeLooseThinkTags()
-                .trimLineBreaks()
-
-            if (allowActiveThinking && tail.isNotBlank()) {
-                val activeThinking = (completedThinking + tail).joinThinkingSegments()
-                return ParsedThinkingContent(
-                    thinkingText = activeThinking.takeIf { it.isNotBlank() },
-                    finalResponseText = before,
-                    isThinkingActive = activeThinking.isNotBlank()
-                )
-            }
-
-            val thinkingText = (completedThinking + tail).joinThinkingSegments()
-            return ParsedThinkingContent(
-                thinkingText = thinkingText.takeIf { it.isNotBlank() },
-                finalResponseText = before,
-                isThinkingActive = false
-            )
+        val firstClose = closeThinkTagRegex.find(text)
+        val firstOpen = openThinkTagRegex.find(text)
+        val effectiveText = if (firstClose != null && (firstOpen == null || firstOpen.range.first > firstClose.range.first)) {
+            "<think>" + text
+        } else {
+            text
         }
 
-        val finalText = withoutCompleteBlocks
-            .removeLooseThinkTags()
-            .trimLineBreaks()
-        val thinkingText = completedThinking.joinThinkingSegments()
+        val thinkingBuilder = StringBuilder()
+        val answerBuilder = StringBuilder()
+        var depth = 0
+        var currentIndex = 0
+        val length = effectiveText.length
+
+        for (match in combinedTagRegex.findAll(effectiveText)) {
+            val segment = effectiveText.substring(currentIndex, match.range.first)
+            if (segment.isNotEmpty()) {
+                if (depth > 0) {
+                    thinkingBuilder.append(segment)
+                } else {
+                    answerBuilder.append(segment)
+                }
+            }
+            val isOpen = match.groups[1] != null
+            if (isOpen) {
+                depth++
+            } else {
+                if (depth > 0) depth--
+            }
+            currentIndex = match.range.last + 1
+        }
+
+        if (currentIndex < length) {
+            val remaining = effectiveText.substring(currentIndex)
+            if (depth > 0) {
+                thinkingBuilder.append(remaining)
+            } else {
+                answerBuilder.append(remaining)
+            }
+        }
+
+        val rawThinking = thinkingBuilder.toString().trimLineBreaks()
+        val rawAnswer = answerBuilder.toString().trimLineBreaks()
+        val isThinkingActive = allowActiveThinking && (depth > 0)
 
         return ParsedThinkingContent(
-            thinkingText = thinkingText.takeIf { it.isNotBlank() },
-            finalResponseText = finalText,
-            isThinkingActive = false
+            thinkingText = rawThinking.takeIf { it.isNotBlank() },
+            finalResponseText = rawAnswer,
+            isThinkingActive = isThinkingActive
         )
     }
 
@@ -87,61 +104,37 @@ object ThinkingTextUtils {
     }
 
     /**
-     * Returns the final answer while hiding reasoning when possible. Some
-     * templates prefill the opening <think> tag, so generated text can contain
-     * only a closing tag. If generation stops before any final answer exists,
-     * preserve the reasoning text as a last-resort visible response instead of
-     * turning a non-empty generation into the app's empty-response fallback.
+     * Returns the final answer outside of thinking tags.
+     * When allowReasoningFallback is false (e.g. Think off), reasoning is never exposed as a substitute final answer.
      */
-    fun finalResponseOrReasoning(text: String): String {
+    fun finalResponseOrReasoning(text: String, allowReasoningFallback: Boolean = false): String {
         val cleaned = ModelOutputSanitizer.clean(text)
-        val firstClose = closeThinkTagRegex.find(cleaned)
-        val firstOpen = openThinkTagRegex.find(cleaned)
-
-        if (firstClose != null && (firstOpen == null || firstOpen.range.first > firstClose.range.first)) {
-            val beforeClose = cleaned
-                .substring(0, firstClose.range.first)
-                .removeLooseThinkTags()
-                .trimLineBreaks()
-            val afterClose = cleaned
-                .substring(firstClose.range.last + 1)
-                .removeLooseThinkTags()
-                .trimLineBreaks()
-            return afterClose.ifBlank { beforeClose }
-        }
-
         val parsed = parse(cleaned, allowActiveThinking = false)
-        return parsed.finalResponseText.ifBlank { parsed.thinkingText.orEmpty() }.trimLineBreaks()
+        return if (parsed.finalResponseText.isNotBlank()) {
+            parsed.finalResponseText
+        } else if (allowReasoningFallback) {
+            parsed.thinkingText.orEmpty()
+        } else {
+            ""
+        }
     }
 
     /**
      * Extracts ONLY the final answer outside of thinking tags.
      * When thinking mode is disabled, reasoning tokens must NEVER be returned as the final answer.
-     * Also strips untagged reasoning monologue or extracts the spoken answer from within it.
-     * Returns an empty string if generation only produced thinking tokens without an answer,
-     * allowing the inference retry loop to fire.
+     * Strips explicit thinking tags and handles untagged reasoning monologues without deleting valid answers.
      */
     fun extractFinalAnswerOnly(text: String): String {
         val cleaned = ModelOutputSanitizer.clean(text)
-        val firstClose = closeThinkTagRegex.find(cleaned)
-        val firstOpen = openThinkTagRegex.find(cleaned)
+        val parsed = parse(cleaned, allowActiveThinking = false)
+        val answer = parsed.finalResponseText.trim()
 
-        val answerAfterTags = if (firstClose != null && (firstOpen == null || firstOpen.range.first > firstClose.range.first)) {
-            val after = cleaned.substring(firstClose.range.last + 1)
-            val stripped = unclosedThinkTagRegex.replace(completeThinkBlockRegex.replace(after, ""), "")
-            stripped.removeLooseThinkTags().trimLineBreaks()
-        } else {
-            val strippedComplete = completeThinkBlockRegex.replace(cleaned, "")
-            val strippedUnclosed = unclosedThinkTagRegex.replace(strippedComplete, "")
-            strippedUnclosed.removeLooseThinkTags().trimLineBreaks()
-        }
-
-        if (answerAfterTags.isBlank()) {
+        if (answer.isBlank()) {
             return ""
         }
 
-        if (ModelResponseQuality.isReasoningLeak(answerAfterTags)) {
-            val extracted = extractSpokenAnswerFromMonologue(answerAfterTags)
+        if (ModelResponseQuality.isReasoningLeak(answer)) {
+            val extracted = extractSpokenAnswerFromMonologue(answer)
             return if (extracted != null && extracted.isNotBlank() && !ModelResponseQuality.isReasoningLeak(extracted)) {
                 extracted
             } else {
@@ -149,7 +142,7 @@ object ThinkingTextUtils {
             }
         }
 
-        return answerAfterTags
+        return answer
     }
 
     fun extractSpokenAnswerFromMonologue(text: String): String? {
@@ -181,8 +174,8 @@ object ThinkingTextUtils {
         return null
     }
 
-    private fun String.removeLooseThinkTags(): String =
-        closeThinkTagRegex.replace(openThinkTagRegex.replace(this, ""), "")
+    fun removeLooseThinkTags(text: String): String =
+        closeThinkTagRegex.replace(openThinkTagRegex.replace(text, ""), "")
 
     private fun String.trimLineBreaks(): String =
         trim('\n', '\r')

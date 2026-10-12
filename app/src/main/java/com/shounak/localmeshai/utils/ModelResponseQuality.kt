@@ -348,12 +348,12 @@ object ModelResponseQuality {
     }
 
     private val ReasoningStarterRegex = Regex(
-        """^(okay|ok|so|well|first|here|in this case|now|wait|hmm)?,?\s*(the user|the prompt|the human|the input|the query|the question)\s+(greeted|asked|is asking|wants|said|mentioned|preferences?|message|input|stated)""",
+        """^(okay|ok|so|well|first|here|in this case|now|wait|hmm|let's see|lets see|let me see)?,?\s*(the user|the prompt|the human|the input|the query|the question)\s+(greeted|asked|is asking|wants|said|mentioned|preferences?|message|input|stated)""",
         RegexOption.IGNORE_CASE
     )
 
     private val ThinkingIntroRegex = Regex(
-        """^(let('s|s| me)\s+(think|see|check|analyze|understand|figure|break|keep|formulate)|i (should|need to|must|have to)\s+(respond|answer|reply|check|analyze|address|mention|keep)|thinking process:|thought process:|internal thoughts:|chain of thought:)""",
+        """^(i (should|need to|must|have to)\s+(respond|answer|reply|address|mention)\s+to the user|thinking process:|thought process:|internal thoughts:|chain of thought:)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -386,13 +386,6 @@ object ModelResponseQuality {
             "let me check the stored memories",
             "let me check my memory",
             "let me check what the user",
-            "let me think",
-            "let's see",
-            "lets see",
-            "let me see",
-            "let me analyze",
-            "let me respond",
-            "let me keep it",
             "so i need to respond",
             "so i should respond",
             "i should check the context",
@@ -405,15 +398,14 @@ object ModelResponseQuality {
         if (starters.any { normalized.startsWith(it) }) return true
 
         val reasoningClues = listOf(
-            "let me ",
-            "the user ",
+            "the user greeted",
+            "the user asked",
             "maybe say ",
             "should i ",
             "stored memories",
             "so i should respond",
             "so i need to respond",
             "let me keep it short",
-            "the user greeted me",
             "user's preferences are"
         )
         val endings = listOf(

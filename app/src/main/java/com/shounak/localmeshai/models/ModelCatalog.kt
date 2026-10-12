@@ -21,6 +21,39 @@ object ModelCatalog {
             contextWindowTokens = 32768
         ),
         ModelInfo(
+            id = "llama32_1b_gguf",
+            name = "Llama 3.2 1B Instruct (GGUF Q4_K_M) ⭐ Recommended",
+            size = "808 MB",
+            status = ModelStatus.NotDownloaded,
+            type = ModelType.Text,
+            fileName = "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+            description = "⭐ Recommended ultra-fast 1.2B Llama 3.2 model running locally via native llama.cpp backend. Sub-second prompt evaluation and high-efficiency mobile chat.",
+            backend = "llama.cpp GGUF",
+            deviceTarget = "4 GB+ RAM, all supported chipsets",
+            url = hf("bartowski/Llama-3.2-1B-Instruct-GGUF", "Llama-3.2-1B-Instruct-Q4_K_M.gguf", revision = "067b946cf014b7c697f3654f621d577a3e3afd1c"),
+            modelPageUrl = "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF",
+            isRecommended = true,
+            contextWindowTokens = 4096,
+            sha256 = "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83",
+            expectedFileSizeBytes = 807_694_464L
+        ),
+        ModelInfo(
+            id = "llama32_3b_gguf",
+            name = "Llama 3.2 3B Instruct (GGUF Q4_K_M) ⭐ Recommended",
+            size = "2.0 GB",
+            status = ModelStatus.NotDownloaded,
+            type = ModelType.Text,
+            fileName = "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+            description = "⭐ Recommended high-quality 3.2B parameter Llama 3.2 model running locally via native llama.cpp backend. Rich conversational ability and precise instruction following.",
+            backend = "llama.cpp GGUF",
+            deviceTarget = "8 GB nominal RAM, all supported chipsets",
+            url = hf("bartowski/Llama-3.2-3B-Instruct-GGUF", "Llama-3.2-3B-Instruct-Q4_K_M.gguf"),
+            modelPageUrl = "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF",
+            isRecommended = true,
+            contextWindowTokens = 4096,
+            expectedFileSizeBytes = 2_019_377_984L  // ~1.88 GB Q4_K_M
+        ),
+        ModelInfo(
             id = "deepseek_r1_qwen15b_q8",
             name = "DeepSeek R1 Distill Qwen 1.5B ⭐ Highly Recommended",
             size = "1.86 GB",
@@ -55,7 +88,7 @@ object ModelCatalog {
         ModelInfo(
             id = "qwen25_15b_gguf",
             name = "Qwen 2.5 1.5B (GGUF Q4_K_M) ⭐ Recommended",
-            size = "1.1 GB",
+            size = "1.12 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
             fileName = "qwen2.5-1.5b-instruct-q4_k_m.gguf",
@@ -66,7 +99,7 @@ object ModelCatalog {
             modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF",
             isRecommended = true,
             contextWindowTokens = 4096,
-            expectedFileSizeBytes = 1_043_024_992L  // ~994 MB Q4_K_M
+            expectedFileSizeBytes = 1_117_320_736L  // ~1.04 GB Q4_K_M
         ),
         ModelInfo(
             id = "qwen3_06b_litertlm",
@@ -113,9 +146,24 @@ object ModelCatalog {
 
         // ── Coding specialists ────────────────────────────────────────
         ModelInfo(
+            id = "qwen25_coder_05b_gguf",
+            name = "Qwen 2.5 Coder 0.5B (GGUF Q4_K_M) ⌨️",
+            size = "469 MB",
+            status = ModelStatus.NotDownloaded,
+            type = ModelType.Text,
+            fileName = "qwen2.5-coder-0.5b-instruct-q4_k_m.gguf",
+            description = "Ultra-compact 0.5B coding model for quick syntax explanations, snippet generation, and fast local code assistance via native llama.cpp backend.",
+            backend = "llama.cpp GGUF",
+            deviceTarget = "4 GB nominal RAM, all supported chipsets",
+            url = hf("Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF", "qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"),
+            modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF",
+            contextWindowTokens = 4096,
+            expectedFileSizeBytes = 491_400_064L
+        ),
+        ModelInfo(
             id = "qwen25_coder_15b_gguf",
             name = "Qwen 2.5 Coder 1.5B (GGUF Q4_K_M) ⌨️",
-            size = "1.1 GB",
+            size = "1.12 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
             fileName = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
@@ -125,7 +173,22 @@ object ModelCatalog {
             url = hf("Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF", "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"),
             modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
             contextWindowTokens = 4096,
-            expectedFileSizeBytes = 1_043_220_640L  // ~994 MB Coder Q4_K_M
+            expectedFileSizeBytes = 1_117_320_768L  // ~1.04 GB Coder Q4_K_M
+        ),
+        ModelInfo(
+            id = "qwen25_coder_3b_gguf",
+            name = "Qwen 2.5 Coder 3B (GGUF Q4_K_M) ⌨️",
+            size = "2.1 GB",
+            status = ModelStatus.NotDownloaded,
+            type = ModelType.Text,
+            fileName = "qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+            description = "Capable 3B parameter coding model running locally on-device for code completion, refactoring, and programming logic via native llama.cpp backend.",
+            backend = "llama.cpp GGUF",
+            deviceTarget = "8 GB nominal RAM",
+            url = hf("Qwen/Qwen2.5-Coder-3B-Instruct-GGUF", "qwen2.5-coder-3b-instruct-q4_k_m.gguf"),
+            modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
+            contextWindowTokens = 4096,
+            expectedFileSizeBytes = 2_104_932_800L
         ),
         ModelInfo(
             id = "qwen25_coder_3b_litertlm",
@@ -146,7 +209,7 @@ object ModelCatalog {
         ModelInfo(
             id = "qwen25_05b_gguf",
             name = "Qwen 2.5 0.5B (GGUF Q4_K_M)",
-            size = "398 MB",
+            size = "469 MB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
             fileName = "qwen2.5-0.5b-instruct-q4_k_m.gguf",
@@ -156,7 +219,7 @@ object ModelCatalog {
             url = hf("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "qwen2.5-0.5b-instruct-q4_k_m.gguf"),
             modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF",
             contextWindowTokens = 4096,
-            expectedFileSizeBytes = 397_206_688L  // Q4_K_M ~379 MB actual
+            expectedFileSizeBytes = 491_400_032L  // Q4_K_M ~469 MB actual
         ),
         ModelInfo(
             id = "qwen3_17b_litertlm",
@@ -176,7 +239,7 @@ object ModelCatalog {
         ModelInfo(
             id = "qwen25_3b_gguf",
             name = "Qwen 2.5 3B (GGUF Q4_K_M)",
-            size = "2.0 GB",
+            size = "2.1 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
             fileName = "qwen2.5-3b-instruct-q4_k_m.gguf",
@@ -186,7 +249,7 @@ object ModelCatalog {
             url = hf("Qwen/Qwen2.5-3B-Instruct-GGUF", "qwen2.5-3b-instruct-q4_k_m.gguf"),
             modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF",
             contextWindowTokens = 4096,
-            expectedFileSizeBytes = 1_934_769_504L  // ~1.80 GB Q4_K_M
+            expectedFileSizeBytes = 2_104_932_768L  // ~1.96 GB Q4_K_M
         ),
         ModelInfo(
             id = "qwen25_7b_gguf",
@@ -194,14 +257,14 @@ object ModelCatalog {
             size = "4.68 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
-            fileName = "qwen2.5-7b-instruct-q4_k_m.gguf",
+            fileName = "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
             description = "High-quality Qwen 2.5 7B instruction model running locally on-device via native llama.cpp backend.",
             backend = "llama.cpp GGUF",
             deviceTarget = "12–16 GB RAM recommended",
-            url = hf("Qwen/Qwen2.5-7B-Instruct-GGUF", "qwen2.5-7b-instruct-q4_k_m.gguf"),
-            modelPageUrl = "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF",
+            url = hf("bartowski/Qwen2.5-7B-Instruct-GGUF", "Qwen2.5-7B-Instruct-Q4_K_M.gguf"),
+            modelPageUrl = "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF",
             contextWindowTokens = 4096,
-            expectedFileSizeBytes = 4_685_135_072L  // ~4.36 GB Q4_K_M
+            expectedFileSizeBytes = 4_683_074_240L  // ~4.36 GB Q4_K_M
         ),
         ModelInfo(
             id = "qwen3_4b_litertlm",
@@ -245,37 +308,19 @@ object ModelCatalog {
 
         // ── Llama family ─────────────────────────────────────────────
         ModelInfo(
-            id = "llama32_1b_gguf",
-            name = "Llama 3.2 1B Instruct (GGUF Q4_K_M)",
-            size = "750 MB",
-            status = ModelStatus.NotDownloaded,
-            type = ModelType.Text,
-            fileName = "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-            description = "Fast, efficient 1.2B parameter Llama 3.2 model running locally via native llama.cpp backend.",
-            backend = "llama.cpp GGUF",
-            deviceTarget = "6 GB nominal RAM, all supported chipsets",
-            url = hf("bartowski/Llama-3.2-1B-Instruct-GGUF", "Llama-3.2-1B-Instruct-Q4_K_M.gguf"),
-            modelPageUrl = "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF",
-            isRecommended = true,
-            contextWindowTokens = 4096,
-            // Exact size from bartowski HF repo — label "750 MB" is approximate.
-            // Q4_0 variant is ~718 MB; if local file is ~718 MB, it is the wrong artifact.
-            expectedFileSizeBytes = 770_303_744L
-        ),
-        ModelInfo(
-            id = "llama32_3b_gguf",
-            name = "Llama 3.2 3B Instruct (GGUF Q4_K_M)",
+            id = "hermes3_llama32_3b_gguf",
+            name = "Hermes 3 Llama 3.2 3B (GGUF Q4_K_M) 🏛️",
             size = "2.0 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
-            fileName = "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-            description = "High quality 3.2B parameter Llama 3.2 model running locally via native llama.cpp backend.",
+            fileName = "Hermes-3-Llama-3.2-3B-Q4_K_M.gguf",
+            description = "Nous Research Hermes 3 fine-tune of Llama 3.2 3B, engineered for strong roleplay, creative reasoning, and complex prompt adherence via native llama.cpp backend.",
             backend = "llama.cpp GGUF",
             deviceTarget = "8 GB nominal RAM",
-            url = hf("bartowski/Llama-3.2-3B-Instruct-GGUF", "Llama-3.2-3B-Instruct-Q4_K_M.gguf"),
-            modelPageUrl = "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF",
+            url = hf("bartowski/Hermes-3-Llama-3.2-3B-GGUF", "Hermes-3-Llama-3.2-3B-Q4_K_M.gguf"),
+            modelPageUrl = "https://huggingface.co/bartowski/Hermes-3-Llama-3.2-3B-GGUF",
             contextWindowTokens = 4096,
-            expectedFileSizeBytes = 2_019_377_984L  // ~1.88 GB Q4_K_M
+            expectedFileSizeBytes = 2_019_374_176L
         ),
         ModelInfo(
             id = "llama31_8b_gguf",
@@ -326,7 +371,7 @@ object ModelCatalog {
         ModelInfo(
             id = "phi35_mini_gguf",
             name = "Phi 3.5 Mini Instruct (GGUF Q4_K_M)",
-            size = "2.2 GB",
+            size = "2.4 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
             fileName = "Phi-3.5-mini-instruct-Q4_K_M.gguf",
@@ -336,7 +381,7 @@ object ModelCatalog {
             url = hf("bartowski/Phi-3.5-mini-instruct-GGUF", "Phi-3.5-mini-instruct-Q4_K_M.gguf"),
             modelPageUrl = "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF",
             contextWindowTokens = 4096,
-            expectedFileSizeBytes = 2_176_116_064L  // ~2.03 GB Q4_K_M
+            expectedFileSizeBytes = 2_393_232_672L  // ~2.23 GB Q4_K_M
         ),
         ModelInfo(
             id = "phi4_mini_mediapipe",
@@ -368,6 +413,22 @@ object ModelCatalog {
 
         // ── DeepSeek family ──────────────────────────────────────────
         ModelInfo(
+            id = "deepseek_r1_qwen15b_gguf",
+            name = "DeepSeek R1 Distill Qwen 1.5B (GGUF Q4_K_M) 🧠",
+            size = "1.12 GB",
+            status = ModelStatus.NotDownloaded,
+            type = ModelType.Text,
+            fileName = "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
+            description = "Reasoning-focused 1.5B distillation of DeepSeek R1 for logic, math, and step-by-step thinking running on-device via native llama.cpp backend.",
+            backend = "llama.cpp GGUF",
+            deviceTarget = "6 GB nominal RAM, all supported chipsets",
+            url = hf("unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF", "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf"),
+            modelPageUrl = "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF",
+            supportsThinkingMode = true,
+            contextWindowTokens = 4096,
+            expectedFileSizeBytes = 1_117_321_312L
+        ),
+        ModelInfo(
             id = "deepseek_r1_qwen7b_gguf",
             name = "DeepSeek R1 Distill Qwen 7B (GGUF Q4_K_M)",
             size = "4.68 GB",
@@ -383,37 +444,83 @@ object ModelCatalog {
             contextWindowTokens = 4096,
             expectedFileSizeBytes = 4_683_272_352L  // ~4.36 GB Q4_K_M
         ),
+        ModelInfo(
+            id = "deepseek_r1_llama8b_gguf",
+            name = "DeepSeek R1 Distill Llama 8B (GGUF Q4_K_M) 🧠",
+            size = "4.92 GB",
+            status = ModelStatus.NotDownloaded,
+            type = ModelType.Text,
+            fileName = "DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf",
+            description = "High-capacity reasoning distillation combining DeepSeek R1 thinking capabilities with the Meta Llama 3.1 8B architecture for advanced math and logic via native llama.cpp backend.",
+            backend = "llama.cpp GGUF",
+            deviceTarget = "12–16 GB RAM recommended",
+            url = hf("unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF", "DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf"),
+            modelPageUrl = "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF",
+            supportsThinkingMode = true,
+            contextWindowTokens = 4096,
+            expectedFileSizeBytes = 4_920_737_216L
+        ),
 
         // ── Compact & Ultra-light models ──────────────────────────────
         ModelInfo(
             id = "smollm2_135m_gguf",
             name = "SmolLM2 135M Instruct (GGUF Q4_K_M) ⚡",
-            size = "95 MB",
+            size = "101 MB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
-            fileName = "smollm2-135m-instruct-q4_k_m.gguf",
+            fileName = "SmolLM2-135M-Instruct-Q4_K_M.gguf",
             description = "Ultra-small 135M model from Hugging Face for instant responses on any device with minimal RAM.",
             backend = "llama.cpp GGUF",
             deviceTarget = "4 GB RAM, all devices",
-            url = hf("HuggingFaceTB/SmolLM2-135M-Instruct-GGUF", "smollm2-135m-instruct-q4_k_m.gguf"),
-            modelPageUrl = "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct-GGUF",
+            url = hf("bartowski/SmolLM2-135M-Instruct-GGUF", "SmolLM2-135M-Instruct-Q4_K_M.gguf"),
+            modelPageUrl = "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF",
             contextWindowTokens = 2048,
-            expectedFileSizeBytes = 94_624_352L   // ~90 MB Q4_K_M
+            expectedFileSizeBytes = 105_454_432L   // ~101 MB Q4_K_M
         ),
         ModelInfo(
             id = "smollm2_360m_gguf",
             name = "SmolLM2 360M Instruct (GGUF Q4_K_M) ⚡",
-            size = "230 MB",
+            size = "258 MB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
-            fileName = "smollm2-360m-instruct-q4_k_m.gguf",
+            fileName = "SmolLM2-360M-Instruct-Q4_K_M.gguf",
             description = "Compact 360M parameter model with impressive general chat and reasoning for its size.",
             backend = "llama.cpp GGUF",
             deviceTarget = "4 GB RAM, all devices",
-            url = hf("HuggingFaceTB/SmolLM2-360M-Instruct-GGUF", "smollm2-360m-instruct-q4_k_m.gguf"),
-            modelPageUrl = "https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF",
+            url = hf("bartowski/SmolLM2-360M-Instruct-GGUF", "SmolLM2-360M-Instruct-Q4_K_M.gguf"),
+            modelPageUrl = "https://huggingface.co/bartowski/SmolLM2-360M-Instruct-GGUF",
             contextWindowTokens = 2048,
-            expectedFileSizeBytes = 228_691_136L  // ~218 MB Q4_K_M
+            expectedFileSizeBytes = 270_590_880L  // ~258 MB Q4_K_M
+        ),
+        ModelInfo(
+            id = "h2o_danube3_500m_gguf",
+            name = "H2O Danube 3 500M Chat (GGUF Q4_K_M) 🌊",
+            size = "303 MB",
+            status = ModelStatus.NotDownloaded,
+            type = ModelType.Text,
+            fileName = "h2o-danube3-500m-chat-Q4_K_M.gguf",
+            description = "Ultra-compact 500M parameter mobile chat model from H2O.ai, engineered specifically for resource-constrained Android devices via native llama.cpp backend.",
+            backend = "llama.cpp GGUF",
+            deviceTarget = "4 GB RAM, all devices",
+            url = hf("h2oai/h2o-danube3-500m-chat-GGUF", "h2o-danube3-500m-chat-Q4_K_M.gguf"),
+            modelPageUrl = "https://huggingface.co/h2oai/h2o-danube3-500m-chat-GGUF",
+            contextWindowTokens = 4096,
+            expectedFileSizeBytes = 317_877_408L
+        ),
+        ModelInfo(
+            id = "h2o_danube3_4b_gguf",
+            name = "H2O Danube 3 4B Chat (GGUF Q4_K_M) 🌊",
+            size = "2.4 GB",
+            status = ModelStatus.NotDownloaded,
+            type = ModelType.Text,
+            fileName = "h2o-danube3-4b-chat-Q4_K_M.gguf",
+            description = "Compact 4B chat model from H2O.ai delivering strong general language understanding and smooth conversational flow via native llama.cpp backend.",
+            backend = "llama.cpp GGUF",
+            deviceTarget = "8 GB nominal RAM",
+            url = hf("bartowski/h2o-danube3-4b-chat-GGUF", "h2o-danube3-4b-chat-Q4_K_M.gguf"),
+            modelPageUrl = "https://huggingface.co/bartowski/h2o-danube3-4b-chat-GGUF",
+            contextWindowTokens = 4096,
+            expectedFileSizeBytes = 2_394_649_280L
         ),
         ModelInfo(
             id = "tinyllama_11b_gguf",
@@ -443,12 +550,12 @@ object ModelCatalog {
             url = hf("HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF", "smollm2-1.7b-instruct-q4_k_m.gguf"),
             modelPageUrl = "https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF",
             contextWindowTokens = 4096,
-            expectedFileSizeBytes = 1_039_847_040L // ~991 MB Q4_K_M
+            expectedFileSizeBytes = 1_055_609_536L // ~1.01 GB Q4_K_M
         ),
         ModelInfo(
             id = "gemma2_2b_gguf",
             name = "Gemma 2 2B IT (GGUF Q4_K_M)",
-            size = "1.6 GB",
+            size = "1.7 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
             fileName = "gemma-2-2b-it-Q4_K_M.gguf",
@@ -458,7 +565,7 @@ object ModelCatalog {
             url = hf("bartowski/gemma-2-2b-it-GGUF", "gemma-2-2b-it-Q4_K_M.gguf"),
             modelPageUrl = "https://huggingface.co/bartowski/gemma-2-2b-it-GGUF",
             contextWindowTokens = 4096,
-            expectedFileSizeBytes = 1_631_906_176L  // ~1.52 GB Q4_K_M
+            expectedFileSizeBytes = 1_708_582_752L  // ~1.59 GB Q4_K_M
         ),
         ModelInfo(
             id = "gemma3_270m_q8",
@@ -540,7 +647,7 @@ object ModelCatalog {
         )
     )
 
-    private fun hf(repo: String, file: String): String {
-        return "https://huggingface.co/$repo/resolve/main/$file?download=true"
+    private fun hf(repo: String, file: String, revision: String = "main"): String {
+        return "https://huggingface.co/$repo/resolve/$revision/$file?download=true"
     }
 }

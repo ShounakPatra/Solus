@@ -33,3 +33,5 @@ build_native/
 *.bin
 dump_gguf.py
 scratch/
+*.log
+traces/

@@ -12,6 +12,15 @@ import java.util.Date
 import java.util.Locale
 
 /**
+ * Diagnostic policy for selecting the backend during GGUF validation / diagnostics.
+ */
+enum class DiagnosticPolicy {
+    AUTO,
+    FORCED_CPU,
+    FORCED_VULKAN
+}
+
+/**
  * Diagnostic result for a single prompt evaluation.
  */
 data class GgufPromptDiagnosticResult(
@@ -34,6 +43,9 @@ data class GgufDiagnosticReport(
     val timestamp: String,
     val modelPath: String,
     val fileName: String,
+    val modelSha256: String = "",
+    val backendUsed: String = "CPU",
+    val backendPolicy: String = "AUTO",
     val fileSizeBytes: Long,
     val expectedSizeBytes: Long,
     val artifactSizeValidationPassed: Boolean,
@@ -48,6 +60,7 @@ data class GgufDiagnosticReport(
     val initSuccess: Boolean,
     val initDurationMs: Long,
     val threadsUsed: Int,
+    val prefillThreadsUsed: Int = threadsUsed,
     val contextWindowUsed: Int,
     val nBatchUsed: Int,
     val nUbatchUsed: Int,
@@ -55,6 +68,9 @@ data class GgufDiagnosticReport(
     val promptResults: List<GgufPromptDiagnosticResult>,
     val closeSuccess: Boolean,
     val numericalAnomalyReport: String?,
+    val numericalValidationPassed: Boolean = true,
+    val responseQualityVerified: Boolean = false,
+    val humanReviewedCoherence: Boolean = false,
     val overallSuccess: Boolean,
     val reportFilePath: String? = null
 ) {
@@ -63,6 +79,12 @@ data class GgufDiagnosticReport(
         sb.appendLine("# GGUF Diagnostic Report")
         sb.appendLine("**Timestamp:** $timestamp")
         sb.appendLine("**Model File:** `$fileName`")
+        if (modelSha256.isNotBlank()) {
+            sb.appendLine("**Model SHA-256:** `$modelSha256`")
+        }
+        sb.appendLine("**Backend:** `$backendUsed`")
+        sb.appendLine("**Backend Policy:** `$backendPolicy`")
+        sb.appendLine("**Response Quality Verified:** ${if (responseQualityVerified) "✅ Yes" else "⚠️ No"}")
         sb.appendLine("**File Size:** ${fileSizeBytes / (1024 * 1024)} MB ($fileSizeBytes bytes)")
         if (expectedSizeBytes > 0L) {
             sb.appendLine("**Expected Size:** ${expectedSizeBytes / (1024 * 1024)} MB ($expectedSizeBytes bytes)")
@@ -79,7 +101,8 @@ data class GgufDiagnosticReport(
         sb.appendLine()
         sb.appendLine("## 2. Runtime Context Initialization")
         sb.appendLine("- **Init Status:** ${if (initSuccess) "✅ Success (${initDurationMs}ms)" else "❌ Failed ($initError)"}")
-        sb.appendLine("- **Threads:** $threadsUsed")
+        sb.appendLine("- **Decode Threads:** $threadsUsed")
+        sb.appendLine("- **Prefill Threads:** $prefillThreadsUsed")
         sb.appendLine("- **Context Window:** $contextWindowUsed")
         sb.appendLine("- **Batch / UBatch:** $nBatchUsed / $nUbatchUsed")
         sb.appendLine()
@@ -88,19 +111,23 @@ data class GgufDiagnosticReport(
             sb.appendLine("### Test ${idx + 1}: \"${res.prompt}\"")
             sb.appendLine("- **Status:** ${if (res.success) "✅ Completed" else "❌ Failed (${res.errorMessage})"}")
             if (res.success) {
-                sb.appendLine("- **TTFT (Time to first token):** ${res.timeToFirstTokenMs}ms")
-                sb.appendLine("- **Tokens Generated:** ${res.generatedTokenCount} tokens (${String.format(Locale.US, "%.1f", res.tokensPerSecond)} tok/s)")
+                sb.appendLine("- **Prefill Duration:** ${res.promptDecodeDurationMs}ms")
+                sb.appendLine("- **TTFT (Native First Token):** ${res.timeToFirstTokenMs}ms")
+                sb.appendLine("- **Tokens Generated (Native):** ${res.generatedTokenCount} tokens (${String.format(Locale.US, "%.1f", res.tokensPerSecond)} tok/s)")
                 sb.appendLine("- **Response Sample:** `${res.generatedText.take(120).replace("\n", " ")}`")
             }
             sb.appendLine()
         }
+        sb.appendLine("## 4. Numerical Anomaly & Quality Forensics")
+        sb.appendLine("- **Numerical Validation:** ${if (numericalValidationPassed) "✅ PASSED" else "❌ FAILED"}")
+        sb.appendLine("- **Automated Response Quality:** ${if (responseQualityVerified) "✅ PASSED" else "⚠️ UNVERIFIED"}")
+        sb.appendLine("- **Human-Reviewed Coherence:** ${if (humanReviewedCoherence) "✅ VERIFIED" else "⚠️ UNVERIFIED"}")
         if (!numericalAnomalyReport.isNullOrBlank()) {
-            sb.appendLine("## 4. Numerical Anomaly Forensics")
             sb.appendLine("```")
             sb.appendLine(numericalAnomalyReport)
             sb.appendLine("```")
-            sb.appendLine()
         }
+        sb.appendLine()
         sb.appendLine("## 5. Summary")
         sb.appendLine("**Overall Verdict:** ${if (overallSuccess) "✅ HEALTHY — Model runs correctly" else "❌ FAILED — Inspect diagnostics above"}")
         return sb.toString()
@@ -127,9 +154,14 @@ internal object GgufDiagnosticRunner {
         context: Context?,
         modelPath: String,
         threads: Int = 4,
+        prefillThreads: Int = threads,
         contextWindow: Int = 2048,
         nBatch: Int = 256,
         nUbatch: Int = 128,
+        backend: LlamaBackend? = null,
+        policy: DiagnosticPolicy = if (backend == LlamaBackend.VULKAN) DiagnosticPolicy.FORCED_VULKAN
+            else if (backend == LlamaBackend.CPU) DiagnosticPolicy.FORCED_CPU
+            else DiagnosticPolicy.AUTO,
         prompts: List<String> = STANDARD_PROMPTS,
         customNativeBridge: LlamaNativeBridge? = null
     ): GgufDiagnosticReport = withContext(Dispatchers.IO) {
@@ -143,6 +175,7 @@ internal object GgufDiagnosticRunner {
             it.fileName.equals(fileName, ignoreCase = true) || it.id.equals(file.nameWithoutExtension, ignoreCase = true)
         }
         val expectedBytes = catalogEntry?.expectedFileSizeBytes ?: 0L
+        val modelSha256 = GgufGpuValidator.resolveModelSha256(modelPath, catalogEntry?.id.orEmpty())
 
         // Phase 1: Artifact validation
         val sizeWarning = LlamaCppEngine.validateGgufArtifactSize(modelPath, expectedBytes)
@@ -160,7 +193,25 @@ internal object GgufDiagnosticRunner {
             LlamaCppEngine.inspectModel(modelPath)
         }
 
-        // Phase 3: Runtime Context Init
+        // Phase 3: Resolve backend according to policy
+        val resolvedBackend = when (policy) {
+            DiagnosticPolicy.FORCED_CPU -> LlamaBackend.CPU
+            DiagnosticPolicy.FORCED_VULKAN -> LlamaBackend.VULKAN
+            DiagnosticPolicy.AUTO -> {
+                val decision = GgufBackendPolicy.selectBackend(
+                    context = context,
+                    modelSha256 = modelSha256,
+                    threads = threads,
+                    contextWindow = contextWindow,
+                    nBatch = nBatch,
+                    nUbatch = nUbatch,
+                    prefillThreads = prefillThreads
+                )
+                decision.selectedBackend
+            }
+        }
+
+        // Phase 4: Runtime Context Init
         val engine = if (customNativeBridge != null) {
             LlamaCppEngine(context, customNativeBridge)
         } else {
@@ -171,46 +222,65 @@ internal object GgufDiagnosticRunner {
         var initDurationMs = 0L
         var initError: String? = null
 
-        val initStart = System.currentTimeMillis()
+        val initStartNano = System.nanoTime()
         try {
             engine.initialize(
                 modelPath = modelPath,
                 threads = threads,
+                prefillThreads = prefillThreads,
                 contextWindow = contextWindow,
                 nBatch = nBatch,
                 nUbatch = nUbatch,
+                backend = resolvedBackend,
                 expectedFileSizeBytes = expectedBytes
             )
             initSuccess = engine.isInitialized
-            initDurationMs = System.currentTimeMillis() - initStart
+            initDurationMs = (System.nanoTime() - initStartNano) / 1_000_000L
         } catch (t: Throwable) {
-            initDurationMs = System.currentTimeMillis() - initStart
+            initDurationMs = (System.nanoTime() - initStartNano) / 1_000_000L
             initError = t.message ?: t.toString()
             Log.e(TAG, "GGUF diagnostic init failed for $fileName", t)
         }
 
-        // Phase 4: Standard prompt matrix execution
+        // Phase 5: Standard prompt matrix execution
         val promptResults = mutableListOf<GgufPromptDiagnosticResult>()
         if (initSuccess) {
             for (prompt in prompts) {
-                val promptStart = System.currentTimeMillis()
-                var firstTokenMs = 0L
+                val promptStartNano = System.nanoTime()
+                var nativeFirstTokenMs = 0L
+                var firstCallbackMs = 0L
                 val tokens = mutableListOf<String>()
+                var generationMetrics: LlamaGenerationMetrics? = null
 
                 try {
+                    val messages = listOf("user" to prompt)
                     val result = engine.generateStream(
                         prompt = prompt,
-                        samplingParams = LlamaSamplingParams(maxTokens = 32, temperature = 0.6f)
+                        messages = messages,
+                        samplingParams = LlamaSamplingParams(maxTokens = 32, temperature = 0.6f),
+                        onMetrics = { m -> generationMetrics = m },
+                        onFirstToken = {
+                            if (nativeFirstTokenMs == 0L) {
+                                nativeFirstTokenMs = (System.nanoTime() - promptStartNano) / 1_000_000L
+                            }
+                        }
                     ) { token ->
-                        if (tokens.isEmpty()) {
-                            firstTokenMs = System.currentTimeMillis() - promptStart
+                        if (tokens.isEmpty() && firstCallbackMs == 0L) {
+                            firstCallbackMs = (System.nanoTime() - promptStartNano) / 1_000_000L
                         }
                         tokens.add(token)
                     }
 
-                    val totalDurationMs = System.currentTimeMillis() - promptStart
-                    val tokCount = tokens.size
-                    val tokPerSec = if (totalDurationMs > 0 && tokCount > 0) {
+                    val totalDurationMs = (System.nanoTime() - promptStartNano) / 1_000_000L
+                    val tokCount = generationMetrics?.tokenCount ?: tokens.size
+                    val decodeMs = generationMetrics?.decodeDurationMs ?: run {
+                        val start = if (nativeFirstTokenMs > 0L) nativeFirstTokenMs else firstCallbackMs
+                        if (start > 0L && totalDurationMs >= start) totalDurationMs - start else totalDurationMs
+                    }
+                    val promptDecodeMs = generationMetrics?.prefillDurationMs ?: (if (nativeFirstTokenMs > 0L) nativeFirstTokenMs else firstCallbackMs)
+                    val tokPerSec = if (decodeMs > 0L && tokCount > 0) {
+                        tokCount.toDouble() / (decodeMs.toDouble() / 1000.0)
+                    } else if (totalDurationMs > 0L && tokCount > 0) {
                         tokCount.toDouble() / (totalDurationMs.toDouble() / 1000.0)
                     } else 0.0
 
@@ -218,9 +288,9 @@ internal object GgufDiagnosticRunner {
                         GgufPromptDiagnosticResult(
                             prompt = prompt,
                             success = (result == LlamaGenerationResult.Completed),
-                            promptTokensCount = prompt.split(" ").size, // Approx
-                            promptDecodeDurationMs = if (firstTokenMs > 0) firstTokenMs else totalDurationMs,
-                            timeToFirstTokenMs = firstTokenMs,
+                            promptTokensCount = 0, // Left unknown; do not substitute word count
+                            promptDecodeDurationMs = promptDecodeMs,
+                            timeToFirstTokenMs = if (nativeFirstTokenMs > 0L) nativeFirstTokenMs else firstCallbackMs,
                             generatedTokenCount = tokCount,
                             totalGenerationDurationMs = totalDurationMs,
                             tokensPerSecond = tokPerSec,
@@ -228,8 +298,18 @@ internal object GgufDiagnosticRunner {
                             errorMessage = if (result == LlamaGenerationResult.Failed) "Generation returned Failed" else null
                         )
                     )
+                } catch (e: LlamaExecutionException) {
+                    val totalDurationMs = (System.nanoTime() - promptStartNano) / 1_000_000L
+                    promptResults.add(
+                        GgufPromptDiagnosticResult(
+                            prompt = prompt,
+                            success = false,
+                            totalGenerationDurationMs = totalDurationMs,
+                            errorMessage = "${e.category}: ${e.message}"
+                        )
+                    )
                 } catch (t: Throwable) {
-                    val totalDurationMs = System.currentTimeMillis() - promptStart
+                    val totalDurationMs = (System.nanoTime() - promptStartNano) / 1_000_000L
                     promptResults.add(
                         GgufPromptDiagnosticResult(
                             prompt = prompt,
@@ -242,7 +322,26 @@ internal object GgufDiagnosticRunner {
             }
         }
 
-        // Phase 5: Cleanup
+        // Capture actual runtime diagnostics BEFORE closing the engine
+        val backendUsed = engine.activeBackend.displayName
+        val activeBackend = engine.activeBackend
+        val anomalyReport = LlamaCppEngine.getLastError()?.takeIf { it.contains("[NUMERICAL_AUDIT]") }
+
+        val validationResult = if (activeBackend == LlamaBackend.VULKAN) {
+            val cacheKey = GgufGpuValidator.buildCacheKey(modelSha256, threads, contextWindow, nBatch, nUbatch, prefillThreads)
+            GgufGpuValidator.getCachedResult(context, cacheKey)
+        } else {
+            GgufGpuValidator.ValidationResult.Pass
+        }
+
+        val overallSuccess = initSuccess && promptResults.isNotEmpty() && promptResults.all { it.success }
+        val numericalValidationPassed = anomalyReport == null &&
+            (activeBackend != LlamaBackend.VULKAN || validationResult is GgufGpuValidator.ValidationResult.Pass)
+        val responseQualityVerified = overallSuccess &&
+            promptResults.all { it.generatedText.isNotBlank() } &&
+            numericalValidationPassed
+
+        // Phase 6: Cleanup
         var closeSuccess = false
         try {
             engine.close()
@@ -250,11 +349,6 @@ internal object GgufDiagnosticRunner {
         } catch (t: Throwable) {
             Log.w(TAG, "Error closing diagnostic engine: ${t.message}")
         }
-
-        // Check for numerical anomalies recorded by native layer
-        val anomalyReport = LlamaCppEngine.getLastError()?.takeIf { it.contains("[NUMERICAL_AUDIT]") }
-
-        val overallSuccess = initSuccess && promptResults.isNotEmpty() && promptResults.all { it.success }
 
         // Save report to disk if context is provided
         var savedPath: String? = null
@@ -266,6 +360,9 @@ internal object GgufDiagnosticRunner {
                     timestamp = timestamp,
                     modelPath = modelPath,
                     fileName = fileName,
+                    modelSha256 = modelSha256,
+                    backendUsed = backendUsed,
+                    backendPolicy = policy.name,
                     fileSizeBytes = fileSizeBytes,
                     expectedSizeBytes = expectedBytes,
                     artifactSizeValidationPassed = sizePassed,
@@ -280,6 +377,7 @@ internal object GgufDiagnosticRunner {
                     initSuccess = initSuccess,
                     initDurationMs = initDurationMs,
                     threadsUsed = threads,
+                    prefillThreadsUsed = prefillThreads,
                     contextWindowUsed = contextWindow,
                     nBatchUsed = nBatch,
                     nUbatchUsed = nUbatch,
@@ -287,6 +385,9 @@ internal object GgufDiagnosticRunner {
                     promptResults = promptResults,
                     closeSuccess = closeSuccess,
                     numericalAnomalyReport = anomalyReport,
+                    numericalValidationPassed = numericalValidationPassed,
+                    responseQualityVerified = responseQualityVerified,
+                    humanReviewedCoherence = false,
                     overallSuccess = overallSuccess,
                     reportFilePath = reportFile.absolutePath
                 )
@@ -302,6 +403,9 @@ internal object GgufDiagnosticRunner {
             timestamp = timestamp,
             modelPath = modelPath,
             fileName = fileName,
+            modelSha256 = modelSha256,
+            backendUsed = backendUsed,
+            backendPolicy = policy.name,
             fileSizeBytes = fileSizeBytes,
             expectedSizeBytes = expectedBytes,
             artifactSizeValidationPassed = sizePassed,
@@ -316,6 +420,7 @@ internal object GgufDiagnosticRunner {
             initSuccess = initSuccess,
             initDurationMs = initDurationMs,
             threadsUsed = threads,
+            prefillThreadsUsed = prefillThreads,
             contextWindowUsed = contextWindow,
             nBatchUsed = nBatch,
             nUbatchUsed = nUbatch,
@@ -323,6 +428,9 @@ internal object GgufDiagnosticRunner {
             promptResults = promptResults,
             closeSuccess = closeSuccess,
             numericalAnomalyReport = anomalyReport,
+            numericalValidationPassed = numericalValidationPassed,
+            responseQualityVerified = responseQualityVerified,
+            humanReviewedCoherence = false,
             overallSuccess = overallSuccess,
             reportFilePath = savedPath
         )

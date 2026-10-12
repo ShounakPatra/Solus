@@ -62,6 +62,9 @@ data class ModelInfo(
     val hasDownloadUrl: Boolean
         get() = !url.isNullOrBlank()
 
+    val isCustom: Boolean
+        get() = id.startsWith("custom_")
+
     val isFutureBuild: Boolean
         get() = status == ModelStatus.NeedsConversion || status == ModelStatus.ComingSoon
 

@@ -55,8 +55,7 @@ object DeviceUtils {
     }
 
     fun recommendedThreadCount(context: Context): Int {
-        val cores = Runtime.getRuntime().availableProcessors()
-        return recommendedThreadCountForCoresAndRam(cores, getTotalRamGB(context))
+        return com.shounak.localmeshai.ai.RuntimeExecutionPolicy.resolve(context).cpuThreads
     }
 
     /**

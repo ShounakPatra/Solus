@@ -6,9 +6,12 @@ import com.shounak.localmeshai.models.ModelPackage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.ResponseBody
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -33,49 +36,120 @@ data class DownloadResult(
     val bytesDownloaded: Long
 )
 
-class ModelDownloader(private val context: Context) {
-    private val modelRoot: File
-        get() = (context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: File(context.filesDir, "downloads"))
-            .resolve("models")
-            .apply { mkdirs() }
+data class ContentRange(
+    val unit: String,
+    val start: Long?,
+    val end: Long?,
+    val total: Long?
+) {
+    companion object {
+        fun parse(header: String?): ContentRange? {
+            if (header.isNullOrBlank()) return null
+            val parts = header.trim().split(' ', limit = 2)
+            if (parts.size != 2) return null
+            val unit = parts[0]
+            val rangeAndTotal = parts[1].split('/', limit = 2)
+            val rangePart = rangeAndTotal[0]
+            val totalPart = rangeAndTotal.getOrNull(1)
 
-    fun getTargetFile(modelId: String, fileName: String, packageType: ModelPackage): File {
-        return when (packageType) {
-            ModelPackage.SingleFile -> modelRoot.resolve(fileName)
-            ModelPackage.ZipDirectory -> modelRoot.resolve(modelId)
+            val total = totalPart?.takeIf { it != "*" }?.toLongOrNull()
+            if (rangePart == "*") {
+                return ContentRange(unit, null, null, total)
+            }
+            val rangeIndices = rangePart.split('-', limit = 2)
+            if (rangeIndices.size != 2) return null
+            val start = rangeIndices[0].toLongOrNull()
+            val end = rangeIndices[1].toLongOrNull()
+            return ContentRange(unit, start, end, total)
         }
+    }
+}
+
+open class ModelDownloader(
+    private val context: Context? = null,
+    private val customHttpClient: OkHttpClient? = null,
+    val artifactStorage: ModelArtifactStorage = defaultStorage(context),
+    val minValidModelBytes: Long = MIN_VALID_MODEL_BYTES
+) {
+    val modelRoot: File
+        get() = artifactStorage.rootDir
+
+    fun getTargetFile(modelId: String, fileName: String, packageType: ModelPackage): File? {
+        val published = artifactStorage.getPublishedArtifact(modelId)
+        if (published != null) return published
+
+        val safeName = runCatching { ModelArtifactStorage.sanitizeFileName(fileName) }.getOrNull() ?: return null
+        val sanitizedId = runCatching { ModelArtifactStorage.sanitizeId(modelId) }.getOrNull() ?: return null
+
+        when (packageType) {
+            ModelPackage.SingleFile -> {
+                val isolatedTarget = artifactStorage.getModelDir(sanitizedId, create = false).resolve(safeName)
+                if (isolatedTarget.exists() && isolatedTarget.isFile && isolatedTarget.length() >= minValidModelBytes) {
+                    return isolatedTarget
+                }
+                val legacy = modelRoot.resolve(safeName)
+                if (legacy.exists() && legacy.isFile && legacy.length() >= minValidModelBytes) {
+                    return legacy
+                }
+            }
+            ModelPackage.ZipDirectory -> {
+                // Never treat an unvalidated arbitrary directory as published
+                return null
+            }
+        }
+        return null
     }
 
     fun getPartialDownloadBytes(modelId: String): Long {
+        val stagingBytes = artifactStorage.getStagingDir(modelId).listFiles()
+            ?.firstOrNull { it.name.endsWith(".download") }
+            ?.takeIf { it.isFile }
+            ?.length() ?: 0L
+        if (stagingBytes > 0L) return stagingBytes
+
         return modelRoot.resolve("$modelId.download")
             .takeIf { it.exists() && it.isFile }
             ?.length()
             ?: 0L
     }
 
-    fun deleteDownload(modelId: String, fileName: String, packageType: ModelPackage) {
-        val target = getTargetFile(modelId, fileName, packageType)
-        val tempFile = modelRoot.resolve("$modelId.download")
-        runCatching {
-            if (target.isDirectory) {
-                target.deleteRecursively()
-            } else {
-                target.delete()
+    fun deleteStagingDownload(modelId: String, fileName: String? = null) {
+        if (!fileName.isNullOrBlank()) {
+            val stagingFile = runCatching { artifactStorage.getStagingFile(modelId, fileName) }.getOrNull()
+            if (stagingFile != null && stagingFile.exists()) {
+                stagingFile.delete()
+                DownloadResumeMetadata.deleteFor(stagingFile)
             }
         }
-        runCatching { tempFile.delete() }
+        val stagingDir = runCatching { artifactStorage.getStagingDir(modelId) }.getOrNull()
+        if (stagingDir != null && stagingDir.exists()) {
+            stagingDir.deleteRecursively()
+        }
+        val legacyTemp = modelRoot.resolve("$modelId.download")
+        runCatching {
+            if (legacyTemp.exists()) {
+                legacyTemp.delete()
+                DownloadResumeMetadata.deleteFor(legacyTemp)
+            }
+        }
     }
 
-    suspend fun downloadModel(
+    fun deleteDownload(modelId: String, fileName: String, packageType: ModelPackage) {
+        deleteStagingDownload(modelId, fileName)
+        artifactStorage.deleteModel(modelId)
+    }
+
+    open suspend fun downloadModel(
         url: String,
         modelId: String,
         fileName: String,
         packageType: ModelPackage,
         bearerToken: String?,
         expectedSha256: String? = null,
+        eTag: String? = null,
         onProgress: suspend (DownloadProgress) -> Unit
     ): DownloadResult = withContext(Dispatchers.IO) {
-        if (!NetworkUtils.isConnected(context)) {
+        if (context != null && !NetworkUtils.isConnected(context)) {
             throw IOException("No internet connection. Please connect to Wi-Fi or mobile data to download models.")
         }
         var retryCount = 0
@@ -88,6 +162,7 @@ class ModelDownloader(private val context: Context) {
                     packageType = packageType,
                     bearerToken = bearerToken,
                     expectedSha256 = expectedSha256,
+                    eTag = eTag,
                     onProgress = onProgress
                 )
             } catch (exception: IOException) {
@@ -101,8 +176,7 @@ class ModelDownloader(private val context: Context) {
                     throw exception
                 }
                 retryCount++
-                val tempFile = modelRoot.resolve("$modelId.download")
-                val downloadedBytes = tempFile.takeIf { it.exists() }?.length() ?: 0L
+                val downloadedBytes = getPartialDownloadBytes(modelId)
                 onProgress(
                     DownloadProgress(
                         progress = 0f,
@@ -117,13 +191,24 @@ class ModelDownloader(private val context: Context) {
         throw IOException("Download retry loop exited unexpectedly.")
     }
 
-    private val httpClient: OkHttpClient by lazy {
-        OkHttpClient.Builder()
+    private fun getHttpClient(bearerToken: String?): OkHttpClient {
+        val base = customHttpClient ?: OkHttpClient.Builder()
             .connectTimeout(CONNECT_TIMEOUT_MS.toLong(), TimeUnit.MILLISECONDS)
             .readTimeout(READ_TIMEOUT_MS.toLong(), TimeUnit.MILLISECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
             .build()
+        return ModelDownloadUrlPolicy.configureClient(base.newBuilder()) { bearerToken }
+            .build()
+    }
+
+    private fun readBoundedResponseBody(body: ResponseBody?, maxBytes: Long = 4096L): String {
+        if (body == null) return ""
+        return runCatching {
+            val source = body.source()
+            source.request(maxBytes)
+            val buffer = source.buffer
+            val toRead = minOf(maxBytes, buffer.size)
+            buffer.clone().readUtf8(toRead).lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(MAX_ERROR_MESSAGE_CHARS)
+        }.getOrDefault("")
     }
 
     private suspend fun downloadModelOnce(
@@ -133,167 +218,359 @@ class ModelDownloader(private val context: Context) {
         packageType: ModelPackage,
         bearerToken: String?,
         expectedSha256: String? = null,
+        eTag: String? = null,
         onProgress: suspend (DownloadProgress) -> Unit
     ): DownloadResult {
-        if (!url.startsWith("https://", ignoreCase = true)) {
+        val parsedUrl = url.toHttpUrlOrNull()
+        val isLoopback = parsedUrl != null && (parsedUrl.host == "localhost" || parsedUrl.host == "127.0.0.1" || parsedUrl.host == "::1")
+        if (!url.startsWith("https://", ignoreCase = true) && !isLoopback) {
             throw IOException("Insecure HTTP connections are blocked for model downloads. URL must use HTTPS.")
         }
 
-        val target = getTargetFile(modelId, fileName, packageType)
-        val tempFile = modelRoot.resolve("$modelId.download")
-        val existingBytes = tempFile.takeIf { it.exists() }?.length()?.takeIf { it > 0L } ?: 0L
+        val normalizedUrl = ModelDownloadUrlPolicy.normalizeUrl(url)
+        val stagingFile = artifactStorage.getStagingFile(modelId, fileName)
+        val legacyTempFile = modelRoot.resolve("$modelId.download")
+        if (!stagingFile.exists() && legacyTempFile.exists() && legacyTempFile.isFile) {
+            legacyTempFile.renameTo(stagingFile)
+        }
 
-        val requestBuilder = Request.Builder()
-            .url(url)
-            .header("Accept", "application/octet-stream")
-            .header("Accept-Encoding", "identity")
-            .header("User-Agent", "Solus/1.0 Android")
+        var existingBytes = if (stagingFile.exists()) stagingFile.length() else 0L
+        val savedMeta = DownloadResumeMetadata.loadFor(stagingFile)
+        var effectiveValidator: String? = eTag
 
         if (existingBytes > 0L) {
-            requestBuilder.header("Range", "bytes=$existingBytes-")
-        }
-        val uri = runCatching { URI(url) }.getOrNull()
-        if (!bearerToken.isNullOrBlank() && uri?.host?.endsWith("huggingface.co") == true) {
-            requestBuilder.header("Authorization", "Bearer ${bearerToken.trim()}")
-        }
+            if (savedMeta != null) {
+                val isIncompatible = savedMeta.normalizedUrl != normalizedUrl ||
+                    savedMeta.packageType != packageType ||
+                    (!savedMeta.expectedSha256.isNullOrBlank() && !expectedSha256.isNullOrBlank() && !savedMeta.expectedSha256.equals(expectedSha256.trim(), ignoreCase = true))
 
-        val call = httpClient.newCall(requestBuilder.build())
-        val response = call.execute()
-
-        val responseCode = response.code
-        if (!response.isSuccessful) {
-            val serverMessage = runCatching {
-                response.body.string().lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(MAX_ERROR_MESSAGE_CHARS)
-            }.getOrDefault("")
-            response.close()
-            throw IOException(downloadErrorMessage(url, responseCode, serverMessage))
+                if (isIncompatible) {
+                    stagingFile.delete()
+                    DownloadResumeMetadata.deleteFor(stagingFile)
+                    existingBytes = 0L
+                    effectiveValidator = null
+                } else if (effectiveValidator.isNullOrBlank()) {
+                    effectiveValidator = savedMeta.validator
+                }
+            }
         }
 
-        val body = response.body
+        var restartAllowed = true
 
-        val contentType = response.header("Content-Type").orEmpty().lowercase(Locale.US)
-        if (contentType.contains("text/html") || contentType.contains("application/json")) {
-            val serverMessage = runCatching {
-                body.string().lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(MAX_ERROR_MESSAGE_CHARS)
-            }.getOrDefault("")
-            response.close()
-            throw IOException("Model host returned a web page instead of a model file. $serverMessage")
-        }
+        while (true) {
+            val requestBuilder = Request.Builder()
+                .url(url)
+                .header("Accept", "application/octet-stream")
+                .header("Accept-Encoding", "identity")
+                .header("User-Agent", "Solus/1.0 Android")
 
-        val append = existingBytes > 0L && responseCode == 206
-        if (existingBytes > 0L && !append) {
-            tempFile.delete()
-        }
-
-        val contentLength = body.contentLength()
-        val totalBytes = if (append && contentLength > 0L) {
-            existingBytes + contentLength
-        } else {
-            contentLength
-        }
-        var downloaded = if (append) existingBytes else 0L
-        val startedAt = System.currentTimeMillis()
-        var lastProgressAt = 0L
-        var lastSpeedAt = startedAt
-        var lastSpeedBytes = downloaded
-        var currentSpeed = 0L
-
-        suspend fun emitProgress(force: Boolean = false) {
-            val now = System.currentTimeMillis()
-            if (!force && now - lastProgressAt < PROGRESS_EMIT_INTERVAL_MS) return
-
-            val speedElapsedMs = now - lastSpeedAt
-            if (speedElapsedMs >= SPEED_SAMPLE_INTERVAL_MS) {
-                val speedBytes = (downloaded - lastSpeedBytes).coerceAtLeast(0L)
-                currentSpeed = speedBytes * 1000L / speedElapsedMs.coerceAtLeast(1L)
-                lastSpeedAt = now
-                lastSpeedBytes = downloaded
+            if (existingBytes > 0L) {
+                requestBuilder.header("Range", "bytes=$existingBytes-")
+                if (!effectiveValidator.isNullOrBlank()) {
+                    requestBuilder.header("If-Range", effectiveValidator)
+                }
             }
 
-            val progress = if (totalBytes > 0L) {
-                (downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+            val client = getHttpClient(bearerToken)
+            val call = client.newCall(requestBuilder.build())
+
+            val job = coroutineContext[Job]
+            val cancelReg = job?.invokeOnCompletion { call.cancel() }
+
+            val response = try {
+                call.execute()
+            } catch (e: IOException) {
+                cancelReg?.dispose()
+                if (job?.isCancelled == true) {
+                    throw kotlinx.coroutines.CancellationException("Download cancelled", e)
+                }
+                throw e
+            }
+
+            val responseCode = response.code
+
+            if (responseCode == 416) {
+                response.close()
+                cancelReg?.dispose()
+
+                val contentRange = ContentRange.parse(response.header("Content-Range"))
+                val isBytesUnit = contentRange == null || contentRange.unit.equals("bytes", ignoreCase = true)
+                val totalFromHeader = if (isBytesUnit) (contentRange?.total ?: savedMeta?.expectedTotalBytes) else null
+                val matchesExpectedTotal = totalFromHeader != null && totalFromHeader > 0L && existingBytes == totalFromHeader
+                val matchesChecksum = if (!expectedSha256.isNullOrBlank()) {
+                    verifyFileSha256(stagingFile, expectedSha256)
+                } else false
+
+                val isMetaMatch = savedMeta == null || (savedMeta.normalizedUrl == normalizedUrl && savedMeta.packageType == packageType)
+
+                if (existingBytes > 0L && isMetaMatch && (matchesExpectedTotal || matchesChecksum)) {
+                    DownloadResumeMetadata.deleteFor(stagingFile)
+                    onProgress(DownloadProgress(1f, existingBytes, existingBytes, 0L))
+                    return publishCompletedDownload(
+                        stagingFile = stagingFile,
+                        url = url,
+                        modelId = modelId,
+                        fileName = fileName,
+                        packageType = packageType,
+                        expectedSha256 = expectedSha256,
+                        downloaded = existingBytes
+                    )
+                } else if (restartAllowed) {
+                    restartAllowed = false
+                    stagingFile.delete()
+                    DownloadResumeMetadata.deleteFor(stagingFile)
+                    existingBytes = 0L
+                    effectiveValidator = null
+                    continue
+                } else {
+                    stagingFile.delete()
+                    DownloadResumeMetadata.deleteFor(stagingFile)
+                    throw IOException("HTTP 416 Range Not Satisfiable: file representation mismatch after restart.")
+                }
+            }
+
+            if (!response.isSuccessful) {
+                val serverMessage = readBoundedResponseBody(response.body)
+                response.close()
+                cancelReg?.dispose()
+                throw IOException(downloadErrorMessage(url, responseCode, serverMessage))
+            }
+
+            val body = response.body
+            val contentType = response.header("Content-Type").orEmpty().lowercase(Locale.US)
+            if (contentType.contains("text/html") || contentType.contains("application/json")) {
+                val serverMessage = readBoundedResponseBody(body)
+                response.close()
+                cancelReg?.dispose()
+                throw IOException("Model host returned a web page instead of a model file. $serverMessage")
+            }
+
+            var contentRange: ContentRange? = null
+            if (responseCode == 206) {
+                contentRange = ContentRange.parse(response.header("Content-Range"))
+                val isRangeValid = contentRange != null &&
+                    contentRange.unit.equals("bytes", ignoreCase = true) &&
+                    contentRange.start != null &&
+                    contentRange.start == existingBytes &&
+                    (contentRange.end == null || contentRange.end >= contentRange.start)
+                if (!isRangeValid) {
+                    response.close()
+                    cancelReg?.dispose()
+                    if (restartAllowed) {
+                        restartAllowed = false
+                        stagingFile.delete()
+                        DownloadResumeMetadata.deleteFor(stagingFile)
+                        existingBytes = 0L
+                        effectiveValidator = null
+                        continue
+                    } else {
+                        stagingFile.delete()
+                        DownloadResumeMetadata.deleteFor(stagingFile)
+                        throw IOException("Server returned invalid Content-Range: ${response.header("Content-Range")}")
+                    }
+                }
+            } else if (responseCode == 200 && existingBytes > 0L) {
+                stagingFile.delete()
+                DownloadResumeMetadata.deleteFor(stagingFile)
+                existingBytes = 0L
+            }
+
+            val validator = response.header("ETag") ?: response.header("Last-Modified") ?: effectiveValidator
+            val append = existingBytes > 0L && responseCode == 206
+            val contentLength = body.contentLength()
+            val totalBytes = if (append) {
+                contentRange?.total ?: if (contentLength > 0L) existingBytes + contentLength else -1L
             } else {
-                0f
+                contentLength
             }
-            lastProgressAt = now
-            onProgress(DownloadProgress(progress, downloaded, totalBytes, currentSpeed))
-        }
 
-        emitProgress(force = true)
+            val currentMeta = DownloadResumeMetadata(
+                normalizedUrl = normalizedUrl,
+                packageType = packageType,
+                expectedSha256 = expectedSha256,
+                validator = validator,
+                expectedTotalBytes = totalBytes,
+                lastDownloadedBytes = existingBytes
+            )
+            DownloadResumeMetadata.saveFor(stagingFile, currentMeta)
 
-        try {
-            response.use { resp ->
-                resp.body.byteStream().use { input ->
-                    FileOutputStream(tempFile, append).use { output ->
-                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                        while (true) {
-                            coroutineContext.ensureActive()
-                            val read = input.read(buffer)
-                            if (read == -1) break
-                            output.write(buffer, 0, read)
-                            downloaded += read
-                            emitProgress()
+            var downloaded = if (append) existingBytes else 0L
+            var bytesReadThisStream = 0L
+            val startedAt = System.currentTimeMillis()
+            var lastProgressAt = 0L
+            var lastSpeedAt = startedAt
+            var lastSpeedBytes = downloaded
+            var currentSpeed = 0L
+
+            suspend fun emitProgress(force: Boolean = false) {
+                val now = System.currentTimeMillis()
+                if (!force && now - lastProgressAt < PROGRESS_EMIT_INTERVAL_MS) return
+
+                val speedElapsedMs = now - lastSpeedAt
+                if (speedElapsedMs >= SPEED_SAMPLE_INTERVAL_MS) {
+                    val speedBytes = (downloaded - lastSpeedBytes).coerceAtLeast(0L)
+                    currentSpeed = speedBytes * 1000L / speedElapsedMs.coerceAtLeast(1L)
+                    lastSpeedAt = now
+                    lastSpeedBytes = downloaded
+                }
+
+                val progress = if (totalBytes > 0L) {
+                    (downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                } else {
+                    0f
+                }
+                lastProgressAt = now
+                onProgress(DownloadProgress(progress, downloaded, totalBytes, currentSpeed))
+            }
+
+            emitProgress(force = true)
+
+            try {
+                response.use { resp ->
+                    resp.body.byteStream().use { input ->
+                        FileOutputStream(stagingFile, append).use { output ->
+                            CancellableHttpTransfer.transfer(
+                                input = input,
+                                output = output,
+                                coroutineContext = coroutineContext,
+                                isCancelled = { job?.isCancelled == true || call.isCanceled() },
+                                onAbort = { call.cancel() }
+                            ) { read, _ ->
+                                downloaded += read
+                                bytesReadThisStream += read
+                                emitProgress()
+                            }
                         }
                     }
                 }
+            } catch (e: Exception) {
+                if (stagingFile.exists() && downloaded > 0L) {
+                    DownloadResumeMetadata.saveFor(
+                        stagingFile,
+                        currentMeta.copy(lastDownloadedBytes = downloaded, updatedAt = System.currentTimeMillis())
+                    )
+                }
+                throw e
+            } finally {
+                cancelReg?.dispose()
+                call.cancel()
             }
-        } finally {
-            call.cancel()
-        }
-        emitProgress(force = true)
 
+            if (contentLength > 0L && bytesReadThisStream != contentLength) {
+                throw IOException("Incomplete range response received: got $bytesReadThisStream bytes, expected $contentLength bytes.")
+            }
+            if (contentRange?.end != null && (existingBytes + bytesReadThisStream) < (contentRange.end + 1)) {
+                throw IOException("Incomplete Content-Range: stream closed before end index ${contentRange.end}.")
+            }
+            if (totalBytes > 0L && downloaded < totalBytes) {
+                throw IOException("Truncated download: received $downloaded of $totalBytes total bytes.")
+            }
+
+            emitProgress(force = true)
+            DownloadResumeMetadata.deleteFor(stagingFile)
+
+            return publishCompletedDownload(
+                stagingFile = stagingFile,
+                url = url,
+                modelId = modelId,
+                fileName = fileName,
+                packageType = packageType,
+                expectedSha256 = expectedSha256,
+                downloaded = downloaded
+            )
+        }
+    }
+
+    private suspend fun publishCompletedDownload(
+        stagingFile: File,
+        url: String,
+        modelId: String,
+        fileName: String,
+        packageType: ModelPackage,
+        expectedSha256: String?,
+        downloaded: Long
+    ): DownloadResult {
         if (downloaded == 0L) {
-            tempFile.delete()
+            stagingFile.delete()
+            DownloadResumeMetadata.deleteFor(stagingFile)
             throw IOException("Downloaded file is empty.")
         }
-        if (downloaded < MIN_VALID_MODEL_BYTES) {
-            tempFile.delete()
+        if (downloaded < minValidModelBytes) {
+            stagingFile.delete()
+            DownloadResumeMetadata.deleteFor(stagingFile)
             throw IOException("Downloaded file is too small to be a valid model.")
         }
         if (
             packageType == ModelPackage.SingleFile &&
             fileName.endsWith(".task", ignoreCase = true) &&
-            !isLikelyTaskBundle(tempFile)
+            !isLikelyTaskBundle(stagingFile)
         ) {
-            val message = invalidTaskFileMessage(tempFile)
-            tempFile.delete()
+            val message = invalidTaskFileMessage(stagingFile)
+            stagingFile.delete()
+            DownloadResumeMetadata.deleteFor(stagingFile)
             throw IOException(message)
         }
 
+        val currentJob = coroutineContext[Job]
+        val isCancelled = { currentJob?.isActive == false }
+
         if (!expectedSha256.isNullOrBlank()) {
-            val actualSha256 = computeSha256(tempFile)
+            val actualSha256 = computeSha256(stagingFile, isCancelled = isCancelled)
             if (!actualSha256.equals(expectedSha256.trim(), ignoreCase = true)) {
-                tempFile.delete()
+                stagingFile.delete()
+                DownloadResumeMetadata.deleteFor(stagingFile)
                 throw IOException("SHA-256 checksum verification failed. Expected: ${expectedSha256.trim()}, Actual: $actualSha256")
             }
         }
 
         val localPath = when (packageType) {
             ModelPackage.SingleFile -> {
-                target.delete()
-                if (!tempFile.renameTo(target)) {
-                    tempFile.copyTo(target, overwrite = true)
-                    tempFile.delete()
-                }
-                target.setLastModified(System.currentTimeMillis())
-                target.absolutePath
+                val published = artifactStorage.publishArtifact(
+                    modelId = modelId,
+                    stagedSource = stagingFile,
+                    relativeTargetName = fileName,
+                    sourceIdentity = url,
+                    expectedSha256 = expectedSha256,
+                    isCancelled = isCancelled
+                )
+                published.setLastModified(System.currentTimeMillis())
+                published.absolutePath
             }
 
             ModelPackage.ZipDirectory -> {
-                target.deleteRecursively()
-                target.mkdirs()
-                unzipModel(tempFile, target)
-                tempFile.delete()
-                val extracted = resolveExtractedModelDirectory(target)
-                extracted.setLastModified(System.currentTimeMillis())
-                extracted.absolutePath
+                val stagingExtractionDir = artifactStorage.getStagingDir(modelId).resolve("extracted")
+                stagingExtractionDir.deleteRecursively()
+                stagingExtractionDir.mkdirs()
+                unzipModel(stagingFile, stagingExtractionDir, isCancelled = isCancelled)
+                stagingFile.delete()
+                val extracted = resolveExtractedModelDirectory(stagingExtractionDir)
+                val isTextModel = fileName.endsWith(".task", ignoreCase = true) ||
+                    fileName.endsWith(".litertlm", ignoreCase = true) ||
+                    fileName.endsWith(".gguf", ignoreCase = true) ||
+                    !fileName.contains("vision", ignoreCase = true)
+                val published = artifactStorage.publishArtifact(
+                    modelId = modelId,
+                    stagedSource = extracted,
+                    relativeTargetName = fileName,
+                    sourceIdentity = url,
+                    expectedSha256 = null,
+                    archiveSha256 = expectedSha256,
+                    isCancelled = isCancelled,
+                    isTextModel = isTextModel
+                )
+                published.setLastModified(System.currentTimeMillis())
+                published.absolutePath
             }
         }
 
         return DownloadResult(localPath = localPath, bytesDownloaded = downloaded)
     }
 
-    private fun unzipModel(zipFile: File, targetDirectory: File) {
+    private suspend fun unzipModel(
+        zipFile: File,
+        targetDirectory: File,
+        isCancelled: (() -> Boolean)? = null
+    ) {
         val canonicalTarget = targetDirectory.canonicalFile
         var totalUncompressedBytes = 0L
         val maxAllowedBytes = 16L * 1024L * 1024L * 1024L // 16 GB max total model size guard
@@ -301,6 +578,10 @@ class ModelDownloader(private val context: Context) {
         ZipInputStream(zipFile.inputStream().buffered()).use { zip ->
             val buffer = ByteArray(8192)
             while (true) {
+                coroutineContext.ensureActive()
+                if (isCancelled?.invoke() == true) {
+                    throw kotlinx.coroutines.CancellationException("ZIP extraction cancelled")
+                }
                 val entry = zip.nextEntry ?: break
                 val safeName = entry.name.replace('\\', '/')
                 val outputFile = File(canonicalTarget, safeName).canonicalFile
@@ -314,6 +595,10 @@ class ModelDownloader(private val context: Context) {
                     outputFile.parentFile?.mkdirs()
                     FileOutputStream(outputFile).use { output ->
                         while (true) {
+                            coroutineContext.ensureActive()
+                            if (isCancelled?.invoke() == true) {
+                                throw kotlinx.coroutines.CancellationException("ZIP extraction cancelled")
+                            }
                             val read = zip.read(buffer)
                             if (read == -1) break
                             totalUncompressedBytes += read
@@ -413,16 +698,43 @@ class ModelDownloader(private val context: Context) {
         private const val MAX_DOWNLOAD_RETRIES = 5
         private const val RETRY_BASE_DELAY_MS = 1_500L
 
-        fun computeSha256(file: File): String {
+        fun defaultStorage(context: Context?): ModelArtifactStorage {
+            val root = if (context != null) {
+                (context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: File(context.filesDir, "downloads"))
+                    .resolve("models")
+            } else {
+                File(System.getProperty("java.io.tmpdir") ?: ".", "solus_models")
+            }
+            root.mkdirs()
+            return ModelArtifactStorage(root)
+        }
+
+        fun computeSha256(
+            file: File,
+            isCancelled: (() -> Boolean)? = null,
+            onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null
+        ): String = AppTrace.section("hashing") {
             if (!file.exists() || !file.isFile) {
                 throw IOException("Cannot compute checksum: file does not exist or is not a regular file")
             }
+            val totalBytes = file.length()
             val digest = MessageDigest.getInstance("SHA-256")
+            var bytesTotalRead = 0L
+            var lastProgressTimeMs = 0L
             FileInputStream(file).use { fis ->
                 val buffer = ByteArray(64 * 1024)
                 var bytesRead: Int
                 while (fis.read(buffer).also { bytesRead = it } != -1) {
+                    if (isCancelled?.invoke() == true) {
+                        throw kotlinx.coroutines.CancellationException("Checksum calculation cancelled")
+                    }
                     digest.update(buffer, 0, bytesRead)
+                    bytesTotalRead += bytesRead
+                    val now = System.nanoTime() / 1_000_000L
+                    if (bytesTotalRead == totalBytes || now - lastProgressTimeMs >= 100L) {
+                        lastProgressTimeMs = now
+                        onProgress?.invoke(bytesTotalRead, totalBytes)
+                    }
                 }
             }
             val hashBytes = digest.digest()
@@ -430,7 +742,7 @@ class ModelDownloader(private val context: Context) {
             for (b in hashBytes) {
                 sb.append(String.format(Locale.US, "%02x", b))
             }
-            return sb.toString()
+            sb.toString()
         }
 
         fun verifyFileSha256(file: File, expectedSha256: String): Boolean {

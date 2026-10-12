@@ -1,6 +1,11 @@
 package com.shounak.localmeshai.ui.screens
 
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
+import com.shounak.localmeshai.ai.RequestProgress
+import com.shounak.localmeshai.ai.ModelLoadState
+import com.shounak.localmeshai.ai.ModelLoadStage
+import com.shounak.localmeshai.ui.models.rememberMessagePresentation
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -38,7 +43,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.OutlinedButton
+import com.shounak.localmeshai.ai.RequestTerminalStatus
 import com.shounak.localmeshai.utils.CrashReportManager
 import com.shounak.localmeshai.utils.glassmorphic
 import com.shounak.localmeshai.utils.glassEffect
@@ -136,7 +143,6 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Settings
-import com.shounak.localmeshai.ui.screens.SettingsDialog
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Stop
@@ -474,13 +480,13 @@ fun ChatScreen(
     var recordingInputLevel by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
     var recordingSpeechActivity by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
     var recordingElapsedMs by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
-    var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
+    var cameraTempFilePath by rememberSaveable { mutableStateOf<String?>(null) }
     var showHistory by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
     val appSettingsData by mainViewModel.appSettingsData.collectAsState()
     var fullscreenMessageIndex by remember { mutableStateOf<Int?>(null) }
     var fullscreenVisionMessageIndex by remember { mutableStateOf<Int?>(null) }
+    val modelLoadState by chatViewModel.modelLoadState.collectAsState()
     val isInitializing by chatViewModel.isInitializing.collectAsState()
     val isGenerating by chatViewModel.isGenerating.collectAsState()
     val isModelReady by chatViewModel.isModelReady.collectAsState()
@@ -489,8 +495,12 @@ fun ChatScreen(
     val error by chatViewModel.error.collectAsState()
     val currentSessionId by chatViewModel.currentSessionId.collectAsState()
     val pendingSessionId by chatViewModel.pendingSessionId.collectAsState()
-    val tokensPerSecond by chatViewModel.tokensPerSecond.collectAsState()
-    val lastInferenceMs by chatViewModel.lastInferenceTime.collectAsState()
+    val chatTokensPerSecond by chatViewModel.tokensPerSecond.collectAsState()
+    val chatLastInferenceMs by chatViewModel.lastInferenceTime.collectAsState()
+    val chatActiveBackend by chatViewModel.activeBackend.collectAsState()
+    val visionTokensPerSecond by visionViewModel.tokensPerSecond.collectAsState()
+    val visionLastInferenceMs by visionViewModel.lastInferenceTime.collectAsState()
+    val visionActiveBackend by visionViewModel.activeBackend.collectAsState()
     val selectedTextModelPath by mainViewModel.selectedTextModelPath.collectAsState()
     val selectedVisionModelPath by mainViewModel.selectedVisionModelPath.collectAsState()
     val visionCurrentSessionId by visionViewModel.currentSessionId.collectAsState()
@@ -541,9 +551,9 @@ fun ChatScreen(
         path.endsWith(".task", ignoreCase = true) || path.endsWith(".litertlm", ignoreCase = true)
     } ?: false
     val selectedSupportsAudio = selectedSupportsAttachments && remember(
-        selectedModel?.localPath,
-        selectedModel?.id,
-        selectedModel?.supportsAudioInput
+        selectedModel.localPath,
+        selectedModel.id,
+        selectedModel.supportsAudioInput
     ) {
         selectedModel.supportsAudioInputByMetadata()
     }
@@ -566,7 +576,7 @@ fun ChatScreen(
     val isCurrentModelBusy = if (selectedSupportsAttachments) {
         isVisionInitializing || isVisionAnalyzing || isVisionStopping
     } else {
-        isInitializing || isGenerating
+        isInitializing || isGenerating || modelLoadState is ModelLoadState.Loading || modelLoadState is ModelLoadState.Stopping || modelLoadState is ModelLoadState.ShutdownStalled
     }
     val hasVisionAttachment = (selectedBitmap != null && selectedBitmap?.isRecycled == false) ||
         selectedFileUri != null ||
@@ -587,10 +597,6 @@ fun ChatScreen(
     val activeMessageCount = if (effectiveSupportsAttachments) visionMessages.size else textMessages.size
     val activeError = if (effectiveSupportsAttachments) visionError else error
     val audioRecordLimitMs = 30_000L
-
-    LaunchedEffect(Unit) {
-        pruneCameraInputCache(context)
-    }
 
     DisposableEffect(context, visionViewModel) {
         val lifecycleOwner = context.findLifecycleOwner()
@@ -613,11 +619,17 @@ fun ChatScreen(
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
         scope.launch(Dispatchers.IO) {
-            val bmp = loadBitmap(context, uri)
-            withContext(Dispatchers.Main) {
-                selectedBitmap = bmp
-                selectedFileUri = null
-                selectedFileName = null
+            try {
+                val bmp = loadBitmap(context, uri)
+                withContext(Dispatchers.Main) {
+                    selectedBitmap = bmp
+                    selectedFileUri = null
+                    selectedFileName = null
+                }
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) {
+                    chatViewModel.setDraftText(textState.ifBlank { "Failed to load image: ${e.message ?: "corrupted or unsupported format"}" })
+                }
             }
         }
     }
@@ -648,6 +660,24 @@ fun ChatScreen(
         }
     }
     var isIngestingDocument by remember { mutableStateOf(false) }
+    LaunchedEffect(selectedBitmap, selectedSupportsAttachments) {
+        visionViewModel.stageImageAttachment(selectedBitmap.takeIf { selectedSupportsAttachments })
+    }
+
+    LaunchedEffect(selectedFileUri, selectedFileName, selectedSupportsAttachments) {
+        val uri = selectedFileUri
+        if (uri == null) {
+            chatViewModel.cancelStagedDocument()
+            visionViewModel.cancelStagedDocument()
+        } else if (selectedSupportsAttachments) {
+            chatViewModel.cancelStagedDocument()
+            visionViewModel.stageDocumentAttachment(uri, selectedFileName ?: "document")
+        } else {
+            visionViewModel.cancelStagedDocument()
+            chatViewModel.stageDocumentAttachment(uri, selectedFileName ?: "document")
+        }
+    }
+
     var attachmentMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var composerBounds by remember { mutableStateOf(Rect.Zero) }
     var rootCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
@@ -744,37 +774,45 @@ fun ChatScreen(
         }
     }
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-        if (success) {
-            cameraTempUri?.let { uri ->
-                scope.launch(Dispatchers.IO) {
+        val filePath = cameraTempFilePath
+        val targetFile = filePath?.let { File(it) }
+        if (success && targetFile != null && targetFile.exists()) {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.fileprovider",
+                        targetFile
+                    )
                     val bmp = loadBitmap(context, uri)
                     withContext(Dispatchers.Main) {
                         selectedBitmap = bmp
                         selectedFileUri = null
                         selectedFileName = null
                     }
-                    runCatching {
-                        context.cacheDir.resolve("camera_inputs").listFiles()?.forEach { file ->
-                            if (file.isFile) file.delete()
-                        }
-                    }
+                } catch (e: Throwable) {
                     withContext(Dispatchers.Main) {
-                        cameraTempUri = null
+                        chatViewModel.setDraftText(textState.ifBlank { "Failed to load photo: ${e.message ?: "corrupted image"}" })
+                    }
+                } finally {
+                    com.shounak.localmeshai.utils.ActiveInputFiles.release(targetFile)
+                    targetFile.delete()
+                    withContext(Dispatchers.Main) {
+                        cameraTempFilePath = null
                     }
                 }
             }
         } else {
-            cameraTempUri?.let { _ ->
+            if (targetFile != null) {
                 scope.launch(Dispatchers.IO) {
-                    runCatching {
-                        context.cacheDir.resolve("camera_inputs").listFiles()?.forEach { file ->
-                            if (file.isFile) file.delete()
-                        }
-                    }
+                    com.shounak.localmeshai.utils.ActiveInputFiles.release(targetFile)
+                    targetFile.delete()
                     withContext(Dispatchers.Main) {
-                        cameraTempUri = null
+                        cameraTempFilePath = null
                     }
                 }
+            } else {
+                cameraTempFilePath = null
             }
         }
     }
@@ -834,42 +872,45 @@ fun ChatScreen(
         }
     }
 
-    var followLatest by remember { mutableStateOf(true) }
+    val scrollController = com.shounak.localmeshai.ui.models.rememberChatScrollController(listState, scope)
+    val effectiveSessionId = if (effectiveSupportsAttachments) visionCurrentSessionId else currentSessionId
+    val currentModeKey = if (effectiveSupportsAttachments) "vision" else "text"
 
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.isScrollInProgress to !listState.canScrollForward }
-            .collect { (isScrolling, isAtBottom) ->
-                when {
-                    isAtBottom -> followLatest = true
-                    isScrolling -> followLatest = false
-                }
-            }
+    LaunchedEffect(effectiveSessionId, currentModeKey) {
+        scrollController.bindConversation(effectiveSessionId, currentModeKey)
     }
 
-    // Only auto-scroll when a new message is added if we were already at bottom.
+    LaunchedEffect(listState) {
+        scrollController.observeUserInteractions()
+    }
+
+    LaunchedEffect(listState) {
+        scrollController.observeScrollPosition()
+    }
+
+    // Only auto-scroll when a new message is added if auto-follow is active
     LaunchedEffect(activeMessageCount, effectiveSupportsAttachments) {
-        if (activeMessageCount > 0 && followLatest) {
-            listState.animateScrollToItem(activeMessageCount - 1, scrollOffset = 100_000)
+        if (activeMessageCount > 0) {
+            scrollController.onNewMessageAdded(activeMessageCount)
         }
     }
 
     val isAnyStreaming = if (effectiveSupportsAttachments) isVisionAnalyzing else isGenerating
-    LaunchedEffect(isAnyStreaming, followLatest) {
-        if (!isAnyStreaming || !followLatest) return@LaunchedEffect
-        while (true) {
-            delay(120L)
-            val count = if (effectiveSupportsAttachments) visionMessages.size else textMessages.size
-            if (count > 0 && followLatest) {
-                listState.scrollToItem(count - 1, scrollOffset = 100_000)
-            }
+    val activeChatReqId by chatViewModel.activeRequestIdState.collectAsState()
+    val activeVisionReqId by visionViewModel.activeRequestIdState.collectAsState()
+
+    // Follow streaming content growth coalesced to at most once every 100ms
+    LaunchedEffect(isAnyStreaming) {
+        scrollController.followStreaming(isAnyStreaming) {
+            if (effectiveSupportsAttachments) visionMessages.size else textMessages.size
         }
     }
 
+    // Terminal layout adjustment: once generation ends, yield one frame for rich presentation layout then align
     LaunchedEffect(isAnyStreaming) {
-        if (!isAnyStreaming && followLatest) {
-            val count = if (effectiveSupportsAttachments) visionMessages.size else textMessages.size
-            if (count > 0) {
-                listState.scrollToItem(count - 1, scrollOffset = 100_000)
+        if (!isAnyStreaming) {
+            scrollController.onStreamingEnded {
+                if (effectiveSupportsAttachments) visionMessages.size else textMessages.size
             }
         }
     }
@@ -937,11 +978,11 @@ fun ChatScreen(
                 selectedAudioUri = null
                 selectedAudioName = null
                 selectedAudioBytes = null
-                cameraTempUri = null
-                runCatching {
-                    context.cacheDir.resolve("camera_inputs").listFiles()?.forEach { file ->
-                        if (file.isFile) file.delete()
-                    }
+                cameraTempFilePath?.let { path ->
+                    val file = File(path)
+                    com.shounak.localmeshai.utils.ActiveInputFiles.release(file)
+                    file.delete()
+                    cameraTempFilePath = null
                 }
                 showHistory = false
             },
@@ -991,14 +1032,6 @@ fun ChatScreen(
                     Text("Cancel")
                 }
             }
-        )
-    }
-
-    if (showSettings) {
-        SettingsDialog(
-            mainViewModel = mainViewModel,
-            hazeState = hazeState,
-            onDismissRequest = { showSettings = false }
         )
     }
 
@@ -1091,7 +1124,7 @@ fun ChatScreen(
                 },
                 onHistory = { showHistory = true },
                 onSettings = if (appSettingsData.enableAutoHideBottomBar) {
-                    { showSettings = true }
+                    { mainViewModel.openSettings(false) }
                 } else null,
                 hazeState = hazeState
             )
@@ -1108,12 +1141,34 @@ fun ChatScreen(
                 if (appSettingsData.enableDynamicThemes) ModelTheme.getAccentColor(selectedModel?.id) else Color(0xFF3B82F6)
             }
 
-            val activeBackendFromVm by chatViewModel.activeBackend.collectAsState()
+            val activeBackendFromVm = if (effectiveSupportsAttachments) visionActiveBackend else chatActiveBackend
             val effectiveBackend = activeBackendFromVm ?: selectedModel?.backend ?: "Local GPU/CPU"
 
+            val latestMessageMetrics = if (effectiveSupportsAttachments) {
+                visionMessages.lastOrNull { !it.isUser && it.metrics != null }?.metrics
+            } else {
+                textMessages.lastOrNull { !it.isUser && it.metrics != null }?.metrics
+            }
+
+            val effectiveTokensPerSecond = when {
+                effectiveSupportsAttachments && visionTokensPerSecond > 0f -> visionTokensPerSecond
+                !effectiveSupportsAttachments && chatTokensPerSecond > 0f -> chatTokensPerSecond
+                latestMessageMetrics?.decodeThroughputTokPerSec != null && latestMessageMetrics.decodeThroughputTokPerSec > 0.0 -> latestMessageMetrics.decodeThroughputTokPerSec.toFloat()
+                effectiveSupportsAttachments -> visionTokensPerSecond
+                else -> chatTokensPerSecond
+            }
+
+            val effectiveLastInferenceMs = when {
+                effectiveSupportsAttachments && visionLastInferenceMs > 0L -> visionLastInferenceMs
+                !effectiveSupportsAttachments && chatLastInferenceMs > 0L -> chatLastInferenceMs
+                latestMessageMetrics?.decodeDurationMs != null && latestMessageMetrics.decodeDurationMs > 0L -> latestMessageMetrics.decodeDurationMs
+                effectiveSupportsAttachments -> visionLastInferenceMs
+                else -> chatLastInferenceMs
+            }
+
             InferenceTelemetryBar(
-                tokensPerSecond = tokensPerSecond,
-                lastInferenceMs = lastInferenceMs,
+                tokensPerSecond = effectiveTokensPerSecond,
+                lastInferenceMs = effectiveLastInferenceMs,
                 activeBackend = effectiveBackend,
                 batteryTempC = batteryTempC,
                 availableRamMb = availableRamMb,
@@ -1153,12 +1208,106 @@ fun ChatScreen(
                     activeError?.let { ErrorCard(it) }
                 }
 
+                // Initialising / Generating banner - placed inside Column above message Box so it never overlaps chat items
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = isCurrentModelBusy,
+                    enter = androidx.compose.animation.fadeIn(tween(180)) +
+                        androidx.compose.animation.expandVertically(
+                            animationSpec = spring(dampingRatio = 0.82f, stiffness = 460f)
+                        ),
+                    exit = androidx.compose.animation.fadeOut(tween(130)) +
+                        androidx.compose.animation.shrinkVertically(
+                            animationSpec = spring(dampingRatio = 0.92f, stiffness = 620f)
+                        ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                            .padding(bottom = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        val activeState = modelLoadState
+                        val progressFraction = (activeState as? ModelLoadState.Loading)?.progressFraction
+                        if (progressFraction != null && progressFraction > 0f) {
+                            LinearProgressIndicator(
+                                progress = { progressFraction },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val loadingText = when {
+                                selectedSupportsAttachments && isVisionInitializing -> "Initialising multimodal model safely…"
+                                selectedSupportsAttachments && isVisionAnalyzing -> "Reading input…"
+                                selectedSupportsAttachments && isVisionStopping -> "Stopping multimodal model…"
+                                selectedSupportsAttachments -> "Initialising multimodal model safely…"
+                                activeState is ModelLoadState.Loading -> {
+                                    val stageName = when (val st = activeState.stage) {
+                                        ModelLoadStage.WaitingForRuntime -> "Waiting for runtime"
+                                        ModelLoadStage.VerifyingFile -> "Verifying model file"
+                                        ModelLoadStage.General -> "Initialising model"
+                                        ModelLoadStage.CpuLoading -> "Loading CPU model"
+                                        ModelLoadStage.GpuLoading -> "Loading GPU model"
+                                        is ModelLoadStage.CpuReference -> "Probing CPU reference (${st.promptIndex + 1}/3, pos ${st.position}/8)"
+                                        is ModelLoadStage.GpuProbe -> "Probing GPU backend (${st.promptIndex + 1}/3, pos ${st.position}/8)"
+                                        is ModelLoadStage.ContextPreparation -> if (st.backend.isNotBlank()) "Preparing context on ${st.backend}" else "Preparing context"
+                                    }
+                                    val sec = activeState.elapsedMs / 1000
+                                    val pct = progressFraction?.let { " ${(it * 100).toInt()}%" } ?: ""
+                                    if (activeState.isStalledWarning) {
+                                        "$stageName$pct (${sec}s elapsed - still working)"
+                                    } else {
+                                        "$stageName$pct (${sec}s)"
+                                    }
+                                }
+                                activeState is ModelLoadState.Stopping -> "Stopping model…"
+                                activeState is ModelLoadState.ShutdownStalled -> "Native runtime shutdown stalled. Please restart the app."
+                                isInitializing -> "Initialising model safely…"
+                                else -> "Generating live response…"
+                            }
+                            Text(
+                                text = loadingText,
+                                modifier = Modifier.weight(1f, fill = false),
+                                textAlign = TextAlign.Start,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (activeState is ModelLoadState.ShutdownStalled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                            )
+                            if ((!selectedSupportsAttachments && (isInitializing || activeState is ModelLoadState.Loading)) ||
+                                (selectedSupportsAttachments && (isVisionInitializing || isVisionAnalyzing))) {
+                                TextButton(
+                                    onClick = {
+                                        if (selectedSupportsAttachments) {
+                                            visionViewModel.stopAnalyzing()
+                                        } else {
+                                            chatViewModel.cancelModelInitialization()
+                                        }
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    Text("Cancel", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Pending hold only when messages were not loaded into the list yet.
                 // Once textMessages/visionMessages are non-empty, the list branch wins.
-                val canShowChatMessages = isCurrentModelReady || currentSessionId != null
+                val canShowChatMessages = selectedModelPath != null || currentSessionId != null
                 val isPendingChatHold = !effectiveSupportsAttachments &&
                     pendingSessionId != null &&
-                    !isCurrentModelReady &&
+                    selectedModelPath == null &&
                     textMessages.isEmpty()
 
                 Box(
@@ -1169,64 +1318,102 @@ fun ChatScreen(
                         // 1. Prioritise showing messages if they exist (history with no model active).
                         (effectiveSupportsAttachments && visionMessages.isNotEmpty()) ||
                             (!effectiveSupportsAttachments && textMessages.isNotEmpty()) -> {
-                            // Wrap the entire list in SelectionContainer so text selection works
-                            SelectionContainer {
-                                LazyColumn(
-                                    state = listState,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentPadding = PaddingValues(vertical = 8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    if (effectiveSupportsAttachments) {
-                                        itemsIndexed(
-                                            visionMessages,
-                                            key = { _, message -> message.id },
-                                            contentType = { _, message ->
-                                                if (message.isUser) "vision_user" else "vision_assistant"
-                                            }
-                                        ) { index, message ->
-                                            VisionChatBubble(
-                                                text = message.text,
-                                                isUser = message.isUser,
-                                                bitmap = message.bitmap,
-                                                imagePath = message.imagePath,
-                                                audioPath = message.audioPath,
-                                                audioName = message.audioName,
-                                                audioDurationMs = message.audioDurationMs,
-                                                documentName = message.documentName,
-                                                documentPath = message.documentPath,
-                                                hazeState = hazeState,
-                                                isStreaming = !message.isUser && isVisionAnalyzing && index == visionMessages.lastIndex,
-                                                entryDelayMs = if (index == visionMessages.lastIndex) 25 else 0,
-                                                ragSources = message.ragSources,
-                                                ragChunkCount = message.ragChunkCount,
-                                                ragTopMatchPct = message.ragTopMatchPct,
-                                                onFullscreenClick = { fullscreenVisionMessageIndex = index }
-                                            )
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                if (effectiveSupportsAttachments) {
+                                    itemsIndexed(
+                                        visionMessages,
+                                        key = { _, message -> message.id },
+                                        contentType = { _, message ->
+                                            if (message.isUser) "vision_user" else "vision_assistant"
                                         }
-                                    } else {
-                                        itemsIndexed(
-                                            textMessages,
-                                            key = { _, message -> message.id },
-                                            contentType = { _, message ->
-                                                if (message.isUser) "text_user" else "text_assistant"
-                                            }
-                                        ) { index, message ->
-                                            ChatBubble(
-                                                text = message.text,
-                                                isUser = message.isUser,
-                                                hazeState = hazeState,
-                                                isStreaming = !message.isUser && isGenerating && index == textMessages.lastIndex,
-                                                entryDelayMs = if (index == textMessages.lastIndex) 25 else 0,
-                                                ragSources = message.ragSources,
-                                                ragChunkCount = message.ragChunkCount,
-                                                ragTopMatchPct = message.ragTopMatchPct,
-                                                documentName = message.documentName,
-                                                documentPath = message.documentPath,
-                                                onFullscreenClick = { fullscreenMessageIndex = index }
-                                            )
-                                        }
+                                    ) { index, message ->
+                                        val isStreaming = !message.isUser && activeVisionReqId != null && message.requestId == activeVisionReqId && message.terminalStatus == null
+                                        VisionChatBubble(
+                                            text = message.text,
+                                            isUser = message.isUser,
+                                            bitmap = message.bitmap,
+                                            imagePath = message.imagePath,
+                                            audioPath = message.audioPath,
+                                            audioName = message.audioName,
+                                            audioDurationMs = message.audioDurationMs,
+                                            documentName = message.documentName,
+                                            documentPath = message.documentPath,
+                                            progress = message.progress,
+                                            hazeState = hazeState,
+                                            isStreaming = isStreaming,
+                                            messageId = message.id,
+                                            requestId = message.requestId.orEmpty(),
+                                            attemptId = message.attemptId.toLong(),
+                                            revision = message.revision,
+                                            reasoningText = message.reasoningText,
+                                            entryDelayMs = if (index == visionMessages.lastIndex) 25 else 0,
+                                            ragSources = message.ragSources,
+                                            ragChunkCount = message.ragChunkCount,
+                                            ragTopMatchPct = message.ragTopMatchPct,
+                                            errorMessage = message.errorMessage,
+                                            onRetry = if (!message.isUser && index == visionMessages.lastIndex && (message.errorMessage != null || message.terminalStatus == RequestTerminalStatus.Failed || message.text.startsWith("⚠️ Error:"))) {
+                                                val userMsgId = message.userMessageId ?: visionMessages.take(index).lastOrNull { it.isUser }?.id
+                                                {
+                                                    val currentSessId = visionViewModel.currentSessionId.value
+                                                    if (currentSessId != null && userMsgId != null) {
+                                                        visionViewModel.retryMessage(currentSessId, userMsgId)
+                                                    } else {
+                                                        visionViewModel.retryLastFailedMessage()
+                                                    }
+                                                }
+                                            } else null,
+                                            onFullscreenClick = { fullscreenVisionMessageIndex = index }
+                                        )
                                     }
+                                } else {
+                                    itemsIndexed(
+                                        textMessages,
+                                        key = { _, message -> message.id },
+                                        contentType = { _, message ->
+                                            if (message.isUser) "text_user" else "text_assistant"
+                                        }
+                                    ) { index, message ->
+                                        val isStreaming = !message.isUser && activeChatReqId != null && message.requestId == activeChatReqId && message.terminalStatus == null
+                                        ChatBubble(
+                                            text = message.text,
+                                            isUser = message.isUser,
+                                            hazeState = hazeState,
+                                            progress = message.progress,
+                                            isStreaming = isStreaming,
+                                            messageId = message.id,
+                                            requestId = message.requestId.orEmpty(),
+                                            attemptId = message.attemptId.toLong(),
+                                            revision = message.revision,
+                                            reasoningText = message.reasoningText,
+                                            entryDelayMs = if (index == textMessages.lastIndex) 25 else 0,
+                                            ragSources = message.ragSources,
+                                            ragChunkCount = message.ragChunkCount,
+                                            ragTopMatchPct = message.ragTopMatchPct,
+                                            documentName = message.documentName,
+                                            documentPath = message.documentPath,
+                                            errorMessage = message.errorMessage,
+                                            onRetry = if (!message.isUser && index == textMessages.lastIndex && (message.errorMessage != null || message.terminalStatus == RequestTerminalStatus.Failed || message.text.startsWith("⚠️ Error:"))) {
+                                                val userMsgId = message.userMessageId ?: textMessages.take(index).lastOrNull { it.isUser }?.id
+                                                {
+                                                    val currentSessId = chatViewModel.currentSessionId.value
+                                                    if (currentSessId != null && userMsgId != null) {
+                                                        chatViewModel.retryMessage(currentSessId, userMsgId)
+                                                    } else {
+                                                        chatViewModel.retryLastFailedMessage()
+                                                    }
+                                                }
+                                            } else null,
+                                            onFullscreenClick = { fullscreenMessageIndex = index }
+                                        )
+                                    }
+                                }
+                                item(key = "bottom_anchor_${effectiveSessionId}_$currentModeKey") {
+                                    Spacer(modifier = Modifier.height(1.dp))
                                 }
                             }
                         }
@@ -1252,7 +1439,7 @@ fun ChatScreen(
                         !canShowChatMessages -> {
                             EmptyState(
                                 title = if (isCurrentModelBusy) "Initialising model" else "Model is not ready",
-                                subtitle = if (isCurrentModelBusy) "This usually takes a moment." else "Choose the model again or select another downloaded model.",
+                                subtitle = if (isCurrentModelBusy) "This usually takes a moment." else "Send a message to load the selected model.",
                                 hazeState = hazeState
                             )
                         }
@@ -1290,21 +1477,11 @@ fun ChatScreen(
                             showBottom = showScrollFab,
                             hazeState = hazeState,
                             onScrollTop = {
-                                scope.launch {
-                                    listState.animateScrollToItem(0)
-                                }
+                                scrollController.scrollToTop()
                             },
                             onScrollBottom = {
-                                scope.launch {
-                                    val lastIndex = if (effectiveSupportsAttachments) {
-                                        visionMessages.lastIndex
-                                    } else {
-                                        textMessages.lastIndex
-                                    }
-                                    if (lastIndex >= 0) {
-                                        listState.animateScrollToItem(lastIndex, scrollOffset = 100_000)
-                                    }
-                                }
+                                val anchorIndex = if (effectiveSupportsAttachments) visionMessages.size else textMessages.size
+                                scrollController.scrollToBottom(anchorIndex)
                             },
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)
@@ -1312,46 +1489,6 @@ fun ChatScreen(
                         )
                     }
 
-                    // Initialising / Generating overlay
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible = isCurrentModelBusy,
-                        enter = androidx.compose.animation.fadeIn(tween(180)) +
-                            androidx.compose.animation.slideInVertically(
-                                initialOffsetY = { -it },
-                                animationSpec = spring(dampingRatio = 0.82f, stiffness = 460f)
-                            ),
-                        exit = androidx.compose.animation.fadeOut(tween(130)) +
-                            androidx.compose.animation.slideOutVertically(
-                                targetOffsetY = { -it / 2 },
-                                animationSpec = spring(dampingRatio = 0.92f, stiffness = 620f)
-                            ),
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            Text(
-                                text = when {
-                                    selectedSupportsAttachments && isVisionInitializing -> "Initialising multimodal model safely…"
-                                    selectedSupportsAttachments && isVisionAnalyzing -> "Reading input…"
-                                    selectedSupportsAttachments && isVisionStopping -> "Stopping multimodal model…"
-                                    selectedSupportsAttachments -> "Initialising multimodal model safely…"
-                                    isInitializing -> "Initialising model safely…"
-                                    else -> "Generating live response…"
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 8.dp),
-                                textAlign = TextAlign.Center,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
                 }
 
                 // ── Chat input box with integrated thinking toggle ──
@@ -1464,11 +1601,11 @@ fun ChatScreen(
                                 LiquidGlassButton(
                                     onClick = {
                                         selectedBitmap = null
-                                        cameraTempUri = null
-                                        runCatching {
-                                            context.cacheDir.resolve("camera_inputs").listFiles()?.forEach { file ->
-                                                if (file.isFile) file.delete()
-                                            }
+                                        cameraTempFilePath?.let { path ->
+                                            val file = File(path)
+                                            com.shounak.localmeshai.utils.ActiveInputFiles.release(file)
+                                            file.delete()
+                                            cameraTempFilePath = null
                                         }
                                     },
                                     hazeState = hazeState,
@@ -1707,13 +1844,11 @@ fun ChatScreen(
                                 thinkingMode = thinkingMode,
                                 canSend = selectedModelPath != null &&
                                     !isCurrentModelResponding &&
-                                    isCurrentModelReady &&
-                                    !isIngestingDocument &&
                                     !isDecodingAudioFile &&
                                     (hasVisionAttachment || textState.isNotBlank()),
-                                isGenerating = if (selectedSupportsAttachments) isVisionAnalyzing else isGenerating,
+                                isGenerating = if (selectedSupportsAttachments) isVisionAnalyzing else (isGenerating || isInitializing),
                                 canThink = selectedSupportsThinking && !isCurrentModelResponding,
-                                supportsAttachments = isCurrentModelReady,
+                                supportsAttachments = selectedModelPath != null,
                                 hasAttachment = hasVisionAttachment,
                                 supportsVision = selectedSupportsAttachments,
                                 supportsAudioInput = selectedSupportsAudio,
@@ -1722,9 +1857,9 @@ fun ChatScreen(
                                 onToggleAttachmentMenu = { attachmentMenuExpanded = it },
                                 onToggleThinking = { enabled -> chatViewModel.setThinkingMode(enabled) },
                                 onCameraSelect = {
-                                    val uri = getTempImageUri(context)
-                                    cameraTempUri = uri
-                                    cameraLauncher.launch(uri)
+                                    val request = createCameraCaptureRequest(context)
+                                    cameraTempFilePath = request.file.absolutePath
+                                    cameraLauncher.launch(request.uri)
                                 },
                                 onPhotosSelect = { imagePicker.launch("image/*") },
                                 onAudioSelect = { audioFilePicker.launch(arrayOf("audio/*", "application/ogg")) },
@@ -1741,69 +1876,31 @@ fun ChatScreen(
                                         when {
                                             selectedModelPath == null -> "Choose an audio-capable multimodal model first."
                                             selectedModel?.type != ModelType.Vision -> "${selectedModel?.name ?: "Selected model"} is a text-only model. Raw audio input needs a multimodal model with audio encoders, such as Gemma 4 or Gemma 3n."
-                                            else -> "${selectedModel?.name ?: "Selected model"} does not include audio encoder assets in this downloaded bundle."
+                                            else -> "${selectedModel.name} does not include audio encoder assets in this downloaded bundle."
                                         }
                                     })
                                 },
                                 onSend = {
                                     attachmentMenuExpanded = false
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    if (selectedSupportsAttachments) {
-                                        val uriToIngest = selectedFileUri
-                                        val nameToIngest = selectedFileName ?: "document"
-                                        val bitmapToSend = selectedBitmap
-                                        val audioUriToSend = selectedAudioUri
-                                        val audioNameToSend = selectedAudioName
-                                        val audioBytesToSend = selectedAudioBytes
-                                        val messageToSend = textState.trim()
-                                        selectedBitmap = null
-                                        selectedFileUri = null
-                                        selectedFileName = null
-                                        selectedAudioUri = null
-                                        selectedAudioName = null
-                                        selectedAudioBytes = null
-                                        chatViewModel.clearDraftText()
-
-                                        if (uriToIngest != null) {
-                                            scope.launch {
-                                                isIngestingDocument = true
-                                                try {
-                                                    val result = visionViewModel.ingestDocumentForRag(uriToIngest, nameToIngest)
-                                                    if (result.success) {
-                                                        Toast.makeText(context, "Indexed ${result.chunkCount} chunks into RAG Knowledge Base", Toast.LENGTH_SHORT).show()
-                                                    } else {
-                                                        Toast.makeText(context, "Document indexing note: ${result.message}", Toast.LENGTH_SHORT).show()
-                                                    }
-                                                } finally {
-                                                    isIngestingDocument = false
-                                                }
-                                                visionViewModel.ask(
-                                                    bitmap = bitmapToSend,
-                                                    question = messageToSend,
-                                                    fileUri = uriToIngest,
-                                                    fileName = nameToIngest,
-                                                    audioUri = audioUriToSend,
-                                                    audioName = audioNameToSend,
-                                                    audioBytes = audioBytesToSend,
-                                                    thinkingMode = thinkingMode && selectedSupportsThinking
-                                                )
-                                            }
-                                        } else {
-                                            visionViewModel.ask(
-                                                bitmap = bitmapToSend,
-                                                question = messageToSend,
-                                                fileUri = null,
-                                                fileName = null,
-                                                audioUri = audioUriToSend,
-                                                audioName = audioNameToSend,
-                                                audioBytes = audioBytesToSend,
-                                                thinkingMode = thinkingMode && selectedSupportsThinking
-                                            )
-                                        }
+                                    val documentUri = selectedFileUri
+                                    val documentName = selectedFileName ?: "document"
+                                    val accepted = if (selectedSupportsAttachments) {
+                                        visionViewModel.ask(
+                                            bitmap = selectedBitmap,
+                                            question = textState.trim(),
+                                            fileUri = documentUri,
+                                            fileName = if (documentUri != null) documentName else null,
+                                            audioUri = selectedAudioUri,
+                                            audioName = selectedAudioName,
+                                            audioBytes = selectedAudioBytes,
+                                            thinkingMode = thinkingMode && selectedSupportsThinking)
                                     } else {
-                                        val uriToIngest = selectedFileUri
-                                        val nameToIngest = selectedFileName ?: "document"
-                                        val messageToSend = textState.trim()
+                                        chatViewModel.sendMessage(
+                                            text = textState.trim(), documentUri = documentUri,
+                                            documentName = if (documentUri != null) documentName else null)
+                                    }
+                                    if (accepted) {
                                         selectedBitmap = null
                                         selectedFileUri = null
                                         selectedFileName = null
@@ -1811,29 +1908,6 @@ fun ChatScreen(
                                         selectedAudioName = null
                                         selectedAudioBytes = null
                                         chatViewModel.clearDraftText()
-
-                                        if (uriToIngest != null) {
-                                            scope.launch {
-                                                isIngestingDocument = true
-                                                try {
-                                                    val result = chatViewModel.ingestDocumentForRag(uriToIngest, nameToIngest)
-                                                    if (result.success) {
-                                                        Toast.makeText(context, "Indexed ${result.chunkCount} chunks into RAG Knowledge Base", Toast.LENGTH_SHORT).show()
-                                                        val resolvedDocPath = AttachmentViewerUtils.findAttachmentFile(context, nameToIngest)?.absolutePath
-                                                         chatViewModel.sendMessage(messageToSend, documentName = nameToIngest, documentPath = resolvedDocPath)
-                                                    } else {
-                                                        Toast.makeText(context, "Document indexing failed: ${result.message}", Toast.LENGTH_LONG).show()
-                                                        if (messageToSend.isNotBlank()) {
-                                                            chatViewModel.sendMessage(messageToSend)
-                                                        }
-                                                    }
-                                                } finally {
-                                                    isIngestingDocument = false
-                                                }
-                                            }
-                                        } else if (messageToSend.isNotBlank()) {
-                                            chatViewModel.sendMessage(messageToSend)
-                                        }
                                     }
                                 },
                                 onStop = {
@@ -2064,104 +2138,35 @@ private suspend fun recordPcm16Mono(
     durationMs: Long = 30_000L,
     onLevel: suspend (inputLevel: Float, speechActivity: Float, elapsedMs: Long) -> Unit = { _, _, _ -> }
 ): RecordedPcmAudio = withContext(Dispatchers.IO) {
-    if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-        throw SecurityException("Microphone permission denied.")
-    }
-
-    val sampleRateHz = AudioUtils.TARGET_SAMPLE_RATE
-    val minBufferSize = AudioRecord.getMinBufferSize(
-        sampleRateHz,
-        AudioFormat.CHANNEL_IN_MONO,
-        AudioFormat.ENCODING_PCM_16BIT
+    val recorder = com.shounak.localmeshai.utils.PcmRecorder(context)
+    val result = recorder.record(
+        maxDurationMs = durationMs,
+        isStopRequested = { controller.isStopRequested },
+        isCancelled = { controller.isCancelled },
+        isPaused = { controller.isPaused },
+        onLevel = onLevel
     )
-    if (minBufferSize <= 0) {
-        throw IllegalStateException("Microphone does not support 16 kHz PCM recording.")
-    }
-
-    val readChunkSize = max(minBufferSize, 1600)
-    val recorder = AudioRecord(
-        MediaRecorder.AudioSource.VOICE_RECOGNITION,
-        sampleRateHz,
-        AudioFormat.CHANNEL_IN_MONO,
-        AudioFormat.ENCODING_PCM_16BIT,
-        readChunkSize * 2
-    )
-    if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-        recorder.release()
-        throw IllegalStateException("Could not initialise microphone.")
-    }
-
-    val output = ByteArrayOutputStream(sampleRateHz * 2 * (durationMs / 1_000L).toInt())
-    val buffer = ByteArray(readChunkSize)
-    var speechActivity = 0f
-    var lastMeterUpdateMs = 0L
-    var finalElapsedMs = 0L
-
-    try {
-        recorder.startRecording()
-        val durationNs = durationMs * 1_000_000L
-        var accumulatedRecordedNs = 0L
-        var lastActiveTimestamp = System.nanoTime()
-
-        while (!controller.isStopRequested && !controller.isCancelled && accumulatedRecordedNs < durationNs) {
-            currentCoroutineContext().ensureActive()
-            if (controller.isPaused) {
-                // Drain mic buffer without saving to output while paused
-                recorder.read(buffer, 0, buffer.size)
-                lastActiveTimestamp = System.nanoTime()
-                kotlinx.coroutines.delay(30L)
-                continue
-            }
-            val read = recorder.read(buffer, 0, buffer.size)
-            if (read > 0) {
-                val now = System.nanoTime()
-                val chunkDurationNs = now - lastActiveTimestamp
-                lastActiveTimestamp = now
-                accumulatedRecordedNs += chunkDurationNs
-                val elapsedMs = (accumulatedRecordedNs / 1_000_000L).coerceAtMost(durationMs)
-                output.write(buffer, 0, read)
-                finalElapsedMs = elapsedMs
-                val inputLevel = AudioUtils.pcm16RmsLevel(buffer, read)
-                speechActivity = if (inputLevel > 0.08f) {
-                    (speechActivity + 0.18f).coerceAtMost(1f)
-                } else {
-                    (speechActivity - 0.08f).coerceAtLeast(0f)
-                }
-                if (elapsedMs - lastMeterUpdateMs >= 45L || elapsedMs >= durationMs) {
-                    withContext(Dispatchers.Main.immediate) {
-                        onLevel(inputLevel, speechActivity, elapsedMs)
-                    }
-                    lastMeterUpdateMs = elapsedMs
-                }
-            }
+    when (result) {
+        is com.shounak.localmeshai.utils.PcmRecordingResult.Success -> {
+            val cacheFile = result.cacheFile ?: error("Cache file was not generated")
+            val elapsedSeconds = (result.durationMs / 1000L).coerceAtLeast(1L)
+            RecordedPcmAudio(
+                wavBytes = result.wavBytes,
+                sampleRateHz = result.sampleRateHz,
+                label = "Voice recording (${elapsedSeconds}s)",
+                cacheUri = Uri.fromFile(cacheFile)
+            )
         }
-    } finally {
-        runCatching { recorder.stop() }
-        recorder.release()
+        is com.shounak.localmeshai.utils.PcmRecordingResult.Failure -> {
+            if (result.errorType == com.shounak.localmeshai.utils.PcmRecorderErrorType.RECORDING_FAILED &&
+                result.message.contains("cancelled", ignoreCase = true)
+            ) {
+                throw CancellationException(result.message)
+            }
+            val userMsg = com.shounak.localmeshai.utils.AudioUtils.getRecorderErrorMessage(result.errorType)
+            throw IllegalStateException(userMsg, result.cause)
+        }
     }
-
-    if (controller.isCancelled) {
-        throw CancellationException("Recording cancelled by user.")
-    }
-
-    val rawPcmBytes = output.toByteArray()
-    if (rawPcmBytes.isEmpty()) {
-        throw IllegalStateException("No microphone audio was captured.")
-    }
-
-    val wavBytes = AudioUtils.createWavFromPcm16(rawPcmBytes, sampleRateHz, 1)
-    val cacheDir = File(context.cacheDir, "multimodal_inputs").apply { mkdirs() }
-    AudioUtils.pruneInferenceCache(cacheDir)
-    val wavFile = File(cacheDir, "mic_recording_${System.currentTimeMillis()}.wav")
-    wavFile.writeBytes(wavBytes)
-
-    val elapsedSeconds = (finalElapsedMs / 1000L).coerceAtLeast(1L)
-    RecordedPcmAudio(
-        wavBytes = wavBytes,
-        sampleRateHz = sampleRateHz,
-        label = "Voice recording (${elapsedSeconds}s)",
-        cacheUri = Uri.fromFile(wavFile)
-    )
 }
 
 private fun pcm16RmsLevel(buffer: ByteArray, read: Int): Float {
@@ -2437,29 +2442,28 @@ private fun ChatComposerActions(
             LiquidGlassButton(
                 onClick = {
                     when {
-                        isRocketFlying -> Unit
                         isGenerating -> onStop()
-                        canSend -> sendAnimationScope.launch {
-                            isRocketFlying = true
-                            rocketFlight.snapTo(0f)
-                            rocketFlight.animateTo(
-                                targetValue = 1f,
-                                animationSpec = tween(durationMillis = 190)
-                            )
+                        canSend -> {
                             onSend()
-                            rocketFlight.animateTo(
-                                targetValue = 0f,
-                                animationSpec = spring(
-                                    dampingRatio = Spring.DampingRatioLowBouncy,
-                                    stiffness = Spring.StiffnessMediumLow
+                            sendAnimationScope.launch {
+                                rocketFlight.snapTo(0f)
+                                rocketFlight.animateTo(
+                                    targetValue = 1f,
+                                    animationSpec = tween(durationMillis = 190)
                                 )
-                            )
-                            isRocketFlying = false
+                                rocketFlight.animateTo(
+                                    targetValue = 0f,
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioLowBouncy,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                )
+                            }
                         }
                     }
                 },
                 hazeState = hazeState,
-                enabled = isRocketFlying || isGenerating || canSend,
+                enabled = isGenerating || canSend,
                 modifier = Modifier
                     .size(48.dp)
                     .graphicsLayer {
@@ -2475,7 +2479,7 @@ private fun ChatComposerActions(
                 contentPadding = PaddingValues(0.dp)
             ) {
                 androidx.compose.animation.Crossfade(
-                    targetState = isGenerating && !isRocketFlying,
+                    targetState = isGenerating,
                     animationSpec = tween(180),
                     label = "chat_send_stop_icon"
                 ) { generating ->
@@ -3381,7 +3385,11 @@ private fun MessageToolButton(
 }
 
 private fun String.isStreamingPlaceholderText(): Boolean {
-    return trim() in setOf("Generating…", "Generating...", "…", "Reading input…", "Reading input...")
+    return trim() in setOf(
+        "Generating…", "Generating...", "…", "Reading input…", "Reading input...",
+        "Loading model…", "Loading model...", "Preparing input…", "Preparing input...",
+        "Validating backend…", "Validating backend...", "Processing prompt…", "Processing prompt..."
+    )
 }
 
 @Composable
@@ -3430,13 +3438,21 @@ private fun ChatBubble(
     text: String,
     isUser: Boolean,
     hazeState: HazeState,
+    progress: RequestProgress? = null,
     isStreaming: Boolean = false,
+    messageId: String = "",
+    requestId: String = "",
+    attemptId: Long = 0L,
+    revision: Int = 0,
+    reasoningText: String? = null,
     entryDelayMs: Int = 0,
     ragSources: List<String> = emptyList(),
     ragChunkCount: Int = 0,
     ragTopMatchPct: Int = 0,
     documentName: String? = null,
     documentPath: String? = null,
+    errorMessage: String? = null,
+    onRetry: (() -> Unit)? = null,
     onFullscreenClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -3456,26 +3472,21 @@ private fun ChatBubble(
             )
         )
     }
-    val parsedContent = remember(text, isStreaming) {
-        ThinkingTextUtils.parse(text, allowActiveThinking = isStreaming)
-    }
-    val displayText = remember(parsedContent.finalResponseText, isUser) {
-        if (isUser) parsedContent.finalResponseText else parsedContent.finalResponseText.normalizeModelAnswerText()
-    }
-    val segments = remember(displayText, isUser, isStreaming) {
-        if (isUser) {
-            listOf(ModelAnswerSegment.Text(displayText))
-        } else if (isStreaming && !displayText.contains("```") && !displayText.contains("$") && !displayText.contains("\\")) {
-            listOf(ModelAnswerSegment.Text(displayText))
-        } else {
-            ModelAnswerFormatter.parseSafely(displayText)
-        }
-    }
-    val showStreamingDots = isStreaming && displayText.isStreamingPlaceholderText()
-    val hasRichBlock = segments.any {
-        it is ModelAnswerSegment.Code || it is ModelAnswerSegment.DisplayMath ||
-            it is ModelAnswerSegment.InlineMathListItem
-    }
+    val presentation = rememberMessagePresentation(
+        text = text,
+        isUser = isUser,
+        isStreaming = isStreaming,
+        messageId = messageId,
+        requestId = requestId,
+        attemptId = attemptId,
+        revision = revision,
+        reasoningText = reasoningText
+    )
+    val parsedContent = presentation.parsedContent
+    val displayText = presentation.displayText
+    val segments = presentation.segments
+    val showStreamingDots = presentation.showStreamingDots
+    val hasRichBlock = presentation.hasRichBlock
     val needsTopActionClearance = !isUser && (hasRichBlock || parsedContent.thinkingText != null)
     val entryValue = entryProgress.value
 
@@ -3536,52 +3547,78 @@ private fun ChatBubble(
                     )
                 }
 
-                if (showStreamingDots) {
+                if (!isUser && progress != null && displayText.isStreamingPlaceholderText()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    ) {
+                        StreamingDotsIndicator(
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = when (progress) {
+                                is RequestProgress.PreparingInput -> "Preparing input…"
+                                is RequestProgress.LoadingModel -> "Loading model…"
+                                is RequestProgress.ValidatingBackend -> "Validating backend…"
+                                is RequestProgress.RecoveringOnCpu -> "GPU failed; retrying on CPU…"
+                                is RequestProgress.ProcessingPrompt -> "Processing prompt…"
+                                is RequestProgress.Generating -> "Generating…"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else if (showStreamingDots) {
                     StreamingDotsIndicator(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 } else {
-                    segments.forEach { segment ->
-                        when (segment) {
-                            is ModelAnswerSegment.Text -> {
-                                if (segment.text.isNotBlank()) {
-                                    val visibleText = segment.text.trim('\n')
-                                    if (isStreaming) {
-                                        Text(
-                                            text = visibleText,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(end = if (needsTopActionClearance) 0.dp else MessageActionButtonReserveWidth),
-                                            textAlign = TextAlign.Start
-                                        )
-                                    } else {
-                                        AdaptiveMessageText(
-                                            text = visibleText,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
+                    if (isStreaming) {
+                        Text(
+                            text = displayText.trim('\n'),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(end = if (needsTopActionClearance) 0.dp else MessageActionButtonReserveWidth),
+                            textAlign = TextAlign.Start
+                        )
+                    } else {
+                        SelectionContainer {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                segments.forEach { segment ->
+                                    when (segment) {
+                                        is ModelAnswerSegment.Text -> {
+                                            if (segment.text.isNotBlank() && (!segment.text.startsWith("⚠️ Error:") || errorMessage != null)) {
+                                                AdaptiveMessageText(
+                                                    text = segment.text.trim('\n'),
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
+                                        }
+                                        is ModelAnswerSegment.Code -> {
+                                            CodeBlock(
+                                                code = segment.code,
+                                                language = segment.language,
+                                                context = context,
+                                                hazeState = hazeState
+                                            )
+                                        }
+                                        is ModelAnswerSegment.DisplayMath -> {
+                                            ModelMathCard(latex = segment.latex, hazeState = hazeState)
+                                        }
+                                        is ModelAnswerSegment.InlineMathListItem -> {
+                                            InlineMathListItem(
+                                                parts = segment.parts,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
                                     }
                                 }
                             }
-                            is ModelAnswerSegment.Code -> {
-                                CodeBlock(
-                                    code = segment.code,
-                                    language = segment.language,
-                                    context = context,
-                                    hazeState = hazeState
-                                )
-                            }
-                            is ModelAnswerSegment.DisplayMath -> {
-                                ModelMathCard(latex = segment.latex, hazeState = hazeState)
-                            }
-                            is ModelAnswerSegment.InlineMathListItem -> {
-                                InlineMathListItem(
-                                    parts = segment.parts,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
                         }
                     }
+
                     if (!isUser && ragSources.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Surface(
@@ -3603,31 +3640,71 @@ private fun ChatBubble(
                         }
                     }
 
-                    if (!isUser && displayText.startsWith("⚠️ Error:")) {
+                    val hasError = !isUser && (errorMessage != null || displayText.startsWith("⚠️ Error:"))
+                    if (hasError) {
+                        val effectiveError = errorMessage ?: displayText
                         Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedButton(
-                            onClick = {
-                                val reports = CrashReportManager.getAllReports(context)
-                                val matching = reports.firstOrNull { it.isNativeCrash } ?: reports.firstOrNull()
-                                if (matching != null) {
-                                    CrashReportManager.sendToGitHub(context, matching.details, matching.title)
-                                } else {
-                                    CrashReportManager.openNewIssue(
-                                        context = context,
-                                        title = "[Model Inference Error] ${displayText.take(60)}",
-                                        body = "### Error Summary\n$displayText\n\n### Complete Device Specifications\n${DeviceUtils.formatFullDeviceDiagnostics(context)}"
-                                    )
-                                }
-                            },
+                        Surface(
                             shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f),
                             border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                            modifier = Modifier.height(30.dp)
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(13.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Report Crash to Repo", style = MaterialTheme.typography.labelSmall)
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = effectiveError,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (onRetry != null) {
+                                        FilledTonalButton(
+                                            onClick = onRetry,
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                            modifier = Modifier.height(30.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Refresh,
+                                                contentDescription = "Retry",
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Retry", style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            val reports = CrashReportManager.getAllReports(context)
+                                            val matching = reports.firstOrNull { it.isNativeCrash } ?: reports.firstOrNull()
+                                            if (matching != null) {
+                                                CrashReportManager.sendToGitHub(context, matching.details, matching.title)
+                                            } else {
+                                                CrashReportManager.openNewIssue(
+                                                    context = context,
+                                                    title = "[Model Inference Error] ${effectiveError.take(60)}",
+                                                    body = "### Error Summary\n$effectiveError\n\n### Complete Device Specifications\n${DeviceUtils.formatFullDeviceDiagnostics(context)}"
+                                                )
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(30.dp)
+                                    ) {
+                                        Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(13.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Report Crash to Repo", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -4194,9 +4271,8 @@ private fun FullscreenAnswerPanel(
     val message = messageProvider() ?: return
     val context = LocalContext.current
     val title = if (message.isUser) "Your question" else "Model response"
-    val parsedContent = remember(message.text) {
-        ThinkingTextUtils.parse(message.text, allowActiveThinking = false)
-    }
+    val presentation = rememberMessagePresentation(text = message.text, isUser = message.isUser, isStreaming = false)
+    val parsedContent = presentation.parsedContent
     var panelVisible by remember(message.id) { mutableStateOf(false) }
     LaunchedEffect(message.id) {
         panelVisible = true
@@ -4269,11 +4345,11 @@ private fun FullscreenAnswerPanel(
                                 isThinkingActive = parsedContent.isThinkingActive
                             )
                         }
-                        val rawVisibleText = parsedContent.finalResponseText.ifBlank { if (message.isUser) "" else "Answers will appear here." }
-                        val visibleText = if (message.isUser) rawVisibleText else rawVisibleText.normalizeModelAnswerText()
-                        val answerSegments = remember(visibleText, message.isUser) {
-                            if (message.isUser) listOf(ModelAnswerSegment.Text(visibleText))
-                            else ModelAnswerFormatter.parseSafely(visibleText)
+                        val rawVisibleText = presentation.displayText.ifBlank { if (message.isUser) "" else "Answers will appear here." }
+                        val answerSegments = if (message.isUser || presentation.displayText.isBlank()) {
+                            listOf(ModelAnswerSegment.Text(rawVisibleText))
+                        } else {
+                            presentation.segments
                         }
                         answerSegments.forEach { segment ->
                             when (segment) {

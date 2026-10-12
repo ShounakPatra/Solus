@@ -12,11 +12,25 @@ class PersistentMemoryManager(
     val memoryStore: MemoryStore = PersistentMemoryStore(context)
 ) {
 
+    val loadState: kotlinx.coroutines.flow.StateFlow<com.shounak.localmeshai.data.StoreLoadState>
+        get() = memoryStore.loadState
+
+    suspend fun loadAsync(): com.shounak.localmeshai.data.StoreLoadState {
+        val state = memoryStore.loadAsync()
+        context?.let { ctx ->
+            com.shounak.localmeshai.data.StartupCoordinator.getInstance(ctx).updateMemoryStoreState(state)
+        }
+        return state
+    }
+
     val totalMemoryCount: Int
         get() = memoryStore.count()
 
     val activeMemoryCount: Int
         get() = memoryStore.getActive().size
+
+    val lastError: String?
+        get() = (memoryStore as? PersistentMemoryStore)?.lastError
 
     fun getAllMemories(): List<MemoryEntry> {
         return memoryStore.getAll()

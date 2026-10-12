@@ -94,7 +94,7 @@ object ModelOutputSanitizer {
         ) {
             return trimmed.trimEnd(',')
         }
-        return if (trimmed.isEmpty()) "Hello! How can I help you today?" else result.trimStart()
+        return if (trimmed.isEmpty()) "" else result.trimStart()
     }
 
     /**

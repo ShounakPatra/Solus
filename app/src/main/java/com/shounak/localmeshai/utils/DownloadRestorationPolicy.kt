@@ -9,5 +9,10 @@ internal object DownloadRestorationPolicy {
     }
 
     fun afterFailure(downloadedBytes: Long): ModelStatus = ModelStatus.Failed
-}
 
+    fun shouldResume(downloadedBytes: Long, totalBytes: Long?): Boolean =
+        downloadedBytes > 0L && (totalBytes == null || totalBytes <= 0L || downloadedBytes < totalBytes)
+
+    fun isComplete(downloadedBytes: Long, totalBytes: Long): Boolean =
+        totalBytes > 0L && downloadedBytes == totalBytes
+}

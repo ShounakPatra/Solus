@@ -10,6 +10,7 @@ import kotlin.math.exp
  * Completely decoupled from LLM inference engines.
  */
 interface SemanticEmbeddingEngine {
+    val algorithmId: String get() = "universal-fnv1a-384"
     val dimension: Int
     suspend fun embed(text: String): FloatArray
     suspend fun embedBatch(texts: List<String>): List<FloatArray>
@@ -25,9 +26,10 @@ interface SemanticEmbeddingEngine {
  * Features:
  * - 100% offline and zero native/external dependencies.
  * - Sub-millisecond embedding latency on mobile CPU.
- * - Deterministic, cosine-similarity calibrated output.
+ * - Deterministic, cosine-similarity heuristic output.
  */
 class UniversalSemanticEmbeddingEngine(
+    override val algorithmId: String = "universal-fnv1a-384",
     override val dimension: Int = DEFAULT_DIMENSION
 ) : SemanticEmbeddingEngine {
 

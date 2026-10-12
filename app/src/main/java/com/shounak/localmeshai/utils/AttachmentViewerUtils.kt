@@ -69,29 +69,12 @@ object AttachmentViewerUtils {
         }
     }
 
-    /**
-     * Attempts to find a stored attachment file on disk.
-     */
     fun findAttachmentFile(context: Context, documentName: String, explicitPath: String? = null): File? {
         if (!explicitPath.isNullOrBlank()) {
             val f = File(explicitPath)
             if (f.exists() && f.isFile) return f
         }
 
-        // Search in chat_attachments directory
-        val attachmentsDir = context.filesDir.resolve("chat_attachments")
-        if (attachmentsDir.exists() && attachmentsDir.isDirectory) {
-            val direct = attachmentsDir.resolve(documentName)
-            if (direct.exists() && direct.isFile) return direct
-
-            val subdirs = attachmentsDir.listFiles()?.filter { it.isDirectory } ?: emptyList()
-            for (sub in subdirs) {
-                val candidate = sub.resolve(documentName)
-                if (candidate.exists() && candidate.isFile) return candidate
-            }
-        }
-
-        // Search in multimodal_inputs cache
         val cacheInputs = context.cacheDir.resolve("multimodal_inputs").resolve(documentName)
         if (cacheInputs.exists() && cacheInputs.isFile) return cacheInputs
 
@@ -100,39 +83,44 @@ object AttachmentViewerUtils {
 
     /**
      * Cleans up orphaned attachment directories in chat_attachments that do not belong
-     * to any existing text session or vision session.
+     * to any existing text session or vision session according to the authoritative repository.
      */
     fun cleanupOrphanAttachments(context: Context, extraKeepSessionIds: Set<String> = emptySet()) {
         val attachmentsDir = context.filesDir.resolve("chat_attachments")
         if (!attachmentsDir.exists() || !attachmentsDir.isDirectory) return
+
+        val repository = com.shounak.localmeshai.data.ChatSessionRepository.getInstance(context)
+        // If either store is unreadable, corrupt, or unsupported, defer destructive orphan cleanup
+        if (!repository.isChatStoreHealthy() || !repository.isVisionStoreHealthy()) return
+
+        val textSessions = runCatching { repository.loadChatSessions() }.getOrNull()
+        val visionSessions = runCatching { repository.loadVisionSessions() }.getOrNull()
+
+        // If either store read failed, defer destructive orphan cleanup
+        if (textSessions == null || visionSessions == null || !repository.isChatStoreHealthy() || !repository.isVisionStoreHealthy()) return
+
         val validIds = mutableSetOf<String>()
         validIds.addAll(extraKeepSessionIds.filter { it.isNotBlank() })
+        textSessions.forEach { if (it.id.isNotBlank()) validIds.add(it.id) }
+        visionSessions.forEach { if (it.id.isNotBlank()) validIds.add(it.id) }
 
-        val chatPrefs = context.getSharedPreferences("chat_history", Context.MODE_PRIVATE)
-        chatPrefs.getString("sessions", null)?.let { raw ->
-            runCatching {
-                val array = JSONArray(raw)
-                for (i in 0 until array.length()) {
-                    val id = array.getJSONObject(i).optString("id")
-                    if (id.isNotBlank()) validIds.add(id)
+        // Clean text/vision kind subdirectories as well as legacy root-level session subdirectories
+        val topChildren = attachmentsDir.listFiles()?.filter { it.isDirectory } ?: emptyList()
+        for (child in topChildren) {
+            when (child.name.lowercase()) {
+                "text", "vision" -> {
+                    child.listFiles()?.filter { it.isDirectory }?.forEach { sessionDir ->
+                        if (!validIds.contains(sessionDir.name)) {
+                            runCatching { sessionDir.deleteRecursively() }
+                        }
+                    }
                 }
-            }
-        }
-
-        val visionPrefs = context.getSharedPreferences("vision_chat_history", Context.MODE_PRIVATE)
-        visionPrefs.getString("sessions", null)?.let { raw ->
-            runCatching {
-                val array = JSONArray(raw)
-                for (i in 0 until array.length()) {
-                    val id = array.getJSONObject(i).optString("id")
-                    if (id.isNotBlank()) validIds.add(id)
+                else -> {
+                    // Legacy root-level session directory
+                    if (!validIds.contains(child.name)) {
+                        runCatching { child.deleteRecursively() }
+                    }
                 }
-            }
-        }
-
-        attachmentsDir.listFiles()?.filter { it.isDirectory }?.forEach { sub ->
-            if (!validIds.contains(sub.name)) {
-                runCatching { sub.deleteRecursively() }
             }
         }
     }

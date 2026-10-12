@@ -12,11 +12,16 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.shounak.localmeshai.ai.VisionInferenceManager
+import com.shounak.localmeshai.ai.VisionRequestContextResolver
+import com.shounak.localmeshai.ai.ResolvedVisionMedia
+import com.shounak.localmeshai.ai.ResponseFinalizer
 import com.shounak.localmeshai.utils.CrashReportManager
 import com.shounak.localmeshai.utils.DocumentTextExtractor
 import com.shounak.localmeshai.utils.ModelOutputSanitizer
 import com.shounak.localmeshai.utils.ModelRuntimeCoordinator
+import com.shounak.localmeshai.utils.RegistrationToken
 import com.shounak.localmeshai.utils.ModelRuntimeOwner
+import com.shounak.localmeshai.utils.AppCacheCleaner
 import com.shounak.localmeshai.utils.ThinkingTextUtils
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -25,16 +30,21 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
+import com.shounak.localmeshai.utils.InferenceTiming
+import com.shounak.localmeshai.utils.ChatRuntimePolicy
 import com.shounak.localmeshai.utils.AppSettings
 import android.util.Log
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -47,6 +57,17 @@ import com.shounak.localmeshai.memory.PersistentMemoryManager
 import com.shounak.localmeshai.memory.MemoryEntry
 import com.shounak.localmeshai.memory.MemoryCategory
 import com.shounak.localmeshai.utils.ModelResponseQuality
+import com.shounak.localmeshai.ai.EmptyResponseReason
+import com.shounak.localmeshai.ai.RequestProgress
+import com.shounak.localmeshai.ai.RequestTerminalStatus
+import com.shounak.localmeshai.ai.InferenceMetrics
+import com.shounak.localmeshai.ai.InferenceExecutionResult
+import com.shounak.localmeshai.ai.PreparedAttachment
+import com.shounak.localmeshai.ai.ImagePreparation
+import com.shounak.localmeshai.ai.DocumentPreparation
+import com.shounak.localmeshai.data.ChatSessionRepository
+import com.shounak.localmeshai.utils.AttachedDocumentContext
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import java.util.Locale
@@ -79,12 +100,23 @@ data class VisionChatMessage(
     val audioDurationMs: Long = 0L,
     val documentName: String? = null,
     val documentPath: String? = null,
-    val imagePath: String? = null
+    val imagePath: String? = null,
+    val progress: RequestProgress? = null,
+    val terminalStatus: RequestTerminalStatus? = null,
+    val metrics: InferenceMetrics? = null,
+    val errorMessage: String? = null,
+    val requestId: String? = null,
+    val attemptId: Int = 1,
+    val reasoningText: String? = null,
+    val userMessageId: String? = null,
+    val emptyReason: EmptyResponseReason? = null,
+    val revision: Int = 0
 )
 
 class VisionViewModel(application: Application) : AndroidViewModel(application) {
     private val inferenceManager = VisionInferenceManager(application)
-    private val historyPrefs = application.getSharedPreferences("vision_chat_history", Context.MODE_PRIVATE)
+    val sessionRepository = ChatSessionRepository.getInstance(application)
+    private val sessionPersistenceChannel = kotlinx.coroutines.channels.Channel<List<VisionChatSession>>(kotlinx.coroutines.channels.Channel.CONFLATED)
     private val appSettings = AppSettings.getInstance(application)
     private val ragManager = RagManager.getInstance(application)
     private var pendingRagDocumentId: String? = null
@@ -96,7 +128,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private val _isPersistentMemoryActive = MutableStateFlow(appSettings.settings.value.enablePersistentMemory)
     val isPersistentMemoryActive = _isPersistentMemoryActive.asStateFlow()
 
-    private val _memories = MutableStateFlow(memoryManager.getAllMemories())
+    private val _memories = MutableStateFlow<List<com.shounak.localmeshai.memory.MemoryEntry>>(emptyList())
     val memories = _memories.asStateFlow()
 
     private val _memoryFeedbackEvent = MutableSharedFlow<String>(extraBufferCapacity = 1)
@@ -145,6 +177,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private val _activeBackend = MutableStateFlow<String?>(null)
     val activeBackend = _activeBackend.asStateFlow()
 
+    private val _lastInferenceTime = MutableStateFlow(0L)
+    val lastInferenceTime = _lastInferenceTime.asStateFlow()
+
+    private val _tokensPerSecond = MutableStateFlow(0f)
+    val tokensPerSecond = _tokensPerSecond.asStateFlow()
+
     private var currentModelPath: String? = null
     private var currentModelId: String = ""
     private var currentModelName: String = ""
@@ -155,21 +193,247 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private var currentAllowUnsafeOverride: Boolean = false
     private var lastLoadedBackendPreference: String? = null
     private var currentContextWindowTokens: Int = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
+    @Volatile private var currentModelEpoch: Long = 0L
+    private val _activeRequestIdState = MutableStateFlow<String?>(null)
+    val activeRequestIdState = _activeRequestIdState.asStateFlow()
+
+    @Volatile private var activeRequestIdInternal: String? = null
+    var activeRequestId: String?
+        get() = activeRequestIdInternal
+        private set(value) {
+            activeRequestIdInternal = value
+            _activeRequestIdState.value = value
+        }
     private var initGeneration: Int = 0
     private var initJob: Job? = null
     private var analysisGeneration: Int = 0
     private var analysisJob: Job? = null
+    private var autoUnloadJob: Job? = null
     private var lastAttachedFileName: String? = null
     @Volatile private var resetRuntimeConversationBeforeNextAsk = false
+    private var coordinatorToken: RegistrationToken? = null
+
+    fun retryMessage(sessionId: String, userMessageId: String) {
+        if (_isAnalyzing.value || _isStopping.value || analysisJob?.isActive == true) return
+        val session = imageChatSessions.firstOrNull { it.id == sessionId } ?: return
+        val userMsg = session.messages.firstOrNull { it.isUser && it.id == userMessageId } ?: return
+
+        if (_currentSessionId.value != sessionId) {
+            selectChatSession(sessionId)
+        }
+
+        // Reconstruct inputs from durable files
+        val imgPath = userMsg.imagePath ?: session.imagePath
+        if (!imgPath.isNullOrBlank()) {
+            val file = File(imgPath)
+            if (!file.exists()) {
+                _error.value = "Referenced image file is missing or unavailable for retry: ${file.name}"
+                return
+            }
+        }
+
+        val audPath = userMsg.audioPath ?: session.audioPath
+        if (!audPath.isNullOrBlank()) {
+            val file = File(audPath)
+            if (!file.exists()) {
+                _error.value = "Referenced audio file is missing or unavailable for retry: ${file.name}"
+                return
+            }
+        }
+
+        val docPath = userMsg.documentPath
+        if (!docPath.isNullOrBlank()) {
+            val file = File(docPath)
+            if (!file.exists()) {
+                _error.value = "Referenced document file is missing or unavailable for retry: ${file.name}"
+                return
+            }
+        }
+
+        if (!imgPath.isNullOrBlank()) {
+            val modelPath = currentModelPath
+            val isMultimodal = modelPath != null && ChatRuntimePolicy.supportsAttachments(modelPath)
+            if (modelPath != null && !isMultimodal) {
+                _error.value = "The selected model does not support image inputs."
+                return
+            }
+        }
+
+        autoUnloadJob?.cancel()
+
+        val userIdx = messages.indexOfFirst { it.isUser && it.id == userMessageId }
+        if (userIdx < 0) return
+
+        val assistantIndex = messages.indexOfFirst { !it.isUser && (it.userMessageId == userMessageId || it.id == userMsg.id) }
+        val nextAttempt = if (assistantIndex >= 0) {
+            messages[assistantIndex].attemptId + 1
+        } else {
+            1
+        }
+        val newRequestId = UUID.randomUUID().toString()
+
+        val initialProgress = if (!_isModelReady.value) RequestProgress.LoadingModel else RequestProgress.PreparingInput
+        val initialPlaceholder = if (!_isModelReady.value) "Loading model…" else "Reading input…"
+        val placeholderAssistant = VisionChatMessage(
+            id = if (assistantIndex >= 0 && assistantIndex < messages.size) messages[assistantIndex].id else UUID.randomUUID().toString(),
+            text = initialPlaceholder,
+            isUser = false,
+            userMessageId = userMsg.id,
+            attemptId = nextAttempt,
+            requestId = newRequestId,
+            progress = initialProgress,
+            terminalStatus = null,
+            errorMessage = null
+        )
+
+        val actualAssistantIndex = if (assistantIndex >= 0 && assistantIndex < messages.size) {
+            messages[assistantIndex] = placeholderAssistant
+            assistantIndex
+        } else {
+            messages.add(userIdx + 1, placeholderAssistant)
+            userIdx + 1
+        }
+
+        val sIdx = imageChatSessions.indexOfFirst { it.id == sessionId }
+        if (sIdx >= 0) {
+            val sessionList = session.messages.toMutableList()
+            val sessAssistantIdx = sessionList.indexOfFirst { !it.isUser && (it.userMessageId == userMessageId || it.id == userMsg.id) }
+            if (sessAssistantIdx >= 0) {
+                sessionList[sessAssistantIdx] = placeholderAssistant
+            } else {
+                val sessionUserIdx = sessionList.indexOfFirst { it.isUser && it.id == userMessageId }
+                if (sessionUserIdx >= 0) {
+                    sessionList.add(sessionUserIdx + 1, placeholderAssistant)
+                } else {
+                    sessionList.add(placeholderAssistant)
+                }
+            }
+            imageChatSessions[sIdx] = session.copy(messages = sessionList)
+        }
+
+        persistSessions()
+
+        val historyUpToUser = messages.take(userIdx + 1)
+        val resolved = VisionRequestContextResolver.resolve(
+            rawQuestion = userMsg.text,
+            newBitmap = userMsg.bitmap,
+            newFileUri = docPath?.let { Uri.fromFile(File(it)) },
+            newAudioUri = audPath?.let { Uri.fromFile(File(it)) },
+            newAudioBytes = null,
+            currentSessionMessages = historyUpToUser,
+            currentSessionId = sessionId
+        )
+
+        val retryBitmap = userMsg.bitmap?.takeUnless { it.isRecycled }
+            ?: resolved.bitmapToUse
+            ?: resolved.imageFileToUse?.let { VisionRequestContextResolver.decodeImageFile(it) }
+            ?: imgPath?.takeIf { it.isNotBlank() }?.let { VisionRequestContextResolver.decodeImageFile(File(it)) }
+
+        val retryDocUri = docPath?.let { Uri.fromFile(File(it)) }
+        val retryAudUri = audPath?.let { Uri.fromFile(File(it)) }
+
+        ask(
+            bitmap = retryBitmap,
+            question = userMsg.text,
+            fileUri = retryDocUri,
+            fileName = userMsg.documentName,
+            audioUri = retryAudUri,
+            audioName = userMsg.audioName ?: session.audioName,
+            audioBytes = null,
+            jobSessionId = sessionId,
+            existingUserMessageId = userMsg.id,
+            existingAssistantIndex = actualAssistantIndex,
+            targetAttemptId = nextAttempt,
+            forcedRequestId = newRequestId,
+            isRetry = true
+        )
+    }
+
+    fun retryLastFailedMessage() {
+        val sId = _currentSessionId.value ?: return
+        val failedAssistant = messages.lastOrNull { !it.isUser && (it.terminalStatus == RequestTerminalStatus.Failed || it.errorMessage != null) } ?: return
+        val userMsgId = failedAssistant.userMessageId ?: messages.takeWhile { it.id != failedAssistant.id }.lastOrNull { it.isUser }?.id ?: return
+        retryMessage(sId, userMsgId)
+    }
 
     // Serializes vision init and ask so they cannot run at the same time.
     private val ioMutex = Mutex()
+    private var releaseJob: Job? = null
+    private val documentPreparation = DocumentPreparation(application, viewModelScope)
+
+    private val imagePreparation = ImagePreparation(getApplication(), viewModelScope)
+    fun stageImageAttachment(bitmap: Bitmap?) = imagePreparation.stage(bitmap)
+
+    fun stageDocumentAttachment(uri: Uri, name: String) = documentPreparation.stage(uri, name)
+    fun cancelStagedDocument() = documentPreparation.cancel()
+
+
+    fun resetAutoUnloadTimer() {
+        autoUnloadJob?.cancel()
+        autoUnloadJob = null
+
+        val timeoutMinutes = appSettings.settings.value.autoUnloadMinutes
+        if (timeoutMinutes <= 0) return
+        if (!_isModelReady.value || _isAnalyzing.value || _isInitializing.value || _isStopping.value) return
+
+        autoUnloadJob = viewModelScope.launch {
+            delay(timeoutMinutes * 60 * 1000L)
+            if (_isModelReady.value && !_isAnalyzing.value && !_isInitializing.value && !_isStopping.value) {
+                Log.i("VisionViewModel", "Auto-unloading idle vision model after $timeoutMinutes minute(s) of inactivity")
+                releaseModel(clearCoordinator = true, clearSelection = false)
+            }
+        }
+    }
 
     init {
-        ModelRuntimeCoordinator.register(ModelRuntimeOwner.Vision) {
+        coordinatorToken = ModelRuntimeCoordinator.register(ModelRuntimeOwner.Vision, requestStop = {
+            initJob?.cancel()
+            analysisJob?.cancel()
+            inferenceManager.cancelGeneration()
+        }) {
             releaseModel(clearCoordinator = false)
+            val joinOk = withTimeoutOrNull(10_000L) {
+                releaseJob?.join()
+                true
+            } ?: false
+            if (!joinOk) {
+                com.shounak.localmeshai.ai.ShutdownResult.TimedOut
+            } else {
+                com.shounak.localmeshai.ai.ShutdownResult.Success
+            }
         }
-        loadSessions()
+        viewModelScope.launch(Dispatchers.IO) {
+            for (snapshot in sessionPersistenceChannel) {
+                writeSessionsToStorage(snapshot)
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            loadSessionsAsync()
+            memoryManager.loadAsync()
+            ragManager.loadAsync()
+            _memories.value = memoryManager.getAllMemories()
+        }
+        // Auto-unload idle vision model timer
+        viewModelScope.launch {
+            combine(isModelReady, isAnalyzing, isInitializing) { ready, analyzing, initializing ->
+                Triple(ready, analyzing, initializing)
+            }.distinctUntilChanged().collect { (ready, analyzing, initializing) ->
+                if (ready && !analyzing && !initializing) {
+                    resetAutoUnloadTimer()
+                } else {
+                    autoUnloadJob?.cancel()
+                    autoUnloadJob = null
+                }
+            }
+        }
+        viewModelScope.launch {
+            appSettings.settings
+                .map { it.autoUnloadMinutes }
+                .distinctUntilChanged()
+                .collect {
+                    resetAutoUnloadTimer()
+                }
+        }
         // Reinitialize active vision model if user changes backend preference in settings
         viewModelScope.launch {
             appSettings.settings
@@ -266,9 +530,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             ?: inferContextWindowTokens(path)
             ?: DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
 
-        if (!forceReload || path != currentModelPath) {
-            appSettings.updateSettings { it.copy(llamaBackendPreference = "AUTO") }
-        }
         val currentBackendPref = appSettings.settings.value.llamaBackendPreference
         if (!forceReload && path == currentModelPath && _isModelReady.value && currentBackendPref == lastLoadedBackendPreference && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Vision)) {
             currentContextWindowTokens = resolvedContextWindowTokens
@@ -284,8 +545,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         currentSupportsThinkingMode = supportsThinkingMode
         currentAllowUnsafeOverride = allowUnsafeOverride
 
+        currentModelEpoch++
+        activeRequestId = null
         val myGen = ++initGeneration
         initJob?.cancel()
+        initJob = null
+        analysisJob?.cancel()
+        analysisJob = null
         analysisGeneration++
         inferenceManager.cancelGeneration()
 
@@ -299,11 +565,22 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         _answer.value = ""
 
         initJob = viewModelScope.launch(Dispatchers.IO) {
+            val shutdownOk = runCatching {
+                kotlinx.coroutines.withTimeout(10_000L) {
+                    releaseJob?.join()
+                }
+            }.isSuccess
+            if (!shutdownOk) {
+                _error.value = "Previous model runtime shutdown timed out or failed"
+                _isInitializing.value = false
+                return@launch
+            }
+            ModelRuntimeCoordinator.withRuntime(ModelRuntimeOwner.Vision) {
             ioMutex.withLock {
                 // A newer init has been requested; drop this one silently.
                 if (myGen != initGeneration) return@withLock
+                AppCacheCleaner.clearAppCache(getApplication())
                 try {
-                    ModelRuntimeCoordinator.activate(ModelRuntimeOwner.Vision)
                     inferenceManager.initialize(
                         modelPath = path,
                         modelId = modelId,
@@ -324,11 +601,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     currentContextWindowTokens = resolvedContextWindowTokens
                     resetRuntimeConversationBeforeNextAsk = false
                     _activeBackend.value = inferenceManager.activeBackendDisplayName
-                    _isModelReady.value = true
+                    _isModelReady.value = inferenceManager.isReady
                 } catch (exception: Exception) {
+                    if (exception is CancellationException) throw exception
                     if (myGen != initGeneration) return@withLock
                     _error.value = exception.message ?: "Failed to load multimodal model."
-                    currentModelPath = null
                     lastLoadedBackendPreference = null
                     _activeBackend.value = null
                     currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
@@ -340,6 +617,43 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 _isStopping.value = false
                 initJob = null
             }
+        }
+        }
+    }
+
+    suspend fun ensureModelReady(
+        onProgress: ((RequestProgress) -> Unit)? = null
+    ): Boolean {
+        if (_isModelReady.value) return true
+        val path = currentModelPath ?: return false
+        onProgress?.invoke(RequestProgress.LoadingModel)
+        return try {
+            val resolvedContextWindowTokens = currentContextWindowTokensTokens
+                ?: inferContextWindowTokens(path)
+                ?: DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
+            inferenceManager.initialize(
+                modelPath = path,
+                modelId = currentModelId,
+                modelName = currentModelName,
+                modelSize = currentModelSize,
+                supportsAudioInput = currentSupportsAudioInput,
+                supportsThinkingMode = currentSupportsThinkingMode,
+                allowUnsafeOverride = currentAllowUnsafeOverride,
+                contextWindowTokens = resolvedContextWindowTokens
+            )
+            lastLoadedBackendPreference = appSettings.settings.value.llamaBackendPreference
+            currentContextWindowTokens = resolvedContextWindowTokens
+            resetRuntimeConversationBeforeNextAsk = false
+            _activeBackend.value = inferenceManager.activeBackendDisplayName
+            _isModelReady.value = inferenceManager.isReady
+            Log.i("VisionViewModel", "Model ready on-demand on ${inferenceManager.activeBackendDisplayName}: $path")
+            true
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            val msg = t.message ?: "Failed to load multimodal model on-demand."
+            Log.e("VisionViewModel", "Model on-demand load failed", t)
+            _error.value = msg
+            false
         }
     }
 
@@ -510,204 +824,223 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         audioUri: Uri? = null,
         audioName: String? = null,
         audioBytes: ByteArray? = null,
-        thinkingMode: Boolean = false
-    ) {
-        if (_isInitializing.value || _isAnalyzing.value || _isStopping.value) return
-        if (!_isModelReady.value) return
-        if (bitmap?.isRecycled == true) return
+        thinkingMode: Boolean = false,
+        preparedAttachment: PreparedAttachment? = null,
+        jobSessionId: String? = null,
+        existingUserMessageId: String? = null,
+        existingAssistantIndex: Int? = null,
+        targetAttemptId: Int = 1,
+        forcedRequestId: String? = null,
+        isRetry: Boolean = false
+    ): Boolean {
+        if (_isAnalyzing.value || _isStopping.value || analysisJob?.isActive == true) return false
+        val path = currentModelPath
+        if (path == null) {
+            _error.value = "Choose and initialise a multimodal model first."
+            return false
+        }
+        if (bitmap?.isRecycled == true) return false
 
+        autoUnloadJob?.cancel()
+        val savedDocument = messages.lastOrNull { it.isUser && !it.documentPath.isNullOrBlank() }
+        val inputUri = fileUri ?: savedDocument?.documentPath?.let { Uri.fromFile(File(it)) }
+        val inputName = fileName ?: savedDocument?.documentName ?: "document"
+        val preparation = if (preparedAttachment == null) inputUri?.let { documentPreparation.take(it, inputName) } else null
+        val imageInput = bitmap?.let(imagePreparation::take)
         val myGen = ++analysisGeneration
-        val jobSessionId = _currentSessionId.value
+        val activeSessionId = jobSessionId ?: _currentSessionId.value ?: UUID.randomUUID().toString().also {
+            _currentSessionId.value = it
+        }
 
-        // When switching to a different attached document in the same chat, reset the runtime
-        // KV cache so previous document context does not overflow the token window or pollute the answer.
-        if (fileName != null && lastAttachedFileName != null && fileName != lastAttachedFileName) {
+        if (isRetry || (fileName != null && lastAttachedFileName != null && fileName != lastAttachedFileName)) {
             resetRuntimeConversationBeforeNextAsk = true
         }
         if (fileName != null) {
             lastAttachedFileName = fileName
         }
 
-        val basePrompt = question.trim()
-        val displayPrompt = basePrompt.trim()
-        val targetDocId = pendingRagDocumentId ?: currentSessionDocumentId
+        val resolved = VisionRequestContextResolver.resolve(
+            rawQuestion = question,
+            newBitmap = bitmap,
+            newFileUri = fileUri,
+            newAudioUri = audioUri,
+            newAudioBytes = audioBytes,
+            currentSessionMessages = messages.toList(),
+            currentSessionId = activeSessionId
+        )
+        if (resolved.media is ResolvedVisionMedia.AttachmentError) {
+            _error.value = resolved.media.message
+            return false
+        }
+
+        val timing = InferenceTiming()
+        val basePrompt = resolved.effectivePrompt
+        val displayPrompt = if (resolved.isImageOnlyPrompt) "" else question.trim()
+        val targetDocId = if (fileUri != null) null else pendingRagDocumentId ?: currentSessionDocumentId
         pendingRagDocumentId = null
         if (targetDocId != null) {
             currentSessionDocumentId = targetDocId
         }
 
-        val activeSessionId = jobSessionId ?: _currentSessionId.value ?: UUID.randomUUID().toString().also {
-            _currentSessionId.value = it
-        }
-
-        val userMessageId = UUID.randomUUID().toString()
+        val userMessageId = existingUserMessageId ?: UUID.randomUUID().toString()
         val placeholderAudioName = audioName ?: if (audioBytes != null || audioUri != null) "Voice message" else null
 
-        // Add message to chat list immediately on the calling thread so UI updates with 0ms delay
-        messages.add(
-            VisionChatMessage(
-                id = userMessageId,
-                text = displayPrompt,
-                isUser = true,
+        val assistantIndex: Int
+        val requestId = forcedRequestId ?: UUID.randomUUID().toString()
+
+        if (existingUserMessageId == null) {
+            // Add message to chat list immediately on the calling thread so UI updates with 0ms delay
+            messages.add(
+                VisionChatMessage(
+                    id = userMessageId,
+                    text = displayPrompt,
+                    isUser = true,
+                    bitmap = bitmap,
+                    imagePath = null,
+                    audioPath = null,
+                    audioName = placeholderAudioName,
+                    audioDurationMs = 0L,
+                    documentName = fileName,
+                    documentPath = null
+                )
+            )
+            assistantIndex = messages.size
+            val initialProgress = if (!_isModelReady.value) RequestProgress.LoadingModel else RequestProgress.PreparingInput
+            val initialPlaceholder = if (!_isModelReady.value) "Loading model…" else "Reading input…"
+            messages.add(
+                VisionChatMessage(
+                    initialPlaceholder,
+                    false,
+                    null,
+                    progress = initialProgress,
+                    userMessageId = userMessageId,
+                    requestId = requestId,
+                    attemptId = targetAttemptId
+                )
+            )
+
+            ensureCurrentSession(
+                question = displayPrompt,
+                answer = initialPlaceholder,
                 bitmap = bitmap,
                 imagePath = null,
                 audioPath = null,
                 audioName = placeholderAudioName,
                 audioDurationMs = 0L,
                 documentName = fileName,
-                documentPath = null
+                documentId = targetDocId
             )
-        )
-        val assistantIndex = messages.size
-        messages.add(VisionChatMessage("Reading input…", false, null))
-
-        if (_isPersistentMemoryActive.value && appSettings.settings.value.autoExtractMemories && basePrompt.isNotBlank()) {
-            val candidate = memoryManager.extractMemoryCandidate(basePrompt)
-            if (candidate != null) {
-                val added = memoryManager.addMemory(candidate.first, candidate.second)
-                if (added != null) {
-                    refreshMemories()
-                    _memoryFeedbackEvent.tryEmit("Remembered: ${candidate.first}")
-                    resetRuntimeConversationBeforeNextAsk = true
-                }
-            }
+            persistSessions()
+        } else {
+            assistantIndex = existingAssistantIndex ?: (messages.size - 1)
         }
 
-        // Ensure session is created (not saved to disk yet with placeholder answer)
-        ensureCurrentSession(
-            question = displayPrompt,
-            answer = "Reading input…",
-            bitmap = bitmap,
-            imagePath = null,
-            audioPath = null,
-            audioName = placeholderAudioName,
-            audioDurationMs = 0L,
-            documentName = fileName,
-            documentId = targetDocId
-        )
-
-        // Set analyzing immediately so the UI shows the spinner/Stop button with 0ms delay
         _isAnalyzing.value = true
+        timing.recordAcknowledged()
+        activeRequestId = requestId
+        val reqModelEpoch = currentModelEpoch
+        val assistantMessageId = messages[assistantIndex].id
+        fun isCurrentRequest(): Boolean = activeRequestId == requestId && currentModelEpoch == reqModelEpoch &&
+            _currentSessionId.value == activeSessionId &&
+            assistantIndex < messages.size && messages[assistantIndex].id == assistantMessageId && myGen == analysisGeneration
+        val historySnapshot = messages.toList()
+        val sessionSnapshot = imageChatSessions.firstOrNull { it.id == activeSessionId }
 
         val job = viewModelScope.launch(Dispatchers.IO) {
             val runningJob = coroutineContext[Job]
+            var preparedInput: PreparedAttachment? = null
+            var documentForIndex: PreparedAttachment? = null
+            val hasExplicitImage = bitmap != null && !bitmap.isRecycled
             var persistentImageFile: File? = null
             var persistentAudioFile: File? = null
             var persistentDocFile: File? = null
             var resolvedAudioDurationMs = 0L
-            var effectiveBitmap: Bitmap? = bitmap
+            var effectiveBitmap: Bitmap? = if (hasExplicitImage) bitmap else null
             var fileText = ""
             var promptFileText = ""
             var documentBudget = documentTextBudget(
                 userPrompt = basePrompt,
-                hasBitmap = bitmap != null && !bitmap.isRecycled,
+                hasBitmap = hasExplicitImage,
                 hasAudio = audioUri != null || audioBytes?.isNotEmpty() == true,
                 thinkingMode = thinkingMode
             )
 
             try {
-                val sessionAttachmentsDir = getApplication<Application>().filesDir.resolve("chat_attachments").resolve(activeSessionId)
-                if (!sessionAttachmentsDir.exists()) {
-                    sessionAttachmentsDir.mkdirs()
-                }
-
-                // 1. Persist image in background IO thread
-                if (bitmap != null && !bitmap.isRecycled) {
-                    val imgFile = sessionAttachmentsDir.resolve("image_${System.currentTimeMillis()}.png")
-                    try {
-                        java.io.FileOutputStream(imgFile).use { out ->
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                        }
-                        persistentImageFile = imgFile
-                        val legacyFile = getSessionBitmapFile(activeSessionId)
-                        java.io.FileOutputStream(legacyFile).use { out ->
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                        }
-                    } catch (e: Exception) {
-                        Log.e("VisionViewModel", "Failed to persist image attachment", e)
-                    }
+                timing.startPreparation()
+                imageInput?.let { pending ->
+                    persistentImageFile = pending.await().persistInto(
+                        attachmentStore = sessionRepository.attachmentStore,
+                        chatKind = com.shounak.localmeshai.data.ChatKind.Vision,
+                        sessionId = activeSessionId
+                    ).durableFile
                 }
 
                 // 2. Persist audio in background IO thread
                 if (audioBytes != null && audioBytes.isNotEmpty()) {
-                    val file = sessionAttachmentsDir.resolve("audio_${System.currentTimeMillis()}.wav")
+                    val tempAudio = File.createTempFile("audio_", ".wav", getApplication<Application>().cacheDir)
                     try {
-                        file.outputStream().use { it.write(audioBytes) }
-                        persistentAudioFile = file
-                        resolvedAudioDurationMs = extractAudioDurationMs(file)
+                        tempAudio.writeBytes(audioBytes)
+                        val storedAudio = sessionRepository.attachmentStore.storeAttachmentFromFile(
+                            chatKind = com.shounak.localmeshai.data.ChatKind.Vision,
+                            sessionId = activeSessionId,
+                            sourceFile = tempAudio,
+                            targetFileName = "audio_${System.currentTimeMillis()}.wav"
+                        )
+                        persistentAudioFile = storedAudio
+                        resolvedAudioDurationMs = extractAudioDurationMs(storedAudio)
                     } catch (e: Exception) {
                         Log.e("VisionViewModel", "Failed to write audio bytes to attachments", e)
+                    } finally {
+                        tempAudio.delete()
                     }
                 } else if (audioUri != null) {
                     val ext = audioName?.substringAfterLast('.', missingDelimiterValue = "wav")?.takeIf { it.isNotBlank() } ?: "wav"
-                    val file = sessionAttachmentsDir.resolve("audio_${System.currentTimeMillis()}.$ext")
                     try {
-                        getApplication<Application>().contentResolver.openInputStream(audioUri)?.use { inStream ->
-                            file.outputStream().use { outStream ->
-                                inStream.copyTo(outStream)
-                            }
-                        }
-                        persistentAudioFile = file
-                        resolvedAudioDurationMs = extractAudioDurationMs(file)
+                        val storedAudio = sessionRepository.attachmentStore.storeAttachmentFromStream(
+                            context = getApplication(),
+                            chatKind = com.shounak.localmeshai.data.ChatKind.Vision,
+                            sessionId = activeSessionId,
+                            sourceUri = audioUri,
+                            targetFileName = "audio_${System.currentTimeMillis()}.$ext"
+                        )
+                        persistentAudioFile = storedAudio
+                        resolvedAudioDurationMs = extractAudioDurationMs(storedAudio)
                     } catch (e: Exception) {
-                        Log.e("VisionViewModel", "Failed to copy audio uri to attachments", e)
+                        throw IllegalStateException("Failed to preserve audio attachment", e)
                     }
                 }
 
-                if (persistentAudioFile != null && persistentAudioFile.exists()) {
-                    audioUri?.path?.let { p ->
-                        val f = File(p)
-                        if (f.exists() && f.parentFile?.name == "multimodal_inputs" && f.canonicalPath != persistentAudioFile.canonicalPath) {
-                            runCatching { f.delete() }
-                        }
-                    }
-                }
-
-                // 3. Persist document in background IO thread
-                if (fileUri != null && fileName != null) {
-                    val docFile = sessionAttachmentsDir.resolve(fileName)
-                    if (!docFile.exists()) {
-                        try {
-                            getApplication<Application>().contentResolver.openInputStream(fileUri)?.use { inStream ->
-                                docFile.outputStream().use { outStream ->
-                                    inStream.copyTo(outStream)
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.e("VisionViewModel", "Failed to copy document to attachments", e)
-                        }
-                    }
-                    if (docFile.exists()) {
-                        persistentDocFile = docFile
-                    }
-                }
-
-                // 4. Extract document text & PDF rendering in background IO thread
-                documentBudget = documentTextBudget(
-                    userPrompt = basePrompt,
-                    hasBitmap = bitmap != null && !bitmap.isRecycled,
-                    hasAudio = audioUri != null || audioBytes?.isNotEmpty() == true,
-                    thinkingMode = thinkingMode
-                )
-
-                if (fileUri != null) {
-                    fileText = try {
-                        readTextFromUri(getApplication(), fileUri, documentBudget)
-                    } catch (e: Exception) {
-                        "Error reading file: ${e.message}"
-                    }
+                // The same extraction supplies inference and optional later indexing.
+                val prepared = preparedAttachment ?: preparation?.await()
+                preparedInput = prepared
+                if (prepared != null) {
+                    val durable = prepared.persistInto(
+                        attachmentStore = sessionRepository.attachmentStore,
+                        chatKind = com.shounak.localmeshai.data.ChatKind.Vision,
+                        sessionId = activeSessionId
+                    )
+                    documentPreparation.remember(durable)
+                    persistentDocFile = durable.durableFile
+                    fileText = durable.extractedText.orEmpty()
+                    documentForIndex = if (fileUri != null) durable else null
                 }
 
                 var renderedPdfBitmap: Bitmap? = null
-                val isPdf = fileUri != null && (
-                    fileName?.endsWith(".pdf", ignoreCase = true) == true ||
-                    getApplication<Application>().contentResolver.getType(fileUri)?.contains("pdf", ignoreCase = true) == true
+                val pdfUri = persistentDocFile?.let(Uri::fromFile) ?: prepared?.fileUri ?: inputUri
+                val isPdf = pdfUri != null && (
+                    inputName.endsWith(".pdf", ignoreCase = true) ||
+                    getApplication<Application>().contentResolver.getType(pdfUri)?.contains("pdf", ignoreCase = true) == true
                 )
                 if (bitmap == null && isPdf && (fileText.isBlank() || fileText.isExtractionFailureText())) {
-                    renderedPdfBitmap = renderPdfPagesToBitmap(getApplication(), fileUri)
+                    renderedPdfBitmap = renderPdfPagesToBitmap(getApplication(), pdfUri)
                     if (renderedPdfBitmap != null) {
                         fileText = ""
-                        val pdfImgFile = sessionAttachmentsDir.resolve("pdf_page_${System.currentTimeMillis()}.png")
+                        val sessionDir = sessionRepository.attachmentStore.getSessionAttachmentsDir(
+                            com.shounak.localmeshai.data.ChatKind.Vision,
+                            activeSessionId,
+                            create = true
+                        )
+                        val pdfImgFile = sessionDir.resolve("pdf_page_${System.currentTimeMillis()}.png")
                         try {
                             java.io.FileOutputStream(pdfImgFile).use { out ->
                                 renderedPdfBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
@@ -718,11 +1051,20 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     }
                 }
-                effectiveBitmap = bitmap ?: renderedPdfBitmap
-                promptFileText = fileText.limitForPrompt(documentBudget)
+                effectiveBitmap = (if (hasExplicitImage) bitmap else null) ?: renderedPdfBitmap
+                if (inputUri != null && renderedPdfBitmap == null && AttachedDocumentContext.isExtractionFailure(fileText)) {
+                    throw IllegalArgumentException(fileText.take(240).ifBlank { "Could not read the attached document" })
+                }
+                promptFileText = withContext(Dispatchers.Default) {
+                    AttachedDocumentContext.select(fileText, basePrompt, documentBudget.maxPromptChars)
+                }
+                if (myGen != analysisGeneration || reqModelEpoch != currentModelEpoch) {
+                    throw CancellationException("Request configuration changed")
+                }
 
                 // Update user message in UI with disk paths and durations
                 withContext(Dispatchers.Main.immediate) {
+                        if (!isCurrentRequest()) return@withContext
                     val uIndex = messages.indexOfFirst { it.id == userMessageId }
                     if (uIndex >= 0 && uIndex < messages.size) {
                         messages[uIndex] = messages[uIndex].copy(
@@ -735,127 +1077,179 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
 
-                ioMutex.withLock {
-                    // Re-check after acquiring the lock — model state may have changed.
-                    if (myGen != analysisGeneration) return@withLock
-                    if (!_isModelReady.value || _isInitializing.value) {
-                        _isAnalyzing.value = false
-                        return@withLock
-                    }
-                    _error.value = null
-                    _answer.value = ""
-
-                    // Check if RAG is active and query context if applicable
-                    var currentRagSources: List<String> = emptyList()
-                    var currentRagChunkCount = 0
-                    var currentRagTopMatchPct = 0
-                    var ragAugmentedContext: String? = null
-
-                    var effectiveDocId = targetDocId ?: currentSessionDocumentId
-                    if (effectiveDocId == null) {
-                        val activeSession = _currentSessionId.value?.let { id ->
-                            imageChatSessions.firstOrNull { it.id == id }
-                        }
-                        effectiveDocId = activeSession?.documentId
-                            ?: activeSession?.documentName?.let { docName ->
-                                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
-                            }
-                            ?: messages.firstNotNullOfOrNull { it.documentName }?.let { docName ->
-                                ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
-                            }
-                            ?: ragManager.findMatchingDocumentForQuery(basePrompt)?.documentId
-                    }
-
-                    val shouldQueryRag = basePrompt.isNotBlank() && ragManager.totalIndexedChunks > 0
-                    if (shouldQueryRag) {
-                        val ragSettings = appSettings.settings.value
-                        val queryForRag = basePrompt
-                        val retrieval = ragManager.retrieve(
-                            query = queryForRag,
-                            topK = ragSettings.ragTopK,
-                            minScore = ragSettings.ragMinSimilarity,
-                            preferredDocumentId = effectiveDocId
-                        )
-                        if (retrieval.hasContext) {
-                            currentRagSources = retrieval.sourceNames
-                            currentRagChunkCount = retrieval.matches.size
-                            currentRagTopMatchPct = (retrieval.topMatchScore * 100f).toInt()
-                            ragAugmentedContext = ragManager.buildAugmentedPrompt(basePrompt, retrieval)
-
-                            val matchedDocId = retrieval.matches.firstOrNull()?.chunk?.documentId
-                            if (matchedDocId != null) {
-                                currentSessionDocumentId = matchedDocId
-                            }
+                // If model is not ready, load it on demand with LoadingModel progress
+                if (!_isModelReady.value) {
+                    timing.startLoading()
+                    withContext(Dispatchers.Main.immediate) {
+                        if (!isCurrentRequest()) return@withContext
+                        if (_currentSessionId.value == activeSessionId && assistantIndex < messages.size) {
+                            messages[assistantIndex] = messages[assistantIndex].copy(
+                                text = "Loading model…",
+                                progress = RequestProgress.LoadingModel
+                            )
                         }
                     }
-
-                    // Format persistent memory context if active
-                    val memoryContext = if (_isPersistentMemoryActive.value) {
-                        memoryManager.formatMemoryContext(query = basePrompt)
-                    } else {
-                        ""
-                    }
-
-                    // Build prompt
-                    val contentPrompt = buildString {
-                        if (memoryContext.isNotBlank()) {
-                            append(memoryContext.trim())
-                            append("\n\n")
-                        }
-                        if (ragAugmentedContext != null) {
-                            append(ragAugmentedContext)
-                        } else {
-                            if (basePrompt.isNotBlank()) {
-                                append(basePrompt)
-                                if (promptFileText.isNotBlank()) {
-                                    append("\n\n--- EXTRACTED ATTACHED FILE: ${fileName ?: "document"} ---\n")
-                                    append(promptFileText)
+                    releaseJob?.join()
+                    val loaded = ModelRuntimeCoordinator.withRuntime(ModelRuntimeOwner.Vision) {
+                      ioMutex.withLock {
+                        ensureModelReady { progress ->
+                            launch(Dispatchers.Main.immediate) {
+                        if (!isCurrentRequest()) return@launch
+                                if (_currentSessionId.value == activeSessionId && assistantIndex < messages.size) {
+                                    messages[assistantIndex] = messages[assistantIndex].copy(
+                                        text = "Loading model…",
+                                        progress = progress
+                                    )
                                 }
-                            } else if (promptFileText.isNotBlank()) {
-                                append("--- EXTRACTED ATTACHED FILE: ${fileName ?: "document"} ---\n")
+                            }
+                        }
+                    }
+                    }
+                    timing.endLoading()
+                    if (!loaded || !_isModelReady.value) {
+                        throw IllegalStateException(_error.value ?: "Failed to load multimodal model")
+                    }
+                }
+
+                // Check if RAG is active and query context if applicable
+                var currentRagSources: List<String> = emptyList()
+                var currentRagChunkCount = 0
+                var currentRagTopMatchPct = 0
+                var ragAugmentedContext: String? = null
+
+                var effectiveDocId = targetDocId ?: currentSessionDocumentId
+                if (effectiveDocId == null) {
+                    val activeSession = sessionSnapshot
+                    effectiveDocId = activeSession?.documentId
+                        ?: activeSession?.documentName?.let { docName ->
+                            ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+                        }
+                        ?: historySnapshot.firstNotNullOfOrNull { it.documentName }?.let { docName ->
+                            ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
+                        }
+                        ?: if (appSettings.settings.value.enableRag) ragManager.findMatchingDocumentForQuery(basePrompt)?.documentId else null
+                }
+
+                val shouldQueryRag = promptFileText.isBlank() && basePrompt.isNotBlank() && ChatRuntimePolicy.shouldRetrieveDocuments(
+                    appSettings.settings.value.enableRag, effectiveDocId, ragManager.totalIndexedChunks
+                )
+                if (shouldQueryRag) {
+                    val ragSettings = appSettings.settings.value
+                    val retrieval = ragManager.retrieve(
+                        query = basePrompt,
+                        topK = ragSettings.ragTopK,
+                        minScore = ragSettings.ragMinSimilarity,
+                        preferredDocumentId = effectiveDocId,
+                        allowGlobalSearch = appSettings.settings.value.enableRag
+                    )
+                    if (retrieval.hasContext) {
+                        currentRagSources = retrieval.sourceNames
+                        currentRagChunkCount = retrieval.matches.size
+                        currentRagTopMatchPct = (retrieval.topMatchScore * 100f).toInt()
+                        ragAugmentedContext = ragManager.buildAugmentedPrompt(basePrompt, retrieval)
+
+                        val matchedDocId = retrieval.matches.firstOrNull()?.chunk?.documentId
+                        if (matchedDocId != null) {
+                            currentSessionDocumentId = matchedDocId
+                        }
+                    }
+                }
+
+                val memoryContext = if (_isPersistentMemoryActive.value) {
+                    memoryManager.formatMemoryContext(query = basePrompt)
+                } else {
+                    ""
+                }
+
+                val contentPrompt = buildString {
+                    if (memoryContext.isNotBlank()) {
+                        append(memoryContext.trim())
+                        append("\n\n")
+                    }
+                    if (ragAugmentedContext != null) {
+                        append(ragAugmentedContext)
+                    } else {
+                        if (basePrompt.isNotBlank()) {
+                            append(basePrompt)
+                            if (promptFileText.isNotBlank()) {
+                                append("\n\n--- EXTRACTED ATTACHED FILE: ${fileName ?: "document"} ---\n")
                                 append(promptFileText)
                             }
+                        } else if (promptFileText.isNotBlank()) {
+                            append("--- EXTRACTED ATTACHED FILE: ${fileName ?: "document"} ---\n")
+                            append(promptFileText)
                         }
                     }
-                    val prompt = if (thinkingMode) {
-                        if (contentPrompt.isNotBlank()) {
-                            "Think step-by-step and write your internal reasoning inside <think> and </think> tags. After the closing </think> tag, provide your final response.\n\n$contentPrompt"
+                }
+                val prompt = if (thinkingMode) {
+                    if (contentPrompt.isNotBlank()) {
+                        if (contentPrompt.contains("<think>", ignoreCase = true) ||
+                            contentPrompt.contains("<thought>", ignoreCase = true) ||
+                            contentPrompt.contains("[thought]", ignoreCase = true) ||
+                            contentPrompt.contains("think step-by-step", ignoreCase = true) ||
+                            contentPrompt.contains("think step by step", ignoreCase = true)
+                        ) {
+                            contentPrompt
                         } else {
-                            "Think step-by-step and write your internal reasoning inside <think> and </think> tags. After the closing </think> tag, describe what you see."
+                            "Think step-by-step and write your internal reasoning inside <think> and </think> tags. After the closing </think> tag, provide your final response.\n\n$contentPrompt"
                         }
                     } else {
-                        contentPrompt
+                        "Think step-by-step and write your internal reasoning inside <think> and </think> tags. After the closing </think> tag, describe what you see."
                     }
+                } else {
+                    contentPrompt
+                }
 
-                    val liveUpdates = Channel<String>(Channel.CONFLATED)
-                    val liveUpdateJob = launch(Dispatchers.Main.immediate) {
-                        var lastPartialUiUpdateAt = 0L
-                        liveUpdates.receiveAsFlow().collect { partial ->
-                            val now = System.currentTimeMillis()
-                            val waitMs = 33L - (now - lastPartialUiUpdateAt)
-                            if (waitMs > 0L) delay(waitMs)
-                            lastPartialUiUpdateAt = System.currentTimeMillis()
-                            if (myGen == analysisGeneration && assistantIndex < messages.size) {
-                                val cleanPartial = ModelOutputSanitizer.clean(partial)
-                                val visiblePartial = if (!thinkingMode && ModelResponseQuality.isReasoningLeak(cleanPartial)) {
-                                    ThinkingTextUtils.extractSpokenAnswerFromMonologue(cleanPartial) ?: cleanPartial.ifBlank { "…" }
-                                } else {
-                                    cleanPartial.ifBlank { "…" }
-                                }
-                                _answer.value = visiblePartial
-                                messages[assistantIndex] = messages[assistantIndex].copy(
-                                    text = visiblePartial,
-                                    bitmap = null
-                                )
-                            }
-                        }
+                timing.endPreparation()
+
+                withContext(Dispatchers.Main.immediate) {
+                        if (!isCurrentRequest()) return@withContext
+                    if (_currentSessionId.value == activeSessionId && assistantIndex < messages.size) {
+                        messages[assistantIndex] = messages[assistantIndex].copy(
+                            text = "Processing prompt…",
+                            progress = RequestProgress.ProcessingPrompt
+                        )
                     }
-                    try {
+                }
+
+                val latestResponse = java.util.concurrent.atomic.AtomicReference("")
+                val liveUpdates = Channel<String>(Channel.CONFLATED)
+                val liveUpdateJob = launch(Dispatchers.Main.immediate) {
+                        if (!isCurrentRequest()) return@launch
+                liveUpdates.receiveAsFlow().collect { partial ->
+                    if (activeRequestId == requestId && myGen == analysisGeneration && currentModelEpoch == reqModelEpoch && _currentSessionId.value == activeSessionId && assistantIndex < messages.size && messages[assistantIndex].terminalStatus == null) {
+                        if (partial.isNotBlank()) timing.recordFirstVisibleText()
+                        _answer.value = partial
+                        messages[assistantIndex] = messages[assistantIndex].copy(
+                            text = partial.ifBlank { if (messages[assistantIndex].progress == RequestProgress.RecoveringOnCpu) "GPU failed; retrying on CPU…" else "Generating…" },
+                            progress = if (partial.isBlank()) messages[assistantIndex].progress else RequestProgress.Generating)
+                    }
+                }
+            }
+
+                try {
+                    releaseJob?.join()
+                    timing.startQueue()
+                    val execResult = ModelRuntimeCoordinator.withRuntime(ModelRuntimeOwner.Vision) {
+                      ioMutex.withLock {
+                        timing.endQueue()
+                        if (myGen != analysisGeneration || reqModelEpoch != currentModelEpoch) return@withLock null
                         if (resetRuntimeConversationBeforeNextAsk) {
-                            inferenceManager.resetConversation(thinkingMode = thinkingMode)
+                            val previousMessages = historySnapshot.filter { it.id != userMessageId && it.id != assistantMessageId }
+                            val restorationHistory = VisionRequestContextResolver.buildRestorationHistory(
+                                sessionMessages = previousMessages,
+                                currentRequestId = requestId,
+                                placeholderTexts = PLACEHOLDER_ANSWERS,
+                                failedAnswerTexts = FAILED_ANSWER_STRINGS
+                            )
+                            inferenceManager.resetConversation(thinkingMode = thinkingMode, initialMessages = restorationHistory)
                             resetRuntimeConversationBeforeNextAsk = false
                         }
-                        val bitmapCopy = effectiveBitmap?.copy(effectiveBitmap.config ?: Bitmap.Config.ARGB_8888, false)
+                        VisionRequestContextResolver.validatePreparedImageFile(persistentImageFile)
+                        val mediaPipeFallbackBitmap = if (inferenceManager.activeBackendDisplayName.contains("MediaPipe", ignoreCase = true)) {
+                            resolved.bitmapToUse ?: resolved.imageFileToUse?.let { VisionRequestContextResolver.decodeImageFile(it) }
+                        } else null
+                        val bitmapCopy = effectiveBitmap ?: mediaPipeFallbackBitmap
                         val audioFile = persistentAudioFile ?: audioUri?.let {
                             copyUriToInferenceCache(
                                 context = getApplication(),
@@ -864,227 +1258,264 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                 prefix = "audio-question"
                             )
                         }
-                        var response = inferenceManager.askStreaming(
+                        timing.startInference()
+                        inferenceManager.askStreaming(
                             bitmap = bitmapCopy,
                             question = prompt,
                             audioFile = audioFile,
                             audioBytes = audioBytes,
-                            thinkingMode = thinkingMode
+                            thinkingMode = thinkingMode,
+                            preparedImageFile = persistentImageFile,
+                            requestId = requestId,
+                            sessionId = activeSessionId,
+                            timing = timing,
+                            isRetry = isRetry,
+                            onProgress = { p ->
+                                launch(Dispatchers.Main.immediate) {
+                        if (!isCurrentRequest()) return@launch
+                                    if (myGen == analysisGeneration && reqModelEpoch == currentModelEpoch && _currentSessionId.value == activeSessionId && assistantIndex < messages.size) {
+                                        messages[assistantIndex] = messages[assistantIndex].copy(progress = if (messages[assistantIndex].terminalStatus == null) p else null)
+                                    }
+                                }
+                            }
                         ) { partial ->
+                            timing.recordChunk(partial)
+                            latestResponse.set(partial)
                             liveUpdates.trySend(partial)
                         }
-                        val hasAudio = audioUri != null || audioBytes?.isNotEmpty() == true
-                        if (response.isNoAnswerGenerated() && bitmapCopy == null && !hasAudio) {
-                            val retryBitmap = createPlaceholderBitmap()
-                            val baseRetryPrompt = when {
-                                ragAugmentedContext != null -> {
-                                    if (memoryContext.isNotBlank()) "${memoryContext.trim()}\n\n$ragAugmentedContext" else ragAugmentedContext
+                    }
+
+                    }
+                    liveUpdates.close()
+                    liveUpdateJob.join()
+                    if (myGen != analysisGeneration || execResult == null) return@launch
+
+                    val partialOrFinalText = execResult.text.ifBlank {
+                        latestResponse.get().takeUnless { it in PLACEHOLDER_ANSWERS }.orEmpty()
+                    }
+                    val isError = execResult.status == RequestTerminalStatus.Failed || !execResult.error.isNullOrBlank()
+                    val textToDisplay = when (execResult.status) {
+                        RequestTerminalStatus.Completed -> partialOrFinalText
+                        RequestTerminalStatus.Stopped -> partialOrFinalText.ifBlank { "Stopped." }
+                        RequestTerminalStatus.Failed -> partialOrFinalText
+                    }
+                    val errorMessageToDisplay = if (isError) {
+                        execResult.error ?: "Inference failed."
+                    } else null
+
+                    if (execResult.status == RequestTerminalStatus.Completed && appSettings.settings.value.enableRag) {
+                        documentForIndex?.let { document ->
+                            viewModelScope.launch(Dispatchers.Default) {
+                                val indexed = ragManager.ingestText(document.name, document.extractedText.orEmpty())
+                                if (indexed.success && activeRequestId == requestId && _currentSessionId.value == activeSessionId) {
+                                    currentSessionDocumentId = indexed.documentId
                                 }
-                                fileText.isNotBlank() && !fileText.isExtractionFailureText() -> {
-                                    val docRetry = buildDocumentRetryPrompt(
-                                        basePrompt = basePrompt,
-                                        fileName = fileName,
-                                        fileText = fileText,
-                                        budget = documentBudget
-                                    )
-                                    if (memoryContext.isNotBlank()) "${memoryContext.trim()}\n\n$docRetry" else docRetry
-                                }
-                                else -> contentPrompt
-                            }
-                            val retryPrompt = if (thinkingMode && baseRetryPrompt.isNotBlank()) {
-                                "Think step-by-step and write your internal reasoning inside <think> and </think> tags. After the closing </think> tag, provide your final response.\n\n$baseRetryPrompt"
-                            } else {
-                                baseRetryPrompt
-                            }
-                            response = inferenceManager.askStreaming(
-                                bitmap = retryBitmap,
-                                question = retryPrompt,
-                                audioFile = audioFile,
-                                audioBytes = audioBytes,
-                                thinkingMode = thinkingMode
-                            ) { partial ->
-                                liveUpdates.trySend(partial)
-                            }
-                            if (!retryBitmap.isRecycled) {
-                                retryBitmap.recycle()
                             }
                         }
-                        if (response.isNoAnswerGenerated() && fileText.isNotBlank()) {
-                            response = buildDocumentExtractiveFallback(
-                                fileName = fileName,
-                                fileText = fileText,
-                                basePrompt = basePrompt,
-                                budget = documentBudget
+                    }
+
+                    withContext(Dispatchers.Main.immediate) {
+                        if (!isCurrentRequest()) return@withContext
+                        if (myGen == analysisGeneration && reqModelEpoch == currentModelEpoch && _currentSessionId.value == activeSessionId && assistantIndex < messages.size) {
+                            messages[assistantIndex] = messages[assistantIndex].copy(
+                                text = textToDisplay,
+                                errorMessage = errorMessageToDisplay,
+                                bitmap = null,
+                                ragSources = currentRagSources,
+                                ragChunkCount = currentRagChunkCount,
+                                ragTopMatchPct = currentRagTopMatchPct,
+                                progress = null,
+                                terminalStatus = execResult.status,
+                                metrics = execResult.metrics?.copy(firstVisibleTextLatencyMs = timing.buildMetrics(requestId, activeSessionId).firstVisibleTextLatencyMs),
+                                attemptId = targetAttemptId,
+                                requestId = requestId,
+                                userMessageId = userMessageId,
+                                reasoningText = execResult.reasoningText,
+                                emptyReason = execResult.emptyReason
                             )
+                            _lastInferenceTime.value = execResult.metrics?.decodeDurationMs ?: 0L
+                            _tokensPerSecond.value = execResult.metrics?.decodeThroughputTokPerSec?.toFloat() ?: 0f
                         }
-                        if (myGen != analysisGeneration) return@withLock
-                        if (response.isNotBlank() && !response.isNoAnswerGenerated()) {
-                            // Only persist the final answer, not every partial.
-                            withContext(Dispatchers.Main.immediate) {
-                                if (myGen == analysisGeneration) {
-                                    val current = if (assistantIndex < messages.size) messages[assistantIndex].text else ""
-                                    val finalResponse = resolveFinalVisionAnswer(
-                                        response = response,
-                                        current = current,
-                                        thinkingMode = thinkingMode,
-                                        userPrompt = basePrompt
-                                    )
-                                    if (assistantIndex < messages.size) {
-                                        messages[assistantIndex] = messages[assistantIndex].copy(
-                                            text = finalResponse.ifBlank { "No answer generated." },
-                                            bitmap = null,
-                                            ragSources = currentRagSources,
-                                            ragChunkCount = currentRagChunkCount,
-                                            ragTopMatchPct = currentRagTopMatchPct
-                                        )
+                        if (execResult.status == RequestTerminalStatus.Completed && textToDisplay.isNotBlank()) {
+                            if (_isPersistentMemoryActive.value && appSettings.settings.value.autoExtractMemories) {
+                                val candidate = withContext(Dispatchers.Default) { memoryManager.extractMemoryCandidate(basePrompt) }
+                                if (candidate != null) {
+                                    val entry = withContext(Dispatchers.IO) { memoryManager.addMemory(candidate.first, candidate.second) }
+                                    if (entry != null) {
+                                        refreshMemories()
+                                        _memoryFeedbackEvent.tryEmit("Remembered: ${candidate.first}")
+                                        resetRuntimeConversationBeforeNextAsk = true
                                     }
-                                    saveCurrentSession(
-                                        displayPrompt,
-                                        finalResponse.ifBlank { "No answer generated." },
-                                        effectiveBitmap,
-                                        targetSessionId = activeSessionId,
-                                        imagePath = persistentImageFile?.absolutePath,
-                                        audioPath = persistentAudioFile?.absolutePath,
-                                        audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
-                                        audioDurationMs = resolvedAudioDurationMs,
-                                        documentName = fileName,
-                                        documentId = targetDocId
-                                    )
                                 }
                             }
-                        } else if (_error.value == null) {
-                            _error.value = "No answer generated."
-                            withContext(Dispatchers.Main.immediate) {
-                                if (assistantIndex < messages.size) {
-                                    messages[assistantIndex] = messages[assistantIndex].copy(
-                                        text = "No answer generated.",
-                                        bitmap = null
-                                    )
-                                }
-                                saveCurrentSession(
-                                    displayPrompt,
-                                    "No answer generated.",
-                                    effectiveBitmap,
-                                    targetSessionId = activeSessionId,
-                                    imagePath = persistentImageFile?.absolutePath,
-                                    audioPath = persistentAudioFile?.absolutePath,
-                                    audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
-                                    audioDurationMs = resolvedAudioDurationMs,
-                                    documentName = fileName,
-                                    documentId = targetDocId
-                                )
-                            }
                         }
-                    } catch (exception: CancellationException) {
-                        withContext(Dispatchers.Main.immediate) {
-                            val current = if (assistantIndex < messages.size) messages[assistantIndex].text else ""
-                            val finalMsg = if (current == "Reading input…" || current == "…" || current.isBlank()) {
-                                "Stopped."
-                            } else {
-                                ModelOutputSanitizer.clean(current)
-                            }
-                            if (myGen == analysisGeneration && assistantIndex < messages.size) {
-                                messages[assistantIndex] = messages[assistantIndex].copy(
-                                    text = finalMsg,
-                                    bitmap = null
-                                )
-                            }
-                            saveCurrentSession(
-                                displayPrompt,
-                                finalMsg,
-                                effectiveBitmap,
-                                targetSessionId = activeSessionId,
-                                imagePath = persistentImageFile?.absolutePath,
-                                audioPath = persistentAudioFile?.absolutePath,
-                                audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
-                                audioDurationMs = resolvedAudioDurationMs,
-                                documentName = fileName,
-                                documentId = targetDocId
+                        val textToSave = if (execResult.status == RequestTerminalStatus.Completed) {
+                            textToDisplay
+                        } else {
+                            textToDisplay.ifBlank { errorMessageToDisplay ?: "Inference failed." }
+                        }
+                        saveCurrentSession(
+                            displayPrompt,
+                            textToSave,
+                            effectiveBitmap,
+                            targetSessionId = activeSessionId,
+                            imagePath = persistentImageFile?.absolutePath,
+                            audioPath = persistentAudioFile?.absolutePath,
+                            audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
+                            audioDurationMs = resolvedAudioDurationMs,
+                            documentName = fileName,
+                            documentId = targetDocId
+                        )
+                    }
+                } catch (exception: CancellationException) {
+                    withContext(NonCancellable + Dispatchers.Main.immediate) {
+                        if (!isCurrentRequest()) return@withContext
+                        val current = latestResponse.get()
+                        val finalMsg = if (current in PLACEHOLDER_ANSWERS || current.isBlank()) {
+                            "Stopped."
+                        } else {
+                            ModelOutputSanitizer.clean(current)
+                        }
+                        if (myGen == analysisGeneration && reqModelEpoch == currentModelEpoch && _currentSessionId.value == activeSessionId && assistantIndex < messages.size) {
+                            messages[assistantIndex] = messages[assistantIndex].copy(
+                                text = finalMsg,
+                                bitmap = null,
+                                progress = null,
+                                terminalStatus = RequestTerminalStatus.Stopped,
+                                attemptId = targetAttemptId,
+                                requestId = requestId,
+                                userMessageId = userMessageId
                             )
                         }
-                    } catch (exception: FutureCancellationException) {
-                        withContext(Dispatchers.Main.immediate) {
-                            val current = if (assistantIndex < messages.size) messages[assistantIndex].text else ""
-                            val finalMsg = if (current == "Reading input…" || current == "…" || current.isBlank()) {
-                                "Stopped."
-                            } else {
-                                ModelOutputSanitizer.clean(current)
-                            }
-                            if (myGen == analysisGeneration && assistantIndex < messages.size) {
-                                messages[assistantIndex] = messages[assistantIndex].copy(
-                                    text = finalMsg,
-                                    bitmap = null
-                                )
-                            }
-                            saveCurrentSession(
-                                displayPrompt,
-                                finalMsg,
-                                effectiveBitmap,
-                                targetSessionId = activeSessionId,
-                                imagePath = persistentImageFile?.absolutePath,
-                                audioPath = persistentAudioFile?.absolutePath,
-                                audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
-                                audioDurationMs = resolvedAudioDurationMs,
-                                documentName = fileName,
-                                documentId = targetDocId
+                        saveCurrentSession(
+                            displayPrompt,
+                            finalMsg,
+                            effectiveBitmap,
+                            targetSessionId = activeSessionId,
+                            imagePath = persistentImageFile?.absolutePath,
+                            audioPath = persistentAudioFile?.absolutePath,
+                            audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
+                            audioDurationMs = resolvedAudioDurationMs,
+                            documentName = fileName,
+                            documentId = targetDocId
+                        )
+                    }
+                } catch (exception: Exception) {
+                    _error.value = exception.message ?: "Image question failed."
+                    runCatching {
+                        CrashReportManager.recordModelCrash(
+                            context = getApplication(),
+                            modelId = currentModelPath?.substringAfterLast('/') ?: "vision_model",
+                            modelName = currentModelPath?.substringAfterLast('/') ?: "Vision Model",
+                            errorMessage = exception.message ?: "Vision analysis failed",
+                            throwable = exception,
+                            runtimeInfo = "Vision Session: $activeSessionId"
+                        )
+                    }
+                    withContext(Dispatchers.Main.immediate) {
+                        if (!isCurrentRequest()) return@withContext
+                        val partial = latestResponse.get().takeUnless { it in PLACEHOLDER_ANSWERS }.orEmpty()
+                        val errorMsg = exception.message ?: "Image question failed."
+                        if (myGen == analysisGeneration && reqModelEpoch == currentModelEpoch && _currentSessionId.value == activeSessionId && assistantIndex < messages.size) {
+                            messages[assistantIndex] = messages[assistantIndex].copy(
+                                text = partial,
+                                errorMessage = errorMsg,
+                                bitmap = null,
+                                progress = null,
+                                terminalStatus = RequestTerminalStatus.Failed,
+                                attemptId = targetAttemptId,
+                                requestId = requestId,
+                                userMessageId = userMessageId
                             )
                         }
-                    } catch (exception: Exception) {
-                        _error.value = exception.message ?: "Image question failed."
-                        runCatching {
-                            CrashReportManager.recordModelCrash(
-                                context = getApplication(),
-                                modelId = currentModelPath?.substringAfterLast('/') ?: "vision_model",
-                                modelName = currentModelPath?.substringAfterLast('/') ?: "Vision Model",
-                                errorMessage = exception.message ?: "Vision analysis failed",
-                                throwable = exception,
-                                runtimeInfo = "Vision Session: $activeSessionId"
-                            )
-                        }
-                        withContext(Dispatchers.Main.immediate) {
-                            val errorMsg = "⚠️ Error: ${exception.message ?: "Image question failed."}"
-                            if (myGen == analysisGeneration && assistantIndex < messages.size) {
-                                messages[assistantIndex] = messages[assistantIndex].copy(
-                                    text = errorMsg,
-                                    bitmap = null
-                                )
-                            }
-                            saveCurrentSession(
-                                displayPrompt,
-                                errorMsg,
-                                effectiveBitmap,
-                                targetSessionId = activeSessionId,
-                                imagePath = persistentImageFile?.absolutePath,
-                                audioPath = persistentAudioFile?.absolutePath,
-                                audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
-                                audioDurationMs = resolvedAudioDurationMs,
-                                documentName = fileName,
-                                documentId = targetDocId
-                            )
-                        }
-                    } finally {
-                        liveUpdateJob.cancel()
-                        liveUpdates.close()
-                        // Always clear both analyzing and stopping flags
+                        saveCurrentSession(
+                            displayPrompt,
+                            partial.ifBlank { "⚠️ Error: $errorMsg" },
+                            effectiveBitmap,
+                            targetSessionId = activeSessionId,
+                            imagePath = persistentImageFile?.absolutePath,
+                            audioPath = persistentAudioFile?.absolutePath,
+                            audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
+                            audioDurationMs = resolvedAudioDurationMs,
+                            documentName = fileName,
+                            documentId = targetDocId
+                        )
+                    }
+                } finally {
+                    liveUpdateJob.cancel()
+                    Log.i("VisionLatency", timing.summary())
+                    liveUpdates.close()
+                    if (activeRequestId == requestId) {
                         _isAnalyzing.value = false
                         _isStopping.value = false
+                        resetAutoUnloadTimer()
+                    }
+                }
+            } catch (failure: Throwable) {
+                withContext(NonCancellable + Dispatchers.Main.immediate) {
+                    if (!isCurrentRequest()) return@withContext
+                    if (activeRequestId == requestId && myGen == analysisGeneration && assistantIndex < messages.size) {
+                        val stopped = failure is CancellationException
+                        val partial = messages[assistantIndex].text.takeUnless { it in PLACEHOLDER_ANSWERS }.orEmpty()
+                        val status = if (stopped) RequestTerminalStatus.Stopped else RequestTerminalStatus.Failed
+                        val errMsg = if (stopped) null else (failure.message ?: "Attachment/model error")
+                        messages[assistantIndex] = messages[assistantIndex].copy(
+                            text = if (stopped) partial.ifBlank { "Stopped." } else partial,
+                            errorMessage = errMsg,
+                            progress = null,
+                            terminalStatus = status,
+                            attemptId = targetAttemptId,
+                            requestId = requestId,
+                            userMessageId = userMessageId
+                        )
+                        saveCurrentSession(
+                            displayPrompt,
+                            if (stopped) partial.ifBlank { "Stopped." } else partial.ifBlank { "⚠️ Error: ${failure.message ?: "Attachment/model error"}" },
+                            effectiveBitmap,
+                            targetSessionId = activeSessionId,
+                            imagePath = persistentImageFile?.absolutePath,
+                            audioPath = persistentAudioFile?.absolutePath,
+                            audioName = audioName ?: if (persistentAudioFile != null) "Voice message" else null,
+                            audioDurationMs = resolvedAudioDurationMs,
+                            documentName = fileName,
+                            documentId = targetDocId
+                        )
                     }
                 }
             } finally {
+                preparedInput?.close()
+                documentPreparation.release(preparation)
+                imagePreparation.release(imageInput)
+                if (activeRequestId == requestId) {
+                    _isAnalyzing.value = false
+                    _isStopping.value = false
+                    resetAutoUnloadTimer()
+                }
                 if (analysisJob == runningJob) {
                     analysisJob = null
                 }
             }
         }
         analysisJob = job
+        return true
     }
 
     fun stopAnalyzing() {
-        if (!_isAnalyzing.value && !_isStopping.value) return
-        analysisGeneration++
+        if (!_isAnalyzing.value && !_isStopping.value) {
+            if (_isInitializing.value) {
+                initGeneration++
+                initJob?.cancel()
+                initJob = null
+                _isInitializing.value = false
+                _isStopping.value = false
+            }
+            return
+        }
         resetRuntimeConversationBeforeNextAsk = true
         inferenceManager.cancelGeneration()
-        analysisJob?.cancel()
+        val jobToCancel = analysisJob
+        analysisJob = null
+        jobToCancel?.cancel()
         _isAnalyzing.value = false
         _isStopping.value = false
 
@@ -1092,19 +1523,23 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         val assistantIndex = messages.indexOfLast { !it.isUser }
         if (assistantIndex >= 0 && assistantIndex < messages.size) {
             val current = messages[assistantIndex].text
-            val finalText = if (current == "Reading input…" || current == "Reading input..." || current == "…" || current.isBlank()) {
+            val finalText = if (current in PLACEHOLDER_ANSWERS || current.isBlank()) {
                 "Stopped."
             } else {
                 ModelOutputSanitizer.clean(current)
             }
-            messages[assistantIndex] = messages[assistantIndex].copy(text = finalText)
+            messages[assistantIndex] = messages[assistantIndex].copy(
+                text = finalText,
+                progress = null,
+                terminalStatus = RequestTerminalStatus.Stopped
+            )
             saveVisibleConversationIfComplete()
         }
         _answer.value = "Stopped."
     }
 
     fun uninitializeModel() {
-        releaseModel(clearCoordinator = true)
+        releaseModel(clearCoordinator = true, clearSelection = true)
     }
     fun startNewChat() {
         stopAnalyzing()
@@ -1113,6 +1548,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         lastAttachedFileName = null
         _answer.value = ""
         _error.value = null
+        _lastInferenceTime.value = 0L
+        _tokensPerSecond.value = 0f
         messages.clear()
         pendingRagDocumentId = null
         currentSessionDocumentId = null
@@ -1249,52 +1686,22 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             )
             messages.add(VisionChatMessage(session.answer, false, null))
         }
+        val lastAssistant = messages.lastOrNull { !it.isUser && it.metrics != null }
+        _lastInferenceTime.value = lastAssistant?.metrics?.decodeDurationMs ?: 0L
+        _tokensPerSecond.value = lastAssistant?.metrics?.decodeThroughputTokPerSec?.toFloat() ?: 0f
         return session
     }
 
     fun deleteChatSession(sessionId: String) {
+        if (sessionId == _currentSessionId.value && _isAnalyzing.value) {
+            stopAnalyzing()
+        }
         val removingCurrent = sessionId == _currentSessionId.value
         val session = imageChatSessions.firstOrNull { it.id == sessionId }
         session?.documentId?.let { docId ->
             ragManager.removeDocument(docId)
         }
-        session?.imagePath?.let { path ->
-            val imgFile = File(path)
-            if (imgFile.exists()) imgFile.delete()
-        }
-        session?.audioPath?.let { path ->
-            val audioFile = File(path)
-            if (audioFile.exists()) audioFile.delete()
-        }
-        session?.messages?.forEach { msg ->
-            msg.imagePath?.let { path ->
-                val imgFile = File(path)
-                if (imgFile.exists()) imgFile.delete()
-            }
-            msg.audioPath?.let { path ->
-                val audioFile = File(path)
-                if (audioFile.exists()) audioFile.delete()
-            }
-            msg.documentPath?.let { path ->
-                val docFile = File(path)
-                if (docFile.exists()) docFile.delete()
-            }
-        }
         if (removingCurrent) {
-            messages.forEach { msg ->
-                msg.imagePath?.let { path ->
-                    val imgFile = File(path)
-                    if (imgFile.exists()) imgFile.delete()
-                }
-                msg.audioPath?.let { path ->
-                    val audioFile = File(path)
-                    if (audioFile.exists()) audioFile.delete()
-                }
-                msg.documentPath?.let { path ->
-                    val docFile = File(path)
-                    if (docFile.exists()) docFile.delete()
-                }
-            }
             _currentSessionId.value = null
             resetRuntimeConversationBeforeNextAsk = true
             lastAttachedFileName = null
@@ -1310,67 +1717,30 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         if (legacyFile.exists()) {
             legacyFile.delete()
         }
-        val sessionAttachmentsDir = getApplication<Application>().filesDir.resolve("chat_attachments").resolve(sessionId)
-        if (sessionAttachmentsDir.exists()) {
-            sessionAttachmentsDir.deleteRecursively()
-        }
         imageChatSessions.removeAll { it.id == sessionId }
-        AttachmentViewerUtils.cleanupOrphanAttachments(
-            getApplication(),
-            setOfNotNull(_currentSessionId.value)
-        )
+        viewModelScope.launch(Dispatchers.IO) {
+            sessionRepository.deleteSessionAsync(com.shounak.localmeshai.data.ChatKind.Vision, sessionId)
+            AttachmentViewerUtils.cleanupOrphanAttachments(
+                getApplication(),
+                setOfNotNull(_currentSessionId.value)
+            )
+        }
         persistSessions()
     }
 
     fun clearHistory() {
+        if (_isAnalyzing.value) {
+            stopAnalyzing()
+        }
+        val sessionIds = imageChatSessions.map { it.id }.toList()
         imageChatSessions.forEach { session ->
             session.documentId?.let { docId ->
                 ragManager.removeDocument(docId)
-            }
-            session.imagePath?.let { path ->
-                val imgFile = File(path)
-                if (imgFile.exists()) imgFile.delete()
-            }
-            session.audioPath?.let { path ->
-                val audioFile = File(path)
-                if (audioFile.exists()) audioFile.delete()
-            }
-            session.messages.forEach { msg ->
-                msg.imagePath?.let { path ->
-                    val imgFile = File(path)
-                    if (imgFile.exists()) imgFile.delete()
-                }
-                msg.audioPath?.let { path ->
-                    val audioFile = File(path)
-                    if (audioFile.exists()) audioFile.delete()
-                }
-                msg.documentPath?.let { path ->
-                    val docFile = File(path)
-                    if (docFile.exists()) docFile.delete()
-                }
-            }
-            val dir = getApplication<Application>().filesDir.resolve("chat_attachments").resolve(session.id)
-            if (dir.exists()) {
-                dir.deleteRecursively()
             }
             val bmpFile = getSessionBitmapFile(session.id)
             if (bmpFile.exists()) bmpFile.delete()
             val legacyBmpFile = getLegacySessionBitmapFile(session.id)
             if (legacyBmpFile.exists()) legacyBmpFile.delete()
-        }
-        messages.forEach { msg ->
-            msg.imagePath?.let { path ->
-                val imgFile = File(path)
-                if (imgFile.exists()) imgFile.delete()
-            }
-            msg.audioPath?.let { path ->
-                val audioFile = File(path)
-                if (audioFile.exists()) audioFile.delete()
-            }
-            msg.documentPath?.let { path ->
-                val docFile = File(path)
-                if (docFile.exists()) docFile.delete()
-            }
         }
         imageChatSessions.clear()
         _currentSessionId.value = null
@@ -1387,8 +1757,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         if (legacyDir.exists()) {
             legacyDir.deleteRecursively()
         }
-        ragManager.clearKnowledgeBase()
-        AttachmentViewerUtils.cleanupOrphanAttachments(getApplication())
+        viewModelScope.launch(Dispatchers.IO) {
+            sessionIds.forEach { id ->
+                sessionRepository.deleteSessionAsync(com.shounak.localmeshai.data.ChatKind.Vision, id)
+            }
+            AttachmentViewerUtils.cleanupOrphanAttachments(getApplication(), emptySet())
+        }
         persistSessions()
     }
 
@@ -1433,17 +1807,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 imageChatSessions.removeAt(index)
                 imageChatSessions.add(0, updated)
-                if (updated.isPersistable()) {
-                    persistSessions()
-                }
+                persistSessions()
                 return
             }
         }
         val sessionId = currentId ?: UUID.randomUUID().toString().also {
             _currentSessionId.value = it
-        }
-        if (bitmap != null && !bitmap.isRecycled) {
-            saveSessionBitmap(sessionId, bitmap)
         }
         val sessionDocId = documentId
             ?: currentSessionDocumentId
@@ -1471,9 +1840,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             currentSessionDocumentId = sessionDocId
         }
         imageChatSessions.add(0, session)
-        if (session.isPersistable()) {
-            persistSessions()
-        }
+        persistSessions()
     }
 
     private fun saveCurrentSession(
@@ -1493,21 +1860,17 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             _currentSessionId.value = it
         }
         
-        // Save bitmap if provided and not recycled
-        if (bitmap != null && !bitmap.isRecycled) {
-            saveSessionBitmap(sessionId, bitmap)
-        }
+        // Per-message attachment files already preserve the original image.
 
         val cleanAnswer = ModelOutputSanitizer.clean(answer)
         val index = imageChatSessions.indexOfFirst { it.id == sessionId }
         val previous = if (index >= 0) imageChatSessions[index] else null
-        val shouldUpdateTimestamp = index == -1 ||
-            previous?.question != question ||
-            previous?.answer != cleanAnswer
-        val effectiveUpdatedAt = if (shouldUpdateTimestamp || previous?.updatedAt?.let { it <= 0L } == true) {
-            now
-        } else {
-            previous?.updatedAt ?: now
+        val shouldUpdateTimestamp = previous == null ||
+            previous.question != question ||
+            previous.answer != cleanAnswer
+        val effectiveUpdatedAt = when {
+            previous == null || shouldUpdateTimestamp || previous.updatedAt <= 0L -> now
+            else -> previous.updatedAt
         }
 
         val anyUserWithBitmap = messages.firstOrNull { it.isUser && (it.bitmap != null || !it.imagePath.isNullOrBlank()) }
@@ -1565,146 +1928,90 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         persistSessions()
     }
 
-    private fun loadSessions() {
-        val raw = historyPrefs.getString(KEY_SESSIONS, null) ?: return
-        runCatching {
-            val array = JSONArray(raw)
-            for (index in 0 until array.length()) {
-                val item = array.getJSONObject(index)
-                val answer = ModelOutputSanitizer.clean(item.optString("answer").orEmpty())
-                // Skip sessions whose answer is blank or a stale placeholder
-                if (answer.isBlank() || answer in PLACEHOLDER_ANSWERS) continue
-                val question = item.optString("question")
-                val imagePath = item.optString("imagePath").takeIf { it.isNotBlank() }
-                val audioPath = item.optString("audioPath").takeIf { it.isNotBlank() }
-                val audioName = item.optString("audioName").takeIf { it.isNotBlank() }
-                val audioDurationMs = item.optLong("audioDurationMs", 0L)
-                val documentName = item.optString("documentName").takeIf { it.isNotBlank() }
-                val documentId = item.optString("documentId").takeIf { it.isNotBlank() }
-
-                val sessionMessages = mutableListOf<VisionChatMessage>()
-                val messagesArray = item.optJSONArray("messages")
-                if (messagesArray != null && messagesArray.length() > 0) {
-                    for (mIdx in 0 until messagesArray.length()) {
-                        val mObj = messagesArray.getJSONObject(mIdx)
-                        val mText = mObj.optString("text")
-                        val mIsUser = mObj.optBoolean("isUser")
-                        val mId = mObj.optString("id").ifBlank { UUID.randomUUID().toString() }
-                        val mImagePath = mObj.optString("imagePath").takeIf { it.isNotBlank() }
-                        val mAudioPath = mObj.optString("audioPath").takeIf { it.isNotBlank() }
-                        val mAudioName = mObj.optString("audioName").takeIf { it.isNotBlank() }
-                        val mAudioDurationMs = mObj.optLong("audioDurationMs", 0L)
-                        val mDocumentName = mObj.optString("documentName").takeIf { it.isNotBlank() }
-                        val mDocumentPath = mObj.optString("documentPath").takeIf { it.isNotBlank() }
-                        val mRagChunkCount = mObj.optInt("ragChunkCount", 0)
-                        val mRagTopMatchPct = mObj.optInt("ragTopMatchPct", 0)
-
-                        val ragSourcesList = mutableListOf<String>()
-                        val mRagSources = mObj.optJSONArray("ragSources")
-                        if (mRagSources != null) {
-                            for (sIdx in 0 until mRagSources.length()) {
-                                ragSourcesList.add(mRagSources.getString(sIdx))
-                            }
-                        }
-
-                        sessionMessages.add(
-                            VisionChatMessage(
-                                id = mId,
-                                text = mText,
-                                isUser = mIsUser,
-                                bitmap = null, // decoded on demand in selectChatSession
-                                imagePath = mImagePath,
-                                audioPath = mAudioPath,
-                                audioName = mAudioName,
-                                audioDurationMs = mAudioDurationMs,
-                                documentName = mDocumentName,
-                                documentPath = mDocumentPath,
-                                ragSources = ragSourcesList,
-                                ragChunkCount = mRagChunkCount,
-                                ragTopMatchPct = mRagTopMatchPct
-                            )
-                        )
-                    }
+    private suspend fun loadSessionsAsync() {
+        val coordinator = com.shounak.localmeshai.data.StartupCoordinator.getInstance(getApplication())
+        when (val res = sessionRepository.loadVisionSessionsAsync()) {
+            is com.shounak.localmeshai.utils.AtomicReadResult.Success -> {
+                val sorted = res.data.sortedByDescending { it.updatedAt }
+                withContext(Dispatchers.Main.immediate) {
+                    imageChatSessions.clear()
+                    imageChatSessions.addAll(sorted)
                 }
-
-                imageChatSessions.add(
-                    VisionChatSession(
-                        id = item.optString("id").ifBlank { UUID.randomUUID().toString() },
-                        title = item.optString("title").ifBlank {
-                            question.toImageChatTitle(
-                                documentName = documentName,
-                                audioName = audioName,
-                                hasImage = !imagePath.isNullOrBlank()
-                            )
-                        },
-                        question = question,
-                        answer = answer,
-                        updatedAt = item.optLong("updatedAt", 0L),
-                        imagePath = imagePath,
-                        audioPath = audioPath,
-                        audioName = audioName,
-                        audioDurationMs = audioDurationMs,
-                        documentName = documentName,
-                        documentId = documentId,
-                        messages = sessionMessages
+                coordinator.updateVisionStoreState(com.shounak.localmeshai.data.StoreLoadState.Ready)
+                migrateLegacySessionImages()
+            }
+            is com.shounak.localmeshai.utils.AtomicReadResult.UnsupportedVersion -> {
+                coordinator.updateVisionStoreState(
+                    com.shounak.localmeshai.data.StoreLoadState.RecoveryRequired(
+                        "Vision history uses a newer schema version (${res.foundVersion} > ${res.maxSupportedVersion}). Update the app to view these sessions without data loss.",
+                        res.file
                     )
                 )
             }
-            imageChatSessions.sortByDescending { it.updatedAt }
-        }.onFailure {
-            historyPrefs.edit().remove(KEY_SESSIONS).apply()
+            is com.shounak.localmeshai.utils.AtomicReadResult.Corrupt -> {
+                coordinator.updateVisionStoreState(
+                    com.shounak.localmeshai.data.StoreLoadState.RecoveryRequired(
+                        "Vision history file is corrupt: ${res.cause.message}. Preserved at ${res.backupFile?.name ?: "backup"}.",
+                        res.file
+                    )
+                )
+            }
+            is com.shounak.localmeshai.utils.AtomicReadResult.Missing -> {
+                coordinator.updateVisionStoreState(com.shounak.localmeshai.data.StoreLoadState.Ready)
+            }
+        }
+    }
+
+    private fun loadSessions() {
+        val loaded = sessionRepository.loadVisionSessions()
+        imageChatSessions.clear()
+        imageChatSessions.addAll(loaded.sortedByDescending { it.updatedAt })
+    }
+
+    private fun migrateLegacySessionImages() {
+        val snapshot = imageChatSessions.toList()
+        viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            val migrated = snapshot.map { session ->
+                val destination = sessionRepository.attachmentStore.getSessionAttachmentsDir(
+                    com.shounak.localmeshai.data.ChatKind.Vision,
+                    session.id,
+                    create = true
+                )
+                fun migrate(path: String?): String? = path?.let {
+                    com.shounak.localmeshai.utils.LegacyAttachmentMigration.copyReferenced(
+                        File(it), app.cacheDir, destination)?.absolutePath ?: it
+                }
+                val legacy = session.imagePath ?: getLegacySessionBitmapFile(session.id)
+                    .takeIf { it.isFile }?.absolutePath
+                session.copy(imagePath = migrate(legacy), messages = session.messages.map {
+                    it.copy(imagePath = migrate(it.imagePath))
+                })
+            }
+            withContext(Dispatchers.Main.immediate) {
+                var changed = false
+                snapshot.zip(migrated).forEach { (before, after) ->
+                    val index = imageChatSessions.indexOfFirst { it.id == before.id }
+                    if (index >= 0 && imageChatSessions[index] == before && before != after) {
+                        imageChatSessions[index] = after
+                        changed = true
+                    }
+                }
+                if (changed) persistSessions()
+            }
         }
     }
 
     private fun persistSessions() {
-        val array = JSONArray()
-        imageChatSessions.filter { it.isPersistable() }.forEach { session ->
-            val obj = JSONObject()
-                .put("id", session.id)
-                .put("title", session.title)
-                .put("question", session.question)
-                .put("answer", ModelOutputSanitizer.clean(session.answer))
-                .put("updatedAt", session.updatedAt)
-                .put("imagePath", session.imagePath ?: "")
-                .put("audioPath", session.audioPath ?: "")
-                .put("audioName", session.audioName ?: "")
-                .put("audioDurationMs", session.audioDurationMs)
-                .put("documentName", session.documentName ?: "")
-                .put("documentId", session.documentId ?: "")
-
-            val messagesArray = JSONArray()
-            session.messages.forEach { msg ->
-                val msgObj = JSONObject()
-                    .put("id", msg.id)
-                    .put("text", msg.text)
-                    .put("isUser", msg.isUser)
-                    .put("imagePath", msg.imagePath ?: "")
-                    .put("audioPath", msg.audioPath ?: "")
-                    .put("audioName", msg.audioName ?: "")
-                    .put("audioDurationMs", msg.audioDurationMs)
-                    .put("documentName", msg.documentName ?: "")
-                    .put("documentPath", msg.documentPath ?: "")
-                    .put("ragChunkCount", msg.ragChunkCount)
-                    .put("ragTopMatchPct", msg.ragTopMatchPct)
-
-                val ragSourcesArray = JSONArray()
-                msg.ragSources.forEach { ragSourcesArray.put(it) }
-                msgObj.put("ragSources", ragSourcesArray)
-
-                messagesArray.put(msgObj)
-            }
-            obj.put("messages", messagesArray)
-
-            array.put(obj)
+        val state = com.shounak.localmeshai.data.StartupCoordinator.getInstance(getApplication()).visionStoreState.value
+        if (state !is com.shounak.localmeshai.data.StoreLoadState.Ready) {
+            return
         }
-        // Chat history does not require crash-guard-style synchronous durability.
-        // Avoid blocking the UI thread while the JSON is written to disk.
-        historyPrefs.edit().putString(KEY_SESSIONS, array.toString()).apply()
+        sessionPersistenceChannel.trySend(imageChatSessions.toList())
     }
 
-    private fun VisionChatSession.isPersistable(): Boolean {
-        val cleanAnswer = answer.trim()
-        return cleanAnswer.isNotBlank() && cleanAnswer !in PLACEHOLDER_ANSWERS
+    private fun writeSessionsToStorage(sessions: List<VisionChatSession>) {
+        sessionRepository.saveVisionSessions(sessions)
     }
 
     private fun markStoppedIfBlank() {
@@ -1989,7 +2296,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             normalized.startsWith("error extracting") ||
             normalized.startsWith("error reading") ||
             normalized.startsWith("the attached file is") ||
-            normalized.startsWith("this file type is not text-extractable")
+            normalized.startsWith("this file type is not text-extractable") ||
+            normalized.startsWith("decompression limit exceeded") ||
+            normalized.contains("decompression bomb")
     }
 
     fun flushVisibleConversation() {
@@ -2045,13 +2354,32 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     override fun onCleared() {
+        documentPreparation.cancel()
+        imagePreparation.cancel()
         saveVisibleConversationIfComplete()
-        releaseModel(clearCoordinator = true)
-        ModelRuntimeCoordinator.unregister(ModelRuntimeOwner.Vision)
+        releaseModel(clearCoordinator = false, clearSelection = true)
+        val token = coordinatorToken
+        ModelRuntimeCoordinator.shutdownScope.launch {
+            try {
+                kotlinx.coroutines.withTimeout(10_000L) {
+                    releaseJob?.join()
+                }
+            } finally {
+                if (token != null) {
+                    ModelRuntimeCoordinator.unregister(ModelRuntimeOwner.Vision, token)
+                }
+                coordinatorToken = null
+            }
+        }
+        sessionPersistenceChannel.close()
         super.onCleared()
     }
 
-    private fun releaseModel(clearCoordinator: Boolean) {
+    private fun releaseModel(clearCoordinator: Boolean, clearSelection: Boolean = false) {
+        autoUnloadJob?.cancel()
+        autoUnloadJob = null
+        currentModelEpoch++
+        activeRequestId = null
         initGeneration++
         analysisGeneration++
         initJob?.cancel()
@@ -2059,106 +2387,52 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         analysisJob?.cancel()
         analysisJob = null
         inferenceManager.cancelGeneration()
-        inferenceManager.close()
-        currentModelPath = null
-        currentModelId = ""
-        currentModelName = ""
-        currentModelSize = ""
-        currentContextWindowTokensTokens = null
-        currentSupportsAudioInput = false
-        currentAllowUnsafeOverride = false
-        lastLoadedBackendPreference = null
-        _activeBackend.value = null
-        currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
-        resetRuntimeConversationBeforeNextAsk = false
-        lastAttachedFileName = null
-        _isInitializing.value = false
-        _isAnalyzing.value = false
-        _isStopping.value = false
-        _isModelReady.value = false
-        if (clearCoordinator) {
-            ModelRuntimeCoordinator.clear(ModelRuntimeOwner.Vision)
-        }
-    }
-
-    private fun resolveFinalVisionAnswer(
-        response: String,
-        current: String,
-        thinkingMode: Boolean,
-        userPrompt: String
-    ): String {
-        val normalizedResponseRaw = if (thinkingMode) {
-            ThinkingTextUtils.normalizeFinalOutput(response)
-        } else {
-            ModelOutputSanitizer.clean(response).trim()
-        }
-        val normalizedResponse = if (thinkingMode) {
-            normalizedResponseRaw
-        } else {
-            ThinkingTextUtils.extractFinalAnswerOnly(normalizedResponseRaw)
-        }
-        val normalizedCurrent = ModelOutputSanitizer.clean(current).trim()
-        var textToUse = when {
-            normalizedResponse.isUsableVisionAnswer() -> normalizedResponse
-            normalizedCurrent.isUsableVisionAnswer() -> normalizedCurrent
-            else -> ""
-        }
-
-        // Strip repeated opening sentence if it duplicates the immediately preceding assistant message
-        val previousAssistantText = messages.dropLast(1).lastOrNull { !it.isUser }?.text
-        if (textToUse.isNotBlank() && !previousAssistantText.isNullOrBlank()) {
-            val stripped = ModelOutputSanitizer.removeRepeatedOpeningPrefix(textToUse, previousAssistantText)
-            if (stripped.isNotBlank() && !ModelResponseQuality.isGenericNonAnswer(stripped, userPrompt)) {
-                textToUse = stripped
+        if (releaseJob?.isActive != true) {
+            releaseJob = ModelRuntimeCoordinator.shutdownScope.launch {
+                val result = ioMutex.withLock {
+                    val res = inferenceManager.close()
+                    AppCacheCleaner.clearAppCache(getApplication())
+                    res
+                }
+                if (result !is com.shounak.localmeshai.ai.ShutdownResult.Success) {
+                    Log.e("VisionViewModel", "Model shutdown failed: $result")
+                    _isStopping.value = false
+                    return@launch
+                }
+                if (clearCoordinator) ModelRuntimeCoordinator.clear(ModelRuntimeOwner.Vision)
+                withContext(Dispatchers.Main.immediate) {
+                    if (clearSelection) {
+                        currentModelPath = null
+                        currentModelId = ""
+                        currentModelName = ""
+                        currentModelSize = ""
+                        currentContextWindowTokensTokens = null
+                        currentSupportsAudioInput = false
+                        currentAllowUnsafeOverride = false
+                    }
+                    lastLoadedBackendPreference = null
+                    _activeBackend.value = null
+                    currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
+                    resetRuntimeConversationBeforeNextAsk = false
+                    lastAttachedFileName = null
+                    _isInitializing.value = false
+                    _isAnalyzing.value = false
+                    _isStopping.value = false
+                    _isModelReady.value = false
+                }
             }
         }
 
-        // If the model produced a valid, usable response that is not a generic non-answer, use it
-        if (textToUse.isNotBlank() && !ModelResponseQuality.isGenericNonAnswer(textToUse, userPrompt)) {
-            return textToUse
-        }
-
-        // If the user requested to remember a fact, preference, or instruction, but the model
-        // returned a generic greeting or boilerplate non-answer, synthesize a clear, friendly confirmation.
-        if (userPrompt.isNotBlank() && ModelResponseQuality.isMemoryOrInstruction(userPrompt) && !ModelResponseQuality.isMemoryRecallQuery(userPrompt)) {
-            val candidate = memoryManager.extractMemoryCandidate(userPrompt)
-            if (candidate != null) {
-                return memoryManager.formatConfirmationMessage(candidate.first, candidate.second)
-            }
-        }
-
-        // If the user was asking about their stored memories, and the model returned a non-answer,
-        // ignorance phrase, or leaked its internal reasoning, answer directly from stored memory.
-        if (_isPersistentMemoryActive.value && userPrompt.isNotBlank()) {
-            val memoryAnswer = memoryManager.findAnswerForUserQuery(userPrompt)
-            if (memoryAnswer != null) {
-                return memoryAnswer
-            }
-        }
-
-        // Fallback for greetings if model returned a generic non-answer or leaked reasoning
-        if (ModelResponseQuality.isGreeting(userPrompt)) {
-            return "Hello! How can I help you today?"
-        }
-
-        // If the text is a reasoning leak or generic non-answer, reject it rather than displaying it
-        if (ModelResponseQuality.isReasoningLeak(textToUse) || ModelResponseQuality.isGenericNonAnswer(textToUse, userPrompt)) {
-            return ""
-        }
-
-        return textToUse
-    }
-
-    private fun String.isUsableVisionAnswer(): Boolean {
-        val normalized = trim()
-        return normalized.isNotBlank() &&
-            normalized !in PLACEHOLDER_ANSWERS &&
-            !normalized.isNoAnswerGenerated()
     }
 
     private companion object {
         const val KEY_SESSIONS = "sessions_json"
-        const val DEFAULT_IMAGE_PROMPT = "Describe the image"
+        const val DEFAULT_IMAGE_PROMPT = "Describe this image."
+        val FAILED_ANSWER_STRINGS = setOf(
+            ResponseFinalizer.FAILED_NO_ANSWER_MESSAGE,
+            "No answer generated.",
+            "Inference failed."
+        )
         const val DEFAULT_VISION_CONTEXT_WINDOW_TOKENS = 1_280
         const val MIN_CONTEXT_WINDOW_TOKENS = 512
         const val APPROX_CHARS_PER_TOKEN = 4
@@ -2187,7 +2461,22 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             "tldr"
         )
         /** Placeholder answers that should never be treated as real saved sessions. */
-        val PLACEHOLDER_ANSWERS = setOf("Reading input…", "Reading input...", "…", "Generating…", "Generating...")
+        val PLACEHOLDER_ANSWERS = setOf(
+            "Reading input…",
+            "Reading input...",
+            "…",
+            "Generating…",
+            "Generating...",
+            "Loading model…",
+            "Loading model...",
+            "Preparing input…",
+            "Preparing input...",
+            "Validating backend…",
+            "Validating backend...",
+            "Processing prompt…",
+            "Processing prompt...",
+            "Stopped."
+        )
     }
 }
 

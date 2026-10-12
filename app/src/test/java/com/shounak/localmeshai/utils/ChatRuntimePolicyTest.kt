@@ -6,6 +6,14 @@ import org.junit.Test
 
 class ChatRuntimePolicyTest {
     @Test
+    fun disabledRagDoesNotSearchUnrelatedLibraryButAttachedDocumentsStillWork() {
+        assertFalse(ChatRuntimePolicy.shouldRetrieveDocuments(false, null, 100))
+        assertTrue(ChatRuntimePolicy.shouldRetrieveDocuments(false, "attached-pdf", 100))
+        assertTrue(ChatRuntimePolicy.shouldRetrieveDocuments(true, null, 100))
+        assertFalse(ChatRuntimePolicy.shouldRetrieveDocuments(true, "attached-pdf", 0))
+    }
+
+    @Test
     fun gemmaTaskUsesConversationNativeLiteRtRuntime() {
         assertTrue(
             ChatRuntimePolicy.shouldUseLiteRtLmConversation(

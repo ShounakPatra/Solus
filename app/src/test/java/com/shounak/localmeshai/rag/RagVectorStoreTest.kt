@@ -3,11 +3,20 @@ package com.shounak.localmeshai.rag
 import com.shounak.localmeshai.rag.embedding.VectorEmbedding
 import com.shounak.localmeshai.rag.store.InMemoryRagVectorStore
 import com.shounak.localmeshai.rag.store.RagChunkRecord
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
+import com.shounak.localmeshai.utils.FailableAtomicFileTransaction
+import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class RagVectorStoreTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
 
     @Test
     fun testAddAndSearch_ReturnsRankedResults() {
@@ -117,13 +126,176 @@ class RagVectorStoreTest {
         val store = InMemoryRagVectorStore(null)
         val v = floatArrayOf(1f, 0f)
         val chunks = listOf(
-            RagChunkRecord("1", "docA", "Report.pdf", 0, "Chunk 0", v),
-            RagChunkRecord("2", "docA", "Report.pdf", 1, "Chunk 1", v),
-            RagChunkRecord("3", "docB", "Other.pdf", 0, "Other chunk", v)
+            RagChunkRecord("1", "docA", "Report.pdf", 0, "Chunk 0", v, timestamp = 2000L),
+            RagChunkRecord("2", "docA", "Report.pdf", 1, "Chunk 1", v, timestamp = 2000L),
+            RagChunkRecord("3", "docB", "Other.pdf", 0, "Other chunk", v, timestamp = 1000L)
         )
         store.addChunks(chunks)
 
         val recent = store.getRecentChunks(limit = 2)
         assertEquals(2, recent.size)
+    }
+
+    @Test
+    fun testFailedWrite_PreservesPreviousStateAndFile() {
+        val testFile = File(tempFolder.root, "rag_failed_write.json")
+        val failableTx = FailableAtomicFileTransaction(testFile)
+        val store = InMemoryRagVectorStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name,
+            transaction = failableTx
+        )
+
+        val chunk1 = RagChunkRecord("1", "doc1", "Doc1.txt", 0, "Chunk 1", floatArrayOf(1f, 0f))
+        assertTrue(store.addChunks(listOf(chunk1)))
+        assertEquals(1, store.getTotalChunkCount())
+
+        // Invalidate startWrite to simulate write failure
+        failableTx.failStartWrite = true
+        val chunk2 = RagChunkRecord("2", "doc2", "Doc2.txt", 0, "Chunk 2", floatArrayOf(0f, 1f))
+        assertFalse(store.addChunks(listOf(chunk2)))
+
+        // In-memory state remains 1
+        assertEquals(1, store.getTotalChunkCount())
+        assertNotNull(store.lastError)
+
+        // Reopening store reloads only chunk1
+        val reopened = InMemoryRagVectorStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name,
+            transaction = FailableAtomicFileTransaction(testFile)
+        )
+        assertEquals(1, reopened.getTotalChunkCount())
+        assertEquals("1", reopened.getRecentChunks(1).first().id)
+    }
+
+    @Test
+    fun testInterruptedCommit_PreservesPreviousStateAndFile() {
+        val testFile = File(tempFolder.root, "rag_interrupted.json")
+        val failableTx = FailableAtomicFileTransaction(testFile)
+        val store = InMemoryRagVectorStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name,
+            transaction = failableTx
+        )
+
+        val chunk1 = RagChunkRecord("1", "doc1", "Doc1.txt", 0, "Chunk 1", floatArrayOf(1f, 0f))
+        assertTrue(store.addChunks(listOf(chunk1)))
+        assertEquals(1, store.getTotalChunkCount())
+
+        // Fail finishWrite
+        failableTx.failFinishWrite = true
+        val chunk2 = RagChunkRecord("2", "doc2", "Doc2.txt", 0, "Chunk 2", floatArrayOf(0f, 1f))
+        assertFalse(store.addChunks(listOf(chunk2)))
+        assertEquals(1, store.getTotalChunkCount())
+
+        val reopened = InMemoryRagVectorStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name,
+            transaction = FailableAtomicFileTransaction(testFile)
+        )
+        assertEquals(1, reopened.getTotalChunkCount())
+        assertEquals("1", reopened.getRecentChunks(1).first().id)
+    }
+
+    @Test
+    fun testCorruptRead_PreservesCorruptFile() {
+        val testFile = File(tempFolder.root, "rag_corrupt.json")
+        testFile.writeText("{ malformed json RAG content [[")
+
+        val store = InMemoryRagVectorStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name
+        )
+
+        assertEquals(0, store.getTotalChunkCount())
+        assertNotNull(store.lastError)
+        assertTrue(testFile.exists())
+        assertEquals("{ malformed json RAG content [[", testFile.readText())
+    }
+
+    @Test
+    fun testConcurrentMutations_SerializedAndConsistent() {
+        val testFile = File(tempFolder.root, "rag_concurrent.json")
+        val store = InMemoryRagVectorStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name
+        )
+
+        val threadCount = 8
+        val itemsPerThread = 4
+        val executor = Executors.newFixedThreadPool(threadCount)
+        val latch = CountDownLatch(threadCount)
+
+        for (t in 0 until threadCount) {
+            executor.submit {
+                try {
+                    for (i in 0 until itemsPerThread) {
+                        store.addChunks(
+                            listOf(
+                                RagChunkRecord(
+                                    id = "t${t}_$i",
+                                    documentId = "doc_$t",
+                                    documentName = "Doc$t.txt",
+                                    chunkIndex = i,
+                                    text = "Text $t $i",
+                                    embedding = floatArrayOf(1f, 0f)
+                                )
+                            )
+                        )
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
+        }
+
+        assertTrue(latch.await(10, TimeUnit.SECONDS))
+        executor.shutdown()
+
+        assertEquals(threadCount * itemsPerThread, store.getTotalChunkCount())
+
+        val reopened = InMemoryRagVectorStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name
+        )
+        assertEquals(threadCount * itemsPerThread, reopened.getTotalChunkCount())
+    }
+
+    @Test
+    fun testDimensionChange_InvalidatesSavedIndex() {
+        val testFile = File(tempFolder.root, "rag_dim_change.json")
+        val store768 = InMemoryRagVectorStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name,
+            expectedDimension = 4
+        )
+
+        val chunk = RagChunkRecord(
+            id = "c1",
+            documentId = "d1",
+            documentName = "Doc.txt",
+            chunkIndex = 0,
+            text = "Content",
+            embedding = floatArrayOf(0.1f, 0.2f, 0.3f, 0.4f)
+        )
+        assertTrue(store768.addChunks(listOf(chunk)))
+        assertEquals(1, store768.getTotalChunkCount())
+
+        // Reopen with different expected dimension (e.g. 2 instead of 4)
+        val storeMismatched = InMemoryRagVectorStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name,
+            expectedDimension = 2
+        )
+
+        // Saved index must be invalidated and cleared
+        assertEquals(0, storeMismatched.getTotalChunkCount())
+        assertNotNull(storeMismatched.lastError)
+        assertTrue(
+            "Error must indicate invalidation/mismatch",
+            storeMismatched.lastError!!.contains("invalidated", ignoreCase = true) ||
+                storeMismatched.lastError!!.contains("mismatch", ignoreCase = true)
+        )
     }
 }

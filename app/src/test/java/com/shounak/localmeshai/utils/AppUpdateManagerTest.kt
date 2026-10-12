@@ -54,6 +54,18 @@ class AppUpdateManagerTest {
         assertEquals("https://github.com/ShounakPatra/Solus", AppUpdateManager.GITHUB_REPO_URL)
         assertEquals("app_updates_high", AppUpdateManager.UPDATE_CHANNEL_ID)
         assertEquals(9001, AppUpdateManager.UPDATE_NOTIFICATION_ID)
+        assertEquals("extra_open_settings_about", AppUpdateManager.EXTRA_OPEN_SETTINGS_ABOUT)
+        assertEquals("extra_update_version", AppUpdateManager.EXTRA_UPDATE_VERSION)
+        assertEquals("extra_update_notes", AppUpdateManager.EXTRA_UPDATE_NOTES)
+        assertEquals("extra_update_html_url", AppUpdateManager.EXTRA_UPDATE_HTML_URL)
+        assertEquals("extra_update_download_url", AppUpdateManager.EXTRA_UPDATE_DOWNLOAD_URL)
+    }
+
+    @Test
+    fun backgroundUpdateJobConstantsAreValid() {
+        assertEquals(9002, AppUpdateManager.BACKGROUND_UPDATE_JOB_ID)
+        assertEquals(6 * 60 * 60 * 1000L, AppUpdateManager.UPDATE_CHECK_INTERVAL_MS)
+        assertEquals(30 * 60 * 1000L, AppUpdateManager.UPDATE_CHECK_FLEX_MS)
     }
 }
 

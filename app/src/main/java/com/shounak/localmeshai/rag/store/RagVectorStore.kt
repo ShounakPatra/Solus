@@ -1,11 +1,23 @@
 package com.shounak.localmeshai.rag.store
 
 import android.content.Context
+import com.shounak.localmeshai.data.StoreLoadState
 import com.shounak.localmeshai.rag.embedding.VectorEmbedding
+import com.shounak.localmeshai.utils.AtomicFileTransaction
+import com.shounak.localmeshai.utils.AtomicJsonFile
+import com.shounak.localmeshai.utils.AtomicReadResult
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.util.concurrent.CopyOnWriteArrayList
 
 data class RagChunkRecord(
     val id: String,
@@ -14,7 +26,8 @@ data class RagChunkRecord(
     val chunkIndex: Int,
     val text: String,
     val embedding: FloatArray,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val contentFingerprint: String? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -36,64 +49,185 @@ data class RagDocumentSummary(
     val documentName: String,
     val chunkCount: Int,
     val totalChars: Int,
-    val addedAt: Long
+    val addedAt: Long,
+    val contentFingerprint: String? = null
 )
 
+class IncompatibleVectorStoreException(message: String) : IllegalStateException(message)
+
 interface VectorStore {
-    fun addChunks(chunks: List<RagChunkRecord>)
+    val loadState: StateFlow<StoreLoadState> get() = MutableStateFlow(StoreLoadState.Ready).asStateFlow()
+    val algorithmId: String get() = "universal-fnv1a-384"
+    val dimension: Int get() = 384
+    val distanceMetric: String get() = "cosine"
+    fun addChunks(chunks: List<RagChunkRecord>): Boolean
+    fun replaceDocument(documentId: String, newChunks: List<RagChunkRecord>): Boolean
     fun removeDocument(documentId: String): Boolean
     fun clearAll()
     fun getDocuments(): List<RagDocumentSummary>
     fun getTotalChunkCount(): Int
     fun search(queryEmbedding: FloatArray, topK: Int = 3, minSimilarity: Float = 0.22f): List<RagSearchResult>
-    fun getChunksForDocument(documentId: String, limit: Int = 3): List<RagChunkRecord>
+    fun getChunksForDocument(documentId: String, limit: Int = Int.MAX_VALUE): List<RagChunkRecord>
     fun getRecentChunks(limit: Int = 3): List<RagChunkRecord>
     fun persist()
     fun load()
+    suspend fun loadAsync(): StoreLoadState = loadState.value
 }
 
 /**
- * Thread-safe vector store with in-memory similarity search and file persistence.
+ * Thread-safe vector store with in-memory similarity search and atomic file persistence.
  */
 class InMemoryRagVectorStore(
     private val context: Context? = null,
-    private val storageFileName: String = "rag_vector_store.json"
+    private val storageDir: File? = null,
+    private val storageFileName: String = "rag_vector_store.json",
+    private val transaction: AtomicFileTransaction? = null,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    expectedDimension: Int? = null,
+    override val algorithmId: String = "universal-fnv1a-384",
+    override val distanceMetric: String = "cosine"
 ) : VectorStore {
 
-    private val records = CopyOnWriteArrayList<RagChunkRecord>()
+    private val _loadState = MutableStateFlow<StoreLoadState>(StoreLoadState.Loading)
+    override val loadState: StateFlow<StoreLoadState> = _loadState.asStateFlow()
+
+    @Volatile
+    private var isLoaded: Boolean = false
+
+    private var explicitDimension: Int? = expectedDimension
+
+    override val dimension: Int
+        get() = explicitDimension ?: recordsState.firstOrNull()?.embedding?.size ?: 384
+
+    @Volatile
+    private var recordsState: List<RagChunkRecord> = emptyList()
     private val lock = Any()
 
-    init {
-        load()
+    var isMarkedForReindexing: Boolean = false
+        private set
+
+    var lastError: String? = null
+        private set
+
+    private val atomicFile: AtomicJsonFile<List<RagChunkRecord>>? by lazy {
+        val file = getStorageFile() ?: return@lazy null
+        if (transaction != null) {
+            AtomicJsonFile(file, transaction)
+        } else {
+            AtomicJsonFile(file)
+        }
     }
 
-    override fun addChunks(chunks: List<RagChunkRecord>) {
-        if (chunks.isEmpty()) return
+    private fun ensureLoaded() {
+        if (!isLoaded) {
+            synchronized(lock) {
+                if (!isLoaded) {
+                    load()
+                }
+            }
+        }
+    }
+
+    private fun getStorageFile(): File? {
+        val dir = storageDir ?: context?.filesDir ?: return null
+        return File(dir, storageFileName)
+    }
+
+    override fun addChunks(chunks: List<RagChunkRecord>): Boolean {
+        ensureLoaded()
+        if (chunks.isEmpty()) return true
+        val expectedDim = explicitDimension ?: recordsState.firstOrNull()?.embedding?.size
+        if (expectedDim != null) {
+            val mismatched = chunks.firstOrNull { it.embedding.size != expectedDim }
+            if (mismatched != null) {
+                lastError = "Incompatible vector dimension: expected $expectedDim, got ${mismatched.embedding.size}"
+                return false
+            }
+        } else {
+            val firstDim = chunks.first().embedding.size
+            val mismatched = chunks.firstOrNull { it.embedding.size != firstDim }
+            if (mismatched != null) {
+                lastError = "Incompatible vector dimension across batch: expected $firstDim, got ${mismatched.embedding.size}"
+                return false
+            }
+        }
         synchronized(lock) {
-            records.addAll(chunks)
-            persist()
+            val nextList = recordsState + chunks
+            val success = persistSnapshot(nextList)
+            if (success) {
+                recordsState = nextList
+                lastError = null
+                return true
+            }
+            return false
+        }
+    }
+
+    override fun replaceDocument(documentId: String, newChunks: List<RagChunkRecord>): Boolean {
+        ensureLoaded()
+        if (newChunks.isEmpty()) {
+            lastError = "Cannot replace document with empty chunks"
+            return false
+        }
+        val expectedDim = explicitDimension ?: recordsState.firstOrNull { it.documentId != documentId }?.embedding?.size
+        if (expectedDim != null) {
+            val mismatched = newChunks.firstOrNull { it.embedding.size != expectedDim }
+            if (mismatched != null) {
+                lastError = "Incompatible vector dimension: expected $expectedDim, got ${mismatched.embedding.size}"
+                return false
+            }
+        } else {
+            val firstDim = newChunks.first().embedding.size
+            val mismatched = newChunks.firstOrNull { it.embedding.size != firstDim }
+            if (mismatched != null) {
+                lastError = "Incompatible vector dimension across batch: expected $firstDim, got ${mismatched.embedding.size}"
+                return false
+            }
+        }
+        synchronized(lock) {
+            val remaining = recordsState.filter { it.documentId != documentId }
+            val nextList = remaining + newChunks
+            val success = persistSnapshot(nextList)
+            if (success) {
+                recordsState = nextList
+                lastError = null
+                return true
+            }
+            return false
         }
     }
 
     override fun removeDocument(documentId: String): Boolean {
+        ensureLoaded()
         synchronized(lock) {
-            val removed = records.removeIf { it.documentId == documentId }
-            if (removed) {
-                persist()
+            val nextList = recordsState.filter { it.documentId != documentId }
+            if (nextList.size == recordsState.size) return false
+            val success = persistSnapshot(nextList)
+            if (success) {
+                recordsState = nextList
+                lastError = null
+                return true
             }
-            return removed
+            return false
         }
     }
 
     override fun clearAll() {
+        ensureLoaded()
         synchronized(lock) {
-            records.clear()
-            persist()
+            val nextList = emptyList<RagChunkRecord>()
+            val success = persistSnapshot(nextList)
+            if (success) {
+                recordsState = nextList
+                lastError = null
+            }
         }
     }
 
     override fun getDocuments(): List<RagDocumentSummary> {
-        val groups = records.groupBy { it.documentId }
+        ensureLoaded()
+        val current = recordsState
+        val groups = current.groupBy { it.documentId }
         return groups.map { (docId, docChunks) ->
             val first = docChunks.first()
             RagDocumentSummary(
@@ -101,22 +235,28 @@ class InMemoryRagVectorStore(
                 documentName = first.documentName,
                 chunkCount = docChunks.size,
                 totalChars = docChunks.sumOf { it.text.length },
-                addedAt = first.timestamp
+                addedAt = first.timestamp,
+                contentFingerprint = first.contentFingerprint
             )
         }.sortedByDescending { it.addedAt }
     }
 
-    override fun getTotalChunkCount(): Int = records.size
+    override fun getTotalChunkCount(): Int {
+        ensureLoaded()
+        return recordsState.size
+    }
 
     override fun search(
         queryEmbedding: FloatArray,
         topK: Int,
         minSimilarity: Float
     ): List<RagSearchResult> {
-        if (records.isEmpty() || queryEmbedding.isEmpty()) return emptyList()
+        ensureLoaded()
+        val current = recordsState
+        if (current.isEmpty() || queryEmbedding.isEmpty()) return emptyList()
 
-        val results = ArrayList<RagSearchResult>(records.size)
-        for (record in records) {
+        val results = ArrayList<RagSearchResult>(current.size)
+        for (record in current) {
             val sim = VectorEmbedding.cosineSimilarity(queryEmbedding, record.embedding)
             if (sim >= minSimilarity) {
                 results.add(RagSearchResult(record, sim))
@@ -128,23 +268,115 @@ class InMemoryRagVectorStore(
     }
 
     override fun getChunksForDocument(documentId: String, limit: Int): List<RagChunkRecord> {
-        return records
+        ensureLoaded()
+        return recordsState
             .filter { it.documentId == documentId }
             .sortedBy { it.chunkIndex }
             .take(limit)
     }
 
     override fun getRecentChunks(limit: Int): List<RagChunkRecord> {
-        val latestDocId = records.maxByOrNull { it.timestamp }?.documentId ?: return emptyList()
+        ensureLoaded()
+        val current = recordsState
+        val latestDocId = current.maxByOrNull { it.timestamp }?.documentId ?: return emptyList()
         return getChunksForDocument(latestDocId, limit)
     }
 
+    private fun persistSnapshot(snapshot: List<RagChunkRecord>): Boolean {
+        val af = atomicFile ?: return true
+        val resolvedDim = explicitDimension ?: snapshot.firstOrNull()?.embedding?.size ?: dimension
+        val result = af.write(snapshot) {
+            serializeRecords(
+                records = it,
+                algorithmId = algorithmId,
+                dimension = resolvedDim,
+                distanceMetric = distanceMetric
+            )
+        }
+        return if (result.isSuccess) {
+            true
+        } else {
+            lastError = result.exceptionOrNull()?.message ?: "Failed to persist RAG vector store"
+            false
+        }
+    }
+
     override fun persist() {
-        val ctx = context ?: return
-        try {
-            val file = File(ctx.filesDir, storageFileName)
-            val jsonArray = JSONArray()
-            synchronized(lock) {
+        ensureLoaded()
+        synchronized(lock) {
+            persistSnapshot(recordsState)
+        }
+    }
+
+    override fun load() {
+        val af = atomicFile ?: run {
+            _loadState.value = StoreLoadState.Ready
+            isLoaded = true
+            return
+        }
+        synchronized(lock) {
+            val result = af.read { deserializeRecords(it, explicitDimension, algorithmId, distanceMetric) }
+            when (result) {
+                is AtomicReadResult.Success -> {
+                    recordsState = result.data
+                    isMarkedForReindexing = false
+                    lastError = null
+                    _loadState.value = StoreLoadState.Ready
+                }
+                is AtomicReadResult.Missing -> {
+                    recordsState = emptyList()
+                    isMarkedForReindexing = false
+                    lastError = null
+                    _loadState.value = StoreLoadState.Ready
+                }
+                is AtomicReadResult.UnsupportedVersion -> {
+                    recordsState = emptyList()
+                    lastError = "Unsupported RAG vector store file version: ${result.foundVersion}"
+                    _loadState.value = StoreLoadState.RecoveryRequired(
+                        "RAG store uses newer version (${result.foundVersion} > ${result.maxSupportedVersion})",
+                        result.file
+                    )
+                }
+                is AtomicReadResult.Corrupt -> {
+                    val rootCause = generateSequence(result.cause) { it.cause }
+                        .firstOrNull { it is IncompatibleVectorStoreException }
+                    if (rootCause != null) {
+                        recordsState = emptyList()
+                        isMarkedForReindexing = true
+                        lastError = "Vector store index requires reindexing due to configuration mismatch: ${rootCause.message}"
+                        _loadState.value = StoreLoadState.Ready
+                    } else {
+                        recordsState = emptyList()
+                        lastError = "Corrupt RAG store detected: ${result.cause.message}"
+                        _loadState.value = StoreLoadState.RecoveryRequired(
+                            "RAG store is corrupt: ${result.cause.message}",
+                            result.file
+                        )
+                    }
+                }
+            }
+            isLoaded = true
+        }
+    }
+
+    override suspend fun loadAsync(): StoreLoadState = withContext(ioDispatcher) {
+        load()
+        _loadState.value
+    }
+
+    companion object {
+        fun serializeRecords(
+            records: List<RagChunkRecord>,
+            algorithmId: String = "universal-fnv1a-384",
+            dimension: Int = records.firstOrNull()?.embedding?.size ?: 384,
+            distanceMetric: String = "cosine"
+        ): String {
+            val root = JSONObject().apply {
+                put("version", 2)
+                put("algorithmId", algorithmId)
+                put("dimension", dimension)
+                put("distanceMetric", distanceMetric)
+                val jsonArray = JSONArray()
                 for (rec in records) {
                     val obj = JSONObject().apply {
                         put("id", rec.id)
@@ -153,6 +385,7 @@ class InMemoryRagVectorStore(
                         put("idx", rec.chunkIndex)
                         put("text", rec.text)
                         put("ts", rec.timestamp)
+                        rec.contentFingerprint?.let { put("fp", it) }
                         val embArr = JSONArray()
                         for (v in rec.embedding) {
                             embArr.put(v.toDouble())
@@ -161,25 +394,57 @@ class InMemoryRagVectorStore(
                     }
                     jsonArray.put(obj)
                 }
+                put("records", jsonArray)
             }
-            file.writeText(jsonArray.toString())
-        } catch (_: Throwable) {
-            // Ignore persistence errors gracefully
+            return root.toString()
         }
-    }
 
-    override fun load() {
-        val ctx = context ?: return
-        try {
-            val file = File(ctx.filesDir, storageFileName)
-            if (!file.exists()) return
-            val text = file.readText()
-            if (text.isBlank()) return
-            val jsonArray = JSONArray(text)
+        fun deserializeRecords(
+            text: String,
+            expectedDimension: Int? = null,
+            expectedAlgorithmId: String? = null,
+            expectedDistanceMetric: String? = null
+        ): List<RagChunkRecord> {
+            val trimmed = text.trim()
+            if (trimmed.isEmpty()) return emptyList()
+
+            val (jsonArray, targetDim) = if (trimmed.startsWith("{")) {
+                val root = JSONObject(trimmed)
+                val fileDimension = if (root.has("dimension")) root.getInt("dimension") else null
+                val fileAlgorithm = if (root.has("algorithmId")) root.optString("algorithmId").takeIf { it.isNotBlank() } else null
+                val fileMetric = if (root.has("distanceMetric")) root.optString("distanceMetric").takeIf { it.isNotBlank() } else null
+
+                if (expectedDimension != null && fileDimension != null && expectedDimension != fileDimension) {
+                    throw IncompatibleVectorStoreException(
+                        "Dimension mismatch: expected $expectedDimension, got $fileDimension"
+                    )
+                }
+                if (expectedAlgorithmId != null && fileAlgorithm != null && expectedAlgorithmId != fileAlgorithm) {
+                    throw IncompatibleVectorStoreException(
+                        "Algorithm mismatch: expected $expectedAlgorithmId, got $fileAlgorithm"
+                    )
+                }
+                if (expectedDistanceMetric != null && fileMetric != null && expectedDistanceMetric != fileMetric) {
+                    throw IncompatibleVectorStoreException(
+                        "Distance metric mismatch: expected $expectedDistanceMetric, got $fileMetric"
+                    )
+                }
+
+                val dim = expectedDimension ?: fileDimension
+                Pair(root.optJSONArray("records") ?: JSONArray(), dim)
+            } else {
+                Pair(JSONArray(trimmed), expectedDimension)
+            }
+
             val loaded = ArrayList<RagChunkRecord>(jsonArray.length())
             for (i in 0 until jsonArray.length()) {
-                val obj = jsonArray.getJSONObject(i)
-                val embArr = obj.getJSONArray("emb")
+                val obj = jsonArray.optJSONObject(i) ?: continue
+                val embArr = obj.optJSONArray("emb") ?: continue
+                if (targetDim != null && targetDim > 0 && embArr.length() != targetDim) {
+                    throw IncompatibleVectorStoreException(
+                        "Chunk embedding dimension ${embArr.length()} does not match target dimension $targetDim"
+                    )
+                }
                 val emb = FloatArray(embArr.length())
                 for (j in 0 until embArr.length()) {
                     emb[j] = embArr.getDouble(j).toFloat()
@@ -192,16 +457,12 @@ class InMemoryRagVectorStore(
                         chunkIndex = obj.getInt("idx"),
                         text = obj.getString("text"),
                         embedding = emb,
-                        timestamp = obj.optLong("ts", System.currentTimeMillis())
+                        timestamp = obj.optLong("ts", System.currentTimeMillis()),
+                        contentFingerprint = if (obj.has("fp")) obj.getString("fp") else null
                     )
                 )
             }
-            synchronized(lock) {
-                records.clear()
-                records.addAll(loaded)
-            }
-        } catch (_: Throwable) {
-            // Ignore load errors gracefully
+            return loaded
         }
     }
 }

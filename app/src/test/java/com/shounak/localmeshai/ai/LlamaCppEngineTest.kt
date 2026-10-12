@@ -104,11 +104,13 @@ class LlamaCppEngineTest {
         override fun initModel(
             modelPath: String,
             nThreads: Int,
+            nThreadsBatch: Int,
             nCtx: Int,
             nBatch: Int,
             nUbatch: Int,
             backend: Int,
-            nGpuLayers: Int
+            nGpuLayers: Int,
+            operationControlId: Long
         ): Long {
             initCallCount.incrementAndGet()
             lastBackendRequested.set(backend)
@@ -126,6 +128,17 @@ class LlamaCppEngineTest {
             liveHandles.add(handle)
             return handle
         }
+
+        fun initModel(
+            modelPath: String,
+            nThreads: Int,
+            nCtx: Int,
+            nBatch: Int,
+            nUbatch: Int,
+            backend: Int,
+            nGpuLayers: Int,
+            operationControlId: Long
+        ): Long = initModel(modelPath, nThreads, nThreads, nCtx, nBatch, nUbatch, backend, nGpuLayers, operationControlId)
 
         override fun generateStream(
             handle: Long,
@@ -151,12 +164,49 @@ class LlamaCppEngineTest {
                     hook(handle, generationId, callback)
                 }
             } else {
+                val ret = generateReturnCode
+                if (ret < 0) {
+                    return ret
+                }
                 assertHandleValid(handle, "generateStream-emit")
                 callback.onToken("Hello")
                 assertHandleValid(handle, "generateStream-complete")
                 callback.onComplete()
             }
-            return 0
+            return generateReturnCode
+        }
+
+        var generateReturnCode: Int = 0
+        var simulatedFailureCategory: String? = null
+        var simulatedFailureCode: Int = 0
+        var simulatedProbeReferenceJson: String? = null
+        var simulatedProbeCompareJson: String? = null
+
+        override fun getLastFailureCategory(): String? = simulatedFailureCategory
+        override fun getLastFailureCode(): Int = simulatedFailureCode
+
+        override fun probeReference(
+            handle: Long,
+            promptIndex: Int,
+            roles: Array<String>?,
+            contents: Array<String>?,
+            nPositions: Int,
+            operationControlId: Long
+        ): String? {
+            assertHandleValid(handle, "probeReference")
+            return simulatedProbeReferenceJson
+        }
+
+        override fun probeCompare(
+            handle: Long,
+            promptIndex: Int,
+            roles: Array<String>?,
+            contents: Array<String>?,
+            nPositions: Int,
+            operationControlId: Long
+        ): String? {
+            assertHandleValid(handle, "probeCompare")
+            return simulatedProbeCompareJson
         }
 
         override fun stop(handle: Long, generationId: Long) {
@@ -170,7 +220,9 @@ class LlamaCppEngineTest {
             onMetadataHook?.invoke(handle)
             val backend = simulateActiveBackend
             val gpuLayers = if (backend == "Vulkan") lastGpuLayersRequested.get() else 0
-            return """{"desc":"Fake","architecture":"llama","n_params":1000,"n_ctx_train":2048,"n_vocab":32000,"has_chat_template":true,"backend":"$backend","n_gpu_layers":$gpuLayers}"""
+            val isIsolated = (backend == "CPU")
+            val gpuBytes = if (backend == "Vulkan") 104857600L else 0L
+            return """{"desc":"Fake","architecture":"llama","n_params":1000,"n_ctx_train":2048,"n_vocab":32000,"has_chat_template":true,"backend":"$backend","n_gpu_layers":$gpuLayers,"actual_compute_backends":["$backend"],"effective_offload_kqv":${backend == "Vulkan"},"is_cpu_isolated":$isIsolated,"gpu_compute_buffer_bytes":$gpuBytes,"backend_policy_version":1}"""
         }
 
         override fun free(handle: Long) {
@@ -1220,7 +1272,8 @@ class LlamaCppEngineTest {
         assertNotNull("Llama 3.2 1B Instruct must be in ModelCatalog", llama32)
         assertEquals("llama.cpp GGUF", llama32!!.backend)
         assertEquals("Llama-3.2-1B-Instruct-Q4_K_M.gguf", llama32.fileName)
-        assertEquals(770_303_744L, llama32.expectedFileSizeBytes)
+        assertEquals(807_694_464L, llama32.expectedFileSizeBytes)
+        assertEquals("6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83", llama32.sha256)
         assertEquals(4096, llama32.contextWindowTokens)
 
         // Test size validation with empty file
@@ -1238,22 +1291,22 @@ class LlamaCppEngineTest {
     fun testQwen25_CatalogMetadataAndArtifactValidation() {
         val qwen15 = ModelCatalog.defaultModels.find { it.id == "qwen25_15b_gguf" }
         assertNotNull(qwen15)
-        assertEquals(1_043_024_992L, qwen15!!.expectedFileSizeBytes)
+        assertEquals(1_117_320_736L, qwen15!!.expectedFileSizeBytes)
 
         val qwen05 = ModelCatalog.defaultModels.find { it.id == "qwen25_05b_gguf" }
         assertNotNull(qwen05)
-        assertEquals(397_206_688L, qwen05!!.expectedFileSizeBytes)
+        assertEquals(491_400_032L, qwen05!!.expectedFileSizeBytes)
 
         val qwenCoder = ModelCatalog.defaultModels.find { it.id == "qwen25_coder_15b_gguf" }
         assertNotNull(qwenCoder)
-        assertEquals(1_043_220_640L, qwenCoder!!.expectedFileSizeBytes)
+        assertEquals(1_117_320_768L, qwenCoder!!.expectedFileSizeBytes)
     }
 
     @Test
     fun testCrossArchitectureCatalogMetadataValidation() {
         val phi = ModelCatalog.defaultModels.find { it.id == "phi35_mini_gguf" }
         assertNotNull(phi)
-        assertEquals(2_176_116_064L, phi!!.expectedFileSizeBytes)
+        assertEquals(2_393_232_672L, phi!!.expectedFileSizeBytes)
 
         val mistral = ModelCatalog.defaultModels.find { it.id == "mistral_7b_gguf" }
         assertNotNull(mistral)
@@ -1261,11 +1314,11 @@ class LlamaCppEngineTest {
 
         val smol135 = ModelCatalog.defaultModels.find { it.id == "smollm2_135m_gguf" }
         assertNotNull(smol135)
-        assertEquals(94_624_352L, smol135!!.expectedFileSizeBytes)
+        assertEquals(105_454_432L, smol135!!.expectedFileSizeBytes)
 
         val smol360 = ModelCatalog.defaultModels.find { it.id == "smollm2_360m_gguf" }
         assertNotNull(smol360)
-        assertEquals(228_691_136L, smol360!!.expectedFileSizeBytes)
+        assertEquals(270_590_880L, smol360!!.expectedFileSizeBytes)
 
         val tinyLlama = ModelCatalog.defaultModels.find { it.id == "tinyllama_11b_gguf" }
         assertNotNull(tinyLlama)
@@ -1273,7 +1326,28 @@ class LlamaCppEngineTest {
 
         val gemma = ModelCatalog.defaultModels.find { it.id == "gemma2_2b_gguf" }
         assertNotNull(gemma)
-        assertEquals(1_631_906_176L, gemma!!.expectedFileSizeBytes)
+        assertEquals(1_708_582_752L, gemma!!.expectedFileSizeBytes)
+    }
+
+    @Test
+    fun testNewlyAddedAndroidGgufModels_AreValidAndNotRecommended() {
+        val newModelIds = listOf(
+            "qwen25_coder_05b_gguf",
+            "qwen25_coder_3b_gguf",
+            "hermes3_llama32_3b_gguf",
+            "deepseek_r1_qwen15b_gguf",
+            "deepseek_r1_llama8b_gguf",
+            "h2o_danube3_500m_gguf",
+            "h2o_danube3_4b_gguf"
+        )
+        for (id in newModelIds) {
+            val model = ModelCatalog.defaultModels.find { it.id == id }
+            assertNotNull("Model $id must exist in ModelCatalog", model)
+            assertEquals("Model $id must use llama.cpp GGUF backend", "llama.cpp GGUF", model!!.backend)
+            assertTrue("Model $id must have expected file size > 0", model.expectedFileSizeBytes > 0L)
+            assertTrue("Model $id must end with .gguf", model.fileName.endsWith(".gguf"))
+            assertFalse("Model $id must NOT be marked as recommended", model.isRecommended)
+        }
     }
 
     @Test
@@ -1545,6 +1619,161 @@ class LlamaCppEngineTest {
         assertEquals(LlamaBackend.VULKAN, LlamaBackend.fromName("VULKAN"))
         assertEquals(LlamaBackend.VULKAN, LlamaBackend.fromName("Vulkan GPU"))
         assertEquals(LlamaBackend.CPU, LlamaBackend.fromName("UNKNOWN"))
+    }
+
+    @Test
+    fun testNativeFailure_NumericalInstabilityThrowsLlamaExecutionException() = runBlocking {
+        val fakeBridge = FakeLlamaNativeBridge()
+        fakeBridge.generateReturnCode = -2
+        fakeBridge.simulatedFailureCategory = "NumericalInstability"
+        fakeBridge.simulatedFailureCode = -2
+        val engine = LlamaCppEngine(null, fakeBridge)
+        val file = createDummyModelFile("numerical_fail.gguf")
+
+        engine.initialize(file.absolutePath)
+
+        var thrown: LlamaExecutionException? = null
+        try {
+            engine.generateStream("Test prompt") {}
+        } catch (e: LlamaExecutionException) {
+            thrown = e
+        }
+
+        assertNotNull(thrown)
+        assertEquals(LlamaFailureCategory.NumericalInstability, thrown?.category)
+        assertEquals(-2, thrown?.code)
+        engine.close()
+    }
+
+    @Test
+    fun testNativeFailure_UnsupportedTemplateThrowsLlamaExecutionException() = runBlocking {
+        val fakeBridge = FakeLlamaNativeBridge()
+        fakeBridge.generateReturnCode = -4
+        fakeBridge.simulatedFailureCategory = "UnsupportedTemplate"
+        fakeBridge.simulatedFailureCode = -4
+        val engine = LlamaCppEngine(null, fakeBridge)
+        val file = createDummyModelFile("template_fail.gguf")
+
+        engine.initialize(file.absolutePath)
+
+        var thrown: LlamaExecutionException? = null
+        try {
+            engine.generateStream("Test prompt") {}
+        } catch (e: LlamaExecutionException) {
+            thrown = e
+        }
+
+        assertNotNull(thrown)
+        assertEquals(LlamaFailureCategory.UnsupportedTemplate, thrown?.category)
+        assertEquals(-4, thrown?.code)
+        engine.close()
+    }
+
+    @Test
+    fun testNativeFailure_PromptAndGenerationDecodeFailuresThrow() = runBlocking {
+        val fakeBridge = FakeLlamaNativeBridge()
+        val engine = LlamaCppEngine(null, fakeBridge)
+        val file = createDummyModelFile("decode_fail.gguf")
+        engine.initialize(file.absolutePath)
+
+        // PromptDecodeFailed
+        fakeBridge.generateReturnCode = -5
+        fakeBridge.simulatedFailureCategory = "PromptDecodeFailed"
+        fakeBridge.simulatedFailureCode = -5
+        try {
+            engine.generateStream("Prompt") {}
+            org.junit.Assert.fail("Expected exception")
+        } catch (e: LlamaExecutionException) {
+            assertEquals(LlamaFailureCategory.PromptDecodeFailed, e.category)
+            assertEquals(-5, e.code)
+        }
+
+        // GenerationDecodeFailed
+        fakeBridge.generateReturnCode = -6
+        fakeBridge.simulatedFailureCategory = "GenerationDecodeFailed"
+        fakeBridge.simulatedFailureCode = -6
+        try {
+            engine.generateStream("Prompt") {}
+            org.junit.Assert.fail("Expected exception")
+        } catch (e: LlamaExecutionException) {
+            assertEquals(LlamaFailureCategory.GenerationDecodeFailed, e.category)
+            assertEquals(-6, e.code)
+        }
+
+        engine.close()
+    }
+
+    @Test
+    fun testNativeFailure_NegativeReturnWithoutErrorCallbackThrows() = runBlocking {
+        val fakeBridge = FakeLlamaNativeBridge()
+        fakeBridge.generateReturnCode = -1
+        fakeBridge.simulatedFailureCategory = null
+        fakeBridge.simulatedFailureCode = 0
+        val engine = LlamaCppEngine(null, fakeBridge)
+        val file = createDummyModelFile("raw_negative.gguf")
+        engine.initialize(file.absolutePath)
+
+        try {
+            engine.generateStream("Test") {}
+            org.junit.Assert.fail("Expected exception for negative return code")
+        } catch (e: LlamaExecutionException) {
+            assertEquals(LlamaFailureCategory.Unknown, e.category)
+            assertEquals(-1, e.code)
+        }
+
+        engine.close()
+    }
+
+    @Test
+    fun testProbing_ProbeReferenceAndCompare() {
+        val fakeBridge = FakeLlamaNativeBridge()
+        fakeBridge.simulatedProbeReferenceJson = """{"success":true,"prompt_index":0,"tokens":[1,2,3]}"""
+        fakeBridge.simulatedProbeCompareJson = """{"success":true,"max_tv_distance":0.012,"positions":[{"pos":0,"tv_distance":0.01}]}"""
+        val engine = LlamaCppEngine(null, fakeBridge)
+        val file = createDummyModelFile("probing.gguf")
+        engine.initialize(file.absolutePath)
+
+        val refResult = engine.probeReference(0, listOf("user" to "Hi"), 8)
+        assertNotNull(refResult)
+        assertTrue(refResult!!.contains("\"success\":true"))
+
+        val cmpResult = engine.probeCompare(0, listOf("user" to "Hi"), 8)
+        assertNotNull(cmpResult)
+        assertTrue(cmpResult!!.contains("max_tv_distance"))
+
+        engine.close()
+    }
+
+    @Test
+    fun testGenerateStream_PropagatesNativeMetrics() = runBlocking {
+        val fakeBridge = FakeLlamaNativeBridge()
+        fakeBridge.onGenerateHook = { handle, genId, callback ->
+            callback.onToken("Hello")
+            callback.onToken(" world")
+            callback.onMetrics(45L, 120L, 2)
+            callback.onComplete()
+        }
+        val engine = LlamaCppEngine(null, fakeBridge)
+        val file = createDummyModelFile("metrics_test.gguf")
+        engine.initialize(file.absolutePath)
+
+        var capturedMetrics: LlamaGenerationMetrics? = null
+        val tokens = mutableListOf<String>()
+
+        val result = engine.generateStream(
+            prompt = "Hi",
+            onMetrics = { metrics -> capturedMetrics = metrics },
+            onToken = { token -> tokens.add(token) }
+        )
+
+        assertEquals(LlamaGenerationResult.Completed, result)
+        assertEquals(listOf("Hello", " world"), tokens)
+        assertNotNull(capturedMetrics)
+        assertEquals(45L, capturedMetrics?.prefillDurationMs)
+        assertEquals(120L, capturedMetrics?.decodeDurationMs)
+        assertEquals(2, capturedMetrics?.tokenCount)
+
+        engine.close()
     }
 }
 

@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.security.MessageDigest
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -7,6 +8,26 @@ plugins {
 }
 
 val keystorePropertiesFile = rootProject.file("keystore.properties")
+val nativeSourceDigest = MessageDigest.getInstance("SHA-256").apply {
+    update("toolchain:ndk-28.2.13676358;cmake-3.22.1;platform:android-28;abi:arm64-v8a;c++17".toByteArray())
+    fileTree("src/main/cpp") {
+        include(
+            "**/*.c", "**/*.cpp", "**/*.h", "**/*.hpp",
+            "**/*.comp", "**/*.spv", "**/*.glsl", "**/*.vert", "**/*.frag",
+            "**/CMakeLists.txt", "**/*.cmake", "**/*.map"
+        )
+    }.files.sortedBy { it.relativeTo(projectDir).invariantSeparatorsPath }.forEach { source ->
+        update(source.relativeTo(projectDir).invariantSeparatorsPath.toByteArray())
+        source.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            var count = input.read(buffer)
+            while (count >= 0) {
+                if (count > 0) update(buffer, 0, count)
+                count = input.read(buffer)
+            }
+        }
+    }
+}.digest().joinToString("") { "%02x".format(it) }
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.isFile) {
         keystorePropertiesFile.inputStream().use(::load)
@@ -16,13 +37,16 @@ val keystoreProperties = Properties().apply {
 android {
     namespace = "com.shounak.localmeshai"
     compileSdk = 37
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.shounak.localmeshai"
         minSdk = 28
         targetSdk = 37
-        versionCode = 7
-        versionName = "3.0.0"
+        versionCode = 8
+        versionName = "5.0.0"
+        buildConfigField("String", "NATIVE_BUILD_ID", "\"$nativeSourceDigest\"")
+        buildConfigField("String", "LITERT_RUNTIME_VERSION", "\"${libs.versions.litertLm.get()}\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -58,6 +82,11 @@ android {
         }
     }
 
+    val isReleaseSmoke = (project.findProperty("solusReleaseSmoke")?.toString()?.toBoolean() == true)
+    if (isReleaseSmoke) {
+        testBuildType = "release"
+    }
+
     buildTypes {
         debug {
             if (debugKeystoreFile.isFile) {
@@ -65,7 +94,9 @@ android {
             }
         }
         release {
-            if (keystorePropertiesFile.isFile) {
+            if (isReleaseSmoke && debugKeystoreFile.isFile) {
+                signingConfig = signingConfigs.findByName("debugConfig")
+            } else if (keystorePropertiesFile.isFile) {
                 signingConfig = signingConfigs.getByName("release")
             }
             isMinifyEnabled = true
@@ -77,7 +108,7 @@ android {
         }
     }
     lint {
-        abortOnError = false
+        abortOnError = true
         checkReleaseBuilds = false
     }
     compileOptions {
@@ -89,18 +120,10 @@ android {
         buildConfig = true
     }
 
-    val sdkDirString = project.findProperty("sdk.dir")?.toString()
-        ?: System.getenv("ANDROID_HOME")
-        ?: System.getenv("ANDROID_SDK_ROOT")
-        ?: "C:/Users/shoun/AppData/Local/Android/Sdk"
-    val ndkDir = file(sdkDirString).resolve("ndk")
-    val hasValidNdk = ndkDir.exists() && ndkDir.listFiles()?.any { it.resolve("source.properties").isFile } == true
-    if (hasValidNdk) {
-        externalNativeBuild {
-            cmake {
-                path = file("src/main/cpp/CMakeLists.txt")
-                version = "3.22.1"
-            }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 
@@ -119,9 +142,18 @@ android {
     }
 }
 
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        variant.packaging.dex.useLegacyPackaging.set(true)
+    }
+}
+
 kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)
+        freeCompilerArgs.addAll(
+            "-Xbackend-threads=0"
+        )
     }
 }
 
@@ -142,6 +174,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.lifecycle.runtimeKtx)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.lifecycle.viewmodelCompose)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
@@ -150,8 +183,6 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
-    implementation(libs.androidx.emoji2)
-    implementation(libs.androidx.emoji2.bundled)
     implementation(libs.latex.base)
     implementation(libs.latex.parser)
     implementation(libs.latex.renderer)
@@ -167,6 +198,8 @@ dependencies {
     implementation(libs.okhttp)
 
     testImplementation(libs.junit)
+    testImplementation(libs.json)
+    testImplementation(libs.mockwebserver)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
@@ -175,7 +208,5 @@ dependencies {
     debugImplementation(libs.androidx.ui.test.manifest)
 }
 
-tasks.matching { it.name.contains("AarMetadata") }.configureEach {
-    enabled = false
-}
+
 

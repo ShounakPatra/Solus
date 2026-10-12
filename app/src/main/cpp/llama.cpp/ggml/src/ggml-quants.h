@@ -95,6 +95,10 @@ GGML_API void iq2xs_free_impl(enum ggml_type type);
 GGML_API void iq3xs_init_impl(int grid_size);
 GGML_API void iq3xs_free_impl(int grid_size);
 
+GGML_API void solus_record_numerical_anomaly(const char * reason);
+GGML_API int solus_has_numerical_anomaly(void);
+GGML_API void solus_clear_numerical_anomaly(void);
+
 #ifdef __cplusplus
 }
 #endif

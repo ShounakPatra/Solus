@@ -33,6 +33,7 @@ import com.shounak.localmeshai.memory.MemoryCategory
 import com.shounak.localmeshai.memory.MemoryEntry
 import com.shounak.localmeshai.memory.PersistentMemoryManager
 import com.shounak.localmeshai.utils.glassEffect
+import com.shounak.localmeshai.utils.LiquidGlassButton
 import dev.chrisbanes.haze.HazeState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -41,6 +42,8 @@ fun PersistentMemoryDialog(
     memoryManager: PersistentMemoryManager,
     onDismissRequest: () -> Unit
 ) {
+    val colors = MaterialTheme.colorScheme
+    val hazeState = remember { HazeState() }
     var memories by remember { mutableStateOf(memoryManager.getAllMemories()) }
     var selectedCategoryFilter by remember { mutableStateOf<MemoryCategory?>(null) }
     var newMemoryText by remember { mutableStateOf("") }
@@ -55,14 +58,13 @@ fun PersistentMemoryDialog(
         onDismissRequest = onDismissRequest,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        val colors = MaterialTheme.colorScheme
         val dialogShape = RoundedCornerShape(24.dp)
         Box(
             modifier = Modifier
                 .fillMaxWidth(0.94f)
                 .fillMaxHeight(0.85f)
                 .glassEffect(
-                    hazeState = remember { HazeState() },
+                    hazeState = hazeState,
                     shape = dialogShape,
                     blurRadius = 20.dp,
                     tintColor = colors.surfaceContainer,
@@ -94,14 +96,35 @@ fun PersistentMemoryDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    IconButton(
+                    LiquidGlassButton(
                         onClick = onDismissRequest,
-                        modifier = Modifier.size(36.dp)
+                        hazeState = hazeState,
+                        modifier = Modifier.size(36.dp),
+                        shape = RoundedCornerShape(18.dp),
+                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                        contentPadding = PaddingValues(0.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Close",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+
+                // Storage Error Banner
+                memoryManager.lastError?.let { err ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        color = colors.errorContainer
+                    ) {
+                        Text(
+                            text = err,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onErrorContainer,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                         )
                     }
                 }
@@ -193,7 +216,7 @@ fun PersistentMemoryDialog(
                                 ),
                                 shape = RoundedCornerShape(10.dp)
                             )
-                            FilledIconButton(
+                            LiquidGlassButton(
                                 onClick = {
                                     if (newMemoryText.isNotBlank()) {
                                         memoryManager.addMemory(newMemoryText, newMemoryCategory)
@@ -202,16 +225,23 @@ fun PersistentMemoryDialog(
                                     }
                                 },
                                 enabled = newMemoryText.isNotBlank(),
+                                hazeState = hazeState,
                                 shape = RoundedCornerShape(10.dp),
-                                colors = IconButtonDefaults.filledIconButtonColors(
-                                    containerColor = colors.primary,
-                                    contentColor = Color.Black,
-                                    disabledContainerColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
-                                    disabledContentColor = colors.onSurfaceVariant.copy(alpha = 0.38f)
-                                ),
-                                modifier = Modifier.size(46.dp)
+                                tintColor = if (newMemoryText.isNotBlank()) colors.primary.copy(alpha = 0.25f) else colors.surfaceContainerHighest.copy(alpha = 0.20f),
+                                contentPadding = PaddingValues(0.dp),
+                                modifier = Modifier
+                                    .size(46.dp)
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (newMemoryText.isNotBlank()) colors.primary.copy(alpha = 0.60f) else colors.outlineVariant.copy(alpha = 0.30f),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = "Add memory")
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "Add memory",
+                                    tint = if (newMemoryText.isNotBlank()) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.40f)
+                                )
                             }
                         }
 
@@ -318,15 +348,33 @@ fun PersistentMemoryDialog(
                             style = MaterialTheme.typography.labelSmall,
                             color = colors.onSurfaceVariant
                         )
-                        TextButton(
+                        LiquidGlassButton(
                             onClick = { showClearConfirmation = true },
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = colors.error
-                            )
+                            hazeState = hazeState,
+                            modifier = Modifier
+                                .height(32.dp)
+                                .border(
+                                    width = 0.8.dp,
+                                    color = colors.error.copy(alpha = 0.40f),
+                                    shape = RoundedCornerShape(10.dp)
+                                ),
+                            shape = RoundedCornerShape(10.dp),
+                            tintColor = colors.error.copy(alpha = 0.18f),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
                         ) {
-                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = colors.error
+                            )
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Clear All")
+                            Text(
+                                "Clear All",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.error
+                            )
                         }
                     }
                 }
@@ -335,7 +383,6 @@ fun PersistentMemoryDialog(
     }
 
     if (showClearConfirmation) {
-        val colors = MaterialTheme.colorScheme
         AlertDialog(
             onDismissRequest = { showClearConfirmation = false },
             containerColor = colors.surfaceContainerLow,
@@ -344,28 +391,52 @@ fun PersistentMemoryDialog(
             title = { Text("Clear all memories?") },
             text = { Text("This will permanently delete all saved user memories, preferences, and custom instructions.") },
             confirmButton = {
-                Button(
+                LiquidGlassButton(
                     onClick = {
                         memoryManager.clearAllMemories()
                         refresh()
                         showClearConfirmation = false
                     },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = colors.error,
-                        contentColor = Color.White
-                    )
+                    hazeState = hazeState,
+                    modifier = Modifier
+                        .height(38.dp)
+                        .border(
+                            width = 0.9.dp,
+                            color = colors.error.copy(alpha = 0.50f),
+                            shape = RoundedCornerShape(10.dp)
+                        ),
+                    shape = RoundedCornerShape(10.dp),
+                    tintColor = colors.error.copy(alpha = 0.25f),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
                 ) {
-                    Text("Delete All")
+                    Text(
+                        "Delete All",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.error
+                    )
                 }
             },
             dismissButton = {
-                TextButton(
+                LiquidGlassButton(
                     onClick = { showClearConfirmation = false },
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = colors.onSurfaceVariant
-                    )
+                    hazeState = hazeState,
+                    modifier = Modifier
+                        .height(38.dp)
+                        .border(
+                            width = 0.8.dp,
+                            color = colors.outlineVariant.copy(alpha = 0.50f),
+                            shape = RoundedCornerShape(10.dp)
+                        ),
+                    shape = RoundedCornerShape(10.dp),
+                    tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                 ) {
-                    Text("Cancel")
+                    Text(
+                        "Cancel",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colors.onSurfaceVariant
+                    )
                 }
             }
         )

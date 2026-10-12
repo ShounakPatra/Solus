@@ -13,10 +13,10 @@ Your conversations and files never leave your phone.
 
 <!-- Custom glass-gradient download CTA (docs/assets/download-solus-apk.svg) -->
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v3.0.0/app-release.apk" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v5.0.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v3.0.0"
+      alt="Download Solus APK — Latest v5.0.0"
       width="360"
       height="72"
     />
@@ -28,8 +28,8 @@ Your conversations and files never leave your phone.
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/version-3.0.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 3.0.0" />
-  <img src="https://img.shields.io/badge/APK_size-46_MB-22C55E?style=for-the-badge&logo=android&logoColor=white" alt="APK size ~46 MB" />
+  <img src="https://img.shields.io/badge/version-5.0.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 5.0.0" />
+  <img src="https://img.shields.io/badge/APK_size-33.14_MB_(31.61_MiB)-22C55E?style=for-the-badge&logo=android&logoColor=white" alt="APK size 33.14 MB (31.61 MiB)" />
   <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=for-the-badge&logo=github&label=Stars&color=FFD700" alt="GitHub stars" />
   <img src="https://img.shields.io/github/downloads/ShounakPatra/Solus/total?style=for-the-badge&label=Downloads&color=20C997" alt="Total downloads" />
 </p>
@@ -38,7 +38,7 @@ Your conversations and files never leave your phone.
   <img src="https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg" alt="Android CI" />
   <img src="https://img.shields.io/badge/Android-9.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android 9.0 or newer" />
   <img src="https://img.shields.io/badge/License-Apache_2.0-A970FF?style=for-the-badge&logo=apache&logoColor=white" alt="Apache 2.0 license" />
-  <img src="https://img.shields.io/badge/Kotlin-2.2.10-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.2.10" />
+  <img src="https://img.shields.io/badge/Kotlin-2.3.2-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.3.2" />
   <img src="https://img.shields.io/badge/Jetpack_Compose-UI-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 </p>
 
@@ -98,6 +98,24 @@ Your conversations and files never leave your phone.
 
 ---
 
+## 🆕 What’s New in **v5.0.0**
+
+- **🗑️ Durable Chat Deletion & Schema v2 Journal** — Transactional deletion with `recordPendingDeletion` pre-checks, version 2 journal schema guaranteeing persistent tombstones across app restarts, partitioned session storage, and corruption-guarded orphan cleanup.
+- **📎 Prepared Attachment Lifecycle & Safe Commit** — Decoupled durable storage preparation from temporary input release; inputs and memory leases are retained until the session history transaction successfully commits, preventing attachment loss on interrupted writes.
+- **🧹 Automatic Inactive Cache Management** — Zero-age automatic cache cleanup across application lifecycle boundaries (background, reopen, model reload, model switch, unload) while strictly leasing and preserving active model weights and compiled OpenCL/Vulkan kernels.
+- **🖼️ LiteRT Multimodal & Image Follow-Up Continuity** — Seamless multi-turn vision memory across consecutive turns; eliminated stream-reset glitches and false heuristic rejections on natural reasoning text with `LiteRtStreamAdapter`, `ResponseFinalizer`, and `VisionRequestContextResolver`.
+- **🔔 Background GitHub Update Checks** — Persistent, battery-friendly update checking powered by Android’s `JobScheduler` (`UpdateCheckJobService`) and `BootCompletedReceiver` to notify users of new releases without keeping the app open.
+- **📜 Scrolling & Streaming Engine Hardening** — Monotonic job identity tracking in `ChatScrollController` preventing cancelled scroll animations from clearing active jobs, bottom-anchor follow synchronization, and clean isolation of `<think>` reasoning blocks from final answer text.
+- **⚡ Prompt Network Cancellation & Resumption** — Socket-level hard aborts via `CancellableHttpTransfer` for instantaneous download and stream cancellation, paired with HTTP range resumption (`206`, `If-Range`) and extraction cancellation wiring.
+- **🛡️ Production-Grade Response Finalization & Retry Isolation** — Multi-attempt response isolation with sanitized answer fallbacks, guaranteed rejection of reasoning-only EOF responses as empty failures, and attempt-scoped controller invalidation during GPU-to-CPU recovery.
+- **📦 Atomic, Transactional Model Publication** — Model directory lookups no longer mutate filesystem state; downloads extract and commit into generation directories atomically, preserving existing valid models on network or validation errors.
+- **📑 Document Extraction & Decompression Bomb Protection** — Strict aggregate memory and recursion protection for attached files (PDF, Office DOCX/PPTX/XLSX, ODT, archives) with a 20 MB uncompressed limit and nested archive blocking.
+- **🔒 Cryptographic APK Update Verification** — Strict certificate identity checking preventing updates signed by untrusted certificates, HTTPS enforcement, and path traversal protection.
+- **🎙️ Audio Memory Optimization & Safe Recorder Lifecycle** — Drastic reduction of PCM recording memory overhead (<1 MB vs 32 MB) with sample-derived duration accounting and guaranteed hardware release.
+- **📉 31% Release APK Footprint Reduction (48.2 MB → 33.1 MB)** — Stripped bundled emoji font in favor of system fonts (Android 9.0+), enabled compressed release DEX, native symbol stripping, and ThinLTO, beating the 36 MB budget by nearly 3 MB.
+
+---
+
 ## 🆕 What’s New in **v3.0.0**
 
 - **🚀 16 KB Page-Size Compliance (Android 15+)** — Full native compliance for Android 15/16 devices with 16 KB memory pages. Completely eliminated legacy 4 KB-aligned runtimes; all native libraries (`llama.cpp`, `LiteRT-LM`, `MediaPipe`) are strictly 16 KB / 64 KB aligned.
@@ -117,7 +135,7 @@ Your conversations and files never leave your phone.
 
 | Layer | Stack |
 |---|---|
-| Language | **Kotlin 2.2.10** & **C++20** |
+| Language | **Kotlin 2.3.2** & **C++20** |
 | UI Framework | **Jetpack Compose**, Material 3, Haze Glass Blur |
 | Inference Backends | **llama.cpp JNI (CPU + Vulkan)**, **LiteRT** (TensorFlow Lite), **MediaPipe GenAI** |
 | Retrieval (RAG) | Local Vector Embeddings, Cosine Similarity, In-Memory Index |
@@ -194,10 +212,10 @@ Solus
 ## 📥 Installation
 
 <p align="center">
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v3.0.0/app-release.apk" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v5.0.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v3.0.0"
+      alt="Download Solus APK — Latest v5.0.0"
       width="360"
       height="72"
     />
@@ -205,7 +223,7 @@ Solus
 </p>
 
 1. Tap the **Download Solus APK** button above or open [Releases](https://github.com/ShounakPatra/Solus/releases).
-2. Download **`app-release.apk`** for **v3.0.0**.
+2. Download **`app-release.apk`** for **v5.0.0**.
 3. Install the APK on your device (allow *Install unknown apps* if prompted).
 4. Launch Solus → open **Models** → download your preferred model → begin private chatting!
 
@@ -324,7 +342,8 @@ Go to **Settings** → **Hugging Face Access Token** and enter your read token. 
 | **v1.0.0 – v1.2.0** | ✅ Shipped | Core local chat, thinking controls, resumable downloads, directional tab motion |
 | **v1.5.0** | ✅ Shipped | Full Settings menu, dynamic model themes, auto-hide nav, high-tech downloading cards, telemetry guard |
 | **v2.0.0** | ✅ Shipped | **Vulkan GPU compute**, **Local RAG document search**, **Audio & Voice input**, **In-App GitHub Auto-Updater** |
-| **v3.0.0** | ✅ **Current** | **16 KB page-size compliance (Android 15+)**, **Optimized 46 MB footprint**, **Zero telemetry/analytics**, **Compressed ARM64 native runtime**, **Full GGUF model support** |
+| **v3.0.0** | ✅ Shipped | **16 KB page-size compliance (Android 15+)**, **Optimized 46 MB footprint**, **Zero telemetry/analytics**, **Compressed ARM64 native runtime**, **Full GGUF model support** |
+| **v5.0.0** | ✅ **Current** | **Production-release hardening: response finalization, transactional model management, resumable downloads, document extraction safety, strict cryptographic update verification** |
 
 </div>
 
@@ -349,10 +368,10 @@ Solus is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for d
 **Made for private, on-device AI.**
 
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v3.0.0/app-release.apk" title="Download the latest Solus APK">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v5.0.0/app-release.apk" title="Download the latest Solus APK">
     <img
       src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — Latest v3.0.0"
+      alt="Download Solus APK — Latest v5.0.0"
       width="320"
       height="64"
     />

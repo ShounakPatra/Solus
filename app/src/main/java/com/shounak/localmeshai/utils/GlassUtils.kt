@@ -237,7 +237,8 @@ fun Modifier.animatedGlassHalo(
     durationMillis: Int = 3_800,
     accentColor: Color? = null
 ): Modifier {
-    if (!enabled) return this
+    val isBusy by ModelRuntimeCoordinator.isRuntimeBusy.collectAsState()
+    if (!enabled || isBusy) return this
     val accent = accentColor ?: MaterialTheme.colorScheme.primary
     return this.drawWithCache {
         val center = Offset(
@@ -256,42 +257,35 @@ fun Modifier.animatedGlassHalo(
             radius = radius
         )
         val outline = shape?.createOutline(size, layoutDirection, this)
+        val cachedPath = when (outline) {
+            is Outline.Rounded -> Path().apply { addRoundRect(outline.roundRect) }
+            is Outline.Generic -> outline.path
+            else -> null
+        }
         onDrawWithContent {
             drawContent()
-            if (outline != null) {
-                when (outline) {
-                    is Outline.Rectangle -> clipRect(
-                        left = outline.rect.left,
-                        top = outline.rect.top,
-                        right = outline.rect.right,
-                        bottom = outline.rect.bottom
-                    ) {
-                        drawCircle(
-                            brush = haloBrush,
-                            center = center,
-                            radius = radius,
-                            blendMode = BlendMode.Screen
-                        )
-                    }
-                    is Outline.Rounded -> {
-                        val path = Path().apply { addRoundRect(outline.roundRect) }
-                        clipPath(path) {
-                            drawCircle(
-                                brush = haloBrush,
-                                center = center,
-                                radius = radius,
-                                blendMode = BlendMode.Screen
-                            )
-                        }
-                    }
-                    is Outline.Generic -> clipPath(outline.path) {
-                        drawCircle(
-                            brush = haloBrush,
-                            center = center,
-                            radius = radius,
-                            blendMode = BlendMode.Screen
-                        )
-                    }
+            if (cachedPath != null) {
+                clipPath(cachedPath) {
+                    drawCircle(
+                        brush = haloBrush,
+                        center = center,
+                        radius = radius,
+                        blendMode = BlendMode.Screen
+                    )
+                }
+            } else if (outline is Outline.Rectangle) {
+                clipRect(
+                    left = outline.rect.left,
+                    top = outline.rect.top,
+                    right = outline.rect.right,
+                    bottom = outline.rect.bottom
+                ) {
+                    drawCircle(
+                        brush = haloBrush,
+                        center = center,
+                        radius = radius,
+                        blendMode = BlendMode.Screen
+                    )
                 }
             } else {
                 drawCircle(
@@ -721,8 +715,9 @@ fun GlassDispersionCard(
     val elevatedTint = tintColor
         .copy(alpha = (tintColor.alpha * 0.35f).coerceAtMost(0.14f))
         .compositeOver(colors.surfaceContainerHigh)
-    val causticShader = remember(quality) {
-        if (quality == LiquidGlassQuality.Full &&
+    val isBusy by ModelRuntimeCoordinator.isRuntimeBusy.collectAsState()
+    val causticShader = remember(quality, isBusy) {
+        if (!isBusy && quality == LiquidGlassQuality.Full &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
         ) {
             runCatching { createCausticShader() }.getOrNull()
@@ -732,11 +727,11 @@ fun GlassDispersionCard(
     }
 
     val dispersionEffect: RenderEffect? =
-        if (quality == LiquidGlassQuality.Full &&
+        if (!isBusy && quality == LiquidGlassQuality.Full &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             cardSize != IntSize.Zero
         ) {
-            remember(cardSize, refractionStrength, dispersionAmount) {
+            remember(cardSize, refractionStrength, dispersionAmount, isBusy) {
                 runCatching {
                     createDispersionRenderEffect(
                         cardSize = cardSize,

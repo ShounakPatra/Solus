@@ -19,20 +19,25 @@ class ThinkingTextUtilsTest {
     }
 
     @Test
-    fun finalResponseOrReasoningPreservesUnclosedReasoningInsteadOfReturningBlank() {
+    fun finalResponseOrReasoningPreservesUnclosedReasoningWhenFallbackAllowed() {
         val output = "<think>still working through the answer"
 
         assertEquals(
             "still working through the answer",
-            ThinkingTextUtils.finalResponseOrReasoning(output)
+            ThinkingTextUtils.finalResponseOrReasoning(output, allowReasoningFallback = true)
+        )
+        assertEquals(
+            "",
+            ThinkingTextUtils.finalResponseOrReasoning(output, allowReasoningFallback = false)
         )
     }
 
     @Test
-    fun finalResponseOrReasoningPreservesClosingOnlyReasoningWhenNoAnswerExists() {
+    fun finalResponseOrReasoningPreservesClosingOnlyReasoningWhenFallbackAllowed() {
         val output = "useful partial reasoning</think>"
 
-        assertEquals("useful partial reasoning", ThinkingTextUtils.finalResponseOrReasoning(output))
+        assertEquals("useful partial reasoning", ThinkingTextUtils.finalResponseOrReasoning(output, allowReasoningFallback = true))
+        assertEquals("", ThinkingTextUtils.finalResponseOrReasoning(output, allowReasoningFallback = false))
     }
 
     @Test

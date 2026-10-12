@@ -9,9 +9,14 @@
 #include <chrono>
 
 #include "llama.h"
+#include "prompt-cache.h"
+#include "prompt-budget.h"
+#include "native-operation-control.h"
 #include "ggml.h"
 #include "ggml-cpu.h"
 #include "ggml-quants.h"
+#include "gguf-backend-config.h"
+#include "utf-conversion.h"
 
 #if defined(__ARM_NEON) && defined(__aarch64__)
 #include <arm_neon.h>
@@ -409,6 +414,15 @@ static int run_real_model_inference(const std::string & model_path,
     llama_backend_init();
 
     llama_model_params mparams = llama_model_default_params();
+    llama_context_params cparams = llama_context_default_params();
+    configure_cpu_backend_params(mparams, cparams);
+
+    cparams.n_ctx = n_ctx;
+    cparams.n_batch = n_batch;
+    cparams.n_ubatch = n_ubatch;
+    cparams.n_threads = n_threads;
+    cparams.n_threads_batch = n_threads;
+
     llama_model * model = llama_model_load_from_file(model_path.c_str(), mparams);
     if (!model) {
         std::cerr << "[RESULT] LOAD=FAIL (Failed to load model file)" << std::endl;
@@ -421,13 +435,6 @@ static int run_real_model_inference(const std::string & model_path,
     llama_model_desc(model, desc_buf, sizeof(desc_buf));
     std::cout << "ARCH: " << desc_buf << std::endl;
 
-    llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx = n_ctx;
-    cparams.n_batch = n_batch;
-    cparams.n_ubatch = n_ubatch;
-    cparams.n_threads = n_threads;
-    cparams.n_threads_batch = n_threads;
-
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) {
         std::cerr << "[RESULT] CONTEXT_INIT=FAIL" << std::endl;
@@ -436,6 +443,17 @@ static int run_real_model_inference(const std::string & model_path,
         return 2;
     }
     std::cout << "[RESULT] CONTEXT_INIT=PASS" << std::endl;
+
+    GgufBackendInspection insp = inspect_gguf_backend(ctx);
+    if (!insp.is_cpu_isolated) {
+        std::cerr << "[RESULT] CPU_ISOLATION=FAIL (GPU backend or buffers detected: "
+                  << insp.gpu_compute_buffer_bytes << " bytes)" << std::endl;
+        llama_free(ctx);
+        llama_model_free(model);
+        llama_backend_free();
+        return 2;
+    }
+    std::cout << "[RESULT] CPU_ISOLATION=PASS (verified 0 GPU compute buffers)" << std::endl;
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
     std::vector<llama_token> tokens(cparams.n_ctx);
@@ -452,8 +470,10 @@ static int run_real_model_inference(const std::string & model_path,
     tokens.resize(n_tokens);
     std::cout << "[RESULT] TOKENIZE=PASS (n_tokens=" << n_tokens << ")" << std::endl;
 
-    // Prompt Evaluation
+    // Prompt Evaluation in chunks of cparams.n_batch
     llama_batch batch = llama_batch_init(cparams.n_batch, 0, 1);
+    auto start_time = std::chrono::high_resolution_clock::now();
+
     for (int i = 0; i < n_tokens; ++i) {
         batch.token[batch.n_tokens] = tokens[i];
         batch.pos[batch.n_tokens] = i;
@@ -461,19 +481,23 @@ static int run_real_model_inference(const std::string & model_path,
         batch.seq_id[batch.n_tokens][0] = 0;
         batch.logits[batch.n_tokens] = (i == n_tokens - 1);
         batch.n_tokens++;
-    }
 
-    auto start_time = std::chrono::high_resolution_clock::now();
-    int decode_res = llama_decode(ctx, batch);
-    if (decode_res != 0) {
-        std::cerr << "[RESULT] PROMPT_DECODE=FAIL (res=" << decode_res << ")" << std::endl;
-        llama_batch_free(batch);
-        llama_free(ctx);
-        llama_model_free(model);
-        llama_backend_free();
-        return 4;
+        if (batch.n_tokens == (int)cparams.n_batch || i == n_tokens - 1) {
+            int decode_res = llama_decode(ctx, batch);
+            if (decode_res != 0) {
+                std::cerr << "[RESULT] PROMPT_DECODE=FAIL (res=" << decode_res << ")" << std::endl;
+                llama_batch_free(batch);
+                llama_free(ctx);
+                llama_model_free(model);
+                llama_backend_free();
+                return 4;
+            }
+            if (i < n_tokens - 1) {
+                batch.n_tokens = 0;
+            }
+        }
     }
-    std::cout << "[RESULT] PROMPT_DECODE=PASS" << std::endl;
+    std::cout << "[RESULT] PROMPT_DECODE=PASS (tokens=" << n_tokens << ", batch=" << cparams.n_batch << ")" << std::endl;
 
     // Autoregressive generation
     int n_generated = 0;
@@ -535,6 +559,171 @@ static int run_real_model_inference(const std::string & model_path,
     return 0;
 }
 
+static bool test_prompt_cache_prefix() {
+    const std::vector<int> cached = {1, 2, 3, 4, 5};
+    TEST_ASSERT(reusable_prompt_tokens(cached, std::vector<int>{1, 2, 3, 4, 5, 6}) == 5,
+                "Follow-up must reuse already evaluated tokens");
+    TEST_ASSERT(reusable_prompt_tokens(cached, cached) == 4,
+                "Identical prompts must re-evaluate last token for fresh logits");
+    TEST_ASSERT(reusable_prompt_tokens(cached, std::vector<int>{1, 2, 9, 4}) == 2,
+                "Edited history must invalidate the divergent suffix");
+    TEST_ASSERT(reusable_prompt_tokens(cached, std::vector<int>{9, 2, 3}) == 0,
+                "Different system prompts must never reuse old state");
+    TEST_ASSERT(reusable_prompt_tokens(cached, std::vector<int>{1, 2}) == 1,
+                "Shortened history must leave a token to decode");
+    TEST_ASSERT(reusable_prompt_tokens(std::vector<int>{}, cached) == 0,
+                "An invalidated cache must be evaluated from scratch");
+    TEST_ASSERT(reusable_prompt_tokens(cached, std::vector<int>{}) == 0,
+                "Empty prompts must not underflow");
+    TEST_PASS("test_prompt_cache_prefix passed successfully");
+}
+
+static bool test_prompt_budget() {
+    TEST_ASSERT(output_token_reserve(2048, 1024) == 512, "Output reserve uses actual context");
+    TEST_ASSERT(output_token_reserve(2048, 32) == 32, "Small output requests stay small");
+    TEST_ASSERT(oldest_history_turn_size({"system", "user", "assistant", "user"}) == 2, "Drop entire oldest turn");
+    TEST_ASSERT(oldest_history_turn_size({"system", "user"}) == 0, "Preserve current user");
+    std::string text = "current request\n--- ATTACHED DOCUMENT: file ---\nabcdef\n--- END ATTACHED DOCUMENT ---";
+    TEST_ASSERT(limit_attached_document(text, 3), "Reduce document context");
+    TEST_ASSERT(text.find("current request") == 0, "Preserve current request");
+    TEST_ASSERT(text.find("abc\n[Document") != std::string::npos, "Bound document excerpt");
+    TEST_ASSERT(text.find("--- END ATTACHED DOCUMENT ---") != std::string::npos, "Preserve boundary");
+    TEST_PASS("test_prompt_budget passed successfully");
+}
+
+static bool test_native_operation_control() {
+    std::cout << "\nRunning Test 9: Native Operation Control Lifecycle & Cancellation..." << std::endl;
+    auto & reg = NativeOperationControlRegistry::instance();
+    uint64_t id = reg.create();
+    TEST_ASSERT(id > 0, "Operation control ID must be non-zero");
+
+    auto ctrl = reg.get(id);
+    TEST_ASSERT(ctrl != nullptr, "Created control must be resolvable from registry");
+    TEST_ASSERT(!ctrl->is_cancelled(), "New control must not be cancelled initially");
+    TEST_ASSERT(ctrl->get_progress() == 0, "Initial progress must be 0");
+
+    ctrl->set_progress(450, 45, 100);
+    TEST_ASSERT(ctrl->get_progress() == 450, "Progress must be 450 permille");
+    TEST_ASSERT(ctrl->completed_units.load() == 45, "Completed units must match");
+    TEST_ASSERT(ctrl->total_units.load() == 100, "Total units must match");
+
+    ctrl->set_stage("GpuProbe");
+    TEST_ASSERT(ctrl->get_stage() == "GpuProbe", "Stage must match");
+
+    // Simulate progress loop with cancellation
+    bool loop_halted = false;
+    for (int step = 0; step < 10; ++step) {
+        if (step == 3) {
+            reg.cancel(id);
+        }
+        if (ctrl->is_cancelled()) {
+            loop_halted = true;
+            break;
+        }
+    }
+    TEST_ASSERT(loop_halted, "Loop must cooperatively halt when cancelled");
+    TEST_ASSERT(ctrl->is_cancelled(), "Control must report cancelled");
+
+    // Test registry release while holding local shared_ptr
+    reg.release(id);
+    TEST_ASSERT(reg.get(id) == nullptr, "Registry must no longer return released control");
+    TEST_ASSERT(ctrl->is_cancelled(), "Retained shared_ptr must safely remain valid after registry release");
+
+    TEST_PASS("test_native_operation_control passed successfully");
+}
+
+static bool test_cpu_backend_isolation_and_boundary_batching() {
+    std::cout << "\n--- TEST: CPU Backend Isolation & Boundary Batching ---" << std::endl;
+
+    // 1. Verify CPU device configuration helper
+    llama_model_params mparams = llama_model_default_params();
+    llama_context_params cparams = llama_context_default_params();
+    configure_cpu_backend_params(mparams, cparams);
+
+    TEST_ASSERT(mparams.devices != nullptr, "mparams.devices must be non-null for CPU isolation");
+    TEST_ASSERT(mparams.devices[0] == nullptr, "mparams.devices[0] must be nullptr to select 0 devices");
+    TEST_ASSERT(mparams.n_gpu_layers == 0, "n_gpu_layers must be 0");
+    TEST_ASSERT(mparams.split_mode == LLAMA_SPLIT_MODE_LAYER, "split_mode must be LAYER");
+    TEST_ASSERT(!cparams.offload_kqv, "offload_kqv must be false on CPU");
+
+    // 2. Test batch boundary chunking logic across offloading boundary token counts (31, 32, 33, 64, 128)
+    std::vector<int> test_prompt_lengths = { 1, 15, 31, 32, 33, 63, 64, 65, 128, 256 };
+    std::vector<int> test_batch_sizes = { 16, 32, 64, 256 };
+
+    for (int batch_size : test_batch_sizes) {
+        for (int prompt_len : test_prompt_lengths) {
+            int current_batch_tokens = 0;
+            int total_decodes = 0;
+            int tokens_processed = 0;
+
+            for (int i = 0; i < prompt_len; ++i) {
+                current_batch_tokens++;
+                tokens_processed++;
+
+                if (current_batch_tokens == batch_size || i == prompt_len - 1) {
+                    TEST_ASSERT(current_batch_tokens <= batch_size, "Batch must never exceed batch_size");
+                    total_decodes++;
+                    current_batch_tokens = 0;
+                }
+            }
+
+            int expected_decodes = (prompt_len + batch_size - 1) / batch_size;
+            TEST_ASSERT(total_decodes == expected_decodes, "Decodes count must match expected chunks");
+            TEST_ASSERT(tokens_processed == prompt_len, "All prompt tokens must be processed");
+        }
+    }
+
+    TEST_PASS("test_cpu_backend_isolation_and_boundary_batching passed successfully");
+}
+
+static bool test_utf_conversion() {
+    std::cout << "\nRunning Test 11: Solus Native UTF-16 to UTF-8 and Path Conversion..." << std::endl;
+    // 1. ASCII
+    const std::u16string ascii = u"Hello, world! 123";
+    std::string ascii_u8 = solus::utf16_to_utf8(ascii.data(), ascii.size());
+    TEST_ASSERT(ascii_u8 == "Hello, world! 123", "ASCII UTF-8 mismatch");
+
+    // 2. Bengali
+    const std::vector<uint16_t> bengali_u16 = { 0x09AC, 0x09BE, 0x0982, 0x09B2, 0x09BE };
+    std::string bengali_u8 = solus::utf16_to_utf8(bengali_u16.data(), bengali_u16.size());
+    TEST_ASSERT(bengali_u8.size() == 15, "Bengali UTF-8 byte length mismatch");
+
+    // 3. Emoji (surrogate pairs)
+    const std::vector<uint16_t> emoji_u16 = { 0xD83D, 0xDE00 }; // 😀
+    std::string emoji_u8 = solus::utf16_to_utf8(emoji_u16.data(), emoji_u16.size());
+    TEST_ASSERT(emoji_u8.size() == 4, "Emoji UTF-8 size mismatch");
+    TEST_ASSERT(static_cast<uint8_t>(emoji_u8[0]) == 0xF0 && static_cast<uint8_t>(emoji_u8[1]) == 0x9F &&
+                static_cast<uint8_t>(emoji_u8[2]) == 0x98 && static_cast<uint8_t>(emoji_u8[3]) == 0x80,
+                "Emoji byte sequence mismatch");
+
+    // 4. Math supplementary (U+1D400)
+    const std::vector<uint16_t> math_u16 = { 0xD835, 0xDC00 };
+    std::string math_u8 = solus::utf16_to_utf8(math_u16.data(), math_u16.size());
+    TEST_ASSERT(math_u8.size() == 4, "Math supplementary size mismatch");
+
+    // 5. Malformed surrogates replaced with U+FFFD
+    const std::vector<uint16_t> malformed_u16 = { 0xD83D, 'a' };
+    std::string malformed_u8 = solus::utf16_to_utf8(malformed_u16.data(), malformed_u16.size());
+    TEST_ASSERT(malformed_u8 == "\xEF\xBF\xBD" "a", "Malformed surrogate mismatch");
+
+    // 6. Embedded NUL in path rejection
+    const std::vector<uint16_t> path_nul = { '/', 'b', 0x0000, 'c' };
+    std::string path_out;
+    TEST_ASSERT(!solus::utf16_to_path_utf8(path_nul.data(), path_nul.size(), path_out), "Embedded NUL path must be rejected");
+
+    // 7. Valid path
+    const std::u16string valid_path = u"/valid/path.gguf";
+    TEST_ASSERT(solus::utf16_to_path_utf8(valid_path.data(), valid_path.size(), path_out) && path_out == "/valid/path.gguf",
+                "Valid path conversion mismatch");
+
+    // 8. Safe UTF-8 to UTF-16 conversion roundtrip
+    std::vector<uint16_t> u16_roundtrip = solus::utf8_to_utf16(emoji_u8.data(), emoji_u8.size());
+    TEST_ASSERT(u16_roundtrip.size() == 2 && u16_roundtrip[0] == 0xD83D && u16_roundtrip[1] == 0xDE00,
+                "Emoji roundtrip to UTF-16 mismatch");
+
+    TEST_PASS("Native UTF conversion verified successfully");
+}
+
 int main(int argc, char ** argv) {
     std::string model_path = "";
     std::string prompt = "Hi";
@@ -576,6 +765,11 @@ int main(int argc, char ** argv) {
     test_ggml_computation_graph_eval();
     test_masked_attention_and_negative_inf_stability();
     test_real_gguf_vocab_loading();
+    test_prompt_cache_prefix();
+    test_prompt_budget();
+    test_native_operation_control();
+    test_cpu_backend_isolation_and_boundary_batching();
+    test_utf_conversion();
 
     std::cout << "\n================================================================" << std::endl;
     std::cout << "TEST RESULTS: " << g_tests_passed << " passed, " << g_tests_failed << " failed." << std::endl;

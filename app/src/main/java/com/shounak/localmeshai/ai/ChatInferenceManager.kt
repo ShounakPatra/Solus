@@ -13,11 +13,14 @@ import com.google.ai.edge.litertlm.Message
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
 import com.google.mediapipe.tasks.genai.llminference.ProgressListener
+import com.shounak.localmeshai.utils.AppCacheCleaner
 import com.shounak.localmeshai.utils.AppSettings
 import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.ChatPromptPolicy
 import com.shounak.localmeshai.utils.ChatRuntimePolicy
 import com.shounak.localmeshai.utils.InferenceBackend
+import com.shounak.localmeshai.utils.StreamingResponsePublisher
+import com.shounak.localmeshai.utils.InferenceTiming
 import com.shounak.localmeshai.utils.InitCrashGuard
 import com.shounak.localmeshai.utils.LiteRtRuntimeCache
 import com.shounak.localmeshai.utils.ModelOutputSanitizer
@@ -46,18 +49,39 @@ class ChatInferenceManager(private val context: Context) {
     private var liteRtCacheDir: File? = null
     private var llamaCppEngine: LlamaCppEngine? = null
     private var runtime = RuntimeKind.None
+    private var activeModelLease: AutoCloseable? = null
     @Volatile private var activeMediaPipeSession: LlmInferenceSession? = null
     @Volatile private var activeMediaPipeFuture: Future<String>? = null
     @Volatile private var stopRequested = false
+    @Volatile private var activeLiteRtAdapter: LiteRtStreamAdapter? = null
+    @Volatile private var lastLiteRtSnapshot: StructuredResponseSnapshot? = null
     @Volatile private var isBeingClosed = false
     @Volatile private var isDefaultThinkingModel = false
     @Volatile private var supportsTextNoThinkingSwitch = false
+    val usesStatefulHistory: Boolean get() = runtime == RuntimeKind.LiteRtLm
+    val hasActiveStatefulConversation: Boolean get() = runtime == RuntimeKind.LiteRtLm && liteRtConversation != null && liteRtMessageCount > 0
+    val isReady: Boolean get() = when (runtime) {
+        RuntimeKind.LlamaCpp -> llamaCppEngine?.isInitialized == true
+        RuntimeKind.LiteRtLm -> liteRtConversation != null
+        RuntimeKind.MediaPipe -> mediaPipeInference != null
+        RuntimeKind.None -> false
+    }
+    val usesStructuredHistory: Boolean get() = runtime == RuntimeKind.LlamaCpp
+    @Volatile private var activeOperationControlId: Long = 0L
     @Volatile private var useNativeGemmaTaskTemplate = false
     @Volatile private var mediaPipeTemperature = DEFAULT_TEMPERATURE
     @Volatile private var liteRtConversationMode = LiteRtConversationMode.Default
     @Volatile private var liteRtMessageCount = 0
     var activeBackendDisplayName: String = ""
         private set
+    @Volatile private var currentGgufVerifiedSha: String = ""
+    @Volatile private var currentGgufModelPath: String = ""
+    @Volatile private var currentGgufThreads: Int = 4
+    @Volatile private var currentGgufPrefillThreads: Int = 4
+    @Volatile private var currentGgufContext: Int = 2048
+    @Volatile private var currentGgufBatch: Int = 256
+    @Volatile private var currentGgufUbatch: Int = 128
+    @Volatile private var currentGgufExpectedBytes: Long = 0L
 
     companion object {
         private const val TAG = "ChatInferenceManager"
@@ -89,7 +113,7 @@ class ChatInferenceManager(private val context: Context) {
      *
      * @param modelId the catalog ID used for crash-guard tracking
      */
-    fun initialize(
+    suspend fun initialize(
         modelPath: String,
         modelId: String = "",
         modelName: String = "",
@@ -101,7 +125,10 @@ class ChatInferenceManager(private val context: Context) {
          * Pass [ModelInfo.expectedFileSizeBytes] from the catalog entry.
          */
         expectedFileSizeBytes: Long = 0L,
-        contextWindowTokens: Int? = null
+        contextWindowTokens: Int? = null,
+        operationControlId: Long = 0L,
+        onModelProgress: ((stage: ModelLoadStage, completed: Long?, total: Long?) -> Unit)? = null,
+        onProgress: ((RequestProgress) -> Unit)? = null
     ) {
         val file = File(modelPath)
         if (!file.exists()) {
@@ -113,6 +140,17 @@ class ChatInferenceManager(private val context: Context) {
 
         val effectiveId = modelId.ifBlank { file.nameWithoutExtension }
         close()
+        com.shounak.localmeshai.data.StartupCoordinator.getInstance(context).awaitCrashGuardChecked()
+        val modelLease = com.shounak.localmeshai.utils.ModelArtifactStorage.leaseArtifact(file)
+        AppCacheCleaner.clearAppCache(context)
+        // Register active operation control handle only AFTER closing prior runtime!
+        activeOperationControlId = operationControlId
+        if (operationControlId != 0L && DefaultLlamaNativeBridge.getOperationControlProgress(operationControlId) == -2) {
+            modelLease.close()
+            throw CancellationException("Operation was cancelled before initialization")
+        }
+
+        try {
         val searchString = "$modelPath|$effectiveId|$modelName".lowercase()
         isDefaultThinkingModel = ThinkingModeConfig.isThinkingSupported(
             modelPath = modelPath,
@@ -147,35 +185,131 @@ class ChatInferenceManager(private val context: Context) {
         val pref = appSettings.settings.value.llamaBackendPreference.uppercase()
 
         if (ChatRuntimePolicy.isGgufModel(file.name)) {
-            val paramsB = DeviceUtils.estimateModelParametersB(modelName.ifBlank { effectiveId }, modelSize)
-            val dynamicContext = DeviceUtils.recommendedContextWindow(context, paramsB)
-            val dynamicThreads = DeviceUtils.recommendedThreadCount(context)
-            val (nBatch, nUbatch) = DeviceUtils.recommendedBatchSize(context)
+            val profile = GgufExecutionProfile.resolve(
+                context = context,
+                modelNameOrId = modelName.ifBlank { effectiveId },
+                modelSize = modelSize,
+                customContextTokens = contextWindowTokens,
+                backendPreference = pref
+            )
+            val dynamicContext = profile.contextTokens
+            val dynamicThreads = profile.decodeThreads
+            val prefillThreads = profile.prefillThreads
+            val nBatch = profile.batchTokens
+            val nUbatch = profile.microBatchTokens
 
-            val selectedBackend = when (pref) {
+            onModelProgress?.invoke(ModelLoadStage.VerifyingFile, null, null)
+            val verifiedSha = GgufGpuValidator.resolveModelSha256(
+                modelPath = file.absolutePath,
+                modelId = effectiveId,
+                context = context,
+                isCancelled = { stopRequested },
+                onProgress = { bytesRead, totalBytes ->
+                    onModelProgress?.invoke(ModelLoadStage.VerifyingFile, bytesRead, totalBytes)
+                }
+            )
+            val requestedBackend = when (pref) {
                 "VULKAN", "GPU" -> LlamaBackend.VULKAN
                 "CPU" -> LlamaBackend.CPU
-                else -> {
-                    if (LlamaCppEngine.isVulkanAvailable()) LlamaBackend.VULKAN else LlamaBackend.CPU
-                }
+                else -> null // Auto mode
             }
 
-            val engine = LlamaCppEngine(context)
-            engine.initialize(
-                modelPath = file.absolutePath,
+            val decision = GgufBackendPolicy.selectBackend(
+                context = context,
+                modelSha256 = verifiedSha,
                 threads = dynamicThreads,
                 contextWindow = dynamicContext,
                 nBatch = nBatch,
                 nUbatch = nUbatch,
-                backend = selectedBackend,
-                nGpuLayers = 99,
-                expectedFileSizeBytes = expectedFileSizeBytes
+                prefillThreads = prefillThreads,
+                requestedBackend = requestedBackend
             )
+
+            var selectedBackend = decision.selectedBackend
+            var fallbackReason: String? = if (decision.isAuto && selectedBackend == LlamaBackend.CPU) decision.reason else null
+            var engine = LlamaCppEngine(context)
+
+            try {
+                onModelProgress?.invoke(
+                    ModelLoadStage.ContextPreparation(if (selectedBackend == LlamaBackend.VULKAN) "Vulkan" else "CPU"),
+                    null,
+                    null
+                )
+                engine.initialize(
+                    modelPath = file.absolutePath,
+                    threads = dynamicThreads,
+                    prefillThreads = prefillThreads,
+                    contextWindow = dynamicContext,
+                    nBatch = nBatch,
+                    nUbatch = nUbatch,
+                    backend = selectedBackend,
+                    nGpuLayers = if (selectedBackend == LlamaBackend.VULKAN) 99 else 0,
+                    expectedFileSizeBytes = expectedFileSizeBytes,
+                    operationControlId = operationControlId
+                )
+            } catch (t: Throwable) {
+                if (t is CancellationException) { engine.close(); throw t }
+                if (selectedBackend == LlamaBackend.VULKAN) {
+                    Log.w(TAG, "Vulkan initialization failed, falling back to true CPU", t)
+                    fallbackReason = "Vulkan initialization failed: ${t.message}"
+                    onModelProgress?.invoke(ModelLoadStage.ContextPreparation("CPU"), null, null)
+                    engine.close() // Release failed GPU engine completely before retrying
+                    val cpuRetryEngine = LlamaCppEngine(context)
+                    try {
+                        cpuRetryEngine.initialize(
+                            modelPath = file.absolutePath,
+                            threads = dynamicThreads,
+                            prefillThreads = prefillThreads,
+                            contextWindow = dynamicContext,
+                            nBatch = nBatch,
+                            nUbatch = nUbatch,
+                            backend = LlamaBackend.CPU,
+                            nGpuLayers = 0,
+                            expectedFileSizeBytes = expectedFileSizeBytes,
+                            operationControlId = operationControlId
+                        )
+                        engine = cpuRetryEngine
+                        selectedBackend = LlamaBackend.CPU
+                    } catch (cpuError: Throwable) {
+                        cpuRetryEngine.close()
+                        llamaCppEngine = null
+                        runtime = RuntimeKind.None
+                        throw cpuError
+                    }
+                } else {
+                    engine.close()
+                    llamaCppEngine = null
+                    runtime = RuntimeKind.None
+                    throw t
+                }
+            }
+
+            if (selectedBackend == LlamaBackend.VULKAN && engine.activeBackend != LlamaBackend.VULKAN) {
+                fallbackReason = "Vulkan initialization fell back to CPU"
+            }
             llamaCppEngine = engine
             runtime = RuntimeKind.LlamaCpp
             _isGgufActive.value = true
-            activeBackendDisplayName = if (engine.activeBackend == LlamaBackend.VULKAN) "GGUF Vulkan GPU" else "GGUF CPU"
-            Log.i(TAG, "LlamaCpp GGUF engine initialized for: ${file.name} on ${engine.activeBackend.displayName} (ctx: $dynamicContext, threads: $dynamicThreads, batch: $nBatch/$nUbatch)")
+
+            // Set current model configuration for recovery fallback
+            currentGgufVerifiedSha = verifiedSha
+            currentGgufModelPath = file.absolutePath
+            currentGgufThreads = dynamicThreads
+            currentGgufPrefillThreads = prefillThreads
+            currentGgufContext = dynamicContext
+            currentGgufBatch = nBatch
+            currentGgufUbatch = nUbatch
+            currentGgufExpectedBytes = expectedFileSizeBytes
+
+            activeBackendDisplayName = if (engine.activeBackend == LlamaBackend.VULKAN) {
+                "GGUF Vulkan GPU"
+            } else if (!fallbackReason.isNullOrBlank()) {
+                "GGUF CPU ($fallbackReason)"
+            } else {
+                "GGUF CPU"
+            }
+            Log.i(TAG, "LlamaCpp GGUF engine initialized for: ${file.name} on $activeBackendDisplayName (ctx: $dynamicContext, threads: $dynamicThreads, prefillThreads: $prefillThreads, batch: $nBatch/$nUbatch)")
+            activeModelLease = modelLease
             return
         }
 
@@ -235,6 +369,15 @@ class ChatInferenceManager(private val context: Context) {
             initMediaPipe(modelPath, contextWindowTokens)
             activeBackendDisplayName = "MediaPipe CPU"
         }
+        activeModelLease = modelLease
+        } catch (t: Throwable) {
+            modelLease.close()
+            throw t
+        } finally {
+            if (activeOperationControlId == operationControlId) {
+                activeOperationControlId = 0L
+            }
+        }
     }
 
     private fun initLiteRtLm(
@@ -252,12 +395,13 @@ class ChatInferenceManager(private val context: Context) {
         val effectiveMaxTokens = (contextWindowTokens ?: 4096).coerceIn(2048, 8192)
         var engine: Engine? = null
         try {
+            val executionPolicy = RuntimeExecutionPolicy.resolve(context)
             val backend = when (inferenceBackend) {
                 InferenceBackend.LITERT_GPU -> Backend.GPU()
                 InferenceBackend.LITERT_CPU,
-                InferenceBackend.MEDIAPIPE -> Backend.CPU()
+                InferenceBackend.MEDIAPIPE -> Backend.CPU(executionPolicy.cpuThreads)
             }
-            val runtimeCacheDir = LiteRtRuntimeCache.prepare(context, modelId, inferenceBackend)
+            val runtimeCacheDir = LiteRtRuntimeCache.prepare(context, modelId, inferenceBackend, modelPath)
             liteRtCacheDir = runtimeCacheDir
             engine = Engine(
                 EngineConfig(
@@ -333,10 +477,15 @@ class ChatInferenceManager(private val context: Context) {
         structuredMessages: List<Pair<String, String>>? = null, // Structured conversation turns for GGUF
         restoreStatefulHistory: Boolean = false,
         thinkingMode: Boolean,
+        requestId: String = "",
+        sessionId: String = "",
+        timing: InferenceTiming? = null,
+        isRetry: Boolean = false,
+        onProgress: ((RequestProgress) -> Unit)? = null,
         onUpdate: (String) -> Unit
-    ): Pair<String, Long> = withContext(Dispatchers.IO) {
+    ): InferenceExecutionResult = withContext(Dispatchers.IO) {
         stopRequested = false
-        val startTime = System.currentTimeMillis()
+        lastLiteRtSnapshot = null
         // Keep the user's original spelling in chat/history, but translate
         // Unicode scripts such as (a+b)² for the inference request.  Small
         // models commonly mis-tokenize those characters while understanding
@@ -349,7 +498,9 @@ class ChatInferenceManager(private val context: Context) {
         // The memory context is seeded on the first turn or after reset, but NOT
         // repeatedly injected into subsequent user turns, which causes repetitive loops
         // and identical response prefixes across turns.
-        val liteRtUserText = if (runtime == RuntimeKind.LiteRtLm && restoreStatefulHistory) {
+        val liteRtUserText = if (runtime != RuntimeKind.LiteRtLm) {
+            ""
+        } else if (restoreStatefulHistory) {
             liteRtMessageCount = 1
             inferencePrompt
         } else if (liteRtMessageCount == 0) {
@@ -373,7 +524,7 @@ class ChatInferenceManager(private val context: Context) {
         } else {
             inferencePrompt
         }
-        val mediaPipePrompt = when {
+        val mediaPipePrompt = if (runtime != RuntimeKind.MediaPipe) "" else when {
             !thinkingMode ->
                 buildNoThinkingMediaPipePrompt(mediaPipeBasePrompt)
             thinkingMode && !isDefaultThinkingModel ->
@@ -381,131 +532,163 @@ class ChatInferenceManager(private val context: Context) {
             else -> mediaPipeBasePrompt
         }
 
-        // Strip <think> blocks in real-time when thinking is disabled.
-        val shouldStripThinking = !thinkingMode
-        val effectiveOnUpdate: (String) -> Unit = if (shouldStripThinking) {
-            { partial -> onUpdate(stripThinkingTags(partial)) }
-        } else {
-            onUpdate
+        val responseController = InferenceResponseController(
+            thinkingMode = thinkingMode,
+            rawUserText = rawUserText,
+            requestId = requestId,
+            initialAttemptId = 1
+        )
+        val publisher = StreamingResponsePublisher(
+            scope = this,
+            transform = { rawSnapshot -> responseController.formatSnapshot(rawSnapshot) },
+            finalTransform = { rawSnapshot -> responseController.formatSnapshot(rawSnapshot) },
+            publish = onUpdate
+        )
+        var attempt = 1
+        val effectiveOnUpdate: (String) -> Unit = { delta ->
+            if (delta.isNotEmpty()) {
+                responseController.appendDelta(delta, reqId = requestId, attemptId = attempt)
+                publisher.appendDelta(delta)
+            }
         }
+
+        onProgress?.invoke(RequestProgress.ProcessingPrompt)
+        var lastLlamaMetrics: LlamaGenerationMetrics? = null
+        var lastNonLlamaTokenCount: Int? = null
+        val reportProgress: (RequestProgress) -> Unit = {
+            if (it == RequestProgress.RecoveringOnCpu) {
+                attempt = 2
+                lastLlamaMetrics = null
+                lastNonLlamaTokenCount = null
+                lastLiteRtSnapshot = null
+                responseController.beginAttempt(2)
+                publisher.beginAttempt(2)
+            }
+            onProgress?.invoke(it)
+        }
+
+        fun currentMetrics() = timing?.buildMetrics(
+            requestId = requestId, sessionId = sessionId, attempt = attempt,
+            generatedTokens = lastLlamaMetrics?.tokenCount ?: lastNonLlamaTokenCount,
+            isTokenCountEstimated = lastLlamaMetrics == null,
+            nativeDecodeDurationMs = lastLlamaMetrics?.decodeDurationMs,
+            prefillDurationMs = lastLlamaMetrics?.prefillDurationMs,
+            promptTokens = lastLlamaMetrics?.promptTokens,
+            reusedTokens = lastLlamaMetrics?.reusedTokens,
+            evaluatedTokens = lastLlamaMetrics?.evaluatedTokens
+        )
+
         try {
             val response = when (runtime) {
                 RuntimeKind.LiteRtLm -> streamLiteRtLm(
                     prompt = liteRtUserText,
                     thinkingMode = thinkingMode,
+                    requestId = requestId,
+                    timing = timing,
+                    onProgress = reportProgress,
+                    onTokensGenerated = { lastNonLlamaTokenCount = it },
+                    responseSnapshot = publisher::rawText,
                     onUpdate = effectiveOnUpdate
                 )
-                RuntimeKind.MediaPipe -> streamMediaPipe(mediaPipePrompt, effectiveOnUpdate)
+                RuntimeKind.MediaPipe -> streamMediaPipe(
+                    prompt = mediaPipePrompt,
+                    timing = timing,
+                    onProgress = reportProgress,
+                    onTokensGenerated = { lastNonLlamaTokenCount = it },
+                    responseSnapshot = publisher::rawText,
+                    onUpdate = effectiveOnUpdate
+                )
                 RuntimeKind.LlamaCpp -> streamLlamaCpp(
                     prompt = inferencePrompt,
                     rawUserText = inferenceUserText,
                     structuredMessages = structuredMessages,
+                    noThinking = !thinkingMode,
+                    timing = timing,
+                    onProgress = reportProgress,
+                    onMetrics = { m -> lastLlamaMetrics = m },
+                    responseSnapshot = publisher::rawText,
+                    publisher = publisher,
+                    responseController = responseController,
                     onUpdate = effectiveOnUpdate
                 )
-                RuntimeKind.None -> "Inference not initialized"
+                RuntimeKind.None -> throw IllegalStateException("Inference not initialized")
             }
-            var cleanResponse = ModelOutputSanitizer.cleanAssistantText(
-                text = finalizeModelOutput(
-                    text = response,
-                    thinkingMode = thinkingMode,
-                    shouldStripThinking = shouldStripThinking
-                ),
-                latestUserText = rawUserText
+            responseController.finish()
+            val rawReasoning = if (runtime == RuntimeKind.LiteRtLm) {
+                lastLiteRtSnapshot?.reasoningText.orEmpty().ifBlank { responseController.getReasoningText() }
+            } else {
+                responseController.getReasoningText()
+            }
+            val cleanResponse = if (runtime == RuntimeKind.LiteRtLm) {
+                ModelOutputSanitizer.cleanAssistantText(response, rawUserText)
+            } else {
+                responseController.getFinalAnswer()
+            }
+            val finalized = ResponseFinalizer.finalize(
+                requestId = requestId,
+                attemptId = attempt,
+                rawAnswer = cleanResponse,
+                rawReasoning = rawReasoning,
+                isStopped = stopRequested,
+                acceptedAnswerFallback = responseController.acceptedAnswerText(),
+                thinkingMode = thinkingMode
             )
-            if (cleanResponse.isBlank() && rawUserText.isNotBlank() && !stopRequested) {
-                val isGreeting = ModelResponseQuality.isGreeting(rawUserText)
-                val effectiveMemoryContext = if (isGreeting) "" else memoryContext
-                val retryResponse = streamDirectAnswerRetry(
-                    rawUserText = inferenceUserText,
-                    memoryContext = effectiveMemoryContext,
-                    onUpdate = onUpdate
-                )
-                val retryCleanResponse = ModelOutputSanitizer.cleanAssistantText(
-                    text = finalizeModelOutput(
-                        text = retryResponse,
-                        thinkingMode = false,
-                        shouldStripThinking = true
-                    ),
-                    latestUserText = rawUserText
-                )
-                if (retryCleanResponse.isNotBlank()) {
-                    cleanResponse = retryCleanResponse
-                }
-            }
-            if (
-                runtime != RuntimeKind.None &&
-                rawUserText.isNotBlank() &&
-                !stopRequested &&
-                ModelResponseQuality.isGenericNonAnswer(cleanResponse, rawUserText)
-            ) {
-                var retryAccumulated = ""
-                val retryOnUpdate: (String) -> Unit = { partial ->
-                    retryAccumulated = partial
-                }
-                val retryResponse = when (runtime) {
-                    RuntimeKind.MediaPipe -> streamMediaPipe(
-                        prompt = buildMediaPipeRetryPrompt(
-                            rawUserText = inferenceUserText,
-                            includeThinkingInstruction = thinkingMode && !isDefaultThinkingModel,
-                            memoryContext = memoryContext
-                        ),
-                        onUpdate = retryOnUpdate,
-                        temperature = RETRY_TEMPERATURE,
-                        seedSalt = 1
-                    )
-                    RuntimeKind.LiteRtLm -> streamDirectAnswerRetry(
-                        rawUserText = inferenceUserText,
-                        onUpdate = retryOnUpdate,
-                        memoryContext = memoryContext
-                    )
-                    RuntimeKind.LlamaCpp -> streamDirectAnswerRetry(
-                        rawUserText = inferenceUserText,
-                        onUpdate = retryOnUpdate,
-                        memoryContext = memoryContext
-                    )
-                    RuntimeKind.None -> ""
-                }
-                val retryCleanResponse = ModelOutputSanitizer.cleanAssistantText(
-                    text = finalizeModelOutput(
-                        text = retryResponse,
-                        thinkingMode = thinkingMode,
-                        shouldStripThinking = shouldStripThinking
-                    ),
-                    latestUserText = rawUserText
-                )
-                if (
-                    retryCleanResponse.isNotBlank() &&
-                    !ModelResponseQuality.isGenericNonAnswer(retryCleanResponse, rawUserText)
-                ) {
-                    cleanResponse = retryCleanResponse
-                    effectiveOnUpdate(cleanResponse)
-                } else {
-                    val fallback = buildBestAvailableFallback(
-                        rawUserText = rawUserText,
-                        firstResponse = cleanResponse,
-                        retryResponse = retryCleanResponse
-                    )
-                    if (fallback.isNotBlank()) {
-                        cleanResponse = fallback
-                        effectiveOnUpdate(cleanResponse)
-                    } else if (!ModelResponseQuality.isReasoningLeak(cleanResponse)) {
-                        effectiveOnUpdate(cleanResponse)
-                    } else {
-                        cleanResponse = ""
-                        effectiveOnUpdate("")
-                    }
-                }
-            }
-            cleanResponse to (System.currentTimeMillis() - startTime)
+            val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
+            publisher.finishExplicit(finalFormatted)
+            timing?.endGeneration()
+            finalized.toExecutionResult(currentMetrics())
         } catch (exception: CancellationException) {
-            throw exception
+            responseController.finish()
+            val acceptedAnswer = responseController.getFinalAnswer()
+            val rawReasoning = responseController.getReasoningText()
+            timing?.endGeneration()
+            val finalized = ResponseFinalizer.finalize(
+                requestId = requestId,
+                attemptId = attempt,
+                rawAnswer = acceptedAnswer,
+                rawReasoning = rawReasoning,
+                isStopped = true,
+                acceptedAnswerFallback = responseController.acceptedAnswerText(),
+                thinkingMode = thinkingMode
+            )
+            val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
+            publisher.finishExplicit(finalFormatted)
+            finalized.toExecutionResult(currentMetrics())
         } catch (exception: FutureCancellationException) {
-            throw CancellationException("Generation cancelled").also { it.initCause(exception) }
+            responseController.finish()
+            val acceptedAnswer = responseController.getFinalAnswer()
+            val rawReasoning = responseController.getReasoningText()
+            timing?.endGeneration()
+            val finalized = ResponseFinalizer.finalize(
+                requestId = requestId,
+                attemptId = attempt,
+                rawAnswer = acceptedAnswer,
+                rawReasoning = rawReasoning,
+                isStopped = true,
+                acceptedAnswerFallback = responseController.acceptedAnswerText(),
+                thinkingMode = thinkingMode
+            )
+            val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
+            publisher.finishExplicit(finalFormatted)
+            finalized.toExecutionResult(currentMetrics())
         } catch (exception: Exception) {
-            if (stopRequested) {
-                throw CancellationException("Generation cancelled").also { it.initCause(exception) }
-            }
-            "Error during inference: ${exception.localizedMessage}" to 0L
+            responseController.finish()
+            val acceptedAnswer = responseController.getFinalAnswer()
+            val rawReasoning = responseController.getReasoningText()
+            timing?.endGeneration()
+            val finalized = ResponseFinalizer.finalize(
+                requestId = requestId,
+                attemptId = attempt,
+                rawAnswer = acceptedAnswer,
+                rawReasoning = rawReasoning,
+                isStopped = stopRequested,
+                sdkError = if (stopRequested) null else exception,
+                acceptedAnswerFallback = responseController.acceptedAnswerText(),
+                thinkingMode = thinkingMode
+            )
+            val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
+            publisher.finishExplicit(finalFormatted)
+            finalized.toExecutionResult(currentMetrics())
         }
     }
 
@@ -513,10 +696,14 @@ class ChatInferenceManager(private val context: Context) {
     private suspend fun streamLiteRtLm(
         prompt: String,
         thinkingMode: Boolean,
+        requestId: String = "",
+        timing: InferenceTiming? = null,
+        onProgress: ((RequestProgress) -> Unit)? = null,
+        onTokensGenerated: ((Int) -> Unit)? = null,
+        responseSnapshot: () -> String,
         onUpdate: (String) -> Unit
     ): String {
-        val conversation = liteRtConversation ?: return "Inference not initialized"
-        val response = StringBuilder()
+        val conversation = liteRtConversation ?: throw IllegalStateException("Inference not initialized")
         val requestPrompt = if (!thinkingMode && supportsTextNoThinkingSwitch) {
             NoThinkingPromptUtils.wrap(prompt)
         } else {
@@ -528,76 +715,87 @@ class ChatInferenceManager(private val context: Context) {
             thinkingMode = thinkingMode
         )
         val requestStartedAt = System.currentTimeMillis()
-        var firstChunkAt = 0L
-        var sawThinkMarkup = false
-        val renderedPrompt = runCatching {
-            conversation.renderMessageIntoString(requestMessage, requestContext)
-        }.getOrNull()
+        var firstChunkRecorded = false
         Log.i(
             TAG,
             "LiteRT request mode=${if (thinkingMode) "thinking" else "direct"} " +
                 "defaultThinking=$isDefaultThinkingModel textSwitch=${requestPrompt != prompt} " +
-                "contextKeys=${requestContext.keys} renderedChars=${renderedPrompt?.length ?: -1} " +
-                "renderedHasThink=${renderedPrompt?.contains("<think>", ignoreCase = true) == true}"
+                "contextKeys=${requestContext.keys} promptChars=${requestPrompt.length}"
         )
-        try {
-            // The request-level value overrides any default embedded in the model's
-            // preface/chat template. This is the hard Qwen switch: with false, the
-            // template pre-fills an empty think block and decoding starts at the answer.
-            conversation.sendMessageAsync(requestMessage, requestContext).collect { message ->
-                if (stopRequested) {
-                    throw CancellationException("Generation cancelled")
+        val adapter = LiteRtStreamAdapter(
+            requestId = requestId,
+            attemptId = 1,
+            thinkingMode = thinkingMode,
+            onFirstToken = {
+                timing?.recordFirstToken()
+                if (!firstChunkRecorded) {
+                    firstChunkRecorded = true
+                    onProgress?.invoke(RequestProgress.Generating)
+                    Log.i(
+                        TAG,
+                        "LiteRT first token mode=${if (thinkingMode) "thinking" else "direct"} " +
+                            "latencyMs=${System.currentTimeMillis() - requestStartedAt}"
+                    )
                 }
-                val chunk = message.toString()
-                if (firstChunkAt == 0L && chunk.isNotEmpty()) {
-                    firstChunkAt = System.currentTimeMillis()
+            },
+            onDelta = { delta ->
+                if (stopRequested) return@LiteRtStreamAdapter
+                if (!firstChunkRecorded && delta.isNotEmpty()) {
+                    firstChunkRecorded = true
+                    timing?.recordFirstToken()
+                    onProgress?.invoke(RequestProgress.Generating)
                     Log.i(
                         TAG,
                         "LiteRT first chunk mode=${if (thinkingMode) "thinking" else "direct"} " +
-                            "latencyMs=${firstChunkAt - requestStartedAt} chars=${chunk.length} " +
-                            "hasThinkMarkup=${chunk.contains("<think>", ignoreCase = true) || chunk.contains("</think>", ignoreCase = true)}"
+                            "latencyMs=${System.currentTimeMillis() - requestStartedAt} chars=${delta.length}"
                     )
                 }
-                sawThinkMarkup = sawThinkMarkup ||
-                    chunk.contains("<think>", ignoreCase = true) ||
-                    chunk.contains("</think>", ignoreCase = true)
-                val current = response.toString()
-                if (current.isNotEmpty() && chunk.startsWith(current)) {
-                    response.clear()
-                    response.append(chunk)
-                } else {
-                    response.append(chunk)
-                }
-                onUpdate(ModelOutputSanitizer.clean(response.toString()))
+                timing?.recordChunk(delta)
+                runCatching { onUpdate(delta) }
             }
-        } catch (exception: CancellationException) {
-            throw exception
+        )
+        activeLiteRtAdapter = adapter
+        try {
+            conversation.sendMessageAsync(requestMessage, adapter, requestContext)
+            val finalSnapshot = adapter.awaitDone()
+            lastLiteRtSnapshot = finalSnapshot
+            val answerText = finalSnapshot.answerText
+            val rawTokens = if (adapter.callbackCount > 0) {
+                adapter.callbackCount
+            } else {
+                val combinedText = answerText + finalSnapshot.reasoningText
+                maxOf(1, Math.round(combinedText.length / 3.8).toInt())
+            }
+            onTokensGenerated?.invoke(rawTokens)
+            return answerText
+        } catch (cancelled: CancellationException) {
+            adapter.cancel(conversation)
+            lastLiteRtSnapshot = adapter.currentSnapshot()
+            throw cancelled
         } catch (exception: Exception) {
+            lastLiteRtSnapshot = adapter.currentSnapshot()
             if (stopRequested) {
                 throw CancellationException("Generation cancelled").also { it.initCause(exception) }
             }
             throw exception
+        } finally {
+            if (activeLiteRtAdapter === adapter) {
+                activeLiteRtAdapter = null
+            }
         }
-        if (stopRequested) {
-            throw CancellationException("Generation cancelled")
-        }
-        Log.i(
-            TAG,
-            "LiteRT response mode=${if (thinkingMode) "thinking" else "direct"} " +
-                "firstChunkMs=${firstChunkAt.takeIf { it > 0L }?.minus(requestStartedAt) ?: -1L} " +
-                "totalMs=${System.currentTimeMillis() - requestStartedAt} " +
-                "responseChars=${response.length} sawThinkMarkup=$sawThinkMarkup"
-        )
-        return response.toString()
     }
 
     private fun streamMediaPipe(
         prompt: String,
-        onUpdate: (String) -> Unit,
         temperature: Float = mediaPipeTemperature,
-        seedSalt: Int = 0
+        seedSalt: Int = 0,
+        timing: InferenceTiming? = null,
+        onProgress: ((RequestProgress) -> Unit)? = null,
+        onTokensGenerated: ((Int) -> Unit)? = null,
+        responseSnapshot: () -> String,
+        onUpdate: (String) -> Unit
     ): String {
-        val inference = mediaPipeInference ?: return "Inference not initialized"
+        val inference = mediaPipeInference ?: throw IllegalStateException("Inference not initialized")
         val sessionOptions = LlmInferenceSession.LlmInferenceSessionOptions.builder()
             .setTopK(40)
             .setTopP(0.95f)
@@ -606,8 +804,9 @@ class ChatInferenceManager(private val context: Context) {
             .build()
         val session = LlmInferenceSession.createFromOptions(inference, sessionOptions)
         activeMediaPipeSession = session
-        val accumulated = StringBuilder()
         var activeFuture: Future<String>? = null
+        var firstChunkRecorded = false
+        var mediaPipeTokenCount = 0
         try {
             if (stopRequested) {
                 throw CancellationException("Generation cancelled")
@@ -616,14 +815,15 @@ class ChatInferenceManager(private val context: Context) {
             val future = session.generateResponseAsync(
                 ProgressListener<String> { partial, _ ->
                     if (stopRequested || partial.isNullOrEmpty()) return@ProgressListener
-                    val current = accumulated.toString()
-                    if (current.isNotEmpty() && partial.startsWith(current)) {
-                        accumulated.clear()
-                        accumulated.append(partial)
-                    } else {
-                        accumulated.append(partial)
+                    mediaPipeTokenCount++
+                    if (!firstChunkRecorded) {
+                        firstChunkRecorded = true
+                        timing?.recordFirstToken()
+                        onProgress?.invoke(RequestProgress.Generating)
                     }
-                    onUpdate(ModelOutputSanitizer.clean(accumulated.toString()))
+
+                    timing?.recordChunk(partial)
+                    onUpdate(partial)
                 }
             )
             activeFuture = future
@@ -647,12 +847,19 @@ class ChatInferenceManager(private val context: Context) {
             if (stopRequested) {
                 throw CancellationException("Generation cancelled")
             }
-            val accumulatedText = accumulated.toString()
-            if (finalResponse.isNotBlank() && finalResponse != accumulatedText) {
-                onUpdate(ModelOutputSanitizer.clean(finalResponse))
-                return finalResponse
+            val accumulatedText = responseSnapshot()
+            val resultText = if (finalResponse.isNotBlank() && finalResponse != accumulatedText) {
+                finalResponse
+            } else {
+                accumulatedText.ifBlank { finalResponse.orEmpty() }
             }
-        return accumulatedText.ifBlank { finalResponse.orEmpty() }
+            val rawTokens = if (mediaPipeTokenCount > 0) {
+                mediaPipeTokenCount
+            } else {
+                maxOf(1, Math.round(resultText.length / 3.8).toInt())
+            }
+            onTokensGenerated?.invoke(rawTokens)
+            return resultText
         } finally {
             if (activeMediaPipeFuture === activeFuture) {
                 activeMediaPipeFuture = null
@@ -672,130 +879,119 @@ class ChatInferenceManager(private val context: Context) {
         prompt: String,
         rawUserText: String = "",
         structuredMessages: List<Pair<String, String>>? = null,
+        noThinking: Boolean = false,
+        timing: InferenceTiming? = null,
+        onProgress: ((RequestProgress) -> Unit)? = null,
+        onMetrics: ((LlamaGenerationMetrics) -> Unit)? = null,
+        responseSnapshot: () -> String,
+        publisher: StreamingResponsePublisher? = null,
+        responseController: InferenceResponseController? = null,
         onUpdate: (String) -> Unit
     ): String {
-        val engine = llamaCppEngine ?: return "GGUF engine not initialized"
-        val sb = StringBuilder()
+        val engine = llamaCppEngine ?: throw IllegalStateException("GGUF engine not initialized")
         // Use structured messages directly when available.
-        // When they are absent (e.g. direct-answer retry), synthesise a single user turn
-        // from rawUserText. Never re-parse a pre-formatted text transcript back into roles —
-        // that approach misparses any user content that literally contains "User:", etc.
-        val messages: List<Pair<String, String>> = structuredMessages
+        // When they are absent, synthesise a single user turn from rawUserText.
+        val baseMessages: List<Pair<String, String>> = structuredMessages
             ?: if (rawUserText.isNotBlank()) listOf("user" to rawUserText.trim())
             else listOf("user" to prompt.trim())
-        val result = engine.generateStream(prompt = prompt, messages = messages) { token ->
-            if (stopRequested) return@generateStream
-            sb.append(token)
-            onUpdate(ModelOutputSanitizer.clean(sb.toString()))
-        }
-        if (result == LlamaGenerationResult.Stopped || stopRequested) {
-            throw CancellationException("Generation stopped by user")
-        }
-        return sb.toString()
-    }
+        val messages = NoThinkingPromptUtils.wrapLatestUserTurn(
+            baseMessages, enabled = noThinking && supportsTextNoThinkingSwitch
+        )
 
-    private suspend fun streamDirectAnswerRetry(
-        rawUserText: String,
-        onUpdate: (String) -> Unit,
-        memoryContext: String = ""
-    ): String {
-        val retryOnUpdate: (String) -> Unit = { partial ->
-            val visiblePartial = ModelOutputSanitizer.clean(stripThinkingTags(partial))
-            if (visiblePartial.isNotBlank()) {
-                onUpdate(visiblePartial)
-            }
-        }
-        return when (runtime) {
-            RuntimeKind.LiteRtLm -> {
-                resetConversation(noThinking = true)
-                val retryPrompt = if (useNativeGemmaTaskTemplate) {
-                    ChatPromptPolicy.nativeGemmaRetryPrompt(rawUserText, memoryContext)
-                } else {
-                    buildDirectAnswerRetryPrompt(
-                        rawUserText = rawUserText,
-                        forceNoThinking = supportsTextNoThinkingSwitch,
-                        memoryContext = memoryContext
-                    )
-                }
-                streamLiteRtLm(
-                    prompt = retryPrompt,
-                    thinkingMode = false,
-                    onUpdate = retryOnUpdate
-                )
-            }
-            RuntimeKind.MediaPipe -> {
-                val retryPrompt = if (useNativeGemmaTaskTemplate) {
-                    ChatPromptPolicy.nativeGemmaRetryPrompt(rawUserText, memoryContext)
-                } else {
-                    buildDirectAnswerRetryPrompt(
-                        rawUserText = rawUserText,
-                        forceNoThinking = supportsTextNoThinkingSwitch,
-                        memoryContext = memoryContext
-                    )
-                }
-                streamMediaPipe(
-                    prompt = retryPrompt,
-                    onUpdate = retryOnUpdate,
-                    temperature = RETRY_TEMPERATURE,
-                    seedSalt = 2
-                )
-            }
-            RuntimeKind.LlamaCpp -> {
-                val retryPrompt = buildDirectAnswerRetryPrompt(
-                    rawUserText = rawUserText,
-                    forceNoThinking = false,
-                    memoryContext = memoryContext
-                )
-                val structuredRetryMessages = listOf(
-                    "system" to "You are a direct, helpful assistant. Provide only the final answer directly. Never output internal thoughts, reasoning steps, or <think> tags.",
-                    "user" to retryPrompt
-                )
-                streamLlamaCpp(
-                    prompt = retryPrompt,
-                    rawUserText = retryPrompt,
-                    structuredMessages = structuredRetryMessages,
-                    onUpdate = retryOnUpdate
-                )
-            }
-            RuntimeKind.None -> ""
-        }
-    }
+        val isVulkan = engine.activeBackend == LlamaBackend.VULKAN
+        var firstTokenRecorded = false
 
-    private fun buildMediaPipeRetryPrompt(
-        rawUserText: String,
-        includeThinkingInstruction: Boolean,
-        memoryContext: String = ""
-    ): String {
-        if (useNativeGemmaTaskTemplate) {
-            return ChatPromptPolicy.nativeGemmaRetryPrompt(rawUserText, memoryContext)
-        }
-        if (ModelResponseQuality.isGreeting(rawUserText)) {
-            val prompt = "Respond warmly and naturally with a brief greeting.\n\nUser: ${rawUserText.trim()}\nAssistant:"
-            return if (includeThinkingInstruction) {
-                "Reason carefully before giving the final answer.\n\n$prompt"
-            } else if (supportsTextNoThinkingSwitch) {
-                NoThinkingPromptUtils.wrap(prompt)
+        try {
+            val result = engine.generateStream(
+                prompt = prompt,
+                messages = messages,
+                onMetrics = onMetrics,
+                onFirstToken = { timing?.recordFirstToken(); onProgress?.invoke(RequestProgress.Generating) }
+            ) { token ->
+                if (stopRequested) return@generateStream
+                if (!firstTokenRecorded) {
+                    firstTokenRecorded = true
+                    onProgress?.invoke(RequestProgress.Generating)
+                }
+
+                timing?.recordChunk(token)
+                onUpdate(token)
+            }
+            if (result == LlamaGenerationResult.Stopped || stopRequested) {
+                throw CancellationException("Generation stopped by user")
+            }
+            return responseSnapshot()
+        } catch (e: LlamaExecutionException) {
+            val isRecoverable = isVulkan && (
+                e.category == LlamaFailureCategory.NumericalInstability ||
+                e.category == LlamaFailureCategory.BackendExecution ||
+                e.category == LlamaFailureCategory.GenerationDecodeFailed ||
+                e.category == LlamaFailureCategory.PromptDecodeFailed
+            )
+
+            if (isRecoverable && !stopRequested && currentGgufModelPath.isNotBlank()) {
+                Log.w(TAG, "Recoverable Vulkan error (${e.category}: ${e.message}). Releasing GPU context and retrying on CPU...")
+                onProgress?.invoke(RequestProgress.RecoveringOnCpu)
+                // 1. Release GPU context
+                engine.close()
+
+                // 2. Clear failed partial response
+                responseController?.beginAttempt(2)
+                publisher?.beginAttempt(2) ?: onUpdate("")
+
+                // 3. Reinitialize on CPU
+                val cpuEngine = LlamaCppEngine(context)
+                try {
+                    val actualSha = GgufGpuValidator.resolveModelSha256(currentGgufModelPath, context = context)
+                    check(actualSha == currentGgufVerifiedSha) { "Selected model changed during generation; reload it" }
+                    cpuEngine.initialize(
+                        modelPath = currentGgufModelPath,
+                        threads = currentGgufThreads,
+                        prefillThreads = currentGgufPrefillThreads,
+                        contextWindow = currentGgufContext,
+                        nBatch = currentGgufBatch,
+                        nUbatch = currentGgufUbatch,
+                        backend = LlamaBackend.CPU,
+                        nGpuLayers = 0,
+                        expectedFileSizeBytes = currentGgufExpectedBytes
+                    )
+                } catch (failure: Throwable) {
+                    cpuEngine.close()
+                    llamaCppEngine = null
+                    runtime = RuntimeKind.None
+                    _isGgufActive.value = false
+                    throw failure
+                }
+                llamaCppEngine = cpuEngine
+                activeBackendDisplayName = "GGUF CPU (Vulkan recovery fallback: ${e.category})"
+
+                // 4. Retry generation once on CPU with the same messages
+                var retryFirstTokenRecorded = false
+                val retryResult = cpuEngine.generateStream(
+                    prompt = prompt,
+                    messages = messages,
+                    onMetrics = onMetrics,
+                    onFirstToken = { timing?.recordFirstToken(); onProgress?.invoke(RequestProgress.Generating) }
+                ) { token ->
+                    if (stopRequested) return@generateStream
+                    if (!retryFirstTokenRecorded) {
+                        retryFirstTokenRecorded = true
+                        onProgress?.invoke(RequestProgress.Generating)
+                    }
+
+                    timing?.recordChunk(token)
+                    onUpdate(token)
+                }
+                if (retryResult == LlamaGenerationResult.Stopped || stopRequested) {
+                    throw CancellationException("Generation stopped by user")
+                }
+                return responseSnapshot()
             } else {
-                prompt
+                throw e
             }
         }
-        val memoryPrefix = if (memoryContext.isNotBlank() && !rawUserText.contains("[User Memory & Preferences]")) {
-            "${memoryContext.trim()}\n\n"
-        } else {
-            ""
-        }
-        val prompt = "${memoryPrefix}Complete the user's request now. Do not acknowledge these instructions. " +
-            "Do not say you understand. " +
-            "Do not ask how you can help. If the user asks you to write something, write it.\n\n" +
-            "User request:\n$rawUserText\n\nAnswer:"
-        return if (includeThinkingInstruction) {
-            "Reason carefully before giving the final answer.\n\n$prompt"
-        } else if (supportsTextNoThinkingSwitch) {
-            NoThinkingPromptUtils.wrap(prompt)
-        } else {
-            prompt
-        }
     }
+
 
     private fun buildNoThinkingMediaPipePrompt(prompt: String): String {
         val directAnswerPrompt = "Skip analysis and reasoning. Do not emit <think> tags. " +
@@ -807,48 +1003,6 @@ class ChatInferenceManager(private val context: Context) {
         }
     }
 
-    private fun buildDirectAnswerRetryPrompt(
-        rawUserText: String,
-        forceNoThinking: Boolean = false,
-        memoryContext: String = ""
-    ): String {
-        if (ModelResponseQuality.isGreeting(rawUserText)) {
-            val prompt = "Respond warmly and naturally with a brief greeting.\n\nUser: ${rawUserText.trim()}\nAssistant:"
-            return if (forceNoThinking) NoThinkingPromptUtils.wrap(prompt) else prompt
-        }
-        val memoryPrefix = if (memoryContext.isNotBlank() && !rawUserText.contains("[User Memory & Preferences]")) {
-            "${memoryContext.trim()}\n\n"
-        } else {
-            ""
-        }
-        val prompt = "Provide only the direct final answer. Do not output <think> tags. " +
-            "Do not analyze, explain your thought process, or plan your response.\n\n" +
-            "${memoryPrefix}User request:\n$rawUserText\n\nFinal answer:"
-        return if (forceNoThinking) NoThinkingPromptUtils.wrap(prompt) else prompt
-    }
-
-    private fun buildBestAvailableFallback(
-        rawUserText: String,
-        firstResponse: String,
-        retryResponse: String
-    ): String {
-        val candidate = when {
-            retryResponse.isNotBlank() && !ModelResponseQuality.isReasoningLeak(retryResponse) -> retryResponse
-            firstResponse.isNotBlank() && !ModelResponseQuality.isReasoningLeak(firstResponse) -> firstResponse
-            else -> ""
-        }
-        if (candidate.isNotBlank() && !ModelResponseQuality.isGenericNonAnswer(candidate, rawUserText)) {
-            return candidate
-        }
-        val request = rawUserText.trim().lowercase(Locale.US)
-        return when {
-            ModelResponseQuality.isGreeting(request) ->
-                "Hello! How can I help you today?"
-            request.contains("what can you do") || request.contains("what do you do") ->
-                "I can answer questions, explain concepts, summarize text, draft short writing, and help with simple code."
-            else -> ""
-        }
-    }
 
     val isStopRequested: Boolean
         get() = stopRequested
@@ -859,17 +1013,24 @@ class ChatInferenceManager(private val context: Context) {
 
     fun cancelGeneration() {
         stopRequested = true
+        val opId = activeOperationControlId
+        if (opId != 0L) {
+            runCatching { LlamaCppEngine.nativeCancelOperationControl(opId) }
+        }
         llamaCppEngine?.stop()
+        activeLiteRtAdapter?.cancel(liteRtConversation)
         runCatching { liteRtConversation?.cancelProcess() }
         val session = activeMediaPipeSession
         if (session != null) {
             runCatching { session.cancelGenerateResponseAsync() }
-        } else {
-            activeMediaPipeFuture?.cancel(true)
         }
+        val future = activeMediaPipeFuture
+        activeMediaPipeFuture = null
+        runCatching { future?.cancel(true) }
     }
 
     fun resetConversation(noThinking: Boolean = false) {
+        if (runtime == RuntimeKind.LlamaCpp) llamaCppEngine?.resetAfterValidation()
         if (runtime != RuntimeKind.LiteRtLm) return
         val mode = if (noThinking && isDefaultThinkingModel) {
             LiteRtConversationMode.NoThinking
@@ -911,12 +1072,14 @@ class ChatInferenceManager(private val context: Context) {
         liteRtMessageCount = 0
         try { liteRtEngine?.close() } catch (_: Throwable) {}
         liteRtEngine = null
-        LiteRtRuntimeCache.clear(context, liteRtCacheDir)
+        LiteRtRuntimeCache.release(context, liteRtCacheDir)
         liteRtCacheDir = null
         try { llamaCppEngine?.close() } catch (_: Throwable) {}
         llamaCppEngine = null
         try { mediaPipeInference?.close() } catch (_: Throwable) {}
         mediaPipeInference = null
+        activeModelLease?.close()
+        activeModelLease = null
         runtime = RuntimeKind.None
         _isGgufActive.value = false
         isDefaultThinkingModel = false
@@ -926,6 +1089,7 @@ class ChatInferenceManager(private val context: Context) {
         liteRtConversationMode = LiteRtConversationMode.Default
         activeBackendDisplayName = ""
         isBeingClosed = false
+        AppCacheCleaner.clearAppCache(context)
     }
 
     private fun finalizeModelOutput(

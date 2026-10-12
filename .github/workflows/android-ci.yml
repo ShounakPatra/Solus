@@ -17,7 +17,7 @@ jobs:
   verify:
     name: Test, lint, and build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Check out source
@@ -28,6 +28,18 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      - name: Provision pinned NDK, CMake, and host shader tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build glslang-tools libvulkan-dev
+          yes | sdkmanager --install "ndk;28.2.13676358" "cmake;3.22.1"
+
+      - name: Run host C++ native tests
+        run: |
+          cmake -S app/src/test/cpp -B build/host-native-tests
+          cmake --build build/host-native-tests --config Release
+          ctest --test-dir build/host-native-tests -C Release --output-on-failure
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -41,6 +53,9 @@ jobs:
       - name: Run Android lint
         run: ./gradlew lintDebug
 
+      - name: Compile instrumentation tests (device-free verification)
+        run: ./gradlew assembleDebugAndroidTest
+
       - name: Build debug APK
         run: ./gradlew assembleDebug
 
@@ -49,5 +64,52 @@ jobs:
         with:
           name: solus-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build release APK
+        run: ./gradlew assembleRelease
+
+      - name: Verify release APK size and structure
+        run: |
+          RELEASE_APK=$(python3 -c "import json; data=json.load(open('app/build/outputs/apk/release/output-metadata.json')); print('app/build/outputs/apk/release/' + data['elements'][0]['outputFile'])")
+          echo "RELEASE_APK=$RELEASE_APK" >> $GITHUB_ENV
+          echo "Resolved release APK: $RELEASE_APK"
+          mkdir -p build/reports/apk-size
+          python3 tools/apk_size_report.py \
+            --apk "$RELEASE_APK" \
+            --output build/reports/apk-size/release-size-report.json \
+            --max-apk-bytes 36000000 \
+            --verify-optimized
+
+      - name: Upload release APK (unsigned CI build)
+        uses: actions/upload-artifact@v4
+        with:
+          name: solus-release-apk
+          path: ${{ env.RELEASE_APK }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload APK size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: solus-apk-size-report
+          path: build/reports/apk-size/release-size-report.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload R8 mapping
+        uses: actions/upload-artifact@v4
+        with:
+          name: solus-release-r8-mapping
+          path: app/build/outputs/mapping/release/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload native debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: solus-release-native-symbols
+          path: app/build/outputs/native-debug-symbols/release/
           if-no-files-found: error
           retention-days: 14

@@ -114,20 +114,27 @@ class RagManagerTest {
     }
 
     @Test
-    fun testIngestDuplicateDocumentName_ReplacesPrevious() = runBlocking {
+    fun testIngestDuplicateDocumentName_CoexistsUnlessExplicitReplacement() = runBlocking {
         val manager = RagManager(
             context = null,
             embeddingEngine = UniversalSemanticEmbeddingEngine(),
             vectorStore = InMemoryRagVectorStore(null)
         )
 
-        manager.ingestText("file.txt", "Initial version of file.")
+        val ing1 = manager.ingestText("file.txt", "Initial version of file.")
         val initialChunks = manager.totalIndexedChunks
         assertEquals(1, manager.indexedDocuments.size)
 
-        manager.ingestText("file.txt", "Updated second version of file.")
-        assertEquals(1, manager.indexedDocuments.size)
-        assertEquals(initialChunks, manager.totalIndexedChunks)
+        // Same name, different content -> coexists with distinct documentId
+        val ing2 = manager.ingestText("file.txt", "Updated second version of file with different words.")
+        assertEquals(2, manager.indexedDocuments.size)
+        assertTrue(ing1.documentId != ing2.documentId)
+
+        // Explicit replacement using targetDocumentId -> replaces existing document
+        val ing3 = manager.ingestText("file.txt", "Third version replacing second.", targetDocumentId = ing2.documentId)
+        assertTrue(ing3.success)
+        assertEquals(2, manager.indexedDocuments.size)
+        assertEquals(ing2.documentId, ing3.documentId)
     }
 
     @Test
@@ -240,5 +247,29 @@ class RagManagerTest {
         assertTrue(manager.isQueryRelatedToDocument("Can you summarize the document?"))
         assertTrue(manager.isQueryRelatedToDocument("What did I upload?"))
         assertTrue(manager.isQueryRelatedToDocument("In the file, when is payment due?"))
+    }
+    @Test fun disabledGlobalRagNeverFallsBackFromMissingExplicitDocument() = runBlocking {
+        val manager = RagManager(null, UniversalSemanticEmbeddingEngine(), InMemoryRagVectorStore(null))
+        manager.ingestText("library.txt", "Quantum computers use quantum bits or qubits.")
+        val result = manager.retrieve("Explain quantum bits", preferredDocumentId = "missing-document",
+            minScore = 0.01f, allowGlobalSearch = false)
+        assertFalse(result.hasContext)
+        assertTrue(result.matches.isEmpty())
+    }
+
+    @Test fun disabledGlobalRagDoesNotInferLibraryDocumentForOverview() = runBlocking {
+        val manager = RagManager(null, UniversalSemanticEmbeddingEngine(), InMemoryRagVectorStore(null))
+        manager.ingestText("library.txt", "Quantum computers use quantum bits or qubits.")
+        assertFalse(manager.retrieve("Summarize the document", allowGlobalSearch = false).hasContext)
+    }
+
+    @Test fun disabledGlobalRagKeepsExplicitDocumentContext() = runBlocking {
+        val manager = RagManager(null, UniversalSemanticEmbeddingEngine(), InMemoryRagVectorStore(null))
+        val attached = manager.ingestText("attached.txt", "Document content that must remain available.")
+        manager.ingestText("library.txt", "Unrelated library content.")
+        val result = manager.retrieve("Summarize the document", preferredDocumentId = attached.documentId,
+            allowGlobalSearch = false)
+        assertTrue(result.hasContext)
+        assertEquals(listOf("attached.txt"), result.sourceNames)
     }
 }

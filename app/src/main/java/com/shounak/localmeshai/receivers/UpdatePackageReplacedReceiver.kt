@@ -13,8 +13,8 @@ import com.shounak.localmeshai.utils.AppUpdateManager
 class UpdatePackageReplacedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
-            Log.d("UpdateReceiver", "Solus package replaced. Deleting downloaded APK installer files.")
-            AppUpdateManager.deleteDownloadedApks(context)
+            Log.d("UpdateReceiver", "Solus package replaced. Cleaning up installer files and rescheduling background check.")
+            AppUpdateManager.onPackageReplaced(context)
         }
     }
 }

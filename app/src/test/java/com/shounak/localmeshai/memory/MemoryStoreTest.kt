@@ -1,10 +1,19 @@
 package com.shounak.localmeshai.memory
 
+import com.shounak.localmeshai.utils.FailableAtomicFileTransaction
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class MemoryStoreTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
 
     @Test
     fun testAddAndRetrieve_Success() {
@@ -101,23 +110,135 @@ class MemoryStoreTest {
 
     @Test
     fun testFilePersistence_SavesAndReloadsAcrossInstances() {
-        val tempDir = File(System.getProperty("java.io.tmpdir"), "solus_mem_test_${System.currentTimeMillis()}")
-        tempDir.mkdirs()
+        val tempDir = tempFolder.newFolder("solus_mem_test")
+        val store1 = PersistentMemoryStore(storageDir = tempDir, storageFileName = "test_memory.json")
+        store1.add(MemoryEntry(content = "Persistent fact 1", category = MemoryCategory.FACT))
+        store1.add(MemoryEntry(content = "Persistent rule 2", category = MemoryCategory.INSTRUCTION))
 
-        try {
-            val store1 = PersistentMemoryStore(storageDir = tempDir, storageFileName = "test_memory.json")
-            store1.add(MemoryEntry(content = "Persistent fact 1", category = MemoryCategory.FACT))
-            store1.add(MemoryEntry(content = "Persistent rule 2", category = MemoryCategory.INSTRUCTION))
+        // Create a second store pointing to the same file
+        val store2 = PersistentMemoryStore(storageDir = tempDir, storageFileName = "test_memory.json")
+        assertEquals(2, store2.count())
 
-            // Create a second store pointing to the same file
-            val store2 = PersistentMemoryStore(storageDir = tempDir, storageFileName = "test_memory.json")
-            assertEquals(2, store2.count())
+        val loaded = store2.getAll()
+        assertTrue(loaded.any { it.content == "Persistent fact 1" && it.category == MemoryCategory.FACT })
+        assertTrue(loaded.any { it.content == "Persistent rule 2" && it.category == MemoryCategory.INSTRUCTION })
+    }
 
-            val loaded = store2.getAll()
-            assertTrue(loaded.any { it.content == "Persistent fact 1" && it.category == MemoryCategory.FACT })
-            assertTrue(loaded.any { it.content == "Persistent rule 2" && it.category == MemoryCategory.INSTRUCTION })
-        } finally {
-            tempDir.deleteRecursively()
+    @Test
+    fun testFailedWrite_PreservesPreviousStateAndFile() {
+        val testFile = File(tempFolder.root, "memory_failed_write.json")
+        val failableTx = FailableAtomicFileTransaction(testFile)
+        val store = PersistentMemoryStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name,
+            transaction = failableTx
+        )
+
+        val entry1 = MemoryEntry(content = "Initial state", category = MemoryCategory.FACT)
+        assertTrue(store.add(entry1))
+        assertEquals(1, store.count())
+
+        // Invalidate startWrite to simulate write failure
+        failableTx.failStartWrite = true
+        val entry2 = MemoryEntry(content = "Should fail", category = MemoryCategory.FACT)
+        assertFalse(store.add(entry2))
+
+        // In-memory state remains 1
+        assertEquals(1, store.count())
+        assertNotNull(store.getById(entry1.id))
+        assertNull(store.getById(entry2.id))
+        assertNotNull(store.lastError)
+
+        // Reopening store reloads only entry1
+        val reopened = PersistentMemoryStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name,
+            transaction = FailableAtomicFileTransaction(testFile)
+        )
+        assertEquals(1, reopened.count())
+        assertEquals("Initial state", reopened.getAll().first().content)
+    }
+
+    @Test
+    fun testInterruptedCommit_PreservesPreviousStateAndFile() {
+        val testFile = File(tempFolder.root, "memory_interrupted_commit.json")
+        val failableTx = FailableAtomicFileTransaction(testFile)
+        val store = PersistentMemoryStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name,
+            transaction = failableTx
+        )
+
+        assertTrue(store.add(MemoryEntry(content = "Valid commit", category = MemoryCategory.FACT)))
+        assertEquals(1, store.count())
+
+        // Fail finishWrite to simulate interrupted commit
+        failableTx.failFinishWrite = true
+        assertFalse(store.add(MemoryEntry(content = "Interrupted commit", category = MemoryCategory.FACT)))
+        assertEquals(1, store.count())
+
+        // Disk content intact
+        val reopened = PersistentMemoryStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name,
+            transaction = FailableAtomicFileTransaction(testFile)
+        )
+        assertEquals(1, reopened.count())
+        assertEquals("Valid commit", reopened.getAll().first().content)
+    }
+
+    @Test
+    fun testCorruptRead_PreservesCorruptFile() {
+        val testFile = File(tempFolder.root, "memory_corrupt.json")
+        testFile.writeText("{ not-valid-json: [corrupt data")
+
+        val store = PersistentMemoryStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name
+        )
+
+        assertEquals(0, store.count())
+        assertNotNull(store.lastError)
+        // Corrupt file was preserved
+        assertTrue(testFile.exists())
+        assertEquals("{ not-valid-json: [corrupt data", testFile.readText())
+    }
+
+    @Test
+    fun testConcurrentMutations_SerializedAndConsistent() {
+        val testFile = File(tempFolder.root, "memory_concurrent.json")
+        val store = PersistentMemoryStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name
+        )
+
+        val threadCount = 10
+        val itemsPerThread = 5
+        val executor = Executors.newFixedThreadPool(threadCount)
+        val latch = CountDownLatch(threadCount)
+
+        for (t in 0 until threadCount) {
+            executor.submit {
+                try {
+                    for (i in 0 until itemsPerThread) {
+                        store.add(MemoryEntry(content = "Thread $t item $i", category = MemoryCategory.FACT))
+                    }
+                } finally {
+                    latch.countDown()
+                }
+            }
         }
+
+        assertTrue(latch.await(10, TimeUnit.SECONDS))
+        executor.shutdown()
+
+        assertEquals(threadCount * itemsPerThread, store.count())
+
+        // Reopen store to verify all mutations were reliably written to disk
+        val reopened = PersistentMemoryStore(
+            storageDir = tempFolder.root,
+            storageFileName = testFile.name
+        )
+        assertEquals(threadCount * itemsPerThread, reopened.count())
     }
 }

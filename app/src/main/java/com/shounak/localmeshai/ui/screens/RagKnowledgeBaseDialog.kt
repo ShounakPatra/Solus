@@ -36,6 +36,7 @@ import com.shounak.localmeshai.rag.RagManager
 import com.shounak.localmeshai.rag.store.RagDocumentSummary
 import com.shounak.localmeshai.utils.AppSettings
 import com.shounak.localmeshai.utils.glassEffect
+import com.shounak.localmeshai.utils.LiquidGlassButton
 import dev.chrisbanes.haze.HazeState
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -52,6 +53,8 @@ fun RagKnowledgeBaseDialog(
     val scope = rememberCoroutineScope()
     val appSettings = remember { AppSettings.getInstance(context) }
     val settingsData by appSettings.settings.collectAsState()
+    val colors = MaterialTheme.colorScheme
+    val hazeState = remember { HazeState() }
 
     var documents by remember { mutableStateOf(ragManager.indexedDocuments) }
     var totalChunks by remember { mutableIntStateOf(ragManager.totalIndexedChunks) }
@@ -95,14 +98,13 @@ fun RagKnowledgeBaseDialog(
         onDismissRequest = onDismissRequest,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        val colors = MaterialTheme.colorScheme
         val dialogShape = RoundedCornerShape(24.dp)
         Box(
             modifier = Modifier
                 .fillMaxWidth(0.95f)
                 .fillMaxHeight(0.88f)
                 .glassEffect(
-                    hazeState = remember { HazeState() },
+                    hazeState = hazeState,
                     shape = dialogShape,
                     blurRadius = 20.dp,
                     tintColor = colors.surfaceContainer,
@@ -134,14 +136,19 @@ fun RagKnowledgeBaseDialog(
                             color = colors.onSurfaceVariant
                         )
                     }
-                    IconButton(
+                    LiquidGlassButton(
                         onClick = onDismissRequest,
-                        modifier = Modifier.size(36.dp)
+                        hazeState = hazeState,
+                        modifier = Modifier.size(36.dp),
+                        shape = RoundedCornerShape(18.dp),
+                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                        contentPadding = PaddingValues(0.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Close",
-                            tint = colors.onSurfaceVariant
+                            tint = colors.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
@@ -182,14 +189,19 @@ fun RagKnowledgeBaseDialog(
                             )
                         )
                     }
-                    IconButton(
+                    LiquidGlassButton(
                         onClick = { showSettingsSection = !showSettingsSection },
-                        modifier = Modifier.size(36.dp)
+                        hazeState = hazeState,
+                        modifier = Modifier.size(36.dp),
+                        shape = RoundedCornerShape(18.dp),
+                        tintColor = if (showSettingsSection) colors.primary.copy(alpha = 0.20f) else colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                        contentPadding = PaddingValues(0.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Tune,
                             contentDescription = "RAG Tuning Settings",
-                            tint = if (showSettingsSection) colors.primary else colors.onSurfaceVariant
+                            tint = if (showSettingsSection) colors.primary else colors.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
@@ -282,25 +294,45 @@ fun RagKnowledgeBaseDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Button(
+                    LiquidGlassButton(
                         onClick = { filePicker.launch(arrayOf("*/*")) },
                         enabled = !isIngesting,
+                        hazeState = hazeState,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .border(
+                                width = 1.dp,
+                                color = if (!isIngesting) colors.primary.copy(alpha = 0.60f) else colors.outlineVariant.copy(alpha = 0.30f),
+                                shape = RoundedCornerShape(12.dp)
+                            ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f)
+                        tintColor = if (!isIngesting) colors.primary.copy(alpha = 0.25f) else colors.surfaceContainerHighest.copy(alpha = 0.20f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                     ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.primary)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Index File", style = MaterialTheme.typography.labelMedium)
+                        Text("Index File", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.primary)
                     }
-                    OutlinedButton(
+                    LiquidGlassButton(
                         onClick = { showAddTextDialog = true },
                         enabled = !isIngesting,
+                        hazeState = hazeState,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .border(
+                                width = 0.8.dp,
+                                color = colors.outlineVariant.copy(alpha = 0.50f),
+                                shape = RoundedCornerShape(12.dp)
+                            ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f)
+                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                     ) {
-                        Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.onSurfaceVariant)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Add Text / Note", style = MaterialTheme.typography.labelMedium)
+                        Text("Add Text / Note", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
                     }
                 }
 
@@ -354,16 +386,29 @@ fun RagKnowledgeBaseDialog(
 
                 // Footer: Clear All
                 if (documents.isNotEmpty()) {
-                    OutlinedButton(
+                    LiquidGlassButton(
                         onClick = { showClearConfirmation = true },
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.error),
-                        border = BorderStroke(0.8.dp, colors.error.copy(alpha = 0.40f)),
+                        hazeState = hazeState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(42.dp)
+                            .border(
+                                width = 0.9.dp,
+                                color = colors.error.copy(alpha = 0.50f),
+                                shape = RoundedCornerShape(12.dp)
+                            ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        tintColor = colors.error.copy(alpha = 0.22f),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                     ) {
-                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.error)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Clear All Documents", style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            "Clear All Documents",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.error
+                        )
                     }
                 }
             }
@@ -397,7 +442,7 @@ fun RagKnowledgeBaseDialog(
                 }
             },
             confirmButton = {
-                Button(
+                LiquidGlassButton(
                     onClick = {
                         val name = textTitle.ifBlank { "Untitled Note.txt" }
                         val content = textContent.trim()
@@ -418,14 +463,43 @@ fun RagKnowledgeBaseDialog(
                         }
                         showAddTextDialog = false
                     },
-                    enabled = textContent.isNotBlank()
+                    enabled = textContent.isNotBlank(),
+                    hazeState = hazeState,
+                    modifier = Modifier
+                        .height(38.dp)
+                        .border(
+                            width = 1.dp,
+                            color = if (textContent.isNotBlank()) colors.primary.copy(alpha = 0.60f) else colors.outlineVariant.copy(alpha = 0.30f),
+                            shape = RoundedCornerShape(10.dp)
+                        ),
+                    shape = RoundedCornerShape(10.dp),
+                    tintColor = if (textContent.isNotBlank()) colors.primary.copy(alpha = 0.25f) else colors.surfaceContainerHighest.copy(alpha = 0.20f),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
                 ) {
-                    Text("Index Text")
+                    Text(
+                        "Index Text",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (textContent.isNotBlank()) colors.primary else colors.onSurfaceVariant
+                    )
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showAddTextDialog = false }) {
-                    Text("Cancel")
+                LiquidGlassButton(
+                    onClick = { showAddTextDialog = false },
+                    hazeState = hazeState,
+                    modifier = Modifier
+                        .height(38.dp)
+                        .border(
+                            width = 0.8.dp,
+                            color = colors.outlineVariant.copy(alpha = 0.50f),
+                            shape = RoundedCornerShape(10.dp)
+                        ),
+                    shape = RoundedCornerShape(10.dp),
+                    tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+                ) {
+                    Text("Cancel", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
                 }
             }
         )
@@ -438,20 +512,43 @@ fun RagKnowledgeBaseDialog(
             title = { Text("Delete Document?") },
             text = { Text("Remove \"${doc.documentName}\" and its ${doc.chunkCount} indexed vector chunks from the knowledge base?") },
             confirmButton = {
-                Button(
+                LiquidGlassButton(
                     onClick = {
                         ragManager.removeDocument(doc.documentId)
                         refresh()
                         docToDelete = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    hazeState = hazeState,
+                    modifier = Modifier
+                        .height(38.dp)
+                        .border(
+                            width = 0.9.dp,
+                            color = colors.error.copy(alpha = 0.50f),
+                            shape = RoundedCornerShape(10.dp)
+                        ),
+                    shape = RoundedCornerShape(10.dp),
+                    tintColor = colors.error.copy(alpha = 0.25f),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
                 ) {
-                    Text("Delete")
+                    Text("Delete", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { docToDelete = null }) {
-                    Text("Cancel")
+                LiquidGlassButton(
+                    onClick = { docToDelete = null },
+                    hazeState = hazeState,
+                    modifier = Modifier
+                        .height(38.dp)
+                        .border(
+                            width = 0.8.dp,
+                            color = colors.outlineVariant.copy(alpha = 0.50f),
+                            shape = RoundedCornerShape(10.dp)
+                        ),
+                    shape = RoundedCornerShape(10.dp),
+                    tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+                ) {
+                    Text("Cancel", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
                 }
             }
         )
@@ -464,20 +561,43 @@ fun RagKnowledgeBaseDialog(
             title = { Text("Clear RAG Knowledge Base?") },
             text = { Text("This will permanently remove all ${documents.size} documents and $totalChunks vector chunks from the on-device knowledge base.") },
             confirmButton = {
-                Button(
+                LiquidGlassButton(
                     onClick = {
                         ragManager.clearKnowledgeBase()
                         refresh()
                         showClearConfirmation = false
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    hazeState = hazeState,
+                    modifier = Modifier
+                        .height(38.dp)
+                        .border(
+                            width = 0.9.dp,
+                            color = colors.error.copy(alpha = 0.50f),
+                            shape = RoundedCornerShape(10.dp)
+                        ),
+                    shape = RoundedCornerShape(10.dp),
+                    tintColor = colors.error.copy(alpha = 0.25f),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
                 ) {
-                    Text("Clear All")
+                    Text("Clear All", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.error)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showClearConfirmation = false }) {
-                    Text("Cancel")
+                LiquidGlassButton(
+                    onClick = { showClearConfirmation = false },
+                    hazeState = hazeState,
+                    modifier = Modifier
+                        .height(38.dp)
+                        .border(
+                            width = 0.8.dp,
+                            color = colors.outlineVariant.copy(alpha = 0.50f),
+                            shape = RoundedCornerShape(10.dp)
+                        ),
+                    shape = RoundedCornerShape(10.dp),
+                    tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+                ) {
+                    Text("Cancel", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
                 }
             }
         )

@@ -20,9 +20,13 @@ import com.google.mediapipe.tasks.genai.llminference.GraphOptions
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
 import com.google.mediapipe.tasks.genai.llminference.ProgressListener
+import com.shounak.localmeshai.ai.ShutdownResult
+import com.shounak.localmeshai.utils.AppCacheCleaner
 import com.shounak.localmeshai.utils.AppSettings
 import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.InferenceBackend
+import com.shounak.localmeshai.utils.StreamingResponsePublisher
+import com.shounak.localmeshai.utils.InferenceTiming
 import com.shounak.localmeshai.utils.InitCrashGuard
 import com.shounak.localmeshai.utils.LiteRtRuntimeCache
 import com.shounak.localmeshai.utils.ModelOutputSanitizer
@@ -36,6 +40,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CancellationException as FutureCancellationException
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 data class VisionLabel(
     val label: String,
@@ -47,11 +52,19 @@ class VisionInferenceManager(private val context: Context) {
     private var liteRtEngine: Engine? = null
     private var liteRtConversation: Conversation? = null
     private var liteRtCacheDir: File? = null
-    private var runtime = RuntimeKind.None
+    @Volatile private var runtime = RuntimeKind.None
+    private var activeModelLease: AutoCloseable? = null
+    val isReady: Boolean get() = when (runtime) {
+        RuntimeKind.LiteRtLm -> liteRtConversation != null
+        RuntimeKind.MediaPipeVision -> mediaPipeInference != null
+        RuntimeKind.None -> false
+    }
     @Volatile private var activeMediaPipeSession: LlmInferenceSession? = null
     @Volatile private var activeMediaPipeFuture: Future<String>? = null
     @Volatile private var activeMediaPipeCallbackDone: CountDownLatch? = null
     @Volatile private var stopRequested = false
+    @Volatile private var activeLiteRtAdapter: LiteRtStreamAdapter? = null
+    @Volatile private var lastLiteRtSnapshot: StructuredResponseSnapshot? = null
     var activeBackendDisplayName: String = ""
         private set
     /**
@@ -81,7 +94,7 @@ class VisionInferenceManager(private val context: Context) {
             Regex("""^[\s\S]*?<\s*/\s*(?:think|thought|reasoning)\s*>""", RegexOption.IGNORE_CASE)
     }
 
-    fun initialize(
+    suspend fun initialize(
         modelPath: String,
         modelId: String = "",
         modelName: String = "",
@@ -99,15 +112,19 @@ class VisionInferenceManager(private val context: Context) {
             throw IllegalArgumentException("Selected .task file does not look like a MediaPipe or LiteRT task bundle. Download a verified Android multimodal .task model from the Models tab.")
         }
 
-        close()
-        this.supportsThinkingMode = supportsThinkingMode
         val effectiveId = modelId.ifBlank { file.nameWithoutExtension }
-        isDefaultThinkingModel = ThinkingModeConfig.isThinkingSupported(
-            modelPath = modelPath,
-            effectiveId = effectiveId,
-            modelName = modelName,
-            supportsThinkingFlag = supportsThinkingMode
-        )
+        close()
+        com.shounak.localmeshai.data.StartupCoordinator.getInstance(context).awaitCrashGuardChecked()
+        val modelLease = com.shounak.localmeshai.utils.ModelArtifactStorage.leaseArtifact(file)
+        try {
+            AppCacheCleaner.clearAppCache(context)
+            this.supportsThinkingMode = supportsThinkingMode
+            isDefaultThinkingModel = ThinkingModeConfig.isThinkingSupported(
+                modelPath = modelPath,
+                effectiveId = effectiveId,
+                modelName = modelName,
+                supportsThinkingFlag = supportsThinkingMode
+            )
         val isGemmaAudio = modelId.contains("gemma4", ignoreCase = true) ||
             modelId.contains("gemma3n", ignoreCase = true) ||
             modelName.contains("gemma 4", ignoreCase = true) ||
@@ -186,11 +203,16 @@ class VisionInferenceManager(private val context: Context) {
                 throw IllegalArgumentException("Unsupported vision model format (${file.extension}). Solus multimodal models require LiteRT (.litertlm) or MediaPipe (.task) bundles.")
             }
         }
+        activeModelLease = modelLease
+        } catch (t: Throwable) {
+            modelLease.close()
+            throw t
+        }
     }
 
     /**
      * Streaming ask. Emits partial text to [onUpdate] as the model produces it.
-     * The returned String is the final, accumulated response.
+     * Returns a typed [InferenceExecutionResult] with metrics and terminal status.
      */
     suspend fun askStreaming(
         bitmap: Bitmap?,
@@ -198,113 +220,239 @@ class VisionInferenceManager(private val context: Context) {
         audioFile: File? = null,
         audioBytes: ByteArray? = null,
         thinkingMode: Boolean = false,
+        preparedImageFile: File? = null,
+        requestId: String = "",
+        sessionId: String = "",
+        timing: InferenceTiming? = null,
+        isRetry: Boolean = false,
+        onProgress: ((RequestProgress) -> Unit)? = null,
         onUpdate: (String) -> Unit
-    ): String = withContext(Dispatchers.IO) {
+    ): InferenceExecutionResult = withContext(Dispatchers.IO) {
         stopRequested = false
+        lastLiteRtSnapshot = null
         val prompt = question.trim()
-        val shouldStripThinking = !thinkingMode
-        val effectiveOnUpdate: (String) -> Unit = if (shouldStripThinking) {
-            { partial -> onUpdate(stripThinkingTags(partial)) }
-        } else {
-            onUpdate
-        }
-        val rawResponse = when (runtime) {
-            RuntimeKind.LiteRtLm -> streamLiteRtLmVision(
-                bitmap = bitmap,
-                prompt = prompt,
-                audioFile = audioFile,
-                audioBytes = audioBytes,
-                thinkingMode = thinkingMode,
-                onUpdate = effectiveOnUpdate
-            )
-            RuntimeKind.MediaPipeVision -> streamMediaPipeVision(
-                bitmap = bitmap,
-                prompt = prompt,
-                audioFile = audioFile,
-                audioBytes = audioBytes,
-                onUpdate = effectiveOnUpdate
-            )
-            RuntimeKind.None -> "Choose and initialise a multimodal model first."
-        }
-        finalizeModelOutput(
-            text = rawResponse,
+        val responseController = InferenceResponseController(
             thinkingMode = thinkingMode,
-            shouldStripThinking = shouldStripThinking
+            rawUserText = prompt,
+            requestId = requestId,
+            initialAttemptId = 1
         )
+        val publisher = StreamingResponsePublisher(
+            scope = this,
+            transform = { rawSnapshot -> responseController.formatSnapshot(rawSnapshot) },
+            finalTransform = { rawSnapshot -> responseController.formatSnapshot(rawSnapshot) },
+            publish = onUpdate
+        )
+        val effectiveOnUpdate: (String) -> Unit = { delta ->
+            if (delta.isNotEmpty()) {
+                responseController.appendDelta(delta, reqId = requestId, attemptId = 1)
+                publisher.appendDelta(delta)
+            }
+        }
+
+        onProgress?.invoke(RequestProgress.ProcessingPrompt)
+
+        var lastGeneratedTokens: Int? = null
+        try {
+            val rawResponse = when (runtime) {
+                RuntimeKind.LiteRtLm -> streamLiteRtLmVision(
+                    bitmap = bitmap,
+                    prompt = prompt,
+                    audioFile = audioFile,
+                    audioBytes = audioBytes,
+                    thinkingMode = thinkingMode,
+                    preparedImageFile = preparedImageFile,
+                    requestId = requestId,
+                    timing = timing,
+                    onProgress = onProgress,
+                    onTokensGenerated = { lastGeneratedTokens = it },
+                    responseSnapshot = publisher::rawText,
+                    onUpdate = effectiveOnUpdate
+                )
+                RuntimeKind.MediaPipeVision -> streamMediaPipeVision(
+                    bitmap = bitmap,
+                    prompt = prompt,
+                    audioFile = audioFile,
+                    audioBytes = audioBytes,
+                    timing = timing,
+                    onProgress = onProgress,
+                    onTokensGenerated = { lastGeneratedTokens = it },
+                    responseSnapshot = publisher::rawText,
+                    onUpdate = effectiveOnUpdate
+                )
+                RuntimeKind.None -> throw IllegalStateException("Choose and initialise a multimodal model first.")
+            }
+            responseController.finish()
+            val rawReasoning = if (runtime == RuntimeKind.LiteRtLm) {
+                lastLiteRtSnapshot?.reasoningText.orEmpty().ifBlank { responseController.getReasoningText() }
+            } else {
+                responseController.getReasoningText()
+            }
+            val cleanResponse = if (runtime == RuntimeKind.LiteRtLm) {
+                ModelOutputSanitizer.clean(rawResponse)
+            } else {
+                responseController.getFinalAnswer()
+            }
+            val finalized = ResponseFinalizer.finalize(
+                requestId = requestId,
+                attemptId = 1,
+                rawAnswer = cleanResponse,
+                rawReasoning = rawReasoning,
+                isStopped = stopRequested,
+                acceptedAnswerFallback = responseController.acceptedAnswerText(),
+                thinkingMode = thinkingMode
+            )
+            val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
+            publisher.finishExplicit(finalFormatted)
+            timing?.endGeneration()
+            val totalTokens = lastGeneratedTokens ?: maxOf(1, Math.round((finalized.answerText.length + rawReasoning.length) / 3.8).toInt())
+            val metrics = timing?.buildMetrics(
+                requestId = requestId,
+                sessionId = sessionId,
+                attempt = 1,
+                generatedTokens = totalTokens,
+                isTokenCountEstimated = true
+            )
+            finalized.toExecutionResult(metrics)
+        } catch (exception: kotlinx.coroutines.CancellationException) {
+            responseController.finish()
+            val acceptedAnswer = responseController.getFinalAnswer()
+            val rawReasoning = responseController.getReasoningText()
+            timing?.endGeneration()
+            val finalized = ResponseFinalizer.finalize(
+                requestId = requestId,
+                attemptId = 1,
+                rawAnswer = acceptedAnswer,
+                rawReasoning = rawReasoning,
+                isStopped = true,
+                acceptedAnswerFallback = responseController.acceptedAnswerText(),
+                thinkingMode = thinkingMode
+            )
+            val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
+            publisher.finishExplicit(finalFormatted)
+            val partialTokens = lastGeneratedTokens ?: maxOf(1, Math.round(finalFormatted.length / 3.8).toInt())
+            val metrics = timing?.buildMetrics(
+                requestId = requestId,
+                sessionId = sessionId,
+                attempt = 1,
+                generatedTokens = partialTokens,
+                isTokenCountEstimated = true
+            )
+            finalized.toExecutionResult(metrics)
+        } catch (t: Throwable) {
+            responseController.finish()
+            val acceptedAnswer = responseController.getFinalAnswer()
+            val rawReasoning = responseController.getReasoningText()
+            timing?.endGeneration()
+            val finalized = ResponseFinalizer.finalize(
+                requestId = requestId,
+                attemptId = 1,
+                rawAnswer = acceptedAnswer,
+                rawReasoning = rawReasoning,
+                isStopped = stopRequested,
+                sdkError = if (stopRequested) null else t,
+                acceptedAnswerFallback = responseController.acceptedAnswerText(),
+                thinkingMode = thinkingMode
+            )
+            val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
+            publisher.finishExplicit(finalFormatted)
+            val partialTokens = lastGeneratedTokens ?: maxOf(1, Math.round(finalFormatted.length / 3.8).toInt())
+            val metrics = timing?.buildMetrics(
+                requestId = requestId,
+                sessionId = sessionId,
+                attempt = 1,
+                generatedTokens = partialTokens,
+                isTokenCountEstimated = true
+            )
+            finalized.toExecutionResult(metrics)
+        }
     }
 
     suspend fun classify(bitmap: Bitmap): List<VisionLabel> = withContext(Dispatchers.IO) {
         emptyList()
     }
 
-    fun close() {
+    fun close(): ShutdownResult {
         val wasMediaPipeVision = runtime == RuntimeKind.MediaPipeVision
         isBeingClosed = true
         cancelGeneration()
-        // Claim the active session atomically before destroying the parent
-        // LlmInference object. This prevents streamMediaPipeVision's finally
-        // block from calling session.close() AFTER mediaPipeInference.close()
-        // destroys the underlying native context — which is the root cause of
-        // the SIGSEGV when the user taps Stop.
+        var closeError: Throwable? = null
+
         val sessionToClose = activeMediaPipeSession
         val callbackDone = activeMediaPipeCallbackDone
         activeMediaPipeSession = null    // null first so finally block skips it
         activeMediaPipeCallbackDone = null
         if (!wasMediaPipeVision && sessionToClose != null && waitForCallbackToReturn(callbackDone)) {
-            runCatching { sessionToClose.close() }
+            try { sessionToClose.close() } catch (t: Throwable) { if (closeError == null) closeError = t }
         } else if (wasMediaPipeVision && sessionToClose != null) {
             Log.w(TAG, "Skipping MediaPipe vision session.close(); native close is unstable on this device")
         }
         if (wasMediaPipeVision) {
             Log.w(TAG, "Skipping MediaPipe vision inference.close(); native close is unstable on this device")
         } else {
-            runCatching { mediaPipeInference?.close() }
+            try { mediaPipeInference?.close() } catch (t: Throwable) { if (closeError == null) closeError = t }
         }
         mediaPipeInference = null
-        runCatching { liteRtConversation?.close() }
+
+        try { liteRtConversation?.close() } catch (t: Throwable) { if (closeError == null) closeError = t }
         liteRtConversation = null
-        runCatching { liteRtEngine?.close() }
+        try { liteRtEngine?.close() } catch (t: Throwable) { if (closeError == null) closeError = t }
         liteRtEngine = null
-        LiteRtRuntimeCache.clear(context, liteRtCacheDir)
+        LiteRtRuntimeCache.release(context, liteRtCacheDir)
         liteRtCacheDir = null
+
+        // Release model file lease strictly AFTER native engines and sessions have cleanly closed
+        try { activeModelLease?.close() } catch (t: Throwable) { if (closeError == null) closeError = t }
+        activeModelLease = null
+
         runtime = RuntimeKind.None
         activeBackendDisplayName = ""
         isDefaultThinkingModel = false
         supportsThinkingMode = false
         isBeingClosed = false
+        AppCacheCleaner.clearAppCache(context)
+
+        return if (closeError != null) {
+            ShutdownResult.Failed(closeError)
+        } else {
+            ShutdownResult.Success
+        }
     }
 
     fun cancelGeneration() {
         stopRequested = true
+        activeLiteRtAdapter?.cancel(liteRtConversation)
         runCatching { liteRtConversation?.cancelProcess() }
         val session = activeMediaPipeSession
         if (session != null) {
-            // Use MediaPipe's native cancellation path. Cancelling the Future
-            // directly makes future.get() return before MediaPipe releases its
-            // single inference lock, which caused the next request to fail with
-            // "Previous invocation still processing" and could crash on close.
             runCatching { session.cancelGenerateResponseAsync() }
-        } else {
-            runCatching { activeMediaPipeFuture?.cancel(true) }
-            activeMediaPipeFuture = null
         }
-        // Do NOT close activeMediaPipeSession here — the streaming method's
-        // finally block owns session lifecycle. Closing it from two threads
-        // simultaneously causes a native crash.
+        val future = activeMediaPipeFuture
+        activeMediaPipeFuture = null
+        runCatching { future?.cancel(true) }
+        activeMediaPipeCallbackDone?.countDown()
     }
 
-    fun resetConversation(thinkingMode: Boolean = false) {
+    fun resetConversation(
+        thinkingMode: Boolean = false,
+        initialMessages: List<Message>? = null
+    ) {
         if (runtime != RuntimeKind.LiteRtLm) return
         val engine = liteRtEngine ?: return
         runCatching { liteRtConversation?.close() }.onFailure { t ->
             Log.w(TAG, "LiteRT-LM vision conversation close during reset failed", t)
         }
-        val config = if (isDefaultThinkingModel) {
+        val extraCtx = if (isDefaultThinkingModel) {
+            ThinkingModeConfig.liteRtExtraContext(
+                isDefaultThinkingModel = true,
+                thinkingMode = thinkingMode
+            )
+        } else emptyMap()
+
+        val config = if (!initialMessages.isNullOrEmpty() || extraCtx.isNotEmpty()) {
             ConversationConfig(
-                extraContext = ThinkingModeConfig.liteRtExtraContext(
-                    isDefaultThinkingModel = true,
-                    thinkingMode = thinkingMode
-                )
+                initialMessages = initialMessages.orEmpty(),
+                extraContext = extraCtx
             )
         } else null
         liteRtConversation = if (config != null) engine.createConversation(config) else engine.createConversation()
@@ -321,12 +469,13 @@ class VisionInferenceManager(private val context: Context) {
         InitCrashGuard.markInitStarted(context, modelId)
         var engine: Engine? = null
         try {
+            val executionPolicy = RuntimeExecutionPolicy.resolve(context)
             val backend = when (inferenceBackend) {
                 InferenceBackend.LITERT_GPU -> Backend.GPU()
                 InferenceBackend.LITERT_CPU,
-                InferenceBackend.MEDIAPIPE -> Backend.CPU()
+                InferenceBackend.MEDIAPIPE -> Backend.CPU(executionPolicy.cpuThreads)
             }
-            val runtimeCacheDir = LiteRtRuntimeCache.prepare(context, modelId, inferenceBackend)
+            val runtimeCacheDir = LiteRtRuntimeCache.prepare(context, modelId, inferenceBackend, modelPath)
             liteRtCacheDir = runtimeCacheDir
 
             val effectiveMaxTokens = (contextWindowTokens ?: 4096).coerceIn(2048, 8192)
@@ -346,8 +495,8 @@ class VisionInferenceManager(private val context: Context) {
                         cacheDir = runtimeCacheDir.absolutePath
                     )
                 )
-                eng.initialize()
                 engine = eng
+                eng.initialize()
                 initialized = true
             } catch (t: Throwable) {
                 Log.w(TAG, "LiteRT-LM init with audioBackend=$audioBackendCandidate and maxTokens=$effectiveMaxTokens failed: ${t.message}", t)
@@ -358,7 +507,7 @@ class VisionInferenceManager(private val context: Context) {
             // Try 2: If primary audio backend was GPU and failed, retry with CPU audioBackend
             if (!initialized && supportsAudioInput && backend !is Backend.CPU) {
                 try {
-                    audioBackendCandidate = Backend.CPU()
+                    audioBackendCandidate = Backend.CPU(executionPolicy.cpuThreads)
                     val eng = Engine(
                         EngineConfig(
                             modelPath = modelPath,
@@ -369,8 +518,8 @@ class VisionInferenceManager(private val context: Context) {
                             cacheDir = runtimeCacheDir.absolutePath
                         )
                     )
-                    eng.initialize()
                     engine = eng
+                    eng.initialize()
                     initialized = true
                     Log.i(TAG, "LiteRT-LM audio backend fell back to CPU successfully")
                 } catch (t: Throwable) {
@@ -394,8 +543,8 @@ class VisionInferenceManager(private val context: Context) {
                             cacheDir = runtimeCacheDir.absolutePath
                         )
                     )
-                    eng.initialize()
                     engine = eng
+                    eng.initialize()
                     initialized = true
                     Log.w(TAG, "LiteRT-LM initialized with audio disabled")
                 } catch (t: Throwable) {
@@ -408,20 +557,26 @@ class VisionInferenceManager(private val context: Context) {
             // Try 4: If effectiveMaxTokens > 2048 and still failed, retry with safe 2048 tokens
             if (!initialized && effectiveMaxTokens > 2048) {
                 finalAudioSupported = false
-                val eng = Engine(
-                    EngineConfig(
-                        modelPath = modelPath,
-                        backend = backend,
-                        visionBackend = backend,
-                        audioBackend = null,
-                        maxNumTokens = 2048,
-                        cacheDir = runtimeCacheDir.absolutePath
+                try {
+                    val eng = Engine(
+                        EngineConfig(
+                            modelPath = modelPath,
+                            backend = backend,
+                            visionBackend = backend,
+                            audioBackend = null,
+                            maxNumTokens = 2048,
+                            cacheDir = runtimeCacheDir.absolutePath
+                        )
                     )
-                )
-                eng.initialize()
-                engine = eng
-                initialized = true
-                Log.w(TAG, "LiteRT-LM initialized with safe 2048 tokens fallback")
+                    engine = eng
+                    eng.initialize()
+                    initialized = true
+                    Log.w(TAG, "LiteRT-LM initialized with safe 2048 tokens fallback")
+                } catch (t: Throwable) {
+                    Log.w(TAG, "LiteRT-LM init with safe 2048 tokens fallback failed: ${t.message}", t)
+                    runCatching { engine?.close() }
+                    engine = null
+                }
             }
 
             modelSupportsAudioInput = finalAudioSupported
@@ -495,23 +650,29 @@ class VisionInferenceManager(private val context: Context) {
         audioFile: File?,
         audioBytes: ByteArray?,
         thinkingMode: Boolean,
+        preparedImageFile: File?,
+        requestId: String = "",
+        timing: InferenceTiming? = null,
+        onProgress: ((RequestProgress) -> Unit)? = null,
+        onTokensGenerated: ((Int) -> Unit)? = null,
+        responseSnapshot: () -> String,
         onUpdate: (String) -> Unit
     ): String {
-        if (bitmap?.isRecycled == true) return "Error: Image was recycled before analysis."
-        val hasAudioBytes = audioBytes?.isNotEmpty() == true
-        val hasAudioInput = audioFile != null || hasAudioBytes
-        if (hasAudioInput && !modelSupportsAudioInput) return "This model does not support audio input."
-        val conversation = liteRtConversation ?: return "Image model is not initialised."
-        val imageFile = bitmap?.writeToCacheFile()
-        val cachedAudioFile = if (audioFile == null && hasAudioBytes) {
-            val f = File(context.cacheDir, "multimodal_inputs/audio_temp_${System.currentTimeMillis()}.wav").apply {
-                parentFile?.mkdirs()
-                writeBytes(audioBytes!!)
+        require(bitmap?.isRecycled != true) { "Image was recycled before analysis" }
+        if (preparedImageFile != null) {
+            require(preparedImageFile.exists() && preparedImageFile.isFile) {
+                "Attached image file does not exist: ${preparedImageFile.absolutePath}"
             }
-            f
-        } else null
-        val effectiveAudioFile = audioFile ?: cachedAudioFile
-        val response = StringBuilder()
+        }
+        val rawBytes = audioBytes
+        val hasAudioBytes = rawBytes?.isNotEmpty() == true
+        val hasAudioInput = audioFile != null || hasAudioBytes
+        require(!hasAudioInput || modelSupportsAudioInput) { "This model does not support audio input." }
+        val conversation = liteRtConversation ?: throw IllegalStateException("Image model is not initialised.")
+        val reusableImageFile = preparedImageFile
+        val imageFile = reusableImageFile ?: bitmap?.writeToCacheFile()
+        val effectiveAudioFile = audioFile
+        var firstChunkRecorded = false
         val requestContext = ThinkingModeConfig.liteRtExtraContext(
             isDefaultThinkingModel = isDefaultThinkingModel,
             thinkingMode = thinkingMode
@@ -523,61 +684,81 @@ class VisionInferenceManager(private val context: Context) {
         )
         try {
             val audioContent: Content? = when {
+                rawBytes != null && rawBytes.isNotEmpty() -> Content.AudioBytes(rawBytes)
                 effectiveAudioFile != null -> Content.AudioFile(effectiveAudioFile.absolutePath)
-                hasAudioBytes -> Content.AudioBytes(audioBytes!!)
                 else -> null
             }
             val imageContent: Content? = imageFile?.let { Content.ImageFile(it.absolutePath) }
-            val textContent = if (prompt.isNotBlank()) Content.Text(prompt) else null
+            val effectivePromptText = if (prompt.isNotBlank()) prompt else if (imageContent != null) DEFAULT_IMAGE_PROMPT else ""
+            val textContent = if (effectivePromptText.isNotBlank()) Content.Text(effectivePromptText) else null
             val message = when {
                 imageContent != null && audioContent != null && textContent != null -> Message.of(imageContent, audioContent, textContent)
                 imageContent != null && audioContent != null -> Message.of(imageContent, audioContent)
                 imageContent != null && textContent != null -> Message.of(imageContent, textContent)
-                imageContent != null -> Message.of(imageContent)
+                imageContent != null -> Message.of(imageContent, Content.Text(DEFAULT_IMAGE_PROMPT))
                 audioContent != null && textContent != null -> Message.of(audioContent, textContent)
                 audioContent != null -> Message.of(audioContent)
                 textContent != null -> Message.of(textContent)
                 else -> Message.of(Content.Text(""))
             }
-            conversation.sendMessageAsync(
-                message,
-                requestContext
-            ).collect { message ->
-                if (stopRequested) {
-                    // Throwing here breaks out of the Flow collector cleanly.
-                    throw kotlinx.coroutines.CancellationException("Stop requested")
+
+            val adapter = LiteRtStreamAdapter(
+                requestId = requestId,
+                attemptId = 1,
+                thinkingMode = thinkingMode,
+                onFirstToken = {
+                    timing?.recordFirstToken()
+                    if (!firstChunkRecorded) {
+                        firstChunkRecorded = true
+                        onProgress?.invoke(RequestProgress.Generating)
+                    }
+                },
+                onDelta = { delta ->
+                    if (stopRequested) return@LiteRtStreamAdapter
+                    if (!firstChunkRecorded && delta.isNotEmpty()) {
+                        firstChunkRecorded = true
+                        timing?.recordFirstToken()
+                        onProgress?.invoke(RequestProgress.Generating)
+                    }
+                    timing?.recordChunk(delta)
+                    runCatching { onUpdate(delta) }
                 }
-                val chunk = message.toString()
-                // Duplicate-partial handling: MediaPipe / LiteRT-LM sometimes
-                // delivers a chunk that already contains the previous accumulation
-                // as a prefix. Detect that and replace instead of append.
-                val current = response.toString()
-                if (current.isNotEmpty() && chunk.startsWith(current)) {
-                    response.clear()
-                    response.append(chunk)
+            )
+            activeLiteRtAdapter = adapter
+            try {
+                conversation.sendMessageAsync(message, adapter, requestContext)
+                val finalSnapshot = adapter.awaitDone()
+                lastLiteRtSnapshot = finalSnapshot
+                val answerText = finalSnapshot.answerText
+                val rawTokens = if (adapter.callbackCount > 0) {
+                    adapter.callbackCount
                 } else {
-                    response.append(chunk)
+                    val combinedText = answerText + finalSnapshot.reasoningText
+                    maxOf(1, Math.round(combinedText.length / 3.8).toInt())
                 }
-                runCatching { onUpdate(ModelOutputSanitizer.clean(response.toString())) }
-            }
-        } catch (_: kotlinx.coroutines.CancellationException) {
-            // Expected when the user stops generation — coroutine was cancelled
-            // or stopRequested flag was set.
-            Log.i(TAG, "LiteRT-LM vision stream cancelled")
-        } catch (t: Throwable) {
-            // Catch everything including native crashes that propagate as Error
-            // so the caller never sees an unhandled exception.
-            Log.w(TAG, "LiteRT-LM vision stream error", t)
-            if (response.isEmpty()) {
-                val errorMsg = t.localizedMessage ?: t.message ?: t.javaClass.simpleName
-                response.append("Error: ").append(errorMsg)
+                onTokensGenerated?.invoke(rawTokens)
+                return answerText
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                adapter.cancel(conversation)
+                lastLiteRtSnapshot = adapter.currentSnapshot()
+                val partialText = adapter.currentSnapshot().answerText + adapter.currentSnapshot().reasoningText
+                val rawTokens = if (adapter.tokenCount > 0) adapter.tokenCount else maxOf(1, Math.round(partialText.length / 3.8).toInt())
+                onTokensGenerated?.invoke(rawTokens)
+                throw cancelled
+            } catch (t: Throwable) {
+                lastLiteRtSnapshot = adapter.currentSnapshot()
+                val partialText = adapter.currentSnapshot().answerText + adapter.currentSnapshot().reasoningText
+                val rawTokens = if (adapter.tokenCount > 0) adapter.tokenCount else maxOf(1, Math.round(partialText.length / 3.8).toInt())
+                onTokensGenerated?.invoke(rawTokens)
+                throw t
+            } finally {
+                if (activeLiteRtAdapter === adapter) {
+                    activeLiteRtAdapter = null
+                }
             }
         } finally {
-            runCatching { imageFile?.delete() }
-            runCatching { cachedAudioFile?.delete() }
+            if (reusableImageFile == null) runCatching { imageFile?.delete() }
         }
-        if (stopRequested) return ModelOutputSanitizer.clean(response.toString()).ifBlank { "Stopped." }
-        return ModelOutputSanitizer.clean(response.toString()).ifBlank { "No answer generated." }
     }
 
     private fun streamMediaPipeVision(
@@ -585,24 +766,28 @@ class VisionInferenceManager(private val context: Context) {
         prompt: String,
         audioFile: File?,
         audioBytes: ByteArray?,
+        timing: InferenceTiming? = null,
+        onProgress: ((RequestProgress) -> Unit)? = null,
+        onTokensGenerated: ((Int) -> Unit)? = null,
+        responseSnapshot: () -> String,
         onUpdate: (String) -> Unit
     ): String {
-        if (bitmap?.isRecycled == true) return "Error: Image was recycled before analysis."
+        require(bitmap?.isRecycled != true) { "Image was recycled before analysis" }
         val hasAudioBytes = audioBytes?.isNotEmpty() == true
         val hasAudioInput = audioFile != null || hasAudioBytes
-        if (hasAudioInput && !modelSupportsAudioInput) return "This model does not support audio input."
-        val inference = mediaPipeInference ?: return "Image model is not initialised."
+        require(!hasAudioInput || modelSupportsAudioInput) { "This model does not support audio input." }
+        val inference = mediaPipeInference ?: throw IllegalStateException("Image model is not initialised.")
         val mpImage = try {
             bitmap?.let { BitmapImageBuilder(it).build() }
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to build MPImage", t)
-            return "Failed to process image."
+            throw IllegalArgumentException("Failed to process image", t)
         }
         val mediaPipeAudioBytes = try {
             if (hasAudioBytes) audioBytes else audioFile?.readBytes()
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to read audio attachment", t)
-            return "Failed to read audio."
+            throw IllegalArgumentException("Failed to read audio", t)
         }
         return try {
             val graphOptions = GraphOptions.builder()
@@ -618,10 +803,24 @@ class VisionInferenceManager(private val context: Context) {
                 .setGraphOptions(graphOptions)
                 .build()
             val session = try {
-                LlmInferenceSession.createFromOptions(inference, sessionOptions)
+                var created: LlmInferenceSession? = null
+                var attempts = 0
+                while (created == null && attempts < 5) {
+                    try {
+                        created = LlmInferenceSession.createFromOptions(inference, sessionOptions)
+                    } catch (t: Throwable) {
+                        if (t.message?.contains("still processing", ignoreCase = true) == true && attempts < 4) {
+                            attempts++
+                            Thread.sleep(60)
+                        } else {
+                            throw t
+                        }
+                    }
+                }
+                created ?: throw IllegalStateException("Failed to create vision session")
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to create vision session", t)
-                return "Failed to create vision session."
+                throw IllegalStateException("Failed to create vision session", t)
             }
             activeMediaPipeSession = session
             try {
@@ -650,7 +849,8 @@ class VisionInferenceManager(private val context: Context) {
                         return "Stopped."
                     }
                 }
-                val accumulated = StringBuilder()
+                var firstChunkRecorded = false
+                var mediaPipeTokenCount = 0
                 val callbackDone = CountDownLatch(1)
                 activeMediaPipeCallbackDone = callbackDone
                 val future = session.generateResponseAsync(
@@ -658,14 +858,15 @@ class VisionInferenceManager(private val context: Context) {
                         try {
                             if (stopRequested) return@ProgressListener
                             if (partial.isNullOrEmpty()) return@ProgressListener
-                            val current = accumulated.toString()
-                            if (current.isNotEmpty() && partial.startsWith(current)) {
-                                accumulated.clear()
-                                accumulated.append(partial)
-                            } else {
-                                accumulated.append(partial)
+                            mediaPipeTokenCount++
+                            if (!firstChunkRecorded) {
+                                firstChunkRecorded = true
+                                timing?.recordFirstToken()
+                                onProgress?.invoke(RequestProgress.Generating)
                             }
-                            runCatching { onUpdate(ModelOutputSanitizer.clean(accumulated.toString())) }
+
+                            timing?.recordChunk(partial)
+                            runCatching { onUpdate(partial) }
                         } finally {
                             if (done) {
                                 callbackDone.countDown()
@@ -678,11 +879,35 @@ class VisionInferenceManager(private val context: Context) {
                 // so we don't block on a future that may never complete cleanly.
                 if (stopRequested) {
                     runCatching { session.cancelGenerateResponseAsync() }
+                    runCatching { future.cancel(true) }
+                    val rawTokens = if (mediaPipeTokenCount > 0) mediaPipeTokenCount else maxOf(1, Math.round(responseSnapshot().length / 3.8).toInt())
+                    onTokensGenerated?.invoke(rawTokens)
+                    return ModelOutputSanitizer.clean(responseSnapshot()).ifBlank { "Stopped." }
                 }
                 val finalResponse = try {
-                    future.get()
+                    while (!future.isDone) {
+                        if (stopRequested) {
+                            runCatching { session.cancelGenerateResponseAsync() }
+                            runCatching { future.cancel(true) }
+                            break
+                        }
+                        try {
+                            future.get(50, TimeUnit.MILLISECONDS)
+                            break
+                        } catch (_: TimeoutException) {
+                            // Check stopRequested on each tick
+                        }
+                    }
+                    if (future.isDone && !future.isCancelled && !stopRequested) {
+                        runCatching { future.get() }.getOrNull()
+                    } else {
+                        null
+                    }
                 } catch (_: FutureCancellationException) {
                     Log.i(TAG, "Vision generation stopped (future cancelled)")
+                    null
+                } catch (_: java.util.concurrent.CancellationException) {
+                    Log.i(TAG, "Vision generation stopped (cancelled)")
                     null
                 } catch (_: InterruptedException) {
                     Log.i(TAG, "Vision generation interrupted")
@@ -693,23 +918,26 @@ class VisionInferenceManager(private val context: Context) {
                         Log.i(TAG, "Vision stream error after stop", t)
                         null
                     } else {
-                        // Don't rethrow — return the accumulated text or error.
-                        Log.e(TAG, "Vision generateResponseAsync failed", t)
-                        null
+                        throw t
                     }
                 } finally {
                     activeMediaPipeFuture = null
                 }
-                val accumulatedText = accumulated.toString()
-                if (stopRequested || finalResponse == null) {
-                    return ModelOutputSanitizer.clean(accumulatedText).ifBlank { "Stopped." }
-                }
-                if (finalResponse.isNotBlank() && finalResponse != accumulatedText) {
-                    runCatching { onUpdate(ModelOutputSanitizer.clean(finalResponse)) }
-                    ModelOutputSanitizer.clean(finalResponse)
+                val accumulatedText = responseSnapshot()
+                val returnText = if (stopRequested || finalResponse == null) {
+                    ModelOutputSanitizer.clean(accumulatedText).ifBlank { "Stopped." }
+                } else if (finalResponse.isNotBlank() && finalResponse != accumulatedText) {
+                    finalResponse
                 } else {
-                    ModelOutputSanitizer.clean(accumulatedText.ifBlank { finalResponse })
+                    accumulatedText.ifBlank { finalResponse }
                 }
+                val rawTokens = if (mediaPipeTokenCount > 0) {
+                    mediaPipeTokenCount
+                } else {
+                    maxOf(1, Math.round(returnText.length / 3.8).toInt())
+                }
+                onTokensGenerated?.invoke(rawTokens)
+                return returnText
             } finally {
                 // Close only the session created by this invocation. If close()
                 // already claimed it, or a future invocation owns a newer
@@ -718,12 +946,14 @@ class VisionInferenceManager(private val context: Context) {
                     val callbackDone = activeMediaPipeCallbackDone
                     activeMediaPipeCallbackDone = null
                     activeMediaPipeSession = null
-                    if (!isBeingClosed) {
+                    if (!isBeingClosed && !stopRequested) {
                         if (waitForCallbackToReturn(callbackDone)) {
                             runCatching { session.close() }.onFailure { t ->
                                 Log.w(TAG, "Session close error (safe to ignore after stop)", t)
                             }
                         }
+                    } else if (stopRequested) {
+                        Log.i(TAG, "Leaving stopped MediaPipe vision session for native cleanup")
                     }
                 }
             }
@@ -731,7 +961,7 @@ class VisionInferenceManager(private val context: Context) {
             // Catch-all for any native crash that propagates as an Error
             // (e.g. UnsatisfiedLinkError, InternalError from JNI).
             Log.e(TAG, "Vision stream unexpected error", t)
-            "Image analysis failed."
+            throw t
         } finally {
             runCatching { mpImage?.close() }.onFailure { t ->
                 Log.w(TAG, "MPImage close error (safe to ignore)", t)
@@ -741,8 +971,9 @@ class VisionInferenceManager(private val context: Context) {
 
     private fun waitForCallbackToReturn(callbackDone: CountDownLatch?): Boolean {
         if (callbackDone == null || callbackDone.count == 0L) return true
+        if (stopRequested) return false
         val completed = runCatching {
-            callbackDone.await(2, TimeUnit.SECONDS)
+            callbackDone.await(150, TimeUnit.MILLISECONDS)
         }.getOrDefault(false)
         if (!completed) {
             Log.w(TAG, "Timed out waiting for MediaPipe vision callback; leaving session for native cleanup")
@@ -803,8 +1034,24 @@ class VisionInferenceManager(private val context: Context) {
         val dir = File(context.cacheDir, "vision_questions").apply { mkdirs() }
         pruneVisionQuestionCache(dir)
         val file = File(dir, "vision-question-${System.currentTimeMillis()}.jpg")
-        FileOutputStream(file).use { output ->
-            compress(Bitmap.CompressFormat.JPEG, 92, output)
+        val maxDimension = 1024
+        val scaledBitmap = if (width > maxDimension || height > maxDimension) {
+            val scale = maxDimension.toFloat() / maxOf(width, height)
+            val destW = (width * scale).toInt().coerceAtLeast(1)
+            val destH = (height * scale).toInt().coerceAtLeast(1)
+            Bitmap.createScaledBitmap(this, destW, destH, true)
+        } else {
+            null
+        }
+        val target = scaledBitmap ?: this
+        try {
+            FileOutputStream(file).use { output ->
+                target.compress(Bitmap.CompressFormat.JPEG, 90, output)
+            }
+        } finally {
+            if (scaledBitmap != null && scaledBitmap != this) {
+                runCatching { scaledBitmap.recycle() }
+            }
         }
         return file
     }

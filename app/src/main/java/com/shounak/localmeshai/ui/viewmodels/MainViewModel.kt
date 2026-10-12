@@ -6,21 +6,28 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.shounak.localmeshai.ai.LlamaCppEngine
+import com.shounak.localmeshai.models.CustomModelDefinition
+import com.shounak.localmeshai.models.CustomModelStore
 import com.shounak.localmeshai.models.ModelCatalog
 import com.shounak.localmeshai.models.ModelInfo
 import com.shounak.localmeshai.models.ModelPackage
 import com.shounak.localmeshai.models.ModelStatus
 import com.shounak.localmeshai.models.ModelType
+import com.shounak.localmeshai.services.DownloadController
 import com.shounak.localmeshai.services.ModelDownloadService
 import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.DownloadSnapshot
 import com.shounak.localmeshai.utils.DownloadStateStore
 import com.shounak.localmeshai.utils.InitCrashGuard
+import com.shounak.localmeshai.utils.ModelArtifactStorage
 import com.shounak.localmeshai.utils.ModelDownloader
+import com.shounak.localmeshai.utils.ModelDownloadUrlPolicy
 import com.shounak.localmeshai.utils.ModelRuntimeCoordinator
 import com.shounak.localmeshai.utils.ModelRuntimeOwner
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.File
 import java.net.URI
@@ -42,6 +49,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val settingsPrefs = application.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
     private val _huggingFaceToken = MutableStateFlow(settingsPrefs.getString(KEY_HF_TOKEN, "").orEmpty())
     val huggingFaceToken = _huggingFaceToken.asStateFlow()
+
+    private val customModelStore = CustomModelStore(application.filesDir)
 
     val availableModels = mutableStateListOf(*ModelCatalog.defaultModels.toTypedArray())
     val unsafeInitOverrideIds = mutableStateListOf<String>()
@@ -69,22 +78,63 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _pendingCrashPrompt = MutableStateFlow<com.shounak.localmeshai.utils.CrashReport?>(null)
     val pendingCrashPrompt = _pendingCrashPrompt.asStateFlow()
 
+    private val _settingsDialogVisible = MutableStateFlow(false)
+    val settingsDialogVisible = _settingsDialogVisible.asStateFlow()
+
+    private val _scrollToAboutRequested = MutableStateFlow(false)
+    val scrollToAboutRequested = _scrollToAboutRequested.asStateFlow()
+
     init {
         DownloadStateStore.initialize(application)
-        refreshCrashReports()
-        checkPendingCrashReport()
         ModelRuntimeCoordinator.setReleasedCallback(ModelRuntimeOwner.Chat) {
             clearSelectedTextModel()
         }
         ModelRuntimeCoordinator.setReleasedCallback(ModelRuntimeOwner.Vision) {
             clearSelectedVisionModel()
         }
+        DownloadController.getInstance(application).inferenceShutdownAwaiter = { modelId ->
+            val target = availableModels.firstOrNull { it.id == modelId }
+            var shutdownOk = true
+            if (target != null) {
+                if (_selectedTextModelPath.value == target.localPath) {
+                    _selectedTextModelPath.value = null
+                    val res = ModelRuntimeCoordinator.releaseAll()
+                    if (res != com.shounak.localmeshai.ai.ShutdownResult.Success) {
+                        shutdownOk = false
+                    }
+                }
+                if (_selectedVisionModelPath.value == target.localPath) {
+                    _selectedVisionModelPath.value = null
+                    val res = ModelRuntimeCoordinator.releaseAll()
+                    if (res != com.shounak.localmeshai.ai.ShutdownResult.Success) {
+                        shutdownOk = false
+                    }
+                }
+            }
+            shutdownOk
+        }
         applyDeviceModelGuards()
         observeDownloadState()
 
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            restoreCustomModels()
             checkLocalModels()
             reconcilePersistedDownloads()
+            refreshCrashReports()
+            checkPendingCrashReport()
+        }
+
+        viewModelScope.launch {
+            appSettingsData.map { it.autoCheckUpdates }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    if (enabled) {
+                        com.shounak.localmeshai.utils.AppUpdateManager.scheduleBackgroundUpdateCheck(getApplication())
+                    } else {
+                        com.shounak.localmeshai.utils.AppUpdateManager.cancelBackgroundUpdateCheck(getApplication())
+                        com.shounak.localmeshai.utils.AppUpdateManager.cancelUpdateNotification(getApplication())
+                    }
+                }
         }
 
         if (appSettingsData.value.autoCheckUpdates) {
@@ -121,9 +171,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshCrashReports()
     }
 
+    private var updateDownloadJob: kotlinx.coroutines.Job? = null
+    private var updateCheckJob: kotlinx.coroutines.Job? = null
+
     fun checkForUpdates(silent: Boolean = false) {
         if (_isCheckingForUpdates.value) return
-        viewModelScope.launch {
+        updateCheckJob?.cancel()
+        updateCheckJob = viewModelScope.launch {
             _isCheckingForUpdates.value = true
             val result = com.shounak.localmeshai.utils.AppUpdateManager.checkForUpdates(
                 currentVersionName = com.shounak.localmeshai.BuildConfig.VERSION_NAME,
@@ -149,8 +203,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun downloadAndInstallUpdate(version: String, downloadUrl: String) {
-        if (_updateDownloadStatus.value is UpdateDownloadStatus.Downloading) return
-        viewModelScope.launch {
+        updateDownloadJob?.cancel()
+        updateDownloadJob = viewModelScope.launch {
             _updateDownloadStatus.value = UpdateDownloadStatus.Downloading(0f)
             val result = com.shounak.localmeshai.utils.AppUpdateManager.downloadApk(
                 context = getApplication(),
@@ -167,7 +221,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (launched) {
                         _updateDownloadStatus.value = UpdateDownloadStatus.Installing
                     } else {
-                        _updateDownloadStatus.value = UpdateDownloadStatus.Error("Failed to launch package installer")
+                        _updateDownloadStatus.value = UpdateDownloadStatus.Error("Failed to verify or launch package installer")
                     }
                 },
                 onFailure = { error ->
@@ -177,16 +231,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun cancelUpdateDownload() {
+        updateDownloadJob?.cancel()
+        updateDownloadJob = null
+        _updateDownloadStatus.value = UpdateDownloadStatus.Idle
+    }
+
     fun dismissUpdateState() {
+        cancelUpdateDownload()
         _updateState.value = null
         _updateDownloadStatus.value = UpdateDownloadStatus.Idle
+    }
+
+    fun openSettings(scrollToAbout: Boolean = false) {
+        _settingsDialogVisible.value = true
+        _scrollToAboutRequested.value = scrollToAbout
+    }
+
+    fun dismissSettings() {
+        _settingsDialogVisible.value = false
+        _scrollToAboutRequested.value = false
+    }
+
+    fun onScrolledToAbout() {
+        _scrollToAboutRequested.value = false
+    }
+
+    fun setUpdateAvailable(updateInfo: com.shounak.localmeshai.utils.AppUpdateManager.UpdateInfo) {
+        _updateState.value = com.shounak.localmeshai.utils.AppUpdateManager.UpdateCheckResult.UpdateAvailable(updateInfo)
     }
 
     private suspend fun reconcilePersistedDownloads() = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         DownloadStateStore.snapshots.value.values.forEach { snapshot ->
             val model = availableModels.firstOrNull { it.id == snapshot.modelId } ?: return@forEach
             val target = modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
-            if (target.exists() && (target.isDirectory || target.length() > 0L)) {
+            if (target != null && target.exists() && (target.isDirectory || target.length() > 0L)) {
                 val validationError = localModelValidationError(model, target)
                 val fileTime = target.lastModified()
                 val dlTime = if (snapshot.downloadedAt > 0L) snapshot.downloadedAt else fileTime
@@ -224,7 +303,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             availableModels.forEachIndexed { index, model ->
                 if (model.isFuturePlaceholder) return@forEachIndexed
                 val target = modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
-                if (target.exists() && (target.isDirectory || target.length() > 0L)) {
+                if (target != null && target.exists() && (target.isDirectory || target.length() > 0L)) {
                     val validationError = localModelValidationError(model, target)
                     if (validationError != null) {
                         list.add(index to model.copy(
@@ -285,7 +364,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _selectedTextModelPath.value = null
             return
         }
-        appSettings.updateSettings { it.copy(llamaBackendPreference = "AUTO") }
         val modelType = model?.type
         if (modelType == ModelType.Vision) {
             _selectedVisionModelPath.value = path
@@ -303,7 +381,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _selectedVisionModelPath.value = null
             return
         }
-        appSettings.updateSettings { it.copy(llamaBackendPreference = "AUTO") }
         val modelType = model?.type
         if (modelType == ModelType.Text) {
             _selectedTextModelPath.value = path
@@ -435,7 +512,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val targetPath = model.localPath
-            ?: modelDownloader.getTargetFile(model.id, model.fileName, model.packageType).takeIf { it.exists() }?.absolutePath
+            ?: modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)?.takeIf { it.exists() }?.absolutePath
         if (targetPath.isNullOrBlank()) {
             startDownloadAnyway(modelId)
             return
@@ -458,46 +535,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelDownload(modelId: String) {
         val model = availableModels.firstOrNull { it.id == modelId } ?: return
-        ModelDownloadService.cancel(
-            context = getApplication(),
-            modelId = model.id,
-            name = model.name,
-            url = model.url.orEmpty(),
-            fileName = model.fileName,
-            packageType = model.packageType,
-            token = _huggingFaceToken.value.ifBlank { null },
-            sha256 = model.sha256
-        )
-        modelDownloader.deleteDownload(model.id, model.fileName, model.packageType)
-        unsafeInitOverrideIds.remove(model.id)
-        DownloadStateStore.update(
-            DownloadSnapshot(
-                modelId = model.id,
-                status = ModelStatus.NotDownloaded,
-                progress = 0f,
-                downloadedBytes = 0L,
-                totalBytes = -1L,
-                bytesPerSecond = 0L,
-                localPath = null,
-                errorMessage = null,
-                downloadedAt = 0L
-            )
-        )
-        val blockMessage = when {
-            InitCrashGuard.isModelBlocked(getApplication(), model.id) -> InitCrashGuard.blockedModelMessage()
-            else -> deviceBlockMessage(model)
-        }
-        updateModel(modelId) {
-            it.copy(
-                status = if (blockMessage != null) ModelStatus.Blocked else ModelStatus.NotDownloaded,
-                progress = 0f,
-                downloadedBytes = 0L,
-                totalBytes = -1L,
-                bytesPerSecond = 0L,
-                localPath = null,
-                errorMessage = blockMessage,
-                downloadedAt = 0L
-            )
+        viewModelScope.launch {
+            DownloadController.getInstance(getApplication()).cancelDownload(model.id)
+            unsafeInitOverrideIds.remove(model.id)
+            val blockMessage = when {
+                InitCrashGuard.isModelBlocked(getApplication(), model.id) -> InitCrashGuard.blockedModelMessage()
+                else -> deviceBlockMessage(model)
+            }
+            updateModel(modelId) {
+                it.copy(
+                    status = if (blockMessage != null) ModelStatus.Blocked else ModelStatus.NotDownloaded,
+                    progress = 0f,
+                    downloadedBytes = 0L,
+                    totalBytes = -1L,
+                    bytesPerSecond = 0L,
+                    localPath = null,
+                    errorMessage = blockMessage,
+                    downloadedAt = 0L
+                )
+            }
         }
     }
 
@@ -532,94 +588,104 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteModel(modelId: String) {
         val model = availableModels.firstOrNull { it.id == modelId } ?: return
-        // Cancel any in-progress download first.
-        ModelDownloadService.cancel(
-            context = getApplication(),
-            modelId = model.id,
-            name = model.name,
-            url = model.url.orEmpty(),
-            fileName = model.fileName,
-            packageType = model.packageType,
-            token = _huggingFaceToken.value.ifBlank { null },
-            sha256 = model.sha256
-        )
-        // Delete the local file / directory and any partial download.
-        modelDownloader.deleteDownload(model.id, model.fileName, model.packageType)
-        unsafeInitOverrideIds.remove(model.id)
-        DownloadStateStore.update(
-            DownloadSnapshot(
-                modelId = model.id,
-                status = ModelStatus.NotDownloaded,
-                progress = 0f,
-                downloadedBytes = 0L,
-                totalBytes = -1L,
-                bytesPerSecond = 0L,
-                localPath = null,
-                errorMessage = null,
-                downloadedAt = 0L
-            )
-        )
-        // Clear selection if this model was active.
-        if (_selectedTextModelPath.value == model.localPath) {
-            _selectedTextModelPath.value = null
-        }
-        if (_selectedVisionModelPath.value == model.localPath) {
-            _selectedVisionModelPath.value = null
-        }
-        // Reset the model to NotDownloaded or Blocked.
-        val blocked = InitCrashGuard.isModelBlocked(getApplication(), model.id)
-        if (blocked && canRetryBlockedModelOnLiteRtCpu(model)) {
-            InitCrashGuard.unblockModel(getApplication(), model.id)
-        }
-        val stillBlocked = InitCrashGuard.isModelBlocked(getApplication(), model.id)
-        val devBlockMsg = deviceBlockMessage(model)
-        val blockMessage = when {
-            stillBlocked -> InitCrashGuard.blockedModelMessage()
-            devBlockMsg != null -> devBlockMsg
-            else -> null
-        }
-        updateModel(modelId) {
-            it.copy(
-                status = if (blockMessage != null) ModelStatus.Blocked else ModelStatus.NotDownloaded,
-                progress = 0f,
-                downloadedBytes = 0L,
-                totalBytes = -1L,
-                bytesPerSecond = 0L,
-                localPath = null,
-                errorMessage = blockMessage,
-                downloadedAt = 0L
-            )
+        viewModelScope.launch {
+            try {
+                // Await relevant inference shutdown if this model is active
+                kotlinx.coroutines.withTimeout(10_000L) {
+                    if (_selectedTextModelPath.value == model.localPath) {
+                        _selectedTextModelPath.value = null
+                        ModelRuntimeCoordinator.releaseAll()
+                    }
+                    if (_selectedVisionModelPath.value == model.localPath) {
+                        _selectedVisionModelPath.value = null
+                        ModelRuntimeCoordinator.releaseAll()
+                    }
+                }
+
+                DownloadController.getInstance(getApplication()).removeModel(model.id)
+
+                unsafeInitOverrideIds.remove(model.id)
+                val blocked = InitCrashGuard.isModelBlocked(getApplication(), model.id)
+                if (blocked && canRetryBlockedModelOnLiteRtCpu(model)) {
+                    InitCrashGuard.unblockModel(getApplication(), model.id)
+                }
+                val stillBlocked = InitCrashGuard.isModelBlocked(getApplication(), model.id)
+                val devBlockMsg = deviceBlockMessage(model)
+                val blockMessage = when {
+                    stillBlocked -> InitCrashGuard.blockedModelMessage()
+                    devBlockMsg != null -> devBlockMsg
+                    else -> null
+                }
+                updateModel(modelId) {
+                    it.copy(
+                        status = if (blockMessage != null) ModelStatus.Blocked else ModelStatus.NotDownloaded,
+                        progress = 0f,
+                        downloadedBytes = 0L,
+                        totalBytes = -1L,
+                        bytesPerSecond = 0L,
+                        localPath = null,
+                        errorMessage = blockMessage,
+                        downloadedAt = 0L
+                    )
+                }
+                if (model.id.startsWith("custom_")) {
+                    customModelStore.remove(model.id)
+                    availableModels.removeAll { it.id == model.id }
+                }
+            } catch (e: Exception) {
+                updateModel(modelId) {
+                    it.copy(errorMessage = "Cannot remove model: ${e.message ?: "inference shutdown stalled"}")
+                }
+            }
         }
     }
 
-    fun normalizeCustomModelUrl(input: String): String {
-        var clean = input.trim()
-        if (clean.isBlank()) return ""
-
-        // If it's a Hugging Face web URL with /blob/, replace /blob/ with /resolve/
-        if (clean.contains("huggingface.co", ignoreCase = true)) {
-            if (clean.contains("/blob/")) {
-                clean = clean.replace("/blob/", "/resolve/")
-            }
-            if (!clean.contains("?download=true") && !clean.contains("&download=true")) {
-                clean = if (clean.contains("?")) "$clean&download=true" else "$clean?download=true"
-            }
-            return clean
+    private suspend fun restoreCustomModels() {
+        val loadState = customModelStore.loadAsync()
+        com.shounak.localmeshai.data.StartupCoordinator.getInstance(getApplication())
+            .updateCustomModelStoreState(loadState)
+        if (loadState !is com.shounak.localmeshai.data.StoreLoadState.Ready) {
+            return
         }
-
-        // Check if it matches shorthand "org/repo/filename"
-        val parts = clean.split("/")
-        if (parts.size >= 3 && !clean.startsWith("http://", ignoreCase = true) && !clean.startsWith("https://", ignoreCase = true)) {
-            val org = parts[0]
-            val repo = parts[1]
-            val rest = parts.drop(2).joinToString("/")
-            return "https://huggingface.co/$org/$repo/resolve/main/$rest?download=true"
+        val customDefinitions = customModelStore.getAll()
+        val toAdd = mutableListOf<ModelInfo>()
+        for (def in customDefinitions) {
+            if (availableModels.none { it.id == def.id }) {
+                toAdd.add(
+                    ModelInfo(
+                        id = def.id,
+                        name = def.name,
+                        size = "Custom",
+                        status = ModelStatus.NotDownloaded,
+                        type = def.type,
+                        fileName = def.fileName,
+                        packageType = def.packageType,
+                        description = def.description,
+                        backend = def.backend,
+                        deviceTarget = def.deviceTarget,
+                        url = def.url,
+                        sha256 = def.sha256,
+                        requiresHuggingFaceToken = ModelDownloadUrlPolicy.requiresHuggingFaceToken(def.url)
+                    )
+                )
+            }
         }
-
-        return clean
+        if (toAdd.isNotEmpty()) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                for (model in toAdd) {
+                    if (availableModels.none { it.id == model.id }) {
+                        availableModels.add(model)
+                    }
+                }
+            }
+        }
     }
+
+    fun normalizeCustomModelUrl(input: String): String = ModelDownloadUrlPolicy.normalizeUrl(input)
 
     fun addCustomModel(name: String, url: String, type: ModelType, sha256: String? = null) {
+        val storeState = com.shounak.localmeshai.data.StartupCoordinator.getInstance(getApplication()).customModelStoreState.value
+        if (storeState is com.shounak.localmeshai.data.StoreLoadState.RecoveryRequired) return
         val normalizedUrl = normalizeCustomModelUrl(url)
         if (normalizedUrl.isBlank()) return
         val rawFileName = inferFileName(normalizedUrl, type)
@@ -631,7 +697,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             ModelPackage.SingleFile
         }
-        val id = "custom_${effectiveType.name.lowercase()}_${normalizedUrl.hashCode().toLong() and 0x7FFFFFFFFFFFFFFFL}"
+        val id = CustomModelStore.generateCustomModelId(normalizedUrl, effectiveType)
         val displayName = name.trim().ifBlank {
             fileName.substringBeforeLast('.').replace('-', ' ').replace('_', ' ')
         }
@@ -649,6 +715,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             else -> "User supplied .task or .litertlm text model."
         }
 
+        val definition = CustomModelDefinition(
+            id = id,
+            name = displayName,
+            url = normalizedUrl,
+            type = effectiveType,
+            fileName = fileName,
+            packageType = packageType,
+            sha256 = sha256?.trim()?.ifBlank { null },
+            description = descriptionText,
+            backend = backendName
+        )
+        val saved = customModelStore.add(definition)
+        if (!saved) return
+
         val model = ModelInfo(
             id = id,
             name = displayName,
@@ -662,7 +742,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             deviceTarget = "All supported chipsets",
             url = normalizedUrl,
             sha256 = sha256?.trim()?.ifBlank { null },
-            requiresHuggingFaceToken = normalizedUrl.contains("huggingface.co")
+            requiresHuggingFaceToken = ModelDownloadUrlPolicy.requiresHuggingFaceToken(normalizedUrl)
         )
 
         val existingIndex = availableModels.indexOfFirst { it.id == id }
@@ -741,18 +821,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun localModelValidationError(model: ModelInfo, target: File): String? {
-        if (target.isDirectory) return null
-        if (target.length() < MIN_VALID_MODEL_BYTES) {
+        if (!target.exists()) return "Model file does not exist."
+        val runnableFile: File = if (target.isDirectory) {
+            val isText = model.type == ModelType.Text
+            try {
+                ModelArtifactStorage.resolveRunnableInDirectory(target, isText = isText)
+            } catch (e: Exception) {
+                return e.message ?: "Invalid model bundle directory."
+            }
+        } else {
+            target
+        }
+
+        if (runnableFile.length() < MIN_VALID_MODEL_BYTES) {
             return "Downloaded file is too small to be a valid model. Retry the download."
         }
+        if (model.expectedFileSizeBytes > 0L && runnableFile.isFile) {
+            val sizeError = LlamaCppEngine.validateGgufArtifactSize(runnableFile.absolutePath, model.expectedFileSizeBytes)
+            if (sizeError != null) {
+                return sizeError
+            }
+        }
+        val expectedSha = model.sha256
+        if (!expectedSha.isNullOrBlank() && !target.isDirectory) {
+            if (!ModelDownloader.verifyFileSha256(runnableFile, expectedSha)) {
+                return "SHA-256 checksum verification failed. The model file may be corrupt or incomplete."
+            }
+        }
         if (
-            model.fileName.endsWith(".task", ignoreCase = true) &&
-            !ModelDownloader.isLikelyTaskBundle(target)
+            (model.fileName.endsWith(".task", ignoreCase = true) || runnableFile.name.endsWith(".task", ignoreCase = true)) &&
+            !ModelDownloader.isLikelyTaskBundle(runnableFile)
         ) {
             return "This .task file does not look like a MediaPipe or LiteRT task bundle. Delete it and download a verified Android .task model."
         }
-        if (model.fileName.endsWith(".gguf", ignoreCase = true)) {
-            val ggufError = LlamaCppEngine.canLoadModel(target.absolutePath)
+        if (model.fileName.endsWith(".gguf", ignoreCase = true) || runnableFile.name.endsWith(".gguf", ignoreCase = true)) {
+            val ggufError = LlamaCppEngine.canLoadModel(runnableFile.absolutePath)
             if (ggufError != null) {
                 return ggufError
             }
@@ -786,23 +889,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun inferFileName(url: String, type: ModelType): String {
-        val path = runCatching { URI(url).path }.getOrNull().orEmpty()
-        val decoded = URLDecoder.decode(path.substringAfterLast('/'), StandardCharsets.UTF_8.name())
-        val baseName = decoded.ifBlank {
-            when (type) {
-                ModelType.Vision -> "custom-vision-model.tflite"
-                ModelType.Text -> "custom-text-model.task"
-            }
+        val defaultName = when (type) {
+            ModelType.Vision -> "custom-vision-model.tflite"
+            ModelType.Text -> "custom-text-model.task"
         }
-
+        val safeName = runCatching { ModelArtifactStorage.inferFileName(url, defaultName) }.getOrDefault(defaultName)
         return when {
-            baseName.endsWith(".gguf", ignoreCase = true) -> baseName
-            baseName.endsWith(".task", ignoreCase = true) -> baseName
-            baseName.endsWith(".litertlm", ignoreCase = true) -> baseName
-            baseName.endsWith(".tflite", ignoreCase = true) -> baseName
-            baseName.endsWith(".zip", ignoreCase = true) -> baseName
-            type == ModelType.Vision -> "$baseName.tflite"
-            else -> "$baseName.task"
+            safeName.endsWith(".gguf", ignoreCase = true) -> safeName
+            safeName.endsWith(".task", ignoreCase = true) -> safeName
+            safeName.endsWith(".litertlm", ignoreCase = true) -> safeName
+            safeName.endsWith(".tflite", ignoreCase = true) -> safeName
+            safeName.endsWith(".zip", ignoreCase = true) -> safeName
+            type == ModelType.Vision -> "$safeName.tflite"
+            else -> "$safeName.task"
         }
     }
 
@@ -810,32 +909,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val MIN_VALID_MODEL_BYTES = 1_000_000L
         private const val KEY_HF_TOKEN = "hugging_face_read_token"
 
-        fun normalizeCustomModelUrl(input: String): String {
-            var clean = input.trim()
-            if (clean.isBlank()) return ""
-
-            // If it's a Hugging Face web URL with /blob/, replace /blob/ with /resolve/
-            if (clean.contains("huggingface.co", ignoreCase = true)) {
-                if (clean.contains("/blob/")) {
-                    clean = clean.replace("/blob/", "/resolve/")
-                }
-                if (!clean.contains("?download=true") && !clean.contains("&download=true")) {
-                    clean = if (clean.contains("?")) "$clean&download=true" else "$clean?download=true"
-                }
-                return clean
-            }
-
-            // Check if it matches shorthand "org/repo/filename"
-            val parts = clean.split("/")
-            if (parts.size >= 3 && !clean.startsWith("http://", ignoreCase = true) && !clean.startsWith("https://", ignoreCase = true)) {
-                val org = parts[0]
-                val repo = parts[1]
-                val rest = parts.drop(2).joinToString("/")
-                return "https://huggingface.co/$org/$repo/resolve/main/$rest?download=true"
-            }
-
-            return clean
-        }
+        fun normalizeCustomModelUrl(input: String): String = ModelDownloadUrlPolicy.normalizeUrl(input)
     }
 
     override fun onCleared() {

@@ -27,7 +27,24 @@ set(Vulkan_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-headers/include" CAC
 include_directories(SYSTEM "${CMAKE_CURRENT_SOURCE_DIR}/vulkan-headers/include")
 
 # Add optimizations and release mode definitions for all targets including llama.cpp and ggml
-add_compile_options(-O3 -DNDEBUG)
+add_compile_options(-O3 -DNDEBUG -ffunction-sections -fdata-sections)
+
+# Interprocedural Optimization (LTO) for Release and RelWithDebInfo configurations
+if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+    list(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+    set(CMAKE_ANDROID_NDK_VERSION "28.2" CACHE STRING "" FORCE)
+    set(CMAKE_C_LINK_OPTIONS_IPO "-fuse-ld=lld" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_LINK_OPTIONS_IPO "-fuse-ld=lld" CACHE STRING "" FORCE)
+
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT ipo_supported LANGUAGES C CXX)
+    if(ipo_supported)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+        set(GGML_LTO ON CACHE BOOL "Enable LTO in ggml" FORCE)
+    else()
+        message(FATAL_ERROR "Interprocedural Optimization (IPO/LTO) is not supported by the toolchain for C/CXX in ${CMAKE_BUILD_TYPE} configuration.")
+    endif()
+endif()
 
 # Ensure 16 KB page-size alignment for Android 15+ devices
 add_link_options("-Wl,-z,max-page-size=16384")
@@ -38,6 +55,20 @@ add_library(
     solus_llama
     SHARED
     llama-jni.cpp
+)
+
+target_link_options(
+    solus_llama
+    PRIVATE
+    "-Wl,--version-script,${CMAKE_CURRENT_SOURCE_DIR}/solus-llama.map"
+    "-Wl,--no-undefined-version"
+    "-Wl,--gc-sections"
+)
+
+set_target_properties(
+    solus_llama
+    PROPERTIES
+    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/solus-llama.map"
 )
 
 find_library(
@@ -60,6 +91,11 @@ find_library(
     log
 )
 
+find_library(
+    android-lib
+    android
+)
+
 target_link_libraries(
     solus_llama
     PRIVATE
@@ -67,6 +103,7 @@ target_link_libraries(
     ggml
     ${log-lib}
     ${vulkan-lib}
+    ${android-lib}
 )
 
 # Native test harness executable for deterministic C++ verification

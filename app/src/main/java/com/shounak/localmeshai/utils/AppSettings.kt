@@ -16,7 +16,7 @@ data class AppSettingsData(
     val enablePersonaPresets: Boolean = true,
     val enableSolusBench: Boolean = true,
     val enableAutoHideBottomBar: Boolean = false,
-    val autoUnloadMinutes: Int = 15,
+    val autoUnloadMinutes: Int = 1,
     val huggingFaceToken: String = "",
     val autoCheckUpdates: Boolean = true,
     val llamaBackendPreference: String = "AUTO",
@@ -29,10 +29,6 @@ data class AppSettingsData(
 
 class AppSettings private constructor(context: Context) {
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
-
-    init {
-        prefs.edit().putString(KEY_LLAMA_BACKEND_PREF, "AUTO").apply()
-    }
 
     private val _settings = MutableStateFlow(loadSettings())
     val settings: StateFlow<AppSettingsData> = _settings.asStateFlow()
@@ -48,10 +44,12 @@ class AppSettings private constructor(context: Context) {
             enablePersonaPresets = prefs.getBoolean(KEY_PERSONA_PRESETS, true),
             enableSolusBench = prefs.getBoolean(KEY_SOLUS_BENCH, true),
             enableAutoHideBottomBar = prefs.getBoolean(KEY_AUTO_HIDE_BOTTOM_BAR, false),
-            autoUnloadMinutes = prefs.getInt(KEY_AUTO_UNLOAD_MINS, 15),
+            autoUnloadMinutes = prefs.getInt(KEY_AUTO_UNLOAD_MINS, 1),
             huggingFaceToken = prefs.getString(KEY_HF_TOKEN, "").orEmpty(),
             autoCheckUpdates = prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true),
-            llamaBackendPreference = "AUTO",
+            llamaBackendPreference = prefs.getString(KEY_LLAMA_BACKEND_PREF, "AUTO")?.let {
+                if (it.uppercase() in listOf("AUTO", "CPU", "VULKAN")) it.uppercase() else "AUTO"
+            } ?: "AUTO",
             enableRag = prefs.getBoolean(KEY_ENABLE_RAG, false),
             ragTopK = prefs.getInt(KEY_RAG_TOP_K, 3),
             ragMinSimilarity = prefs.getFloat(KEY_RAG_MIN_SIMILARITY, 0.35f).let {

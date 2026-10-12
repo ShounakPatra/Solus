@@ -1,5 +1,6 @@
 package com.shounak.localmeshai.ui.screens
 
+import com.shounak.localmeshai.ai.RequestProgress
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
@@ -24,7 +25,9 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.OutlinedButton
+import com.shounak.localmeshai.ai.RequestTerminalStatus
 import com.shounak.localmeshai.utils.CrashReportManager
 import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.glassmorphic
@@ -36,6 +39,7 @@ import com.shounak.localmeshai.utils.ModelOutputSanitizer
 import com.shounak.localmeshai.utils.ModelAnswerFormatter
 import com.shounak.localmeshai.utils.ModelAnswerSegment
 import com.shounak.localmeshai.utils.ThinkingTextUtils
+import com.shounak.localmeshai.ui.models.rememberMessagePresentation
 import com.shounak.localmeshai.ui.components.ModelMathCard
 import com.shounak.localmeshai.ui.components.InlineMathListItem
 import com.shounak.localmeshai.utils.fluidReveal
@@ -130,6 +134,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -187,6 +192,7 @@ fun ImageGenScreen(
     var selectedFileName by remember { mutableStateOf<String?>(null) }
     var showHistory by remember { mutableStateOf(false) }
     var fullscreenMessageIndex by remember { mutableStateOf<Int?>(null) }
+    var localImageError by remember { mutableStateOf<String?>(null) }
     val answer by visionViewModel.answer.collectAsState()
     val currentSessionId by visionViewModel.currentSessionId.collectAsState()
     val isInitializing by visionViewModel.isInitializing.collectAsState()
@@ -194,6 +200,7 @@ fun ImageGenScreen(
     val isStopping by visionViewModel.isStopping.collectAsState()
     val isModelReady by visionViewModel.isModelReady.collectAsState()
     val visionError by visionViewModel.error.collectAsState()
+    val activeVisionReqId by visionViewModel.activeRequestIdState.collectAsState()
     val selectedVisionModelPath by mainViewModel.selectedVisionModelPath.collectAsState()
     val selectedVisionModel = selectedVisionModelPath?.let { path ->
         mainViewModel.availableModels.firstOrNull { it.localPath == path }
@@ -218,9 +225,16 @@ fun ImageGenScreen(
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
         scope.launch(Dispatchers.IO) {
-            val bmp = loadBitmap(context, uri)
-            withContext(Dispatchers.Main) {
-                selectedBitmap = bmp
+            try {
+                val bmp = loadBitmap(context, uri)
+                withContext(Dispatchers.Main) {
+                    selectedBitmap = bmp
+                    localImageError = null
+                }
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) {
+                    localImageError = "Failed to load image: ${e.message ?: "corrupted or unsupported format"}"
+                }
             }
         }
     }
@@ -229,16 +243,46 @@ fun ImageGenScreen(
         selectedFileUri = uri
         selectedFileName = getFileName(context, uri)
     }
-    var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
+    var cameraTempFilePath by rememberSaveable { mutableStateOf<String?>(null) }
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-        if (success) {
-            cameraTempUri?.let { uri ->
-                scope.launch(Dispatchers.IO) {
+        val filePath = cameraTempFilePath
+        val targetFile = filePath?.let { java.io.File(it) }
+        if (success && targetFile != null && targetFile.exists()) {
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.fileprovider",
+                        targetFile
+                    )
                     val bmp = loadBitmap(context, uri)
                     withContext(Dispatchers.Main) {
                         selectedBitmap = bmp
+                        localImageError = null
+                    }
+                } catch (e: Throwable) {
+                    withContext(Dispatchers.Main) {
+                        localImageError = "Failed to load photo: ${e.message ?: "corrupted image"}"
+                    }
+                } finally {
+                    com.shounak.localmeshai.utils.ActiveInputFiles.release(targetFile)
+                    targetFile.delete()
+                    withContext(Dispatchers.Main) {
+                        cameraTempFilePath = null
                     }
                 }
+            }
+        } else {
+            if (targetFile != null) {
+                scope.launch(Dispatchers.IO) {
+                    com.shounak.localmeshai.utils.ActiveInputFiles.release(targetFile)
+                    targetFile.delete()
+                    withContext(Dispatchers.Main) {
+                        cameraTempFilePath = null
+                    }
+                }
+            } else {
+                cameraTempFilePath = null
             }
         }
     }
@@ -341,7 +385,44 @@ fun ImageGenScreen(
                     ImageMetricRow(modelName = path.substringAfterLast("/"))
                 }
 
-                visionError?.let { ImageErrorCard(it) }
+                (localImageError ?: visionError)?.let { ImageErrorCard(it) }
+
+                // Initialising / Analyzing / Stopping progress banner
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = isInitializing || isAnalyzing || isStopping,
+                    enter = androidx.compose.animation.fadeIn(tween(180)) +
+                        androidx.compose.animation.expandVertically(
+                            animationSpec = spring(dampingRatio = 0.82f, stiffness = 460f)
+                        ),
+                    exit = androidx.compose.animation.fadeOut(tween(130)) +
+                        androidx.compose.animation.shrinkVertically(
+                            animationSpec = spring(dampingRatio = 0.92f, stiffness = 620f)
+                        ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                            .padding(bottom = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        VisionLiquidProgressBar(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            text = when {
+                                isInitializing -> "Initialising image model safely…"
+                                isStopping -> "Stopping image model…"
+                                else -> "Reading input…"
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
 
                 // Middle area: large Answer area covering full upper part, matching Chats tab
                 Box(
@@ -375,60 +456,54 @@ fun ImageGenScreen(
                             )
                         }
                         else -> {
-                            SelectionContainer {
-                                LazyColumn(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentPadding = PaddingValues(vertical = 8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    itemsIndexed(
-                                        messages,
-                                        key = { _, message -> message.id },
-                                        contentType = { _, message ->
-                                            if (message.isUser) "vision_user" else "vision_assistant"
-                                        }
-                                    ) { index, message ->
-                                        VisionChatBubble(
-                                            text = message.text,
-                                            isUser = message.isUser,
-                                            bitmap = message.bitmap,
-                                            hazeState = hazeState,
-                                            isStreaming = !message.isUser && isAnalyzing && index == messages.lastIndex,
-                                            entryDelayMs = if (index == messages.lastIndex) 25 else 0,
-                                            audioPath = message.audioPath,
-                                            audioName = message.audioName,
-                                            audioDurationMs = message.audioDurationMs,
-                                            documentName = message.documentName,
-                                            onFullscreenClick = { fullscreenMessageIndex = index }
-                                        )
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                itemsIndexed(
+                                    messages,
+                                    key = { _, message -> message.id },
+                                    contentType = { _, message ->
+                                        if (message.isUser) "vision_user" else "vision_assistant"
                                     }
+                                ) { index, message ->
+                                    val isStreaming = !message.isUser && activeVisionReqId != null && message.requestId == activeVisionReqId && message.terminalStatus == null
+                                    VisionChatBubble(
+                                        text = message.text,
+                                        isUser = message.isUser,
+                                        bitmap = message.bitmap,
+                                        hazeState = hazeState,
+                                        isStreaming = isStreaming,
+                                        messageId = message.id,
+                                        requestId = message.requestId.orEmpty(),
+                                        attemptId = message.attemptId.toLong(),
+                                        revision = message.revision,
+                                        reasoningText = message.reasoningText,
+                                        entryDelayMs = if (index == messages.lastIndex) 25 else 0,
+                                        audioPath = message.audioPath,
+                                        audioName = message.audioName,
+                                        audioDurationMs = message.audioDurationMs,
+                                        documentName = message.documentName,
+                                        errorMessage = message.errorMessage,
+                                        onRetry = if (!message.isUser && index == messages.lastIndex && (message.errorMessage != null || message.terminalStatus == RequestTerminalStatus.Failed || message.text.startsWith("⚠️ Error:"))) {
+                                            val userMsgId = message.userMessageId ?: messages.take(index).lastOrNull { it.isUser }?.id
+                                            {
+                                                val currentSessId = visionViewModel.currentSessionId.value
+                                                if (currentSessId != null && userMsgId != null) {
+                                                    visionViewModel.retryMessage(currentSessId, userMsgId)
+                                                } else {
+                                                    visionViewModel.retryLastFailedMessage()
+                                                }
+                                            }
+                                        } else null,
+                                        onFullscreenClick = { fullscreenMessageIndex = index }
+                                    )
                                 }
                             }
                         }
                     }
 
-                    // Initialising / Analyzing / Stopping progress overlay
-                    if (isInitializing || isAnalyzing || isStopping) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .align(Alignment.TopCenter),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            VisionLiquidProgressBar(modifier = Modifier.fillMaxWidth())
-                            Text(
-                                text = when {
-                                    isInitializing -> "Initialising image model safely…"
-                                    isStopping -> "Stopping image model…"
-                                    else -> "Reading input…"
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                textAlign = TextAlign.Center,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
                 }
 
                 // Bottom input group: glassmorphic composer matching ChatScreen
@@ -564,15 +639,21 @@ fun ImageGenScreen(
                             } ?: true,
                             hazeState = hazeState,
                             onCameraSelect = {
-                                val uri = getTempImageUri(context)
-                                cameraTempUri = uri
-                                cameraLauncher.launch(uri)
+                                val request = createCameraCaptureRequest(context)
+                                cameraTempFilePath = request.file.absolutePath
+                                cameraLauncher.launch(request.uri)
                             },
                             onPhotosSelect = { imagePicker.launch("image/*") },
                             onFilesSelect = { filePicker.launch(arrayOf("*/*")) },
                             onSend = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                visionViewModel.ask(selectedBitmap, question, selectedFileUri, selectedFileName)
+                                visionViewModel.ask(
+                                    bitmap = selectedBitmap,
+                                    question = question,
+                                    fileUri = selectedFileUri,
+                                    fileName = selectedFileName,
+                                    thinkingMode = selectedVisionModel?.supportsThinkingMode == true
+                                )
                                 question = ""
                                 selectedBitmap = null
                                 selectedFileUri = null
@@ -637,9 +718,8 @@ fun VisionFullscreenAnswerPanel(
     val message = messageProvider() ?: return
     val context = LocalContext.current
     val title = if (message.isUser) "Your question" else "Model response"
-    val parsedContent = remember(message.text) {
-        ThinkingTextUtils.parse(message.text, allowActiveThinking = false)
-    }
+    val presentation = rememberMessagePresentation(text = message.text, isUser = message.isUser, isStreaming = false)
+    val parsedContent = presentation.parsedContent
     var panelVisible by remember(message.id) { mutableStateOf(false) }
     LaunchedEffect(message.id) {
         panelVisible = true
@@ -792,18 +872,18 @@ fun VisionFullscreenAnswerPanel(
                         }
 
                         val rawFilteredText = if (message.isUser && (!message.audioPath.isNullOrBlank() || !message.documentName.isNullOrBlank())) {
-                            parsedContent.finalResponseText.lines().filterNot { line ->
+                            presentation.displayText.lines().filterNot { line ->
                                 (!message.audioPath.isNullOrBlank() && line.trim().startsWith("🎧 Attached Audio:")) ||
                                 (!message.documentName.isNullOrBlank() && line.trim().startsWith("📎 Attached File:"))
                             }.joinToString("\n").trim()
                         } else {
-                            parsedContent.finalResponseText
+                            presentation.displayText
                         }
-                        val rawVisibleText = rawFilteredText.ifBlank { if (message.isUser) "" else "Answers will appear here." }
-                        val visibleText = if (message.isUser) rawVisibleText else rawVisibleText.normalizeModelAnswerText()
-                        val answerSegments = remember(visibleText, message.isUser) {
-                            if (message.isUser) listOf(ModelAnswerSegment.Text(visibleText))
-                            else ModelAnswerFormatter.parseSafely(visibleText)
+                        val visibleText = rawFilteredText.ifBlank { if (message.isUser) "" else "Answers will appear here." }
+                        val answerSegments = if (message.isUser || rawFilteredText.isBlank()) {
+                            listOf(ModelAnswerSegment.Text(visibleText))
+                        } else {
+                            presentation.segments
                         }
                         answerSegments.forEach { segment ->
                             when (segment) {
@@ -856,27 +936,56 @@ fun VisionFullscreenAnswerPanel(
 }
 
 fun loadBitmap(context: android.content.Context, uri: Uri, maxDimension: Int = 2048): Bitmap {
+    val mimeType = context.contentResolver.getType(uri).orEmpty().lowercase(java.util.Locale.US)
+    val name = getFileName(context, uri).lowercase(java.util.Locale.US)
+    val ext = name.substringAfterLast('.', "")
+    if (mimeType.isNotBlank() && !mimeType.startsWith("image/")) {
+        throw IllegalArgumentException("Unsupported file type ($mimeType). Please select an image.")
+    }
+    if (ext.isNotBlank() && !com.shounak.localmeshai.utils.ImageValidationUtils.isSupportedImageExtension(ext)) {
+        throw IllegalArgumentException("Unsupported image format (.$ext). Supported: JPG, PNG, WEBP, BMP, HEIC.")
+    }
+
+    val reportedSize = runCatching {
+        context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length }
+    }.getOrNull()
+    if (reportedSize != null && reportedSize > com.shounak.localmeshai.utils.ImageValidationUtils.MAX_IMAGE_FILE_BYTES) {
+        throw IllegalArgumentException("Image file exceeds 25 MB limit.")
+    }
+
     val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-        ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, info, _ ->
-            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-            val srcW = info.size.width
-            val srcH = info.size.height
-            val maxEdge = maxOf(srcW, srcH)
-            if (maxEdge > maxDimension) {
-                val scale = maxDimension.toFloat() / maxEdge
-                val targetW = (srcW * scale).toInt().coerceAtLeast(1)
-                val targetH = (srcH * scale).toInt().coerceAtLeast(1)
-                decoder.setTargetSize(targetW, targetH)
+        try {
+            ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, info, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                val srcW = info.size.width
+                val srcH = info.size.height
+                if (srcW <= 0 || srcH <= 0) {
+                    throw IllegalArgumentException("Corrupt image: invalid dimensions.")
+                }
+                val (targetW, targetH) = com.shounak.localmeshai.utils.ImageValidationUtils.calculateDownscaledDimensions(srcW, srcH, maxDimension)
+                if (targetW != srcW || targetH != srcH) {
+                    decoder.setTargetSize(targetW, targetH)
+                }
             }
+        } catch (e: Exception) {
+            throw IllegalArgumentException("Failed to decode image: ${e.message ?: "corrupted image file"}", e)
         }
     } else {
         val options = BitmapFactory.Options().apply {
             inJustDecodeBounds = true
         }
-        context.contentResolver.openInputStream(uri)?.use { inStream ->
+        val inputStream = context.contentResolver.openInputStream(uri)
+            ?: throw IllegalStateException("Could not open image stream.")
+        inputStream.use { inStream ->
             BitmapFactory.decodeStream(inStream, null, options)
         }
-        val maxEdge = maxOf(options.outWidth, options.outHeight)
+        val srcW = options.outWidth
+        val srcH = options.outHeight
+        if (srcW <= 0 || srcH <= 0) {
+            throw IllegalArgumentException("Corrupt image: invalid dimensions.")
+        }
+        val (targetW, targetH) = com.shounak.localmeshai.utils.ImageValidationUtils.calculateDownscaledDimensions(srcW, srcH, maxDimension)
+        val maxEdge = maxOf(srcW, srcH)
         var sampleSize = 1
         while (maxEdge / (sampleSize * 2) >= maxDimension) {
             sampleSize *= 2
@@ -885,9 +994,19 @@ fun loadBitmap(context: android.content.Context, uri: Uri, maxDimension: Int = 2
             inSampleSize = sampleSize
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
-        context.contentResolver.openInputStream(uri)?.use { inStream ->
+        val decoded = context.contentResolver.openInputStream(uri)?.use { inStream ->
             BitmapFactory.decodeStream(inStream, null, decodeOptions)
-        } ?: throw IllegalStateException("Could not open bitmap stream")
+        } ?: throw IllegalStateException("Could not open bitmap stream.")
+
+        if (decoded.width != targetW || decoded.height != targetH) {
+            val scaled = Bitmap.createScaledBitmap(decoded, targetW, targetH, true)
+            if (scaled != decoded) {
+                decoded.recycle()
+            }
+            scaled
+        } else {
+            decoded
+        }
     }
     return bitmap.copy(Bitmap.Config.ARGB_8888, false)
 }
@@ -1470,29 +1589,28 @@ private fun VisionComposerActions(
         LiquidGlassButton(
             onClick = {
                 when {
-                    isRocketFlying -> Unit
                     isAnalyzing -> onStop()
-                    canSend -> sendAnimationScope.launch {
-                        isRocketFlying = true
-                        rocketFlight.snapTo(0f)
-                        rocketFlight.animateTo(
-                            targetValue = 1f,
-                            animationSpec = tween(durationMillis = 190)
-                        )
+                    canSend -> {
                         onSend()
-                        rocketFlight.animateTo(
-                            targetValue = 0f,
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioLowBouncy,
-                                stiffness = Spring.StiffnessMediumLow
+                        sendAnimationScope.launch {
+                            rocketFlight.snapTo(0f)
+                            rocketFlight.animateTo(
+                                targetValue = 1f,
+                                animationSpec = tween(durationMillis = 190)
                             )
-                        )
-                        isRocketFlying = false
+                            rocketFlight.animateTo(
+                                targetValue = 0f,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioLowBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                )
+                            )
+                        }
                     }
                 }
             },
             hazeState = hazeState,
-            enabled = isRocketFlying || isAnalyzing || canSend,
+            enabled = isAnalyzing || canSend,
             modifier = Modifier
                 .size(48.dp)
                 .graphicsLayer {
@@ -1508,7 +1626,7 @@ private fun VisionComposerActions(
             contentPadding = PaddingValues(0.dp)
         ) {
             androidx.compose.animation.Crossfade(
-                targetState = isAnalyzing && !isRocketFlying,
+                targetState = isAnalyzing,
                 animationSpec = tween(180),
                 label = "vision_send_stop_icon"
             ) { analyzing ->
@@ -1937,7 +2055,11 @@ private fun MessageToolButton(
 }
 
 private fun String.isStreamingPlaceholderText(): Boolean {
-    return trim() in setOf("Generating…", "Generating...", "…", "Reading input…", "Reading input...")
+    return trim() in setOf(
+        "Generating…", "Generating...", "…", "Reading input…", "Reading input...",
+        "Loading model…", "Loading model...", "Preparing input…", "Preparing input...",
+        "Validating backend…", "Validating backend...", "Processing prompt…", "Processing prompt..."
+    )
 }
 
 @Composable
@@ -2186,12 +2308,20 @@ fun VisionChatBubble(
     audioDurationMs: Long = 0L,
     documentName: String? = null,
     documentPath: String? = null,
+    progress: RequestProgress? = null,
     hazeState: HazeState,
     isStreaming: Boolean = false,
+    messageId: String = "",
+    requestId: String = "",
+    attemptId: Long = 0L,
+    revision: Int = 0,
+    reasoningText: String? = null,
     entryDelayMs: Int = 0,
     ragSources: List<String> = emptyList(),
     ragChunkCount: Int = 0,
     ragTopMatchPct: Int = 0,
+    errorMessage: String? = null,
+    onRetry: (() -> Unit)? = null,
     onFullscreenClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -2224,10 +2354,18 @@ fun VisionChatBubble(
             )
         )
     }
-    val parsedContent = remember(text, isStreaming) {
-        ThinkingTextUtils.parse(text, allowActiveThinking = isStreaming)
-    }
-    val rawText = if (isUser) parsedContent.finalResponseText else parsedContent.finalResponseText.normalizeModelAnswerText()
+    val presentation = rememberMessagePresentation(
+        text = text,
+        isUser = isUser,
+        isStreaming = isStreaming,
+        messageId = messageId,
+        requestId = requestId,
+        attemptId = attemptId,
+        revision = revision,
+        reasoningText = reasoningText
+    )
+    val parsedContent = presentation.parsedContent
+    val rawText = presentation.displayText
     val displayText = remember(rawText, isUser, audioPath, documentName) {
         if (isUser && (!audioPath.isNullOrBlank() || !documentName.isNullOrBlank())) {
             rawText.lines().filterNot { line ->
@@ -2240,20 +2378,13 @@ fun VisionChatBubble(
             rawText
         }
     }
-    val segments = remember(displayText, isUser, isStreaming) {
-        if (isUser) {
-            listOf(ModelAnswerSegment.Text(displayText))
-        } else if (isStreaming && !displayText.contains("```") && !displayText.contains("$") && !displayText.contains("\\")) {
-            listOf(ModelAnswerSegment.Text(displayText))
-        } else {
-            ModelAnswerFormatter.parseSafely(displayText)
-        }
+    val segments = if (isUser && (!audioPath.isNullOrBlank() || !documentName.isNullOrBlank())) {
+        listOf(ModelAnswerSegment.Text(displayText))
+    } else {
+        presentation.segments
     }
-    val showStreamingDots = isStreaming && displayText.isStreamingPlaceholderText()
-    val hasRichBlock = segments.any {
-        it is ModelAnswerSegment.Code || it is ModelAnswerSegment.DisplayMath ||
-            it is ModelAnswerSegment.InlineMathListItem
-    }
+    val showStreamingDots = presentation.showStreamingDots
+    val hasRichBlock = presentation.hasRichBlock
     val hasTopImage = isUser && resolvedBitmap != null && !resolvedBitmap.isRecycled
     val hasTopAudio = isUser && !audioPath.isNullOrBlank()
     val hasTopDoc = isUser && !documentName.isNullOrBlank()
@@ -2384,9 +2515,9 @@ fun VisionChatBubble(
                     }
                 }
 
-                if (hasTopAudio) {
+                if (isUser && !audioPath.isNullOrBlank()) {
                     AudioMessagePlayer(
-                        audioPath = audioPath!!,
+                        audioPath = audioPath,
                         audioName = audioName,
                         initialDurationMs = audioDurationMs,
                         isUser = true,
@@ -2397,9 +2528,9 @@ fun VisionChatBubble(
                     }
                 }
 
-                if (hasTopDoc) {
+                if (isUser && !documentName.isNullOrBlank()) {
                     DocumentAttachmentCard(
-                        documentName = documentName!!,
+                        documentName = documentName,
                         documentPath = documentPath,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -2415,52 +2546,78 @@ fun VisionChatBubble(
                     )
                 }
 
-                if (showStreamingDots) {
+                if (!isUser && progress != null && displayText.isStreamingPlaceholderText()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    ) {
+                        StreamingDotsIndicator(
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = when (progress) {
+                                is RequestProgress.PreparingInput -> "Preparing input…"
+                                is RequestProgress.LoadingModel -> "Loading model…"
+                                is RequestProgress.ValidatingBackend -> "Validating backend…"
+                                is RequestProgress.RecoveringOnCpu -> "GPU failed; retrying on CPU…"
+                                is RequestProgress.ProcessingPrompt -> "Processing prompt…"
+                                is RequestProgress.Generating -> "Generating…"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else if (showStreamingDots) {
                     StreamingDotsIndicator(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 } else {
-                    segments.forEach { segment ->
-                        when (segment) {
-                            is ModelAnswerSegment.Text -> {
-                                if (segment.text.isNotBlank()) {
-                                    val visibleText = segment.text.trim('\n')
-                                    if (isStreaming) {
-                                        Text(
-                                            text = visibleText,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(end = if (needsTopActionClearance) 0.dp else MessageActionButtonReserveWidth),
-                                            textAlign = TextAlign.Start
-                                        )
-                                    } else {
-                                        AdaptiveMessageText(
-                                            text = visibleText,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
+                    if (isStreaming) {
+                        Text(
+                            text = displayText.trim('\n'),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(end = if (needsTopActionClearance) 0.dp else MessageActionButtonReserveWidth),
+                            textAlign = TextAlign.Start
+                        )
+                    } else {
+                        SelectionContainer {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                segments.forEach { segment ->
+                                    when (segment) {
+                                        is ModelAnswerSegment.Text -> {
+                                            if (segment.text.isNotBlank() && (!segment.text.startsWith("⚠️ Error:") || errorMessage != null)) {
+                                                AdaptiveMessageText(
+                                                    text = segment.text.trim('\n'),
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
+                                        }
+                                        is ModelAnswerSegment.Code -> {
+                                            CodeBlock(
+                                                code = segment.code,
+                                                language = segment.language,
+                                                context = context,
+                                                hazeState = hazeState
+                                            )
+                                        }
+                                        is ModelAnswerSegment.DisplayMath -> {
+                                            ModelMathCard(latex = segment.latex, hazeState = hazeState)
+                                        }
+                                        is ModelAnswerSegment.InlineMathListItem -> {
+                                            InlineMathListItem(
+                                                parts = segment.parts,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
                                     }
                                 }
                             }
-                            is ModelAnswerSegment.Code -> {
-                                CodeBlock(
-                                    code = segment.code,
-                                    language = segment.language,
-                                    context = context,
-                                    hazeState = hazeState
-                                )
-                            }
-                            is ModelAnswerSegment.DisplayMath -> {
-                                ModelMathCard(latex = segment.latex, hazeState = hazeState)
-                            }
-                            is ModelAnswerSegment.InlineMathListItem -> {
-                                InlineMathListItem(
-                                    parts = segment.parts,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
                         }
                     }
+
                     if (!isUser && ragSources.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Surface(
@@ -2482,31 +2639,71 @@ fun VisionChatBubble(
                         }
                     }
 
-                    if (!isUser && displayText.startsWith("⚠️ Error:")) {
+                    val hasError = !isUser && (errorMessage != null || displayText.startsWith("⚠️ Error:"))
+                    if (hasError) {
+                        val effectiveError = errorMessage ?: displayText
                         Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedButton(
-                            onClick = {
-                                val reports = CrashReportManager.getAllReports(context)
-                                val matching = reports.firstOrNull { it.isNativeCrash } ?: reports.firstOrNull()
-                                if (matching != null) {
-                                    CrashReportManager.sendToGitHub(context, matching.details, matching.title)
-                                } else {
-                                    CrashReportManager.openNewIssue(
-                                        context = context,
-                                        title = "[Vision Model Inference Error] ${displayText.take(60)}",
-                                        body = "### Error Summary\n$displayText\n\n### Complete Device Specifications\n${DeviceUtils.formatFullDeviceDiagnostics(context)}"
-                                    )
-                                }
-                            },
+                        Surface(
                             shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f),
                             border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                            modifier = Modifier.height(30.dp)
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(13.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Report Crash to Repo", style = MaterialTheme.typography.labelSmall)
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = effectiveError,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (onRetry != null) {
+                                        FilledTonalButton(
+                                            onClick = onRetry,
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                            modifier = Modifier.height(30.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Refresh,
+                                                contentDescription = "Retry",
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Retry", style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            val reports = CrashReportManager.getAllReports(context)
+                                            val matching = reports.firstOrNull { it.isNativeCrash } ?: reports.firstOrNull()
+                                            if (matching != null) {
+                                                CrashReportManager.sendToGitHub(context, matching.details, matching.title)
+                                            } else {
+                                                CrashReportManager.openNewIssue(
+                                                    context = context,
+                                                    title = "[Vision Model Inference Error] ${effectiveError.take(60)}",
+                                                    body = "### Error Summary\n$effectiveError\n\n### Complete Device Specifications\n${DeviceUtils.formatFullDeviceDiagnostics(context)}"
+                                                )
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(30.dp)
+                                    ) {
+                                        Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(13.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Report Crash to Repo", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -2551,29 +2748,38 @@ fun VisionChatBubble(
     }
 }
 
-fun getTempImageUri(context: android.content.Context): Uri {
+data class CameraCaptureRequest(
+    val file: java.io.File,
+    val uri: Uri,
+    val lease: AutoCloseable
+)
+
+fun createCameraCaptureRequest(context: android.content.Context): CameraCaptureRequest {
     pruneCameraInputCache(context)
     val cacheDir = context.cacheDir.resolve("camera_inputs").apply { mkdirs() }
     val file = java.io.File.createTempFile("tmp_camera_", ".jpg", cacheDir)
-    return androidx.core.content.FileProvider.getUriForFile(
+    val lease = com.shounak.localmeshai.utils.ActiveInputFiles.protect(file)
+    val uri = androidx.core.content.FileProvider.getUriForFile(
         context,
-        "com.shounak.localmeshai.fileprovider",
+        "${context.packageName}.fileprovider",
         file
     )
+    return CameraCaptureRequest(file, uri, lease)
 }
 
-fun pruneCameraInputCache(context: android.content.Context) {
+fun getTempImageUri(context: android.content.Context): Uri {
+    return createCameraCaptureRequest(context).uri
+}
+
+fun pruneCameraInputCache(context: android.content.Context, now: Long = System.currentTimeMillis()) {
     val dir = context.cacheDir.resolve("camera_inputs")
     if (!dir.exists()) return
-    val now = System.currentTimeMillis()
-    val files = dir.listFiles()?.filter { it.isFile } ?: return
-    files
-        .filter { now - it.lastModified() > 24L * 60L * 60L * 1000L }
-        .forEach { runCatching { it.delete() } }
-    files
-        .sortedByDescending { it.lastModified() }
-        .drop(16)
-        .forEach { runCatching { it.delete() } }
+    val expiry = 24L * 60L * 60L * 1000L
+    dir.listFiles()?.filter { it.isFile }?.forEach { file ->
+        if (now - file.lastModified() > expiry) {
+            runCatching { com.shounak.localmeshai.utils.ActiveInputFiles.deleteIfUnreferenced(file) }
+        }
+    }
 }
 
 fun getFileName(context: android.content.Context, uri: Uri): String {

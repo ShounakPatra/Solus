@@ -19,10 +19,12 @@
 -keep class com.shounak.localmeshai.ai.LlamaCppEngine$* { *; }
 -keep class com.shounak.localmeshai.ai.LlamaTokenCallback { *; }
 -keepclassmembers class * implements com.shounak.localmeshai.ai.LlamaTokenCallback {
+    public void onFirstToken();
     public void onToken(java.lang.String);
     public void onComplete();
     public void onStop();
     public void onError(java.lang.String);
+    public void onMetrics(long, long, int);
 }
 -keep class com.shounak.localmeshai.ai.LlamaSamplingParams { *; }
 -keep class com.shounak.localmeshai.ai.LlamaModelMetadata { *; }
@@ -41,24 +43,10 @@
 -dontwarn com.google.mediapipe.framework.**
 
 # --------------------------------------------------------------------
-# Data & Model Classes (JSON / State / Memory)
+# PDFBox Android & FontBox
 # --------------------------------------------------------------------
--keep class com.shounak.localmeshai.models.** { *; }
--keep class com.shounak.localmeshai.memory.** { *; }
-
-# --------------------------------------------------------------------
-# PDFBox Android & FontBox (uses reflection for CMap / Font loading)
-# --------------------------------------------------------------------
--keep class com.tom_roush.pdfbox.** { *; }
--keep class com.tom_roush.fontbox.** { *; }
 -dontwarn com.tom_roush.pdfbox.**
 -dontwarn com.tom_roush.fontbox.**
-
-# --------------------------------------------------------------------
-# LaTeX & Math Renderer
-# --------------------------------------------------------------------
--keep class ru.noties.jlatexmath.** { *; }
--dontwarn ru.noties.jlatexmath.**
 
 # --------------------------------------------------------------------
 # OkHttp & Okio

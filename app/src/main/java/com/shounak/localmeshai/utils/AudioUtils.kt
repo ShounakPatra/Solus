@@ -15,6 +15,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Locale
 import kotlin.math.roundToLong
 import kotlin.math.sqrt
 
@@ -341,15 +342,47 @@ object AudioUtils {
         return result ?: "audio"
     }
 
-    fun pruneInferenceCache(dir: File) {
-        val now = System.currentTimeMillis()
+    fun pruneInferenceCache(dir: File, now: Long = System.currentTimeMillis()) {
         val files = dir.listFiles()?.filter { it.isFile } ?: return
+        val expiry = 24L * 60L * 60L * 1000L
         files
-            .filter { now - it.lastModified() > 2L * 60L * 60L * 1000L }
-            .forEach { runCatching { it.delete() } }
-        files
-            .sortedByDescending { it.lastModified() }
-            .drop(8)
-            .forEach { runCatching { it.delete() } }
+            .filter { now - it.lastModified() > expiry }
+            .forEach { runCatching { ActiveInputFiles.deleteIfUnreferenced(it) } }
+    }
+
+    fun getRecorderErrorMessage(errorType: PcmRecorderErrorType): String = when (errorType) {
+        PcmRecorderErrorType.PERMISSION_DENIED -> "Microphone permission is required to record audio."
+        PcmRecorderErrorType.HARDWARE_UNAVAILABLE -> "Microphone hardware is busy or unavailable."
+        PcmRecorderErrorType.FORMAT_UNSUPPORTED -> "Audio recording format is not supported on this device."
+        PcmRecorderErrorType.INITIALIZATION_FAILED -> "Failed to initialize microphone."
+        PcmRecorderErrorType.RECORDING_TOO_SHORT -> "Recording was too short. Please speak longer."
+        PcmRecorderErrorType.SILENCE_OR_ZERO_ONLY -> "No voice detected (recording was silent)."
+        PcmRecorderErrorType.RECORDING_FAILED -> "Audio recording failed."
+    }
+}
+
+object ImageValidationUtils {
+    const val MAX_IMAGE_DIMENSION = 2048
+    const val MAX_IMAGE_FILE_BYTES = 25L * 1024L * 1024L
+
+    fun calculateDownscaledDimensions(
+        width: Int,
+        height: Int,
+        maxDimension: Int = MAX_IMAGE_DIMENSION
+    ): Pair<Int, Int> {
+        require(width > 0 && height > 0) { "Invalid image dimensions: ${width}x${height}" }
+        val maxEdge = maxOf(width, height)
+        if (maxEdge <= maxDimension) {
+            return Pair(width, height)
+        }
+        val scale = maxDimension.toFloat() / maxEdge
+        val targetW = (width * scale).toInt().coerceAtLeast(1)
+        val targetH = (height * scale).toInt().coerceAtLeast(1)
+        return Pair(targetW, targetH)
+    }
+
+    fun isSupportedImageExtension(extension: String): Boolean {
+        val ext = extension.lowercase(Locale.US).trimStart('.')
+        return ext in setOf("jpg", "jpeg", "png", "webp", "bmp", "heic", "heif")
     }
 }

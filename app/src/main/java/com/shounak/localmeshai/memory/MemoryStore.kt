@@ -1,16 +1,29 @@
 package com.shounak.localmeshai.memory
 
 import android.content.Context
+import com.shounak.localmeshai.data.StoreLoadState
+import com.shounak.localmeshai.utils.AtomicFileTransaction
+import com.shounak.localmeshai.utils.AtomicJsonFile
+import com.shounak.localmeshai.utils.AtomicReadResult
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Interface for persistent memory storage.
  * Completely independent of RAG vector storage and LLM engines.
  */
 interface MemoryStore {
+    val loadState: StateFlow<StoreLoadState> get() = MutableStateFlow(StoreLoadState.Ready).asStateFlow()
     fun getAll(): List<MemoryEntry>
     fun getActive(): List<MemoryEntry>
     fun getById(id: String): MemoryEntry?
@@ -22,6 +35,7 @@ interface MemoryStore {
     fun count(): Int
     fun persist()
     fun load()
+    suspend fun loadAsync(): StoreLoadState = loadState.value
 }
 
 /**
@@ -30,14 +44,41 @@ interface MemoryStore {
 class PersistentMemoryStore(
     private val context: Context? = null,
     private val storageDir: File? = null,
-    private val storageFileName: String = "solus_persistent_memory.json"
+    private val storageFileName: String = "solus_persistent_memory.json",
+    private val transaction: AtomicFileTransaction? = null,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : MemoryStore {
 
-    private val entries = CopyOnWriteArrayList<MemoryEntry>()
+    private val _loadState = MutableStateFlow<StoreLoadState>(StoreLoadState.Loading)
+    override val loadState: StateFlow<StoreLoadState> = _loadState.asStateFlow()
+
+    @Volatile
+    private var isLoaded: Boolean = false
+
+    @Volatile
+    private var entriesState: List<MemoryEntry> = emptyList()
     private val lock = Any()
 
-    init {
-        load()
+    var lastError: String? = null
+        private set
+
+    private val atomicFile: AtomicJsonFile<List<MemoryEntry>>? by lazy {
+        val file = getStorageFile() ?: return@lazy null
+        if (transaction != null) {
+            AtomicJsonFile(file, transaction)
+        } else {
+            AtomicJsonFile(file)
+        }
+    }
+
+    private fun ensureLoaded() {
+        if (!isLoaded) {
+            synchronized(lock) {
+                if (!isLoaded) {
+                    load()
+                }
+            }
+        }
     }
 
     private fun getStorageFile(): File? {
@@ -46,218 +87,203 @@ class PersistentMemoryStore(
     }
 
     override fun getAll(): List<MemoryEntry> {
-        return entries.toList()
+        ensureLoaded()
+        return entriesState
     }
 
     override fun getActive(): List<MemoryEntry> {
-        return entries.filter { it.isEnabled }
+        ensureLoaded()
+        return entriesState.filter { it.isEnabled }
     }
 
     override fun getById(id: String): MemoryEntry? {
-        return entries.firstOrNull { it.id == id }
+        ensureLoaded()
+        return entriesState.firstOrNull { it.id == id }
     }
 
     override fun add(entry: MemoryEntry): Boolean {
+        ensureLoaded()
         synchronized(lock) {
             val trimmed = entry.content.trim()
             if (trimmed.isBlank()) return false
-            if (entries.any { it.content.equals(trimmed, ignoreCase = true) }) {
+            if (entriesState.any { it.content.equals(trimmed, ignoreCase = true) }) {
                 return false
             }
-            entries.add(entry.copy(content = trimmed))
-            persist()
-            return true
+            val nextList = entriesState + entry.copy(content = trimmed)
+            val success = persistSnapshot(nextList)
+            if (success) {
+                entriesState = nextList
+                lastError = null
+                return true
+            }
+            return false
         }
     }
 
     override fun update(entry: MemoryEntry): Boolean {
+        ensureLoaded()
         synchronized(lock) {
-            val index = entries.indexOfFirst { it.id == entry.id }
+            val index = entriesState.indexOfFirst { it.id == entry.id }
             if (index == -1) return false
             val trimmed = entry.content.trim()
             if (trimmed.isBlank()) return false
-            entries[index] = entry.copy(content = trimmed, updatedAt = System.currentTimeMillis())
-            persist()
-            return true
+            val updated = entry.copy(content = trimmed, updatedAt = System.currentTimeMillis())
+            val nextList = entriesState.toMutableList().apply { set(index, updated) }
+            val success = persistSnapshot(nextList)
+            if (success) {
+                entriesState = nextList
+                lastError = null
+                return true
+            }
+            return false
         }
     }
 
     override fun delete(id: String): Boolean {
+        ensureLoaded()
         synchronized(lock) {
-            val removed = entries.removeIf { it.id == id }
-            if (removed) {
-                persist()
+            val nextList = entriesState.filter { it.id != id }
+            if (nextList.size == entriesState.size) return false
+            val success = persistSnapshot(nextList)
+            if (success) {
+                entriesState = nextList
+                lastError = null
+                return true
             }
-            return removed
+            return false
         }
     }
 
     override fun setEnabled(id: String, enabled: Boolean): Boolean {
+        ensureLoaded()
         synchronized(lock) {
-            val index = entries.indexOfFirst { it.id == id }
+            val index = entriesState.indexOfFirst { it.id == id }
             if (index == -1) return false
-            val current = entries[index]
-            entries[index] = current.copy(isEnabled = enabled, updatedAt = System.currentTimeMillis())
-            persist()
-            return true
+            val current = entriesState[index]
+            val updated = current.copy(isEnabled = enabled, updatedAt = System.currentTimeMillis())
+            val nextList = entriesState.toMutableList().apply { set(index, updated) }
+            val success = persistSnapshot(nextList)
+            if (success) {
+                entriesState = nextList
+                lastError = null
+                return true
+            }
+            return false
         }
     }
 
     override fun clearAll() {
+        ensureLoaded()
         synchronized(lock) {
-            entries.clear()
-            persist()
+            val nextList = emptyList<MemoryEntry>()
+            val success = persistSnapshot(nextList)
+            if (success) {
+                entriesState = nextList
+                lastError = null
+            }
         }
     }
 
-    override fun count(): Int = entries.size
+    override fun count(): Int {
+        ensureLoaded()
+        return entriesState.size
+    }
+
+    private fun persistSnapshot(snapshot: List<MemoryEntry>): Boolean {
+        val af = atomicFile ?: return true
+        val result = af.write(snapshot) { serializeEntries(it) }
+        return if (result.isSuccess) {
+            true
+        } else {
+            lastError = result.exceptionOrNull()?.message ?: "Failed to persist memory store"
+            false
+        }
+    }
 
     override fun persist() {
-        val file = getStorageFile() ?: return
-        try {
-            val serialized = serializeEntries(entries)
-            val parent = file.parentFile
-            if (parent != null && !parent.exists()) {
-                parent.mkdirs()
-            }
-            val tempFile = File(file.parentFile, "${file.name}.tmp")
-            tempFile.writeText(serialized)
-            if (tempFile.exists()) {
-                if (file.exists()) {
-                    file.delete()
-                }
-                tempFile.renameTo(file)
-            }
-        } catch (_: Throwable) {
-            // Gracefully handle any IO errors
+        ensureLoaded()
+        synchronized(lock) {
+            persistSnapshot(entriesState)
         }
     }
 
     override fun load() {
-        val file = getStorageFile() ?: return
-        try {
-            if (!file.exists()) return
-            val content = file.readText()
-            if (content.isBlank()) return
-            val loaded = deserializeEntries(content)
-            synchronized(lock) {
-                entries.clear()
-                entries.addAll(loaded)
-            }
-        } catch (_: Throwable) {
-            // Gracefully handle any load errors
+        val af = atomicFile ?: run {
+            _loadState.value = StoreLoadState.Ready
+            isLoaded = true
+            return
         }
+        synchronized(lock) {
+            val result = af.read { deserializeEntries(it) }
+            when (result) {
+                is AtomicReadResult.Success -> {
+                    entriesState = result.data
+                    lastError = null
+                    _loadState.value = StoreLoadState.Ready
+                }
+                is AtomicReadResult.Missing -> {
+                    entriesState = emptyList()
+                    lastError = null
+                    _loadState.value = StoreLoadState.Ready
+                }
+                is AtomicReadResult.UnsupportedVersion -> {
+                    lastError = "Unsupported memory file version: ${result.foundVersion}"
+                    _loadState.value = StoreLoadState.RecoveryRequired(
+                        "Memory file uses newer version (${result.foundVersion} > ${result.maxSupportedVersion})",
+                        result.file
+                    )
+                }
+                is AtomicReadResult.Corrupt -> {
+                    lastError = "Corrupt memory file detected: ${result.cause.message}"
+                    _loadState.value = StoreLoadState.RecoveryRequired(
+                        "Memory file is corrupt: ${result.cause.message}",
+                        result.file
+                    )
+                }
+            }
+            isLoaded = true
+        }
+    }
+
+    override suspend fun loadAsync(): StoreLoadState = withContext(ioDispatcher) {
+        load()
+        _loadState.value
     }
 
     companion object {
         fun serializeEntries(entries: List<MemoryEntry>): String {
-            try {
-                val jsonArray = JSONArray()
-                for (entry in entries) {
-                    val obj = JSONObject().apply {
-                        put("id", entry.id)
-                        put("content", entry.content)
-                        put("category", entry.category.name)
-                        put("isEnabled", entry.isEnabled)
-                        put("createdAt", entry.createdAt)
-                        put("updatedAt", entry.updatedAt)
-                    }
-                    jsonArray.put(obj)
+            val jsonArray = JSONArray()
+            for (entry in entries) {
+                val obj = JSONObject().apply {
+                    put("id", entry.id)
+                    put("content", entry.content)
+                    put("category", entry.category.name)
+                    put("isEnabled", entry.isEnabled)
+                    put("createdAt", entry.createdAt)
+                    put("updatedAt", entry.updatedAt)
                 }
-                return jsonArray.toString(2)
-            } catch (_: Throwable) {
-                // Fallback for JVM test environment where org.json is stubbed
+                jsonArray.put(obj)
             }
-
-            val sb = StringBuilder()
-            sb.append("[\n")
-            for (i in entries.indices) {
-                val e = entries[i]
-                sb.append("  {\n")
-                sb.append("    \"id\": \"").append(escape(e.id)).append("\",\n")
-                sb.append("    \"content\": \"").append(escape(e.content)).append("\",\n")
-                sb.append("    \"category\": \"").append(e.category.name).append("\",\n")
-                sb.append("    \"isEnabled\": ").append(e.isEnabled).append(",\n")
-                sb.append("    \"createdAt\": ").append(e.createdAt).append(",\n")
-                sb.append("    \"updatedAt\": ").append(e.updatedAt).append("\n")
-                sb.append("  }")
-                if (i < entries.size - 1) sb.append(",")
-                sb.append("\n")
-            }
-            sb.append("]")
-            return sb.toString()
+            return jsonArray.toString(2)
         }
 
         fun deserializeEntries(content: String): List<MemoryEntry> {
-            try {
-                val jsonArray = JSONArray(content)
-                val list = mutableListOf<MemoryEntry>()
-                for (i in 0 until jsonArray.length()) {
-                    val obj = jsonArray.getJSONObject(i)
-                    list.add(
-                        MemoryEntry(
-                            id = obj.getString("id"),
-                            content = obj.getString("content"),
-                            category = MemoryCategory.fromString(obj.optString("category", "GENERAL")),
-                            isEnabled = obj.optBoolean("isEnabled", true),
-                            createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
-                            updatedAt = obj.optLong("updatedAt", System.currentTimeMillis())
-                        )
-                    )
-                }
-                return list
-            } catch (_: Throwable) {
-                // Fallback for JVM test environment
-            }
-
+            val jsonArray = JSONArray(content)
             val list = mutableListOf<MemoryEntry>()
-            val objectRegex = Regex("""\{([^{}]+)\}""")
-            for (match in objectRegex.findAll(content)) {
-                val block = match.groupValues[1]
-                val id = Regex(""""id"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"""").find(block)?.groupValues?.get(1) ?: continue
-                val rawContent = Regex(""""content"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"""").find(block)?.groupValues?.get(1) ?: continue
-                val categoryStr = Regex(""""category"\s*:\s*"([^"]+)"""").find(block)?.groupValues?.get(1) ?: "GENERAL"
-                val isEnabled = Regex(""""isEnabled"\s*:\s*(true|false)""").find(block)?.groupValues?.get(1)?.toBoolean() ?: true
-                val createdAt = Regex(""""createdAt"\s*:\s*(\d+)""").find(block)?.groupValues?.get(1)?.toLongOrNull() ?: System.currentTimeMillis()
-                val updatedAt = Regex(""""updatedAt"\s*:\s*(\d+)""").find(block)?.groupValues?.get(1)?.toLongOrNull() ?: System.currentTimeMillis()
-
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
                 list.add(
                     MemoryEntry(
-                        id = unescape(id),
-                        content = unescape(rawContent),
-                        category = MemoryCategory.fromString(categoryStr),
-                        isEnabled = isEnabled,
-                        createdAt = createdAt,
-                        updatedAt = updatedAt
+                        id = obj.getString("id"),
+                        content = obj.getString("content"),
+                        category = MemoryCategory.fromString(obj.optString("category", "GENERAL")),
+                        isEnabled = obj.optBoolean("isEnabled", true),
+                        createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
+                        updatedAt = obj.optLong("updatedAt", System.currentTimeMillis())
                     )
                 )
             }
             return list
-        }
-
-        private fun escape(s: String): String {
-            val sb = StringBuilder()
-            for (c in s) {
-                when (c) {
-                    '\\' -> sb.append("\\\\")
-                    '"' -> sb.append("\\\"")
-                    '\b' -> sb.append("\\b")
-                    '\u000C' -> sb.append("\\f")
-                    '\n' -> sb.append("\\n")
-                    '\r' -> sb.append("\\r")
-                    '\t' -> sb.append("\\t")
-                    else -> sb.append(c)
-                }
-            }
-            return sb.toString()
-        }
-
-        private fun unescape(s: String): String {
-            return s.replace("\\\"", "\"")
-                .replace("\\\\", "\\")
-                .replace("\\n", "\n")
-                .replace("\\r", "\r")
-                .replace("\\t", "\t")
         }
     }
 }

@@ -2,6 +2,8 @@ package com.shounak.localmeshai.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
+import kotlinx.coroutines.CancellationException
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.animateColorAsState
@@ -69,6 +71,12 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import com.shounak.localmeshai.utils.ChatRuntimePolicy
 import com.shounak.localmeshai.ai.GgufDiagnosticRunner
 import com.shounak.localmeshai.ai.GgufDiagnosticReport
+import com.shounak.localmeshai.ai.GgufBenchmarkRunner
+import com.shounak.localmeshai.ai.NonGgufBenchmarkRunner
+import com.shounak.localmeshai.ai.BenchmarkProgress
+import com.shounak.localmeshai.ai.BenchmarkResult
+import com.shounak.localmeshai.ai.GgufGpuValidator
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.style.TextDecoration
@@ -307,7 +315,6 @@ fun ModelManagerScreen(
     val huggingFaceToken by mainViewModel.huggingFaceToken.collectAsState()
     val appSettingsData by mainViewModel.appSettingsData.collectAsState()
     val enableDynamicThemes = appSettingsData.enableDynamicThemes
-    var showSettings by remember { mutableStateOf(false) }
 
     // Search + tier filter state. rememberSaveable so they survive config
     // changes (rotation, dark mode toggle, etc.).
@@ -405,19 +412,6 @@ fun ModelManagerScreen(
         it.id !in downloadedIds && (it.status == ModelStatus.NeedsConversion || it.status == ModelStatus.ComingSoon) && it.isMixtureOfExperts()
     }
 
-    if (showSettings) {
-        SettingsDialog(
-            mainViewModel = mainViewModel,
-            hazeState = hazeState,
-            onDismissRequest = {
-                showSettings = false
-                if (appSettingsData.enableAutoHideBottomBar) {
-                    onGoToChat?.invoke()
-                }
-            }
-        )
-    }
-
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 112.dp),
@@ -435,7 +429,7 @@ fun ModelManagerScreen(
                     fontWeight = FontWeight.Bold
                 )
                 LiquidGlassButton(
-                    onClick = { showSettings = true },
+                    onClick = { mainViewModel.openSettings(false) },
                     hazeState = hazeState,
                     modifier = Modifier.size(42.dp),
                     shape = RoundedCornerShape(21.dp),
@@ -544,7 +538,7 @@ fun ModelManagerScreen(
                             onGoToChat?.invoke()
                         },
                         isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
-                        onOpenSettings = { showSettings = true },
+                        onOpenSettings = { mainViewModel.openSettings(false) },
                         enableDynamicThemes = enableDynamicThemes,
                         hazeState = hazeState
                     )
@@ -603,7 +597,7 @@ fun ModelManagerScreen(
                         onGoToChat?.invoke()
                     },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
-                    onOpenSettings = { showSettings = true },
+                    onOpenSettings = { mainViewModel.openSettings(false) },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -647,7 +641,7 @@ fun ModelManagerScreen(
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
-                    onOpenSettings = { showSettings = true },
+                    onOpenSettings = { mainViewModel.openSettings(false) },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -688,7 +682,7 @@ fun ModelManagerScreen(
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
-                    onOpenSettings = { showSettings = true },
+                    onOpenSettings = { mainViewModel.openSettings(false) },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -723,7 +717,7 @@ fun ModelManagerScreen(
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
-                    onOpenSettings = { showSettings = true },
+                    onOpenSettings = { mainViewModel.openSettings(false) },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -764,7 +758,7 @@ fun ModelManagerScreen(
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
-                    onOpenSettings = { showSettings = true },
+                    onOpenSettings = { mainViewModel.openSettings(false) },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -2074,22 +2068,171 @@ fun ModelItem(
                 }
 
                 var showBenchDialog by remember { mutableStateOf(false) }
+                var isRunningBench by remember { mutableStateOf(false) }
+                var benchProgress by remember { mutableStateOf<BenchmarkProgress?>(null) }
+                var benchResult by remember { mutableStateOf<BenchmarkResult?>(null) }
+                var benchJob by remember { mutableStateOf<Job?>(null) }
+                val benchScope = rememberCoroutineScope()
+
                 if (showBenchDialog) {
                     AlertDialog(
-                        onDismissRequest = { showBenchDialog = false },
-                        title = { Text("⚡ Solus Bench Rating") },
+                        onDismissRequest = {
+                            if (!isRunningBench) {
+                                showBenchDialog = false
+                            }
+                        },
+                        title = {
+                            val isGguf = ChatRuntimePolicy.isGgufModel(model.fileName)
+                            Text(if (isGguf) "⚡ CPU / GPU Performance Check" else "⚡ Performance Benchmark")
+                        },
                         text = {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
                                 Text("Model: ${model.name}", style = MaterialTheme.typography.titleSmall)
                                 Text("Backend: ${model.backend}", style = MaterialTheme.typography.bodySmall)
-                                Text("Speed Rating: ~18.5 – 28.2 t/s (Optimal)", style = MaterialTheme.typography.bodySmall)
-                                Text("Latency (TTFT): ~135 ms", style = MaterialTheme.typography.bodySmall)
-                                Text("Thermal Profile: Normal (<40°C)", style = MaterialTheme.typography.bodySmall)
+
+                                if (isRunningBench) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        LinearProgressIndicator(
+                                            progress = {
+                                                val p = benchProgress
+                                                if (p != null && p.totalSteps > 0) p.currentStep.toFloat() / p.totalSteps.toFloat() else 0f
+                                            },
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                        Text(
+                                            benchProgress?.phase ?: "Starting benchmark...",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        if (!benchProgress?.detail.isNullOrBlank()) {
+                                            Text(
+                                                benchProgress!!.detail,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                } else if (benchResult != null) {
+                                    val r = benchResult!!
+                                    val isGguf = ChatRuntimePolicy.isGgufModel(model.fileName)
+                                    Text(
+                                        if (isGguf) {
+                                            if (r.qualifiesVulkan) "✅ Vulkan Qualified" else "ℹ️ CPU Preferred"
+                                        } else {
+                                            "⚡ Benchmark Completed"
+                                        },
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isGguf && r.qualifiesVulkan) MaterialTheme.colorScheme.primary else if (!isGguf) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+                                    )
+                                    Text(r.summary, style = MaterialTheme.typography.bodySmall)
+                                    HorizontalDivider()
+                                    if (isGguf) {
+                                        Text("• Warm TTFT: CPU ${r.cpuWarmTtftMedianMs.toInt()} ms vs GPU ${r.vulkanWarmTtftMedianMs.toInt()} ms (${String.format(Locale.US, "%.1f", r.warmTtftImprovementPercent)}% diff)", style = MaterialTheme.typography.bodySmall)
+                                        Text("• Cold Load + First Token: CPU ${r.cpuColdLoadFtMs.toInt()} ms vs GPU ${r.vulkanColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+                                        Text("• Sustained Decode: CPU ${String.format(Locale.US, "%.1f", r.cpuDecodeTokPerSec)} t/s vs GPU ${String.format(Locale.US, "%.1f", r.vulkanDecodeTokPerSec)} t/s", style = MaterialTheme.typography.bodySmall)
+                                        Text("• Frame Time p95: CPU ${String.format(Locale.US, "%.1f", r.cpuFrameP95Ms)} ms vs GPU ${String.format(Locale.US, "%.1f", r.vulkanFrameP95Ms)} ms", style = MaterialTheme.typography.bodySmall)
+                                    } else {
+                                        Text("• Warm TTFT: ${r.cpuWarmTtftMedianMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+                                        Text("• Cold Load + First Token: ${r.cpuColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+                                        Text("• Sustained Decode: ${String.format(Locale.US, "%.1f", r.cpuDecodeTokPerSec)} t/s", style = MaterialTheme.typography.bodySmall)
+                                        Text("• Frame Time p95: ${String.format(Locale.US, "%.1f", r.cpuFrameP95Ms)} ms", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    Text("• Max UI Render Stall: ${r.maxRenderStallMs} ms", style = MaterialTheme.typography.bodySmall)
+                                } else {
+                                    if (ChatRuntimePolicy.isGgufModel(model.fileName) && model.localPath != null) {
+                                        Text(
+                                            "Runs 5 cold samples and 20 warm samples across CPU and Vulkan to verify if Vulkan improves latency by >= 10% without frame stalls or regressions.",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    } else if (model.localPath != null) {
+                                        Text(
+                                            "Runs cold load and warm prompt evaluations to measure Time to First Token (TTFT), sustained decode throughput (t/s), and UI frame smoothness.",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    } else {
+                                        Text(
+                                            "Status: ${model.status}\nContext: ${model.contextWindowTokens ?: 2048} tokens",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                }
                             }
                         },
                         confirmButton = {
-                            TextButton(onClick = { showBenchDialog = false }) {
-                                Text("Close")
+                            if (isRunningBench) {
+                                TextButton(
+                                    onClick = {
+                                        benchJob?.cancel()
+                                        isRunningBench = false
+                                        benchProgress = null
+                                    }
+                                ) {
+                                    Text("Cancel")
+                                }
+                            } else {
+                                if (benchResult == null && model.localPath != null) {
+                                    TextButton(
+                                        onClick = {
+                                            isRunningBench = true
+                                            benchResult = null
+                                            benchJob = benchScope.launch {
+                                                try {
+                                                    val isGguf = ChatRuntimePolicy.isGgufModel(model.fileName)
+                                                    val res = if (isGguf) {
+                                                        val sha = GgufGpuValidator.resolveModelSha256(
+                                                            modelPath = model.localPath!!,
+                                                            modelId = model.id,
+                                                            context = context
+                                                        )
+                                                        GgufBenchmarkRunner.runBenchmark(
+                                                            context = context,
+                                                            modelPath = model.localPath!!,
+                                                            modelSha256 = sha,
+                                                            onProgress = { p -> benchProgress = p }
+                                                        )
+                                                    } else {
+                                                        NonGgufBenchmarkRunner.runBenchmark(
+                                                            context = context,
+                                                            modelPath = model.localPath!!,
+                                                            modelId = model.id,
+                                                            onProgress = { p -> benchProgress = p }
+                                                        )
+                                                    }
+                                                    benchResult = res
+                                                } catch (t: Throwable) {
+                                                    if (t !is CancellationException) {
+                                                        Log.e("ModelManagerScreen", "Benchmark failed", t)
+                                                    }
+                                                } finally {
+                                                    isRunningBench = false
+                                                }
+                                            }
+                                        }
+                                    ) {
+                                        Text("Run Check")
+                                    }
+                                } else {
+                                    TextButton(onClick = { showBenchDialog = false }) {
+                                        Text("Close")
+                                    }
+                                }
+                            }
+                        },
+                        dismissButton = {
+                            if (!isRunningBench && benchResult != null) {
+                                TextButton(
+                                    onClick = {
+                                        benchResult = null
+                                    }
+                                ) {
+                                    Text("Re-test")
+                                }
                             }
                         }
                     )

@@ -1,5 +1,6 @@
 package com.shounak.localmeshai
 import android.Manifest
+import android.content.Intent
 import android.os.Bundle
 import android.os.Build
 import android.content.pm.PackageManager
@@ -7,6 +8,7 @@ import android.view.Display
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -50,6 +52,7 @@ import com.shounak.localmeshai.ui.screens.ChatScreen
 import com.shounak.localmeshai.ui.screens.ModelManagerScreen
 import com.shounak.localmeshai.ui.theme.LocalMeshAITheme
 import com.shounak.localmeshai.ui.viewmodels.MainViewModel
+import com.shounak.localmeshai.utils.AppCacheCleaner
 import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.GlassDispersionCard
 import com.shounak.localmeshai.utils.InitCrashGuard
@@ -95,55 +98,45 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
-import androidx.emoji2.bundled.BundledEmojiCompatConfig
-import androidx.emoji2.text.EmojiCompat
 
 class MainActivity : ComponentActivity() {
+    private val mainViewModel: MainViewModel by viewModels()
     private var isFirstStart = true
 
     override fun onStart() {
         super.onStart()
-        if (!isFirstStart) {
-            AppSettings.getInstance(this).updateSettings {
-                it.copy(llamaBackendPreference = "AUTO")
+        isFirstStart = false
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (isFinishing) {
+            ModelRuntimeCoordinator.shutdownScope.launch {
+                ModelRuntimeCoordinator.releaseAll()
+                AppCacheCleaner.clearAppCache(applicationContext)
             }
         }
-        isFirstStart = false
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        handleIntent(intent)
         com.shounak.localmeshai.utils.CrashReportManager.install(this)
-        AppSettings.getInstance(this).updateSettings {
-            it.copy(llamaBackendPreference = "AUTO")
-        }
-        // Offload font bundling to background so it doesn't block the main UI thread during startup.
-        lifecycleScope.launch(Dispatchers.Default) {
-            runCatching {
-                EmojiCompat.init(
-                    BundledEmojiCompatConfig(this@MainActivity)
-                        .setReplaceAll(false)
-                )
-            }
-        }
-        val crashedModel = InitCrashGuard.checkAndRecoverCrash(this)
-        if (crashedModel != null) {
-            com.shounak.localmeshai.utils.CrashReportManager.recordNativeCrash(
-                this,
-                crashedModel,
-                "Model '$crashedModel' crashed during native initialization on ${DeviceUtils.currentDeviceChipLabel()}."
-            )
-        }
-        lifecycleScope.launch(Dispatchers.IO) {
-            LiteRtRuntimeCache.pruneOnStartup(this@MainActivity)
-            com.shounak.localmeshai.utils.AppUpdateManager.deleteDownloadedApks(this@MainActivity)
-        }
         enableEdgeToEdge()
         preferHighestRefreshRate()
         requestNotificationPermissionIfNeeded()
+        val decor = window.decorView
+        decor.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                decor.viewTreeObserver.removeOnPreDrawListener(this)
+                decor.post {
+                    com.shounak.localmeshai.data.StartupCoordinator.getInstance(applicationContext).onFirstFrameRendered()
+                }
+                return true
+            }
+        })
         setContent {
-            val mainViewModel: MainViewModel = viewModel()
             val appSettingsData by mainViewModel.appSettingsData.collectAsState()
 
             LocalMeshAITheme(darkTheme = appSettingsData.enableDarkMode) {
@@ -193,6 +186,23 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 42)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent == null) return
+        if (intent.getBooleanExtra(com.shounak.localmeshai.utils.AppUpdateManager.EXTRA_OPEN_SETTINGS_ABOUT, false)) {
+            // Do not trust unverified incoming intent extras for download URLs or version data.
+            // Trigger independent verification against the official repository release API.
+            mainViewModel.checkForUpdates(silent = false)
+            mainViewModel.openSettings(scrollToAbout = true)
+            intent.removeExtra(com.shounak.localmeshai.utils.AppUpdateManager.EXTRA_OPEN_SETTINGS_ABOUT)
         }
     }
 }
@@ -247,6 +257,20 @@ fun MainNavigation(mainViewModel: MainViewModel) {
             },
             onCancel = {
                 mainViewModel.dismissPendingCrashPrompt()
+            }
+        )
+    }
+
+    val settingsDialogVisible by mainViewModel.settingsDialogVisible.collectAsState()
+    val scrollToAboutRequested by mainViewModel.scrollToAboutRequested.collectAsState()
+
+    if (settingsDialogVisible) {
+        com.shounak.localmeshai.ui.screens.SettingsDialog(
+            mainViewModel = mainViewModel,
+            hazeState = hazeState,
+            scrollToAbout = scrollToAboutRequested,
+            onDismissRequest = {
+                mainViewModel.dismissSettings()
             }
         )
     }

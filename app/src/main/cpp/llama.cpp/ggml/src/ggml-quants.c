@@ -372,8 +372,44 @@ void dequantize_row_q8_0(const block_q8_0 * restrict x, float * restrict y, int6
 //
 // ===================== Helper functions
 //
+#ifdef __cplusplus
+#include <atomic>
+static std::atomic<int> g_solus_numerical_anomaly{0};
+extern "C" {
+void solus_record_numerical_anomaly(const char * reason) {
+    (void)reason;
+    g_solus_numerical_anomaly.store(1, std::memory_order_release);
+}
+
+int solus_has_numerical_anomaly(void) {
+    return g_solus_numerical_anomaly.load(std::memory_order_acquire);
+}
+
+void solus_clear_numerical_anomaly(void) {
+    g_solus_numerical_anomaly.store(0, std::memory_order_release);
+}
+}
+#else
+#include <stdatomic.h>
+static atomic_int g_solus_numerical_anomaly = 0;
+
+void solus_record_numerical_anomaly(const char * reason) {
+    (void)reason;
+    atomic_store_explicit(&g_solus_numerical_anomaly, 1, memory_order_release);
+}
+
+int solus_has_numerical_anomaly(void) {
+    return atomic_load_explicit(&g_solus_numerical_anomaly, memory_order_acquire);
+}
+
+void solus_clear_numerical_anomaly(void) {
+    atomic_store_explicit(&g_solus_numerical_anomaly, 0, memory_order_release);
+}
+#endif
+
 static inline int nearest_int(float fval) {
     if (isnan(fval)) {
+        solus_record_numerical_anomaly("nearest_int: fval is NaN");
         return 0;
     }
     if (fval >= 4194303.f) {
@@ -2498,6 +2534,7 @@ void quantize_row_q8_K_ref(const float * restrict x, block_q8_K * restrict y, in
         for (int j = 0; j < QK_K; ++j) {
             float val = x[j];
             if (isnan(val) || isinf(val)) {
+                solus_record_numerical_anomaly("quantize_row_q8_K_ref: input val is non-finite");
                 continue;
             }
             float ax = fabsf(val);
@@ -2518,11 +2555,13 @@ void quantize_row_q8_K_ref(const float * restrict x, block_q8_K * restrict y, in
         for (int j = 0; j < QK_K; ++j) {
             float val = x[j];
             if (isnan(val)) {
+                solus_record_numerical_anomaly("quantize_row_q8_K_ref: element val is NaN");
                 y[i].qs[j] = 0;
                 continue;
             }
             float fval = iscale * val;
             if (isnan(fval)) {
+                solus_record_numerical_anomaly("quantize_row_q8_K_ref: scaled val is NaN");
                 y[i].qs[j] = 0;
             } else if (fval >= 127.f) {
                 y[i].qs[j] = 127;
@@ -2542,6 +2581,7 @@ void quantize_row_q8_K_ref(const float * restrict x, block_q8_K * restrict y, in
         }
         y[i].d = 1.0f / iscale;
         if (!isfinite(y[i].d)) {
+            solus_record_numerical_anomaly("quantize_row_q8_K_ref: block scale d is non-finite");
             y[i].d = 0.0f;
         }
         x += QK_K;
