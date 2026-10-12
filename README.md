@@ -29,7 +29,7 @@ Your conversations and files never leave your phone.
 
 <p>
   <img src="https://img.shields.io/badge/version-5.0.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="App version 5.0.0" />
-  <img src="https://img.shields.io/badge/APK_size-33.16_MB_(31.62_MiB)-22C55E?style=for-the-badge&logo=android&logoColor=white" alt="APK size 33.16 MB (31.62 MiB)" />
+  <img src="https://img.shields.io/badge/APK_size-33.16_MB_(31.63_MiB)-22C55E?style=for-the-badge&logo=android&logoColor=white" alt="APK size 33.16 MB (31.63 MiB)" />
   <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=for-the-badge&logo=github&label=Stars&color=FFD700" alt="GitHub stars" />
   <img src="https://img.shields.io/github/downloads/ShounakPatra/Solus/total?style=for-the-badge&label=Downloads&color=20C997" alt="Total downloads" />
 </p>
@@ -81,7 +81,7 @@ Your conversations and files never leave your phone.
 |---|---|---|
 | ⚡ | **Vulkan GPU Acceleration** | Native Vulkan graphics compute backend integrated via `llama.cpp JNI` for accelerated inference on modern mobile GPUs |
 | 📚 | **On-Device RAG Engine** | Retrieval-Augmented Generation with local chunking, vector embeddings, similarity matching, and cross-session document continuity |
-| 🧩 | **GGUF Model Execution** | Experimental direct GGUF inference (e.g. Qwen 2.5 0.5B GGUF; note: Llama 3.2 1B GGUF not yet supported; full GGUF suite coming in October) |
+| 🧩 | **Major GGUF Model Execution** | Full major GGUF support across all standard model architectures (Qwen, Llama, Gemma, DeepSeek, Phi, Mistral) with native Vulkan GPU compute & CPU fallback via `llama.cpp JNI` |
 | 🎙️ | **Full Voice & Audio Input** | 16kHz PCM audio recording with pause/resume controls, live waveform meters, pre-send audio player, and in-bubble playback |
 | 🔄 | **In-App Auto Updater** | Automatic checking, downloading, and package installation of new Solus APK releases directly from GitHub Releases |
 | 🖼️ | **Vision & Document Analysis** | Multimodal image understanding, PDF page rendering, camera capture, and color-coded document badge viewers |
@@ -112,6 +112,8 @@ Your conversations and files never leave your phone.
 - **📑 Document Extraction & Decompression Bomb Protection** — Strict aggregate memory and recursion protection for attached files (PDF, Office DOCX/PPTX/XLSX, ODT, archives) with a 20 MB uncompressed limit and nested archive blocking.
 - **🔒 Cryptographic APK Update Verification** — Strict certificate identity checking preventing updates signed by untrusted certificates, HTTPS enforcement, and path traversal protection.
 - **🎙️ Audio Memory Optimization & Safe Recorder Lifecycle** — Drastic reduction of PCM recording memory overhead (<1 MB vs 32 MB) with sample-derived duration accounting and guaranteed hardware release.
+- **🧩 Major GGUF Model Architecture Support** — Comprehensive native execution for all standard GGUF model families (Qwen, Llama, Gemma, DeepSeek, Phi, Mistral) and custom user imports via accelerated Vulkan GPU compute and multithreaded CPU fallbacks.
+- **⌨️ Keyboard Inset & IME Relocation Fix** — Attached `Modifier.imePadding()` and focus-driven `BringIntoViewRequester` handlers to Custom Model inputs (SHA-256 Checksum, URL, Name, Add button), preventing virtual keyboard overlap and viewport shift regressions.
 - **📉 31% Release APK Footprint Reduction (48.2 MB → 33.16 MB)** — Stripped bundled emoji font in favor of system fonts (Android 9.0+), enabled compressed release DEX, native symbol stripping, and ThinLTO, beating the 36 MB budget by nearly 3 MB.
 
 ---
@@ -157,7 +159,7 @@ Your conversations and files never leave your phone.
 | Open Source (Apache 2.0) | ✅ | Varies |
 | Vulkan GPU Acceleration | ✅ | ❌ |
 | Local Document RAG (Embeddings) | ✅ | ❌ |
-| Direct GGUF Model Support | ✅ *(Expanding Oct)* | ❌ |
+| Direct GGUF Model Support | ✅ | ❌ |
 | Voice Recording & In-Bubble Audio | ✅ | ❌ |
 | External App Document Viewer | ✅ | ❌ |
 | In-App GitHub OTA Auto-Updater | ✅ | ❌ |
@@ -184,7 +186,7 @@ Your conversations and files never leave your phone.
 
 </div>
 
-> 💡 **Notice on GGUF Support**: Solus v2.0.0 introduces native GGUF support for selected architectures such as Qwen 2.5 0.5B. Certain models like Llama 3.2 1B GGUF are currently unsupported. Comprehensive GGUF compatibility, full architecture support, and dedicated optimizations are arriving in our major **October update**!
+> 💡 **Comprehensive GGUF Support**: Solus features full, major GGUF architecture support across popular open-weights families (Qwen 2.5, Llama 3 / 3.2, Gemma, DeepSeek, Phi-3, Mistral) and custom direct GGUF downloads/imports, fully accelerated on-device with native Vulkan GPU compute and CPU fallback.
 
 ---
 
@@ -311,7 +313,7 @@ When you attach a file (PDF, TXT, DOCX, etc.), Solus splits the document into te
 <summary><b>Which GGUF models are currently supported?</b></summary>
 <br/>
 
-Solus v2.0.0 features experimental GGUF execution for lightweight architectures such as Qwen 2.5 0.5B GGUF. Some architectures like Llama 3.2 1B GGUF are not yet supported. Full GGUF compatibility across major model families is arriving in October!
+Solus features comprehensive GGUF model support across all major open-weight architectures (Qwen 2.5, Llama 3 / 3.2, Gemma, DeepSeek, Phi-3, Mistral, and user-added custom GGUF models). Models can be downloaded from the catalog or added via direct URL / Hugging Face repo link, executing 100% offline with Vulkan GPU acceleration.
 
 </details>
 
@@ -343,9 +345,15 @@ Go to **Settings** → **Hugging Face Access Token** and enter your read token. 
 | **v1.5.0** | ✅ Shipped | Full Settings menu, dynamic model themes, auto-hide nav, high-tech downloading cards, telemetry guard |
 | **v2.0.0** | ✅ Shipped | **Vulkan GPU compute**, **Local RAG document search**, **Audio & Voice input**, **In-App GitHub Auto-Updater** |
 | **v3.0.0** | ✅ Shipped | **16 KB page-size compliance (Android 15+)**, **Optimized 46 MB footprint**, **Zero telemetry/analytics**, **Compressed ARM64 native runtime**, **Full GGUF model support** |
-| **v5.0.0** | ✅ **Current** | **Production-release hardening: response finalization, transactional model management, resumable downloads, document extraction safety, strict cryptographic update verification** |
+| **v5.0.0** | ✅ **Current** | **Production-release hardening: response finalization, transactional model management, major GGUF architecture support, resumable downloads, document extraction safety, strict cryptographic update verification** |
+| **v6.0.0** | 🔮 Planned | **Latest llama.cpp engine upgrade**, **Broader upstream text & multimodal compatibility**, **Zero-copy phone storage import (split models & projectors)** |
 
 </div>
+
+### 🔮 Upcoming in **v6.0.0**
+- **⚡ Latest llama.cpp Engine** — Update the bundled runtime and adapt Solus's native integration.
+- **🌐 Broader Model Compatibility** — Support upstream text models, plus image and audio understanding with text replies, within phone memory limits.
+- **📂 Import from Phone Storage** — Use original GGUF files directly without copying them, including split models and matching multimodal projectors.
 
 ---
 

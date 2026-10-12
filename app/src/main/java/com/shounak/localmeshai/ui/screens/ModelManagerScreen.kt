@@ -33,6 +33,10 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -303,6 +307,10 @@ internal fun ModelInfo.searchRelevance(query: String): Int {
     return score
 }
 
+@OptIn(
+    androidx.compose.foundation.ExperimentalFoundationApi::class,
+    androidx.compose.foundation.layout.ExperimentalLayoutApi::class
+)
 @Composable
 fun ModelManagerScreen(
     mainViewModel: MainViewModel = viewModel(),
@@ -412,9 +420,20 @@ fun ModelManagerScreen(
         it.id !in downloadedIds && (it.status == ModelStatus.NeedsConversion || it.status == ModelStatus.ComingSoon) && it.isMixtureOfExperts()
     }
 
+    val listState = rememberLazyListState()
+    val isKeyboardOpen = WindowInsets.isImeVisible
+
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 112.dp),
+        state = listState,
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding(),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = 16.dp,
+            end = 16.dp,
+            bottom = if (isKeyboardOpen) 24.dp else 112.dp
+        ),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item(key = "title_header") {
@@ -1294,6 +1313,10 @@ private fun PrivacyCard(hazeState: HazeState) {
     }
 }
 
+@OptIn(
+    androidx.compose.foundation.ExperimentalFoundationApi::class,
+    androidx.compose.foundation.layout.ExperimentalLayoutApi::class
+)
 @Composable
 private fun AccessCard(
     token: String,
@@ -1303,6 +1326,17 @@ private fun AccessCard(
 ) {
     var tokenDraft by rememberSaveable(token) { mutableStateOf(token) }
     val cardTint = MaterialTheme.colorScheme.surfaceContainerHigh
+    val coroutineScope = rememberCoroutineScope()
+    val isKeyboardOpen = WindowInsets.isImeVisible
+    val tokenBringIntoViewRequester = remember { BringIntoViewRequester() }
+    var isTokenFocused by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isKeyboardOpen, isTokenFocused) {
+        if (isKeyboardOpen && isTokenFocused) {
+            delay(160)
+            tokenBringIntoViewRequester.bringIntoView()
+        }
+    }
 
     Card(
         modifier = Modifier
@@ -1319,14 +1353,26 @@ private fun AccessCard(
         shape = MaterialTheme.shapes.medium
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier
+                .padding(16.dp)
+                .bringIntoViewRequester(tokenBringIntoViewRequester),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("Access", style = MaterialTheme.typography.titleSmall)
             OutlinedTextField(
                 value = tokenDraft,
                 onValueChange = { tokenDraft = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { focusState ->
+                        isTokenFocused = focusState.isFocused
+                        if (focusState.isFocused) {
+                            coroutineScope.launch {
+                                delay(160)
+                                tokenBringIntoViewRequester.bringIntoView()
+                            }
+                        }
+                    },
                 singleLine = true,
                 label = { Text("Hugging Face read token") },
                 leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
@@ -1368,6 +1414,10 @@ private fun AccessCard(
     }
 }
 
+@OptIn(
+    androidx.compose.foundation.ExperimentalFoundationApi::class,
+    androidx.compose.foundation.layout.ExperimentalLayoutApi::class
+)
 @Composable
 private fun CustomModelCard(
     onAddModel: (String, String, ModelType, String?) -> Unit,
@@ -1383,6 +1433,39 @@ private fun CustomModelCard(
     val hasTypeSelection = effectiveTextSelected || imageSelected
     val selectedTypeCount = (if (effectiveTextSelected) 1 else 0) + (if (imageSelected) 1 else 0)
     val cardTint = MaterialTheme.colorScheme.surfaceContainerLow
+
+    val coroutineScope = rememberCoroutineScope()
+    val isKeyboardOpen = WindowInsets.isImeVisible
+
+    val nameBringIntoViewRequester = remember { BringIntoViewRequester() }
+    var isNameFocused by remember { mutableStateOf(false) }
+
+    val urlBringIntoViewRequester = remember { BringIntoViewRequester() }
+    var isUrlFocused by remember { mutableStateOf(false) }
+
+    val shaBringIntoViewRequester = remember { BringIntoViewRequester() }
+    var isShaFocused by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isKeyboardOpen, isNameFocused) {
+        if (isKeyboardOpen && isNameFocused) {
+            delay(160)
+            nameBringIntoViewRequester.bringIntoView()
+        }
+    }
+
+    LaunchedEffect(isKeyboardOpen, isUrlFocused) {
+        if (isKeyboardOpen && isUrlFocused) {
+            delay(160)
+            urlBringIntoViewRequester.bringIntoView()
+        }
+    }
+
+    LaunchedEffect(isKeyboardOpen, isShaFocused) {
+        if (isKeyboardOpen && isShaFocused) {
+            delay(160)
+            shaBringIntoViewRequester.bringIntoView()
+        }
+    }
 
     Card(
         modifier = Modifier
@@ -1421,7 +1504,18 @@ private fun CustomModelCard(
             OutlinedTextField(
                 value = modelName,
                 onValueChange = { modelName = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .bringIntoViewRequester(nameBringIntoViewRequester)
+                    .onFocusChanged { focusState ->
+                        isNameFocused = focusState.isFocused
+                        if (focusState.isFocused) {
+                            coroutineScope.launch {
+                                delay(160)
+                                nameBringIntoViewRequester.bringIntoView()
+                            }
+                        }
+                    },
                 singleLine = true,
                 label = { Text("Name (optional)") },
                 shape = RoundedCornerShape(12.dp),
@@ -1435,7 +1529,18 @@ private fun CustomModelCard(
             OutlinedTextField(
                 value = modelUrl,
                 onValueChange = { modelUrl = it },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .bringIntoViewRequester(urlBringIntoViewRequester)
+                    .onFocusChanged { focusState ->
+                        isUrlFocused = focusState.isFocused
+                        if (focusState.isFocused) {
+                            coroutineScope.launch {
+                                delay(160)
+                                urlBringIntoViewRequester.bringIntoView()
+                            }
+                        }
+                    },
                 label = { Text("Direct .gguf, .litertlm, .task URL or HF repo/file") },
                 leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
                 minLines = 1,
@@ -1448,52 +1553,69 @@ private fun CustomModelCard(
                     focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
                 )
             )
-            OutlinedTextField(
-                value = modelSha256,
-                onValueChange = { modelSha256 = it },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("SHA-256 Checksum (optional)") },
-                leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null) },
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                )
-            )
-            LiquidGlassButton(
-                onClick = {
-                    val cleanSha = modelSha256.trim().ifBlank { null }
-                    if (effectiveTextSelected) {
-                        onAddModel(modelName, modelUrl, ModelType.Text, cleanSha)
-                    }
-                    if (imageSelected) {
-                        onAddModel(modelName, modelUrl, ModelType.Vision, cleanSha)
-                    }
-                    modelName = ""
-                    modelUrl = ""
-                    modelSha256 = ""
-                    textSelected = false
-                    imageSelected = false
-                },
-                enabled = modelUrl.isNotBlank() && hasTypeSelection,
-                modifier = Modifier.align(Alignment.End).height(44.dp),
-                hazeState = hazeState,
-                shape = RoundedCornerShape(12.dp),
-                tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f),
-                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .bringIntoViewRequester(shaBringIntoViewRequester),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    when (selectedTypeCount) {
-                        0 -> "Select type"
-                        2 -> "Add both"
-                        else -> "Add"
-                    }
+                OutlinedTextField(
+                    value = modelSha256,
+                    onValueChange = { modelSha256 = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { focusState ->
+                            isShaFocused = focusState.isFocused
+                            if (focusState.isFocused) {
+                                coroutineScope.launch {
+                                    delay(160)
+                                    shaBringIntoViewRequester.bringIntoView()
+                                }
+                            }
+                        },
+                    singleLine = true,
+                    label = { Text("SHA-256 Checksum (optional)") },
+                    leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null) },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                    )
                 )
+                LiquidGlassButton(
+                    onClick = {
+                        val cleanSha = modelSha256.trim().ifBlank { null }
+                        if (effectiveTextSelected) {
+                            onAddModel(modelName, modelUrl, ModelType.Text, cleanSha)
+                        }
+                        if (imageSelected) {
+                            onAddModel(modelName, modelUrl, ModelType.Vision, cleanSha)
+                        }
+                        modelName = ""
+                        modelUrl = ""
+                        modelSha256 = ""
+                        textSelected = false
+                        imageSelected = false
+                    },
+                    enabled = modelUrl.isNotBlank() && hasTypeSelection,
+                    modifier = Modifier.align(Alignment.End).height(44.dp),
+                    hazeState = hazeState,
+                    shape = RoundedCornerShape(12.dp),
+                    tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        when (selectedTypeCount) {
+                            0 -> "Select type"
+                            2 -> "Add both"
+                            else -> "Add"
+                        }
+                    )
+                }
             }
         }
     }
