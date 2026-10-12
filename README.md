@@ -38,7 +38,7 @@ Your conversations and files never leave your phone.
   <img src="https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg" alt="Android CI" />
   <img src="https://img.shields.io/badge/Android-9.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android 9.0 or newer" />
   <img src="https://img.shields.io/badge/License-Apache_2.0-A970FF?style=for-the-badge&logo=apache&logoColor=white" alt="Apache 2.0 license" />
-  <img src="https://img.shields.io/badge/Kotlin-2.3.2-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.3.2" />
+  <img src="https://img.shields.io/badge/Kotlin-2.4.20-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.4.20" />
   <img src="https://img.shields.io/badge/Jetpack_Compose-UI-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 </p>
 
@@ -135,7 +135,7 @@ Your conversations and files never leave your phone.
 
 | Layer | Stack |
 |---|---|
-| Language | **Kotlin 2.3.2** & **C++20** |
+| Language | **Kotlin 2.4.20** & **C++20** |
 | UI Framework | **Jetpack Compose**, Material 3, Haze Glass Blur |
 | Inference Backends | **llama.cpp JNI (CPU + Vulkan)**, **LiteRT** (TensorFlow Lite), **MediaPipe GenAI** |
 | Retrieval (RAG) | Local Vector Embeddings, Cosine Similarity, In-Memory Index |

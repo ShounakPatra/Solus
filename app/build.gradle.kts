@@ -57,7 +57,7 @@ android {
 
         externalNativeBuild {
             cmake {
-                arguments("-DANDROID_PLATFORM=android-28")
+                arguments("-DANDROID_PLATFORM=android-28", "-DANDROID_LD=lld")
             }
         }
     }
