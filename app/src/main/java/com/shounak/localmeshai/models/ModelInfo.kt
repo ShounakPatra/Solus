@@ -25,6 +25,21 @@ enum class ModelPackage {
     ZipDirectory
 }
 
+enum class LoadRestrictionCategory {
+    DeviceCompatibility,
+    PreviousCrash,
+    RuntimeIncompatibility
+}
+
+@Immutable
+data class LoadRestriction(
+    val reason: String,
+    val category: LoadRestrictionCategory
+) {
+    val canTryAnyway: Boolean
+        get() = category == LoadRestrictionCategory.DeviceCompatibility
+}
+
 @Immutable
 data class ModelInfo(
     val id: String,
@@ -57,13 +72,60 @@ data class ModelInfo(
     val bytesPerSecond: Long = 0L,
     val localPath: String? = null,
     val errorMessage: String? = null,
-    val downloadedAt: Long = 0L
+    val downloadedAt: Long = 0L,
+    val bundle: ModelBundle? = null,
+    val downloadSpec: ModelDownloadSpec? = null,
+    val supportsVisionInput: Boolean = false,
+    val loadRestriction: LoadRestriction? = null
 ) {
+    val canTryAnyway: Boolean
+        get() = loadRestriction?.canTryAnyway == true
+
+    val isCrashBlocked: Boolean
+        get() = loadRestriction?.category == LoadRestrictionCategory.PreviousCrash
+
     val hasDownloadUrl: Boolean
         get() = !url.isNullOrBlank()
 
     val isCustom: Boolean
-        get() = id.startsWith("custom_")
+        get() = id.startsWith("custom_") || id.startsWith("local_gguf_")
+
+    val isStorageImport: Boolean
+        get() = bundle?.mainArtifacts?.any { it.source is ArtifactSource.PersistedUri } == true
+
+    val isSplit: Boolean
+        get() = bundle?.isSplit == true
+
+    val isMultimodal: Boolean
+        get() = supportsVision || supportsAudio
+
+    val supportsVision: Boolean
+        get() {
+            if (bundle != null) return bundle.capabilities.supportsVision
+            if (downloadSpec != null) return downloadSpec.capabilities.supportsVision
+            return supportsVisionInput || (type == ModelType.Vision)
+        }
+
+    val supportsAudio: Boolean
+        get() {
+            if (bundle != null) return bundle.capabilities.supportsAudio
+            if (downloadSpec != null) return downloadSpec.capabilities.supportsAudio
+            return supportsAudioInput
+        }
+
+    val thinkingCapability: ThinkingCapability
+        get() {
+            if (bundle != null && bundle.capabilities.thinking != ThinkingCapability.Unknown) {
+                return bundle.capabilities.thinking
+            }
+            if (downloadSpec != null && downloadSpec.capabilities.thinking != ThinkingCapability.Unknown) {
+                return downloadSpec.capabilities.thinking
+            }
+            if (supportsThinkingMode) {
+                return ThinkingCapability.Toggleable
+            }
+            return ThinkingCapability.Unknown
+        }
 
     val isFutureBuild: Boolean
         get() = status == ModelStatus.NeedsConversion || status == ModelStatus.ComingSoon
@@ -81,7 +143,10 @@ data class ModelInfo(
         get() = effectiveContextWindowTokens?.let { "Context ${it.withThousandsSeparator()}" } ?: "Context TBD"
 
     val effectiveContextWindowTokens: Int?
-        get() = contextWindowTokens ?: ContextWindowInFileName.find(fileName)?.groupValues?.get(1)?.toIntOrNull()
+        get() = contextWindowTokens
+            ?: bundle?.contextLength?.takeIf { it > 0 }
+            ?: bundle?.capabilities?.contextLength?.takeIf { it > 0 }
+            ?: ContextWindowInFileName.find(fileName)?.groupValues?.get(1)?.toIntOrNull()
 
     val etaString: String
         get() {

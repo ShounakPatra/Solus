@@ -3,8 +3,11 @@ package com.shounak.localmeshai.ai
 import android.content.Context
 import android.util.Log
 import androidx.annotation.VisibleForTesting
+import com.shounak.localmeshai.models.ModelBundle
 import com.shounak.localmeshai.utils.AppTrace
+import com.shounak.localmeshai.utils.ModelSourceResolver
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -47,6 +50,7 @@ class LlamaExecutionException(
 interface LlamaTokenCallback {
     fun onFirstToken() {}
     fun onToken(token: String)
+    fun onStructuredToken(answer: String, reasoning: String, isThinkingActive: Boolean) {}
     fun onComplete()
     fun onStop()
     fun onError(error: String)
@@ -86,6 +90,54 @@ data class LlamaSamplingParams(
     val seed: Int = 0
 )
 
+sealed class MultimodalMediaInput {
+    abstract val messageIndex: Int
+
+    data class Image(
+        val rgbBytes: ByteArray,
+        val width: Int,
+        val height: Int,
+        override val messageIndex: Int = -1
+    ) : MultimodalMediaInput() {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as Image
+            if (!rgbBytes.contentEquals(other.rgbBytes)) return false
+            if (width != other.width) return false
+            if (height != other.height) return false
+            if (messageIndex != other.messageIndex) return false
+            return true
+        }
+        override fun hashCode(): Int {
+            var result = rgbBytes.contentHashCode()
+            result = 31 * result + width
+            result = 31 * result + height
+            result = 31 * result + messageIndex
+            return result
+        }
+    }
+
+    data class Audio(
+        val samples: FloatArray,
+        override val messageIndex: Int = -1
+    ) : MultimodalMediaInput() {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            other as Audio
+            if (!samples.contentEquals(other.samples)) return false
+            if (messageIndex != other.messageIndex) return false
+            return true
+        }
+        override fun hashCode(): Int {
+            var result = samples.contentHashCode()
+            result = 31 * result + messageIndex
+            return result
+        }
+    }
+}
+
 data class LlamaModelMetadata(
     val desc: String = "",
     val architecture: String = "",
@@ -102,7 +154,12 @@ data class LlamaModelMetadata(
     val effectiveOffloadKqv: Boolean = false,
     val isCpuIsolated: Boolean = false,
     val gpuComputeBufferBytes: Long = 0L,
-    val backendPolicyVersion: Int = 1
+    val backendPolicyVersion: Int = 2,
+    val supportsVision: Boolean = false,
+    val supportsAudio: Boolean = false,
+    val audioSampleRate: Int = -1,
+    val hasDecoder: Boolean = true,
+    val upstreamRevision: String = "a17e94d229fc7fed1567a799baebd11b771fe5af"
 )
 
 enum class LlamaBackend(val id: Int, val displayName: String) {
@@ -144,7 +201,13 @@ data class LlamaModelInspectionResult(
     val hasChatTemplate: Boolean = false,
     val primaryQuantization: String = "",
     val isSupported: Boolean = false,
-    val error: String = ""
+    val error: String = "",
+    val splitNo: Int = -1,
+    val splitCount: Int = -1,
+    val isProjector: Boolean = false,
+    val clipHasVisionEncoder: Boolean = false,
+    val clipHasAudioEncoder: Boolean = false,
+    val thinkingCapability: String = "Unknown"
 )
 
 /**
@@ -176,6 +239,18 @@ internal interface LlamaNativeBridge {
         nGpuLayers: Int = 0,
         operationControlId: Long = 0L
     ): Long
+    fun initModelBundle(
+        modelPaths: Array<String>,
+        projectorPath: String?,
+        nThreads: Int,
+        nThreadsBatch: Int = nThreads,
+        nCtx: Int,
+        nBatch: Int,
+        nUbatch: Int,
+        backend: Int = 0,
+        nGpuLayers: Int = 0,
+        operationControlId: Long = 0L
+    ): Long = initModel(modelPaths.firstOrNull() ?: "", nThreads, nThreadsBatch, nCtx, nBatch, nUbatch, backend, nGpuLayers, operationControlId)
     fun generateStream(
         handle: Long,
         generationId: Long,
@@ -191,6 +266,45 @@ internal interface LlamaNativeBridge {
         seed: Int,
         callback: LlamaTokenCallback
     ): Int
+
+    fun generateStream(
+        handle: Long,
+        generationId: Long,
+        prompt: String,
+        roles: Array<String>?,
+        contents: Array<String>?,
+        temperature: Float,
+        topP: Float,
+        topK: Int,
+        minP: Float,
+        repeatPenalty: Float,
+        maxTokens: Int,
+        seed: Int,
+        enableThinking: Boolean,
+        callback: LlamaTokenCallback
+    ): Int = generateStream(handle, generationId, prompt, roles, contents, temperature, topP, topK, minP, repeatPenalty, maxTokens, seed, callback)
+    fun generateMultimodalStream(
+        handle: Long,
+        generationId: Long,
+        prompt: String,
+        roles: Array<String>?,
+        contents: Array<String>?,
+        mediaTypes: IntArray?,
+        mediaMessageIndices: IntArray? = null,
+        imageWidths: IntArray?,
+        imageHeights: IntArray?,
+        imageBytes: Array<ByteArray>?,
+        audioFloats: Array<FloatArray>?,
+        temperature: Float,
+        topP: Float,
+        topK: Int,
+        minP: Float,
+        repeatPenalty: Float,
+        maxTokens: Int,
+        seed: Int,
+        enableThinking: Boolean = true,
+        callback: LlamaTokenCallback
+    ): Int = generateStream(handle, generationId, prompt, roles, contents, temperature, topP, topK, minP, repeatPenalty, maxTokens, seed, enableThinking, callback)
     fun stop(handle: Long, generationId: Long)
     fun getMetadata(handle: Long): String?
     fun free(handle: Long)
@@ -282,6 +396,24 @@ internal object DefaultLlamaNativeBridge : LlamaNativeBridge {
         )
     }
 
+    override fun initModelBundle(
+        modelPaths: Array<String>,
+        projectorPath: String?,
+        nThreads: Int,
+        nThreadsBatch: Int,
+        nCtx: Int,
+        nBatch: Int,
+        nUbatch: Int,
+        backend: Int,
+        nGpuLayers: Int,
+        operationControlId: Long
+    ): Long {
+        if (!isAvailable()) return 0L
+        return LlamaCppEngine.nativeInitModelBundle(
+            modelPaths, projectorPath, nThreads, nThreadsBatch, nCtx, nBatch, nUbatch, backend, nGpuLayers, operationControlId
+        )
+    }
+
     override fun generateStream(
         handle: Long,
         generationId: Long,
@@ -296,11 +428,61 @@ internal object DefaultLlamaNativeBridge : LlamaNativeBridge {
         maxTokens: Int,
         seed: Int,
         callback: LlamaTokenCallback
+    ): Int = generateStream(
+        handle, generationId, prompt, roles, contents,
+        temperature, topP, topK, minP, repeatPenalty, maxTokens, seed, true, callback
+    )
+
+    override fun generateStream(
+        handle: Long,
+        generationId: Long,
+        prompt: String,
+        roles: Array<String>?,
+        contents: Array<String>?,
+        temperature: Float,
+        topP: Float,
+        topK: Int,
+        minP: Float,
+        repeatPenalty: Float,
+        maxTokens: Int,
+        seed: Int,
+        enableThinking: Boolean,
+        callback: LlamaTokenCallback
     ): Int {
         if (!isAvailable()) return -1
         return LlamaCppEngine.nativeGenerateStream(
             handle, generationId, prompt, roles, contents,
-            temperature, topP, topK, minP, repeatPenalty, maxTokens, seed, callback
+            temperature, topP, topK, minP, repeatPenalty, maxTokens, seed, enableThinking, callback
+        )
+    }
+
+    override fun generateMultimodalStream(
+        handle: Long,
+        generationId: Long,
+        prompt: String,
+        roles: Array<String>?,
+        contents: Array<String>?,
+        mediaTypes: IntArray?,
+        mediaMessageIndices: IntArray?,
+        imageWidths: IntArray?,
+        imageHeights: IntArray?,
+        imageBytes: Array<ByteArray>?,
+        audioFloats: Array<FloatArray>?,
+        temperature: Float,
+        topP: Float,
+        topK: Int,
+        minP: Float,
+        repeatPenalty: Float,
+        maxTokens: Int,
+        seed: Int,
+        enableThinking: Boolean,
+        callback: LlamaTokenCallback
+    ): Int {
+        if (!isAvailable()) return -1
+        return LlamaCppEngine.nativeGenerateMultimodalStream(
+            handle, generationId, prompt, roles, contents,
+            mediaTypes, mediaMessageIndices, imageWidths, imageHeights, imageBytes, audioFloats,
+            temperature, topP, topK, minP, repeatPenalty, maxTokens, seed, enableThinking, callback
         )
     }
 
@@ -371,9 +553,11 @@ internal object DefaultLlamaNativeBridge : LlamaNativeBridge {
  *   4. InterruptedException during close wait NEVER frees a handle while active leases exist.
  */
 class LlamaCppEngine @VisibleForTesting internal constructor(
-    private val context: Context? = null,
+    context: Context? = null,
     internal val nativeBridge: LlamaNativeBridge = DefaultLlamaNativeBridge
 ) {
+    private val context: Context? = context?.applicationContext
+
     // Secondary public constructor for standard production use
     constructor(context: Context?) : this(context, DefaultLlamaNativeBridge)
     constructor() : this(null, DefaultLlamaNativeBridge)
@@ -384,7 +568,8 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         INITIALIZING,
         OPEN,
         CLOSING,
-        CLOSED
+        CLOSED,
+        CLOSE_FAILED
     }
 
     /** Monitor guarding lifecycle state transitions and active lease counts. */
@@ -393,6 +578,14 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
 
     /** Raw native pointer. Only valid when engineState == OPEN. Zero otherwise. */
     @Volatile private var nativeHandle: Long = 0L
+
+    /** Retained unresolved resources when close or cleanup fails. */
+    @Volatile private var failedHandle: Long = 0L
+    @Volatile private var failedBundleLease: AutoCloseable? = null
+    @Volatile private var closeFailure: Throwable? = null
+
+    val failedCloseError: Throwable?
+        get() = synchronized(lifecycleLock) { closeFailure }
 
     /** Current lifecycle phase. Read/written only under lifecycleLock. */
     private var engineState = EngineState.UNINITIALIZED
@@ -425,6 +618,8 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
     val actualConfiguration: ModelActualConfiguration?
         get() = synchronized(lifecycleLock) { _actualConfiguration }
 
+    @Volatile private var activeBundleLease: AutoCloseable? = null
+
     // ── Testable seams ────────────────────────────────────────────────────────────────────────────
 
     @VisibleForTesting
@@ -438,6 +633,14 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
     @VisibleForTesting
     internal val testNativeHandle: Long
         get() = synchronized(lifecycleLock) { nativeHandle }
+
+    @VisibleForTesting
+    internal val testFailedHandle: Long
+        get() = synchronized(lifecycleLock) { failedHandle }
+
+    @VisibleForTesting
+    internal val testFailedBundleLease: AutoCloseable?
+        get() = synchronized(lifecycleLock) { failedBundleLease }
 
     @VisibleForTesting
     internal val testInitEpoch: Long
@@ -463,6 +666,9 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
      * 0L otherwise (engine is INITIALIZING, CLOSING, CLOSED, or UNINITIALIZED).
      */
     private fun acquireOperationLeaseUnlocked(): Long {
+        if (engineState == EngineState.CLOSE_FAILED) {
+            throw IllegalStateException("Engine is in unrecoverable CLOSE_FAILED state (handle: $failedHandle); app restart required.", closeFailure)
+        }
         if (engineState != EngineState.OPEN || nativeHandle == 0L) return 0L
         activeLeaseCount++
         return nativeHandle
@@ -505,7 +711,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
 
         fun inspectModel(modelPath: String): LlamaModelInspectionResult {
             val file = File(modelPath)
-            if (!file.exists()) {
+            if (!modelPath.startsWith("/proc/self/fd/") && !file.exists()) {
                 return LlamaModelInspectionResult(valid = false, error = "File does not exist: $modelPath")
             }
             if (!isLibraryLoaded) {
@@ -546,15 +752,21 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                     hasChatTemplate = json.optBoolean("has_chat_template", false),
                     primaryQuantization = json.optString("primary_quant", ""),
                     isSupported = json.optBoolean("is_supported", false),
-                    error = json.optString("error", "")
+                    error = json.optString("error", ""),
+                    splitNo = json.optInt("split_no", -1),
+                    splitCount = json.optInt("split_count", -1),
+                    isProjector = json.optBoolean("is_projector", false),
+                    clipHasVisionEncoder = json.optBoolean("clip_has_vision_encoder", false),
+                    clipHasAudioEncoder = json.optBoolean("clip_has_audio_encoder", false),
+                    thinkingCapability = json.optString("thinking_capability", "Unknown")
                 )
             }.getOrElse {
                 fun extractString(key: String): String =
                     Regex("\"$key\"\\s*:\\s*\"([^\"]*)\"").find(jsonStr)?.groupValues?.get(1) ?: ""
                 fun extractLong(key: String): Long =
                     Regex("\"$key\"\\s*:\\s*(\\d+)").find(jsonStr)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-                fun extractInt(key: String): Int =
-                    Regex("\"$key\"\\s*:\\s*(\\d+)").find(jsonStr)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                fun extractInt(key: String, default: Int = 0): Int =
+                    Regex("\"$key\"\\s*:\\s*(-?\\d+)").find(jsonStr)?.groupValues?.get(1)?.toIntOrNull() ?: default
                 fun extractBoolean(key: String): Boolean =
                     Regex("\"$key\"\\s*:\\s*(true|false)").find(jsonStr)?.groupValues?.get(1)?.toBooleanStrictOrNull() ?: false
 
@@ -571,7 +783,13 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                     hasChatTemplate = extractBoolean("has_chat_template"),
                     primaryQuantization = extractString("primary_quant"),
                     isSupported = extractBoolean("is_supported"),
-                    error = extractString("error")
+                    error = extractString("error"),
+                    splitNo = extractInt("split_no", -1),
+                    splitCount = extractInt("split_count", -1),
+                    isProjector = extractBoolean("is_projector"),
+                    clipHasVisionEncoder = extractBoolean("clip_has_vision_encoder"),
+                    clipHasAudioEncoder = extractBoolean("clip_has_audio_encoder"),
+                    thinkingCapability = extractString("thinking_capability").ifBlank { "Unknown" }
                 )
             }
         }
@@ -633,11 +851,27 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
             modelPath: String, nThreads: Int, nThreadsBatch: Int, nCtx: Int, nBatch: Int, nUbatch: Int,
             backend: Int, nGpuLayers: Int, operationControlId: Long
         ): Long
+        @JvmStatic external fun nativeInitModelBundle(
+            modelPaths: Array<String>, projectorPath: String?, nThreads: Int, nThreadsBatch: Int, nCtx: Int, nBatch: Int, nUbatch: Int,
+            backend: Int, nGpuLayers: Int, operationControlId: Long
+        ): Long
         @JvmStatic external fun nativeGenerateStream(
             handle: Long, generationId: Long, prompt: String,
             roles: Array<String>?, contents: Array<String>?,
             temperature: Float, topP: Float, topK: Int, minP: Float,
             repeatPenalty: Float, maxTokens: Int, seed: Int,
+            enableThinking: Boolean,
+            callback: LlamaTokenCallback
+        ): Int
+        @JvmStatic external fun nativeGenerateMultimodalStream(
+            handle: Long, generationId: Long, prompt: String,
+            roles: Array<String>?, contents: Array<String>?,
+            mediaTypes: IntArray?, mediaMessageIndices: IntArray?,
+            imageWidths: IntArray?, imageHeights: IntArray?,
+            imageBytes: Array<ByteArray>?, audioFloats: Array<FloatArray>?,
+            temperature: Float, topP: Float, topK: Int, minP: Float,
+            repeatPenalty: Float, maxTokens: Int, seed: Int,
+            enableThinking: Boolean,
             callback: LlamaTokenCallback
         ): Int
         @JvmStatic external fun nativeStop(handle: Long, generationId: Long)
@@ -708,25 +942,94 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         nUbatch: Int = 128,
         backend: LlamaBackend = LlamaBackend.CPU,
         nGpuLayers: Int = 99,
-        /**
-         * Expected GGUF file size in bytes for artifact integrity validation. 0L = no check.
-         * Logs a warning (does not block init) if the actual file size is outside ±5% of this value.
-         */
         expectedFileSizeBytes: Long = 0L,
         operationControlId: Long = 0L
     ) {
-        val file = File(modelPath)
-        if (!file.exists()) throw IllegalArgumentException("GGUF model file not found at $modelPath")
+        initialize(
+            modelPaths = listOf(modelPath),
+            projectorPath = null,
+            lease = null,
+            threads = threads,
+            prefillThreads = prefillThreads,
+            contextWindow = contextWindow,
+            nBatch = nBatch,
+            nUbatch = nUbatch,
+            backend = backend,
+            nGpuLayers = nGpuLayers,
+            expectedFileSizeBytes = expectedFileSizeBytes,
+            operationControlId = operationControlId
+        )
+    }
 
-        // Artifact size validation: warn if file size doesn't match expected quantization variant
-        val sizeWarning = validateGgufArtifactSize(modelPath, expectedFileSizeBytes)
-        if (sizeWarning != null) {
-            safeLogE("[ARTIFACT_VALIDATION] $sizeWarning")
-            // We do NOT abort initialization here — the model may still work if the size
-            // difference is due to a re-upload or metadata change. The warning is logged
-            // to Logcat and is visible in the crash forensics workflow.
-        } else if (expectedFileSizeBytes > 0L) {
-            safeLogI("[ARTIFACT_VALIDATION] File size OK: ${file.length()} bytes (expected $expectedFileSizeBytes ±5%)")
+    fun initializeBundle(
+        context: Context,
+        bundle: ModelBundle,
+        threads: Int = 4,
+        prefillThreads: Int = threads,
+        contextWindow: Int = 2048,
+        nBatch: Int = 256,
+        nUbatch: Int = 128,
+        backend: LlamaBackend = LlamaBackend.CPU,
+        nGpuLayers: Int = 99,
+        expectedFileSizeBytes: Long = 0L,
+        operationControlId: Long = 0L
+    ) {
+        val lease = ModelSourceResolver.resolve(context, bundle)
+        try {
+            initialize(
+                modelPaths = lease.paths,
+                projectorPath = lease.projectorPath,
+                lease = lease,
+                threads = threads,
+                prefillThreads = prefillThreads,
+                contextWindow = contextWindow,
+                nBatch = nBatch,
+                nUbatch = nUbatch,
+                backend = backend,
+                nGpuLayers = nGpuLayers,
+                expectedFileSizeBytes = expectedFileSizeBytes,
+                operationControlId = operationControlId
+            )
+        } catch (e: Throwable) {
+            if (activeBundleLease !== lease && failedBundleLease !== lease) {
+                runCatching { lease.close() }
+            }
+            throw e
+        }
+    }
+
+    fun initialize(
+        modelPaths: List<String>,
+        projectorPath: String? = null,
+        lease: AutoCloseable? = null,
+        threads: Int = 4,
+        prefillThreads: Int = threads,
+        contextWindow: Int = 2048,
+        nBatch: Int = 256,
+        nUbatch: Int = 128,
+        backend: LlamaBackend = LlamaBackend.CPU,
+        nGpuLayers: Int = 99,
+        expectedFileSizeBytes: Long = 0L,
+        operationControlId: Long = 0L
+    ) {
+        if (modelPaths.isEmpty()) throw IllegalArgumentException("No model paths provided for GGUF initialization")
+
+        if (modelPaths.size == 1 && expectedFileSizeBytes > 0L) {
+            val singleFile = File(modelPaths[0])
+            if (singleFile.exists()) {
+                val sizeWarning = validateGgufArtifactSize(modelPaths[0], expectedFileSizeBytes)
+                if (sizeWarning != null) {
+                    safeLogE("[ARTIFACT_VALIDATION] $sizeWarning")
+                } else {
+                    safeLogI("[ARTIFACT_VALIDATION] File size OK: ${singleFile.length()} bytes (expected $expectedFileSizeBytes ±5%)")
+                }
+            }
+        }
+
+        synchronized(lifecycleLock) {
+            if (engineState == EngineState.CLOSE_FAILED) {
+                throw IllegalStateException("Engine is in unrecoverable CLOSE_FAILED state (handle: $failedHandle); restart required.", closeFailure)
+            }
         }
 
         // Step 1: Ensure any active or closing model is completely closed
@@ -734,6 +1037,9 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
 
         val myEpoch: Long
         synchronized(lifecycleLock) {
+            if (engineState == EngineState.CLOSE_FAILED) {
+                throw IllegalStateException("Engine transitioned to CLOSE_FAILED state during shutdown; restart required.", closeFailure)
+            }
             while (engineState == EngineState.CLOSING || engineState == EngineState.INITIALIZING) {
                 try {
                     lifecycleLock.jvmWait(50)
@@ -741,6 +1047,9 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                     Thread.currentThread().interrupt()
                     throw IllegalStateException("Initialization interrupted while waiting for previous state to resolve", e)
                 }
+            }
+            if (engineState == EngineState.CLOSE_FAILED) {
+                throw IllegalStateException("Engine transitioned to CLOSE_FAILED state; restart required.", closeFailure)
             }
             engineState = EngineState.INITIALIZING
             myEpoch = initEpoch.incrementAndGet()
@@ -755,8 +1064,9 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                 throw IllegalStateException("Native library libsolus_llama.so is not available on this device/ABI")
             }
             handle = AppTrace.section("cpu_gpu_loading") {
-                nativeBridge.initModel(
-                    modelPath = file.absolutePath,
+                nativeBridge.initModelBundle(
+                    modelPaths = modelPaths.toTypedArray(),
+                    projectorPath = projectorPath,
                     nThreads = threads,
                     nThreadsBatch = prefillThreads,
                     nCtx = contextWindow,
@@ -768,83 +1078,125 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                 )
             }
             if (handle == 0L) {
+                val cat = nativeBridge.getLastFailureCategory()
+                val code = nativeBridge.getLastFailureCode()
                 val nativeErr = nativeBridge.getLastError()?.takeIf { it.isNotBlank() } ?: "unknown native loader failure"
-                throw IllegalStateException("GGUF initialization failed: $nativeErr (path: $modelPath)")
+                if (cat == "UserStopped" || nativeErr.contains("cancelled", ignoreCase = true) || nativeErr.contains("user", ignoreCase = true)) {
+                    throw CancellationException("Model loading cancelled: $nativeErr")
+                }
+                val suffix = if (!cat.isNullOrBlank()) " [$cat:$code]" else ""
+                throw IllegalStateException("GGUF initialization failed$suffix: $nativeErr")
             }
         } catch (t: Throwable) {
             initError = t
         }
 
-        // Step 3: Publish handle ONLY if this initialization epoch was NOT cancelled/superseded
-        var handleToFree = 0L
-        var shouldTransitionToClosed = false
-
-        synchronized(lifecycleLock) {
-            if (engineState == EngineState.INITIALIZING && myEpoch == initEpoch.get() && initError == null && handle != 0L) {
-                // Success: publish handle and mark OPEN
-                nativeHandle = handle
-                val backendStr = nativeBridge.getActiveBackend(handle)
-                _activeBackend = LlamaBackend.fromName(backendStr)
-                _actualConfiguration = ModelActualConfiguration(
+        // Step 3: Read metadata and construct configuration before publishing
+        var metadataError: Throwable? = null
+        var loadedBackend = backend
+        var loadedConfig: ModelActualConfiguration? = null
+        if (handle != 0L && initError == null) {
+            try {
+                val metaJson = nativeBridge.getMetadata(handle)
+                val metadata = if (!metaJson.isNullOrBlank()) parseMetadataJson(metaJson) else null
+                val backendStr = metadata?.backend ?: nativeBridge.getActiveBackend(handle)
+                loadedBackend = LlamaBackend.fromName(backendStr)
+                loadedConfig = ModelActualConfiguration(
                     runtimeKind = "Gguf",
-                    backend = _activeBackend.displayName,
+                    backend = loadedBackend.displayName,
                     threads = threads,
                     prefillThreads = prefillThreads,
-                    contextWindow = contextWindow,
-                    batchSize = nBatch,
-                    ubatchSize = nUbatch,
-                    gpuLayers = if (_activeBackend == LlamaBackend.VULKAN) nGpuLayers else 0
+                    contextWindow = metadata?.contextSize?.takeIf { it > 0 } ?: contextWindow,
+                    batchSize = metadata?.batchSize?.takeIf { it > 0 } ?: nBatch,
+                    ubatchSize = metadata?.microBatchSize?.takeIf { it > 0 } ?: nUbatch,
+                    gpuLayers = if (loadedBackend == LlamaBackend.VULKAN) (metadata?.nGpuLayers ?: nGpuLayers) else 0,
+                    contextLength = metadata?.contextSize?.takeIf { it > 0 } ?: contextWindow,
+                    actualComputeBackends = metadata?.actualComputeBackends ?: emptyList(),
+                    effectiveOffloadKqv = metadata?.effectiveOffloadKqv ?: false,
+                    isCpuIsolated = metadata?.isCpuIsolated ?: false,
+                    gpuComputeBufferBytes = metadata?.gpuComputeBufferBytes ?: 0L,
+                    backendPolicyVersion = metadata?.backendPolicyVersion ?: 1
                 )
+            } catch (t: Throwable) {
+                metadataError = t
+            }
+        }
+
+        // Step 4: Publish handle ONLY if this initialization epoch was NOT cancelled/superseded and no error occurred
+        val hasFailed = initError != null || metadataError != null
+        synchronized(lifecycleLock) {
+            if (!hasFailed && engineState == EngineState.INITIALIZING && myEpoch == initEpoch.get() && handle != 0L) {
+                nativeHandle = handle
+                activeBundleLease = lease
+                _activeBackend = loadedBackend
+                _actualConfiguration = loadedConfig
                 engineState = EngineState.OPEN
                 lifecycleLock.jvmNotifyAll()
-                safeLogI("LlamaCppEngine initialized: ${file.name} on ${_activeBackend.displayName} (ctx=$contextWindow, threads=$threads, prefillThreads=$prefillThreads, batch=$nBatch/$nUbatch, gpu_layers=$nGpuLayers)")
+                safeLogI("LlamaCppEngine initialized: ${modelPaths.size} part(s) on ${_activeBackend.displayName} (ctx=${_actualConfiguration?.contextWindow}, threads=$threads, prefillThreads=$prefillThreads, batch=${_actualConfiguration?.batchSize}/${_actualConfiguration?.ubatchSize}, gpu_layers=${_actualConfiguration?.gpuLayers}, projector=${projectorPath != null})")
                 return
             }
-
-            // Initialization was cancelled/superseded, close() intervened, or init failed.
-            // Discard the handle so it is never published as OPEN.
-            if (handle != 0L) {
-                handleToFree = handle
-            }
-            if (engineState == EngineState.INITIALIZING || engineState == EngineState.CLOSING) {
-                shouldTransitionToClosed = true
-            }
         }
 
-        // Free the obsolete native handle FIRST, before publishing CLOSED!
-        if (handleToFree != 0L) {
+        // Step 5: Unified cleanup path for all post-load failure / cancellation / superseded outcomes
+        val effectiveFailure = initError ?: metadataError ?: IllegalStateException("Initialization cancelled or superseded")
+        if (handle != 0L) {
+            var freeOk = true
+            var freeThrowable: Throwable? = null
             try {
-                nativeBridge.free(handleToFree)
+                nativeBridge.free(handle)
             } catch (t: Throwable) {
-                safeLogW("Error freeing discarded model handle: ${t.message}")
+                freeOk = false
+                freeThrowable = t
+                safeLogW("Error freeing discarded model handle $handle: ${t.message}")
             }
-        }
 
-        // ONLY AFTER native resources are completely freed, transition to CLOSED and notify all waiters
-        if (shouldTransitionToClosed) {
+            if (freeOk) {
+                runCatching { lease?.close() }
+                synchronized(lifecycleLock) {
+                    if (engineState == EngineState.INITIALIZING || engineState == EngineState.CLOSING) {
+                        engineState = EngineState.CLOSED
+                    }
+                    lifecycleLock.jvmNotifyAll()
+                }
+            } else {
+                safeLogE("Retaining lease and handle $handle because native free failed for discarded model; transitioning to CLOSE_FAILED", freeThrowable)
+                synchronized(lifecycleLock) {
+                    failedHandle = handle
+                    failedBundleLease = lease
+                    closeFailure = freeThrowable ?: IllegalStateException("Free discarded model handle failed")
+                    engineState = EngineState.CLOSE_FAILED
+                    lifecycleLock.jvmNotifyAll()
+                }
+                throw IllegalStateException("Failed to free discarded native model handle ($handle). Engine in CLOSE_FAILED state; restart required.", freeThrowable)
+            }
+        } else {
+            runCatching { lease?.close() }
             synchronized(lifecycleLock) {
                 if (engineState == EngineState.INITIALIZING || engineState == EngineState.CLOSING) {
                     engineState = EngineState.CLOSED
-                    lifecycleLock.jvmNotifyAll()
                 }
+                lifecycleLock.jvmNotifyAll()
             }
         }
 
-        initError?.let { throw it }
+        throw effectiveFailure
     }
 
     /**
-     * Streams token generation from the GGUF model.
+     * Streams token generation from the GGUF model with optional multimodal media inputs (images/audio).
      *
      * Acquires an operation lease before calling JNI. The lease prevents
      * nativeFree from executing until this function completes.
      */
-    suspend fun generateStream(
+    suspend fun generateMultimodalStream(
         prompt: String,
         messages: List<Pair<String, String>>? = null,
+        mediaInputs: List<MultimodalMediaInput>? = null,
         samplingParams: LlamaSamplingParams = LlamaSamplingParams(),
+        enableThinking: Boolean = true,
         onMetrics: ((LlamaGenerationMetrics) -> Unit)? = null,
         onFirstToken: (() -> Unit)? = null,
+        onStructuredToken: ((answer: String, reasoning: String, isThinkingActive: Boolean) -> Unit)? = null,
         onToken: (String) -> Unit
     ): LlamaGenerationResult = withContext(Dispatchers.IO) {
         val genId = generationIdCounter.incrementAndGet()
@@ -868,6 +1220,13 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         val rolesArray = messages?.map { it.first }?.toTypedArray()
         val contentsArray = messages?.map { it.second }?.toTypedArray()
 
+        val mediaTypes = mediaInputs?.map { if (it is MultimodalMediaInput.Image) 0 else 1 }?.toIntArray()
+        val mediaMessageIndices = mediaInputs?.map { it.messageIndex }?.toIntArray()
+        val imageWidths = mediaInputs?.map { if (it is MultimodalMediaInput.Image) it.width else 0 }?.toIntArray()
+        val imageHeights = mediaInputs?.map { if (it is MultimodalMediaInput.Image) it.height else 0 }?.toIntArray()
+        val imageBytes = mediaInputs?.map { if (it is MultimodalMediaInput.Image) it.rgbBytes else ByteArray(0) }?.toTypedArray()
+        val audioFloats = mediaInputs?.map { if (it is MultimodalMediaInput.Audio) it.samples else FloatArray(0) }?.toTypedArray()
+
         var generationError: String? = null
         var wasStopped = false
 
@@ -877,6 +1236,11 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
             }
             override fun onToken(token: String) {
                 if (token.isNotEmpty() && !wasStopped && activeGenerationId == genId) onToken(token)
+            }
+            override fun onStructuredToken(answer: String, reasoning: String, isThinkingActive: Boolean) {
+                if (!wasStopped && activeGenerationId == genId) {
+                    onStructuredToken?.invoke(answer, reasoning, isThinkingActive)
+                }
             }
             override fun onComplete() {
                 safeLogI("GGUF generation completed (genId=$genId)")
@@ -921,12 +1285,18 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         try {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             synchronized(lifecycleLock) { activeGenerationId = genId }
-            val res = nativeBridge.generateStream(
+            val res = nativeBridge.generateMultimodalStream(
                 handle = leaseHandle,
                 generationId = genId,
                 prompt = prompt,
                 roles = rolesArray,
                 contents = contentsArray,
+                mediaTypes = mediaTypes,
+                mediaMessageIndices = mediaMessageIndices,
+                imageWidths = imageWidths,
+                imageHeights = imageHeights,
+                imageBytes = imageBytes,
+                audioFloats = audioFloats,
                 temperature = samplingParams.temperature,
                 topP = samplingParams.topP,
                 topK = samplingParams.topK,
@@ -934,6 +1304,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                 repeatPenalty = samplingParams.repeatPenalty,
                 maxTokens = samplingParams.maxTokens,
                 seed = samplingParams.seed,
+                enableThinking = enableThinking,
                 callback = callback
             )
             if (res < 0 || generationError != null) {
@@ -954,6 +1325,30 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
             }
         }
     }
+
+    /**
+     * Streams text token generation from the GGUF model.
+     */
+    suspend fun generateStream(
+        prompt: String,
+        messages: List<Pair<String, String>>? = null,
+        samplingParams: LlamaSamplingParams = LlamaSamplingParams(),
+        enableThinking: Boolean = true,
+        onMetrics: ((LlamaGenerationMetrics) -> Unit)? = null,
+        onFirstToken: (() -> Unit)? = null,
+        onStructuredToken: ((answer: String, reasoning: String, isThinkingActive: Boolean) -> Unit)? = null,
+        onToken: (String) -> Unit
+    ): LlamaGenerationResult = generateMultimodalStream(
+        prompt = prompt,
+        messages = messages,
+        mediaInputs = null,
+        samplingParams = samplingParams,
+        enableThinking = enableThinking,
+        onMetrics = onMetrics,
+        onFirstToken = onFirstToken,
+        onStructuredToken = onStructuredToken,
+        onToken = onToken
+    )
 
     /**
      * Runs reference probe on current model context to record token probabilities.
@@ -1099,7 +1494,12 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                 effectiveOffloadKqv = json.optBoolean("effective_offload_kqv", false),
                 isCpuIsolated = json.optBoolean("is_cpu_isolated", false),
                 gpuComputeBufferBytes = json.optLong("gpu_compute_buffer_bytes", 0L),
-                backendPolicyVersion = json.optInt("backend_policy_version", 1)
+                backendPolicyVersion = json.optInt("backend_policy_version", 1),
+                supportsVision = json.optBoolean("supports_vision", false),
+                supportsAudio = json.optBoolean("supports_audio", false),
+                audioSampleRate = json.optInt("audio_sample_rate", -1),
+                hasDecoder = json.optBoolean("has_decoder", true),
+                upstreamRevision = json.optString("upstream_revision", "8bb3cf0d216a5ae48360179f2931daf284be4d01")
             )
         }.getOrElse {
             fun extractString(key: String): String =
@@ -1126,7 +1526,12 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                 effectiveOffloadKqv = extractBoolean("effective_offload_kqv"),
                 isCpuIsolated = extractBoolean("is_cpu_isolated"),
                 gpuComputeBufferBytes = extractLong("gpu_compute_buffer_bytes"),
-                backendPolicyVersion = extractInt("backend_policy_version").let { if (it == 0) 1 else it }
+                backendPolicyVersion = extractInt("backend_policy_version").let { if (it == 0) 1 else it },
+                supportsVision = extractBoolean("supports_vision"),
+                supportsAudio = extractBoolean("supports_audio"),
+                audioSampleRate = extractInt("audio_sample_rate").let { if (it == 0) -1 else it },
+                hasDecoder = if (jsonStr.contains("has_decoder")) extractBoolean("has_decoder") else true,
+                upstreamRevision = extractString("upstream_revision").ifBlank { "8bb3cf0d216a5ae48360179f2931daf284be4d01" }
             )
         }
     }
@@ -1169,13 +1574,21 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         var interruptedInWait = false
 
         synchronized(lifecycleLock) {
-            // 1. If another thread is actively closing, wait until it completes to CLOSED
+            if (engineState == EngineState.CLOSE_FAILED) {
+                throw IllegalStateException("Engine is in unrecoverable CLOSE_FAILED state (handle: $failedHandle); restart required.", closeFailure)
+            }
+
+            // 1. If another thread is actively closing, wait until it completes to CLOSED or CLOSE_FAILED
             while (engineState == EngineState.CLOSING) {
                 try {
                     lifecycleLock.jvmWait(50)
                 } catch (_: InterruptedException) {
                     interruptedInWait = true
                 }
+            }
+
+            if (engineState == EngineState.CLOSE_FAILED) {
+                throw IllegalStateException("Engine transitioned to CLOSE_FAILED state; restart required.", closeFailure)
             }
 
             // 2. If an initialization is in progress, cancel it by advancing initEpoch, mark CLOSING, and wait
@@ -1192,6 +1605,9 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                     }
                 }
                 if (interruptedInWait) Thread.currentThread().interrupt()
+                if (engineState == EngineState.CLOSE_FAILED) {
+                    throw IllegalStateException("Engine transitioned to CLOSE_FAILED state during initialization shutdown; restart required.", closeFailure)
+                }
                 return
             }
 
@@ -1233,16 +1649,36 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         }
 
         // 3. Guaranteed activeLeaseCount == 0: free native resources
+        var freeSucceeded = false
+        var freeThrowable: Throwable? = null
         try {
             if (nativeBridge.isAvailable() && handleToFree != 0L) {
                 nativeBridge.free(handleToFree)
             }
+            freeSucceeded = true
         } catch (t: Throwable) {
+            freeThrowable = t
             safeLogW("nativeFree error: ${t.message}")
         } finally {
-            synchronized(lifecycleLock) {
-                engineState = EngineState.CLOSED
-                lifecycleLock.jvmNotifyAll()
+            if (freeSucceeded) {
+                val leaseToClose = activeBundleLease
+                activeBundleLease = null
+                runCatching { leaseToClose?.close() }
+                synchronized(lifecycleLock) {
+                    engineState = EngineState.CLOSED
+                    lifecycleLock.jvmNotifyAll()
+                }
+            } else {
+                safeLogE("Retaining unresolved native handle $handleToFree and active bundle lease; transitioning to CLOSE_FAILED", freeThrowable)
+                synchronized(lifecycleLock) {
+                    failedHandle = handleToFree
+                    failedBundleLease = activeBundleLease
+                    activeBundleLease = null
+                    closeFailure = freeThrowable ?: IllegalStateException("nativeFree failed for handle $handleToFree")
+                    engineState = EngineState.CLOSE_FAILED
+                    lifecycleLock.jvmNotifyAll()
+                }
+                throw IllegalStateException("Failed to free native resources for handle $handleToFree. Engine in CLOSE_FAILED state; app restart required.", freeThrowable)
             }
         }
     }

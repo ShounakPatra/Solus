@@ -170,4 +170,44 @@ class InferenceResponseControllerTest {
         assertTrue(finalized is FinalizedResponse.Failed)
         assertEquals("", finalized.answerText)
     }
+
+    @Test
+    fun testAppendStructuredSeparatesReasoningAndAnswerCleanly() {
+        val controller = InferenceResponseController(
+            thinkingMode = true,
+            requestId = "req-struct",
+            initialAttemptId = 1
+        )
+        controller.appendStructured(
+            answer = "",
+            reasoning = "Analyzing step by step...",
+            isThinkingActive = true,
+            reqId = "req-struct",
+            attemptId = 1
+        )
+
+        val snap1 = controller.snapshot(revision = 1)
+        assertEquals("Analyzing step by step...", snap1.reasoningText)
+        assertEquals("", snap1.answerText)
+        assertTrue(snap1.isThinkingActive)
+
+        controller.appendStructured(
+            answer = "The result is 42.",
+            reasoning = "Analyzing step by step...",
+            isThinkingActive = false,
+            reqId = "req-struct",
+            attemptId = 1
+        )
+
+        val snap2 = controller.snapshot(revision = 2)
+        assertEquals("Analyzing step by step...", snap2.reasoningText)
+        assertEquals("The result is 42.", snap2.answerText)
+        assertFalse(snap2.isThinkingActive)
+
+        controller.finish()
+        val finalized = controller.finalizeResponse(requestId = "req-struct")
+        assertTrue(finalized is FinalizedResponse.Completed)
+        assertEquals("The result is 42.", finalized.answerText)
+        assertEquals("Analyzing step by step...", finalized.reasoningText)
+    }
 }

@@ -15,7 +15,9 @@ data class DownloadResumeMetadata(
     val validator: String? = null, // Strong ETag or Last-Modified
     val expectedTotalBytes: Long = -1L,
     val lastDownloadedBytes: Long = 0L,
-    val updatedAt: Long = System.currentTimeMillis()
+    val isCompleted: Boolean = false,
+    val updatedAt: Long = System.currentTimeMillis(),
+    val sourceIdentity: String? = null
 ) {
     fun toJson(): String = JSONObject().apply {
         put("normalizedUrl", normalizedUrl)
@@ -24,7 +26,9 @@ data class DownloadResumeMetadata(
         put("validator", validator ?: JSONObject.NULL)
         put("expectedTotalBytes", expectedTotalBytes)
         put("lastDownloadedBytes", lastDownloadedBytes)
+        put("isCompleted", isCompleted)
         put("updatedAt", updatedAt)
+        put("sourceIdentity", sourceIdentity ?: JSONObject.NULL)
     }.toString(2)
 
     companion object {
@@ -39,7 +43,9 @@ data class DownloadResumeMetadata(
                 validator = if (json.isNull("validator") || !json.has("validator")) null else json.getString("validator"),
                 expectedTotalBytes = json.optLong("expectedTotalBytes", -1L),
                 lastDownloadedBytes = json.optLong("lastDownloadedBytes", 0L),
-                updatedAt = json.optLong("updatedAt", System.currentTimeMillis())
+                isCompleted = json.optBoolean("isCompleted", false),
+                updatedAt = json.optLong("updatedAt", System.currentTimeMillis()),
+                sourceIdentity = if (json.isNull("sourceIdentity") || !json.has("sourceIdentity")) null else json.getString("sourceIdentity")
             )
         }
 

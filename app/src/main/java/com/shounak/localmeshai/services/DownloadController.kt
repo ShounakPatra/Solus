@@ -33,7 +33,9 @@ data class DownloadRequest(
     val fileName: String,
     val packageType: ModelPackage,
     val bearerToken: String? = null,
-    val sha256: String? = null
+    val sha256: String? = null,
+    val downloadSpec: com.shounak.localmeshai.models.ModelDownloadSpec? = null,
+    val retainStagingOnCancel: Boolean = false
 )
 
 interface DownloadEventListener {
@@ -96,6 +98,11 @@ class DownloadController(
 
                 val canProceed = getMutex(request.modelId).withLock {
                     if (activeAttempts[request.modelId] != attemptId) return@withLock false
+                    if (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(request.modelId) ||
+                        com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(request.modelId)) {
+                        activeAttempts.remove(request.modelId, attemptId)
+                        return@withLock false
+                    }
 
                     val previousSnapshot = DownloadStateStore.get(request.modelId)
                     val partialBytes = maxOf(
@@ -140,29 +147,53 @@ class DownloadController(
                 if (!canProceed) return@launch
 
                 try {
-                    val result = downloader.downloadModel(
-                        url = request.url,
-                        modelId = request.modelId,
-                        fileName = request.fileName,
-                        packageType = request.packageType,
-                        bearerToken = request.bearerToken,
-                        expectedSha256 = request.sha256
-                    ) { progress ->
-                        if (activeAttempts[request.modelId] != attemptId) return@downloadModel
-                        val snapshot = DownloadSnapshot(
+                    val result = if (request.downloadSpec != null) {
+                        downloader.downloadArtifactBundle(
+                            spec = request.downloadSpec,
+                            bearerToken = request.bearerToken
+                        ) { progress ->
+                            if (activeAttempts[request.modelId] != attemptId) return@downloadArtifactBundle
+                            val snapshot = DownloadSnapshot(
+                                modelId = request.modelId,
+                                status = ModelStatus.Downloading,
+                                progress = progress.progress,
+                                downloadedBytes = progress.downloadedBytes,
+                                totalBytes = progress.totalBytes,
+                                bytesPerSecond = progress.bytesPerSecond
+                            )
+                            DownloadStateStore.update(snapshot)
+                            eventListener?.onDownloadProgress(request, progress, snapshot)
+                        }
+                    } else {
+                        downloader.downloadModel(
+                            url = request.url,
                             modelId = request.modelId,
-                            status = ModelStatus.Downloading,
-                            progress = progress.progress,
-                            downloadedBytes = progress.downloadedBytes,
-                            totalBytes = progress.totalBytes,
-                            bytesPerSecond = progress.bytesPerSecond
-                        )
-                        DownloadStateStore.update(snapshot)
-                        eventListener?.onDownloadProgress(request, progress, snapshot)
+                            fileName = request.fileName,
+                            packageType = request.packageType,
+                            bearerToken = request.bearerToken,
+                            expectedSha256 = request.sha256
+                        ) { progress ->
+                            if (activeAttempts[request.modelId] != attemptId) return@downloadModel
+                            val snapshot = DownloadSnapshot(
+                                modelId = request.modelId,
+                                status = ModelStatus.Downloading,
+                                progress = progress.progress,
+                                downloadedBytes = progress.downloadedBytes,
+                                totalBytes = progress.totalBytes,
+                                bytesPerSecond = progress.bytesPerSecond
+                            )
+                            DownloadStateStore.update(snapshot)
+                            eventListener?.onDownloadProgress(request, progress, snapshot)
+                        }
                     }
 
                     getMutex(request.modelId).withLock {
                         if (activeAttempts[request.modelId] == attemptId) {
+                            if (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(request.modelId) ||
+                                com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(request.modelId)) {
+                                activeAttempts.remove(request.modelId, attemptId)
+                                return@withLock
+                            }
                             val completeSnapshot = DownloadSnapshot(
                                 modelId = request.modelId,
                                 status = ModelStatus.Available,
@@ -179,6 +210,11 @@ class DownloadController(
                     getMutex(request.modelId).withLock {
                         if (activeAttempts[request.modelId] == attemptId) {
                             val snapshot = DownloadStateStore.get(request.modelId)
+                            val publishedFile = downloader.artifactStorage.getPublishedArtifact(request.modelId)
+                            val isAvailable = snapshot?.status == ModelStatus.Available || publishedFile != null
+                            if (isAvailable) {
+                                return@withLock
+                            }
                             val pausedSnapshot = DownloadSnapshot(
                                 modelId = request.modelId,
                                 status = ModelStatus.Paused,
@@ -234,6 +270,7 @@ class DownloadController(
             previousJob = prev
             if (prev != null && !prev.isCompleted) {
                 cancellingJobs.add(prev)
+                downloader.cancelTransport(request.modelId)
                 prev.cancel()
             }
             activeJobs[request.modelId] = lazyJob
@@ -247,6 +284,7 @@ class DownloadController(
     suspend fun pause(modelId: String) {
         pendingOperationsCount.incrementAndGet()
         try {
+            downloader.cancelTransport(modelId)
             val job = activeJobs.remove(modelId)
             activeAttempts.remove(modelId)
             if (job != null && !job.isCompleted) {
@@ -264,7 +302,8 @@ class DownloadController(
                     status = ModelStatus.Paused,
                     progress = snapshot?.progress ?: 0f,
                     downloadedBytes = partialBytes,
-                    totalBytes = snapshot?.totalBytes ?: -1L
+                    totalBytes = snapshot?.totalBytes ?: -1L,
+                    errorMessage = "Paused — download kept"
                 )
                 DownloadStateStore.update(pausedSnapshot)
                 if (request != null) {
@@ -279,9 +318,10 @@ class DownloadController(
 
     fun resume(request: DownloadRequest): Job = start(request)
 
-    suspend fun cancelDownload(modelId: String) {
+    suspend fun cancelDownload(modelId: String, retainStaging: Boolean = false) {
         pendingOperationsCount.incrementAndGet()
         try {
+            downloader.cancelTransport(modelId)
             val request = requests.remove(modelId)
             activeAttempts.remove(modelId)
             val job = activeJobs.remove(modelId)
@@ -292,22 +332,75 @@ class DownloadController(
                 cancellingJobs.remove(job)
             }
             getMutex(modelId).withLock {
-                // Cancellation deletes staging files ONLY — never deletes published models.
-                if (request != null) {
-                    downloader.deleteStagingDownload(request.modelId, request.fileName)
-                } else {
-                    downloader.deleteStagingDownload(modelId)
+                val latestSnapshot = DownloadStateStore.get(modelId)
+                val publishedFile = downloader.artifactStorage.getPublishedArtifact(modelId)
+                val isAvailable = latestSnapshot?.status == ModelStatus.Available || publishedFile != null
+
+                if (isAvailable) {
+                    if (!retainStaging) {
+                        if (request != null) {
+                            downloader.deleteStagingDownload(request.modelId, request.fileName)
+                        } else {
+                            downloader.deleteStagingDownload(modelId)
+                        }
+                    }
+                    val localPath = latestSnapshot?.localPath ?: publishedFile?.absolutePath
+                    val resolvedBytes = when {
+                        (latestSnapshot?.downloadedBytes ?: 0L) > 0L -> latestSnapshot?.downloadedBytes ?: 0L
+                        (latestSnapshot?.totalBytes ?: 0L) > 0L -> latestSnapshot?.totalBytes ?: 0L
+                        publishedFile != null && publishedFile.length() > 0L -> publishedFile.length()
+                        else -> 0L
+                    }
+                    val completeSnapshot = DownloadSnapshot(
+                        modelId = modelId,
+                        status = ModelStatus.Available,
+                        progress = 1f,
+                        downloadedBytes = resolvedBytes,
+                        totalBytes = latestSnapshot?.totalBytes ?: -1L,
+                        localPath = localPath,
+                        downloadedAt = latestSnapshot?.downloadedAt?.takeIf { it > 0 } ?: System.currentTimeMillis()
+                    )
+                    DownloadStateStore.update(completeSnapshot)
+                    return@withLock
                 }
-                val resetSnapshot = DownloadSnapshot(
-                    modelId = modelId,
-                    status = ModelStatus.NotDownloaded,
-                    progress = 0f,
-                    downloadedBytes = 0L,
-                    totalBytes = -1L
-                )
-                DownloadStateStore.update(resetSnapshot)
-                if (request != null) {
-                    eventListener?.onDownloadCancelled(request)
+
+                if (retainStaging) {
+                    val partialBytes = maxOf(
+                        latestSnapshot?.downloadedBytes ?: 0L,
+                        downloader.getPartialDownloadBytes(modelId)
+                    )
+                    val totalBytes = latestSnapshot?.totalBytes ?: -1L
+                    val progress = if (totalBytes > 0L) (partialBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else (latestSnapshot?.progress ?: 0f)
+                    val pausedSnapshot = DownloadSnapshot(
+                        modelId = modelId,
+                        status = ModelStatus.Paused,
+                        progress = progress,
+                        downloadedBytes = partialBytes,
+                        totalBytes = totalBytes,
+                        errorMessage = "Paused — download kept"
+                    )
+                    DownloadStateStore.update(pausedSnapshot)
+                    if (request != null) {
+                        eventListener?.onDownloadPaused(request, pausedSnapshot)
+                    }
+                } else {
+                    // Cancellation deletes staging files ONLY — never deletes published models.
+                    if (request != null) {
+                        downloader.deleteStagingDownload(request.modelId, request.fileName)
+                    } else {
+                        downloader.deleteStagingDownload(modelId)
+                    }
+                    val resetSnapshot = DownloadSnapshot(
+                        modelId = modelId,
+                        status = ModelStatus.NotDownloaded,
+                        progress = 0f,
+                        downloadedBytes = 0L,
+                        totalBytes = -1L
+                    )
+                    DownloadStateStore.update(resetSnapshot)
+                    if (request != null) {
+                        eventListener?.onDownloadCancelled(request)
+                    }
                 }
             }
         } finally {
@@ -316,7 +409,7 @@ class DownloadController(
         }
     }
 
-    suspend fun cancel(modelId: String) = cancelDownload(modelId)
+    suspend fun cancel(modelId: String, retainStaging: Boolean = false) = cancelDownload(modelId, retainStaging)
 
     suspend fun removeModel(modelId: String) {
         pendingOperationsCount.incrementAndGet()
@@ -352,7 +445,10 @@ class DownloadController(
                 }
 
                 // Delete published model
-                downloader.artifactStorage.deleteModel(modelId)
+                val deleted = downloader.artifactStorage.deleteModel(modelId)
+                if (!deleted) {
+                    throw IllegalStateException("Cannot remove model $modelId: deletion refused because files remain leased")
+                }
 
                 val resetSnapshot = DownloadSnapshot(
                     modelId = modelId,

@@ -177,4 +177,20 @@ class ResponseFinalizerTest {
         assertEquals("Finished thoughts", result.reasoningText)
         assertEquals(RequestTerminalStatus.Completed, result.status)
     }
+
+    @Test
+    fun testValidReasoningFollowedByBlankCompletionPreservesAcceptedReasoning() {
+        val result = ResponseFinalizer.finalize(
+            requestId = "req-accepted-reasoning-fallback",
+            attemptId = 1,
+            rawAnswer = "Final answer here.",
+            rawReasoning = "",
+            acceptedReasoningFallback = "Preserved reasoning from previous tokens."
+        )
+
+        assertTrue(result is FinalizedResponse.Completed)
+        assertEquals("Final answer here.", result.answerText)
+        assertEquals("Preserved reasoning from previous tokens.", result.reasoningText)
+        assertEquals(RequestTerminalStatus.Completed, result.status)
+    }
 }

@@ -33,10 +33,37 @@ object ModelDownloadUrlPolicy {
     }
 
     /**
-     * Derives whether the given model URL requires or accepts a Hugging Face token.
+     * Checks whether a supplied Hugging Face token is eligible to be attached to requests for this URL.
+     * Uses origin checks exclusively to determine token attachment eligibility.
+     */
+    fun isTokenEligible(httpUrl: HttpUrl): Boolean = isExactHuggingFace(httpUrl)
+
+    /**
+     * Checks whether a supplied Hugging Face token is eligible to be attached to requests for this URL.
+     * Uses origin checks exclusively to determine token attachment eligibility.
+     */
+    fun isTokenEligible(url: String): Boolean = isExactHuggingFace(url)
+
+    /**
+     * Known gated catalog repository identifiers that explicitly require Hugging Face authentication.
+     */
+    val knownGatedCatalogRepos = setOf(
+        "google/gemma-3n-E2B-it-litert-preview",
+        "google/gemma-3n-E4B-it-litert-preview",
+        "litert-community/Gemma3-1B-IT",
+        "litert-community/gemma-3-270m-it",
+        "litert-community/Gemma3-4B-IT"
+    )
+
+    /**
+     * Derives whether the given model URL requires a Hugging Face token.
+     * Origin alone does not mandate authentication. Unknown access requirements permit an anonymous attempt.
+     * Preserves explicit requirements for known gated catalog models.
      */
     fun requiresHuggingFaceToken(url: String): Boolean {
-        return isExactHuggingFace(url)
+        if (!isExactHuggingFace(url)) return false
+        val clean = normalizeUrl(url)
+        return knownGatedCatalogRepos.any { repo -> clean.contains(repo, ignoreCase = true) }
     }
 
     /**
@@ -74,19 +101,12 @@ object ModelDownloadUrlPolicy {
         // Rewriting /blob/ and appending download=true only applies to exact huggingface.co
         if (isExactHuggingFace(sanitized)) {
             val builder = sanitized.newBuilder()
-            var pathChanged = false
-            val newSegments = sanitized.pathSegments.toMutableList()
-            for (i in newSegments.indices) {
-                if (newSegments[i].equals("blob", ignoreCase = true)) {
-                    newSegments[i] = "resolve"
-                    pathChanged = true
-                }
-            }
-            if (pathChanged) {
-                builder.encodedPath("/")
-                for (seg in newSegments) {
-                    builder.addPathSegment(seg)
-                }
+            val encSegments = sanitized.encodedPathSegments
+            if (encSegments.size >= 4 && encSegments[2].equals("blob", ignoreCase = true)) {
+                val newEncodedPath = "/" + encSegments.mapIndexed { idx, seg ->
+                    if (idx == 2) "resolve" else seg
+                }.joinToString("/")
+                builder.encodedPath(newEncodedPath)
             }
             if (sanitized.queryParameter("download") == null) {
                 builder.addQueryParameter("download", "true")

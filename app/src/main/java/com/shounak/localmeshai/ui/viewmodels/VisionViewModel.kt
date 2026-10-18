@@ -12,10 +12,15 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.shounak.localmeshai.ai.VisionInferenceManager
+import com.shounak.localmeshai.models.ModelBundle
 import com.shounak.localmeshai.ai.VisionRequestContextResolver
 import com.shounak.localmeshai.ai.ResolvedVisionMedia
 import com.shounak.localmeshai.ai.ResponseFinalizer
 import com.shounak.localmeshai.utils.CrashReportManager
+import com.shounak.localmeshai.ai.ModelLoadIdentity
+import com.shounak.localmeshai.ai.GgufExecutionProfile
+import com.shounak.localmeshai.utils.DeviceUtils
+import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.utils.DocumentTextExtractor
 import com.shounak.localmeshai.utils.ModelOutputSanitizer
 import com.shounak.localmeshai.utils.ModelRuntimeCoordinator
@@ -23,6 +28,7 @@ import com.shounak.localmeshai.utils.RegistrationToken
 import com.shounak.localmeshai.utils.ModelRuntimeOwner
 import com.shounak.localmeshai.utils.AppCacheCleaner
 import com.shounak.localmeshai.utils.ThinkingTextUtils
+import com.shounak.localmeshai.utils.ThinkingModeConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -108,9 +114,11 @@ data class VisionChatMessage(
     val requestId: String? = null,
     val attemptId: Int = 1,
     val reasoningText: String? = null,
+    val isThinkingActive: Boolean = false,
     val userMessageId: String? = null,
     val emptyReason: EmptyResponseReason? = null,
-    val revision: Int = 0
+    val revision: Int = 0,
+    val responseFormatVersion: Int = 0
 )
 
 class VisionViewModel(application: Application) : AndroidViewModel(application) {
@@ -168,6 +176,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private val _isStopping = MutableStateFlow(false)
     val isStopping = _isStopping.asStateFlow()
 
+    private val _thinkingMode = MutableStateFlow(false)
+    val thinkingMode = _thinkingMode.asStateFlow()
+
+    fun setThinkingMode(enabled: Boolean) {
+        _thinkingMode.value = enabled
+    }
+
     private val _error = MutableStateFlow<String?>(null)
     val error = _error.asStateFlow()
 
@@ -184,6 +199,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     val tokensPerSecond = _tokensPerSecond.asStateFlow()
 
     private var currentModelPath: String? = null
+    private var currentBundle: ModelBundle? = null
     private var currentModelId: String = ""
     private var currentModelName: String = ""
     private var currentModelSize: String = ""
@@ -192,6 +208,10 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private var currentSupportsThinkingMode: Boolean = false
     private var currentAllowUnsafeOverride: Boolean = false
     private var lastLoadedBackendPreference: String? = null
+    private var currentRequestedIdentity: ModelLoadIdentity? = null
+    private var currentLoadedIdentity: ModelLoadIdentity? = null
+    @Volatile var currentResolvedThinkingCapability: ThinkingCapability = ThinkingCapability.Unknown
+        private set
     private var currentContextWindowTokens: Int = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
     @Volatile private var currentModelEpoch: Long = 0L
     private val _activeRequestIdState = MutableStateFlow<String?>(null)
@@ -204,6 +224,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             activeRequestIdInternal = value
             _activeRequestIdState.value = value
         }
+    @Volatile var activeLoadOperationId: String? = null
+        private set
     private var initGeneration: Int = 0
     private var initJob: Job? = null
     private var analysisGeneration: Int = 0
@@ -212,6 +234,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private var lastAttachedFileName: String? = null
     @Volatile private var resetRuntimeConversationBeforeNextAsk = false
     private var coordinatorToken: RegistrationToken? = null
+    private var lastShutdownResult: com.shounak.localmeshai.ai.ShutdownResult? = null
 
     fun retryMessage(sessionId: String, userMessageId: String) {
         if (_isAnalyzing.value || _isStopping.value || analysisJob?.isActive == true) return
@@ -340,6 +363,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             audioUri = retryAudUri,
             audioName = userMsg.audioName ?: session.audioName,
             audioBytes = null,
+            thinkingMode = _thinkingMode.value,
             jobSessionId = sessionId,
             existingUserMessageId = userMsg.id,
             existingAssistantIndex = actualAssistantIndex,
@@ -386,11 +410,18 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     init {
-        coordinatorToken = ModelRuntimeCoordinator.register(ModelRuntimeOwner.Vision, requestStop = {
-            initJob?.cancel()
-            analysisJob?.cancel()
-            inferenceManager.cancelGeneration()
-        }) {
+        coordinatorToken = ModelRuntimeCoordinator.register(
+            owner = ModelRuntimeOwner.Vision,
+            loadedModelIdentity = { currentLoadedIdentity?.modelPath ?: currentModelPath ?: currentModelId },
+            stableModelIdProvider = { currentModelId },
+            modelPathProvider = { currentModelPath ?: currentLoadedIdentity?.modelPath.orEmpty() },
+            loadOperationIdProvider = { activeLoadOperationId.orEmpty() },
+            requestStop = {
+                initJob?.cancel()
+                analysisJob?.cancel()
+                inferenceManager.cancelGeneration()
+            }
+        ) {
             releaseModel(clearCoordinator = false)
             val joinOk = withTimeoutOrNull(10_000L) {
                 releaseJob?.join()
@@ -399,7 +430,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             if (!joinOk) {
                 com.shounak.localmeshai.ai.ShutdownResult.TimedOut
             } else {
-                com.shounak.localmeshai.ai.ShutdownResult.Success
+                lastShutdownResult ?: if (inferenceManager.isReady) {
+                    com.shounak.localmeshai.ai.ShutdownResult.Failed(IllegalStateException("Vision inference manager still ready after release"))
+                } else {
+                    com.shounak.localmeshai.ai.ShutdownResult.Success
+                }
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -515,6 +550,14 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         resetRuntimeConversationBeforeNextAsk = true
     }
 
+    fun updateSupportsThinkingMode(supports: Boolean) {
+        currentSupportsThinkingMode = supports
+    }
+
+    fun updateSupportsAudioInput(supports: Boolean) {
+        currentSupportsAudioInput = supports
+    }
+
     fun initModel(
         path: String,
         modelId: String = "",
@@ -524,19 +567,62 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         supportsAudioInput: Boolean = false,
         supportsThinkingMode: Boolean = false,
         allowUnsafeOverride: Boolean = false,
-        forceReload: Boolean = false
+        forceReload: Boolean = false,
+        bundle: ModelBundle? = null
     ) {
         val resolvedContextWindowTokens = contextWindowTokens
             ?: inferContextWindowTokens(path)
             ?: DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
 
         val currentBackendPref = appSettings.settings.value.llamaBackendPreference
-        if (!forceReload && path == currentModelPath && _isModelReady.value && currentBackendPref == lastLoadedBackendPreference && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Vision)) {
-            currentContextWindowTokens = resolvedContextWindowTokens
-            return
+        val file = File(path)
+        val isGguf = path.endsWith(".gguf", ignoreCase = true)
+        val identity = if (bundle != null) {
+            ModelLoadIdentity.fromBundle(
+                bundle = bundle,
+                runtimeKind = if (isGguf) "LlamaCpp" else "MediaPipe/LiteRT",
+                backendPreference = currentBackendPref,
+                threads = DeviceUtils.recommendedThreadCount(getApplication()),
+                contextWindow = resolvedContextWindowTokens
+            )
+        } else if (isGguf) {
+            val profile = GgufExecutionProfile.resolve(
+                context = getApplication(),
+                modelNameOrId = modelName.ifBlank { modelId.ifBlank { file.nameWithoutExtension } },
+                modelSize = modelSize,
+                customContextTokens = resolvedContextWindowTokens,
+                backendPreference = currentBackendPref
+            )
+            profile.toIdentity(file, "LlamaCpp", currentBackendPref)
+        } else {
+            ModelLoadIdentity.fromFile(
+                file = file,
+                runtimeKind = "MediaPipe/LiteRT",
+                backendPreference = currentBackendPref,
+                threads = DeviceUtils.recommendedThreadCount(getApplication()),
+                contextWindow = resolvedContextWindowTokens
+            )
+        }
+
+        if (!forceReload) {
+            if (_isModelReady.value && inferenceManager.isReady && currentLoadedIdentity == identity && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Vision)) {
+                currentContextWindowTokens = resolvedContextWindowTokens
+                currentSupportsThinkingMode = supportsThinkingMode
+                currentAllowUnsafeOverride = allowUnsafeOverride
+                currentSupportsAudioInput = supportsAudioInput
+                return
+            }
+            if (_isInitializing.value && initJob?.isActive == true && currentRequestedIdentity == identity && !_isStopping.value) {
+                currentContextWindowTokens = resolvedContextWindowTokens
+                currentSupportsThinkingMode = supportsThinkingMode
+                currentAllowUnsafeOverride = allowUnsafeOverride
+                currentSupportsAudioInput = supportsAudioInput
+                return
+            }
         }
 
         currentModelPath = path
+        currentBundle = bundle
         currentModelId = modelId
         currentModelName = modelName
         currentModelSize = modelSize
@@ -544,9 +630,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         currentSupportsAudioInput = supportsAudioInput
         currentSupportsThinkingMode = supportsThinkingMode
         currentAllowUnsafeOverride = allowUnsafeOverride
+        currentRequestedIdentity = identity
 
         currentModelEpoch++
         activeRequestId = null
+        val opId = java.util.UUID.randomUUID().toString()
+        activeLoadOperationId = opId
         val myGen = ++initGeneration
         initJob?.cancel()
         initJob = null
@@ -575,49 +664,78 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 _isInitializing.value = false
                 return@launch
             }
-            ModelRuntimeCoordinator.withRuntime(ModelRuntimeOwner.Vision) {
-            ioMutex.withLock {
-                // A newer init has been requested; drop this one silently.
-                if (myGen != initGeneration) return@withLock
-                AppCacheCleaner.clearAppCache(getApplication())
-                try {
-                    inferenceManager.initialize(
-                        modelPath = path,
-                        modelId = modelId,
-                        modelName = modelName,
-                        modelSize = modelSize,
-                        supportsAudioInput = supportsAudioInput,
-                        supportsThinkingMode = supportsThinkingMode,
-                        allowUnsafeOverride = allowUnsafeOverride,
-                        contextWindowTokens = resolvedContextWindowTokens
-                    )
-                    // Re-check after the (potentially long) native init.
-                    if (myGen != initGeneration) {
-                        inferenceManager.close()
-                        return@withLock
+            try {
+                ModelRuntimeCoordinator.withRuntime(ModelRuntimeOwner.Vision) {
+                    ioMutex.withLock {
+                        // A newer init has been requested; drop this one silently.
+                        if (myGen != initGeneration) return@withLock
+                        AppCacheCleaner.clearAppCache(getApplication())
+                        try {
+                            inferenceManager.initialize(
+                                modelPath = path,
+                                modelId = modelId,
+                                modelName = modelName,
+                                modelSize = modelSize,
+                                supportsAudioInput = supportsAudioInput,
+                                supportsThinkingMode = supportsThinkingMode,
+                                allowUnsafeOverride = allowUnsafeOverride,
+                                contextWindowTokens = resolvedContextWindowTokens,
+                                bundle = bundle
+                            )
+                            // Re-check after the (potentially long) native init.
+                            if (myGen != initGeneration) {
+                                inferenceManager.close()
+                                return@withLock
+                            }
+                            currentModelPath = path
+                            lastLoadedBackendPreference = currentBackendPref
+                            currentLoadedIdentity = identity
+                            currentResolvedThinkingCapability = ThinkingModeConfig.resolveThinkingCapability(
+                                bundle = bundle,
+                                localPath = path,
+                                supportsThinkingFlag = supportsThinkingMode,
+                                id = modelId,
+                                name = modelName,
+                                context = getApplication()
+                            )
+                            currentContextWindowTokens = resolvedContextWindowTokens
+                            resetRuntimeConversationBeforeNextAsk = false
+                            _activeBackend.value = inferenceManager.activeBackendDisplayName
+                            _isModelReady.value = inferenceManager.isReady
+                        } catch (exception: Exception) {
+                            if (exception is CancellationException) throw exception
+                            if (myGen != initGeneration) return@withLock
+                            _error.value = exception.message ?: "Failed to load multimodal model."
+                            lastLoadedBackendPreference = null
+                            currentLoadedIdentity = null
+                            currentRequestedIdentity = null
+                            currentResolvedThinkingCapability = ThinkingCapability.Unknown
+                            _activeBackend.value = null
+                            currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
+                            _isModelReady.value = false
+                        }
                     }
-                    currentModelPath = path
-                    lastLoadedBackendPreference = currentBackendPref
-                    currentContextWindowTokens = resolvedContextWindowTokens
-                    resetRuntimeConversationBeforeNextAsk = false
-                    _activeBackend.value = inferenceManager.activeBackendDisplayName
-                    _isModelReady.value = inferenceManager.isReady
-                } catch (exception: Exception) {
-                    if (exception is CancellationException) throw exception
-                    if (myGen != initGeneration) return@withLock
-                    _error.value = exception.message ?: "Failed to load multimodal model."
-                    lastLoadedBackendPreference = null
-                    _activeBackend.value = null
-                    currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
-                    _isModelReady.value = false
+                }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                if (myGen != initGeneration) return@launch
+                val msg = t.message ?: "Failed to load multimodal model."
+                Log.e("VisionViewModel", "Multimodal model init failed", t)
+                _error.value = msg
+                lastLoadedBackendPreference = null
+                currentLoadedIdentity = null
+                currentRequestedIdentity = null
+                currentResolvedThinkingCapability = ThinkingCapability.Unknown
+                _activeBackend.value = null
+                currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
+                _isModelReady.value = false
+            } finally {
+                if (myGen == initGeneration) {
+                    _isInitializing.value = false
+                    _isStopping.value = false
+                    initJob = null
                 }
             }
-            if (myGen == initGeneration) {
-                _isInitializing.value = false
-                _isStopping.value = false
-                initJob = null
-            }
-        }
         }
     }
 
@@ -639,7 +757,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 supportsAudioInput = currentSupportsAudioInput,
                 supportsThinkingMode = currentSupportsThinkingMode,
                 allowUnsafeOverride = currentAllowUnsafeOverride,
-                contextWindowTokens = resolvedContextWindowTokens
+                contextWindowTokens = resolvedContextWindowTokens,
+                bundle = currentBundle
             )
             lastLoadedBackendPreference = appSettings.settings.value.llamaBackendPreference
             currentContextWindowTokens = resolvedContextWindowTokens
@@ -756,7 +875,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             bmp.recycle()
                         }
                         combined
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
                         renderedPages.forEach { runCatching { if (!it.isRecycled) it.recycle() } }
                         null
                     }
@@ -805,10 +924,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         if (!file.exists()) return 0L
         try {
             val retriever = android.media.MediaMetadataRetriever()
-            retriever.setDataSource(file.absolutePath)
-            val dur = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
-            retriever.release()
-            if (dur != null && dur > 0L) return dur
+            try {
+                retriever.setDataSource(file.absolutePath)
+                val dur = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+                if (dur != null && dur > 0L) return dur
+            } finally {
+                runCatching { retriever.release() }
+            }
         } catch (_: Exception) {}
         if (file.extension.equals("wav", ignoreCase = true) && file.length() > 44) {
             return ((file.length() - 44) * 1000L / (16000 * 2)).coerceAtLeast(500L)
@@ -824,7 +946,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         audioUri: Uri? = null,
         audioName: String? = null,
         audioBytes: ByteArray? = null,
-        thinkingMode: Boolean = false,
+        thinkingMode: Boolean = _thinkingMode.value,
         preparedAttachment: PreparedAttachment? = null,
         jobSessionId: String? = null,
         existingUserMessageId: String? = null,
@@ -937,6 +1059,16 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
         _isAnalyzing.value = true
         timing.recordAcknowledged()
+        val capability = currentResolvedThinkingCapability.takeIf { it != ThinkingCapability.Unknown }
+            ?: ThinkingModeConfig.resolveThinkingCapability(
+                bundle = currentBundle,
+                localPath = currentModelPath,
+                supportsThinkingFlag = currentSupportsThinkingMode,
+                id = currentModelId,
+                name = currentModelName,
+                context = getApplication<Application>()
+            )
+        val thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(capability, thinkingMode)
         activeRequestId = requestId
         val reqModelEpoch = currentModelEpoch
         val assistantMessageId = messages[assistantIndex].id
@@ -962,7 +1094,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 userPrompt = basePrompt,
                 hasBitmap = hasExplicitImage,
                 hasAudio = audioUri != null || audioBytes?.isNotEmpty() == true,
-                thinkingMode = thinkingMode
+                thinkingMode = thinkingModeForRequest
             )
 
             try {
@@ -1077,6 +1209,10 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
 
+                if (currentModelId.isNotBlank() && (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(currentModelId) || com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(currentModelId))) {
+                    throw IllegalStateException("Model is pending deletion or has been removed.")
+                }
+
                 // If model is not ready, load it on demand with LoadingModel progress
                 if (!_isModelReady.value) {
                     timing.startLoading()
@@ -1181,24 +1317,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     }
                 }
-                val prompt = if (thinkingMode) {
-                    if (contentPrompt.isNotBlank()) {
-                        if (contentPrompt.contains("<think>", ignoreCase = true) ||
-                            contentPrompt.contains("<thought>", ignoreCase = true) ||
-                            contentPrompt.contains("[thought]", ignoreCase = true) ||
-                            contentPrompt.contains("think step-by-step", ignoreCase = true) ||
-                            contentPrompt.contains("think step by step", ignoreCase = true)
-                        ) {
-                            contentPrompt
-                        } else {
-                            "Think step-by-step and write your internal reasoning inside <think> and </think> tags. After the closing </think> tag, provide your final response.\n\n$contentPrompt"
-                        }
-                    } else {
-                        "Think step-by-step and write your internal reasoning inside <think> and </think> tags. After the closing </think> tag, describe what you see."
-                    }
-                } else {
-                    contentPrompt
-                }
+                val prompt = contentPrompt
 
                 timing.endPreparation()
 
@@ -1213,23 +1332,35 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 }
 
                 val latestResponse = java.util.concurrent.atomic.AtomicReference("")
-                val liveUpdates = Channel<String>(Channel.CONFLATED)
+                val latestStructuredSnapshot = java.util.concurrent.atomic.AtomicReference<com.shounak.localmeshai.ai.StructuredResponseSnapshot?>(null)
+                val liveUpdates = Channel<com.shounak.localmeshai.ai.StructuredResponseSnapshot>(Channel.CONFLATED)
                 val liveUpdateJob = launch(Dispatchers.Main.immediate) {
-                        if (!isCurrentRequest()) return@launch
-                liveUpdates.receiveAsFlow().collect { partial ->
-                    if (activeRequestId == requestId && myGen == analysisGeneration && currentModelEpoch == reqModelEpoch && _currentSessionId.value == activeSessionId && assistantIndex < messages.size && messages[assistantIndex].terminalStatus == null) {
-                        if (partial.isNotBlank()) timing.recordFirstVisibleText()
-                        _answer.value = partial
-                        messages[assistantIndex] = messages[assistantIndex].copy(
-                            text = partial.ifBlank { if (messages[assistantIndex].progress == RequestProgress.RecoveringOnCpu) "GPU failed; retrying on CPU…" else "Generating…" },
-                            progress = if (partial.isBlank()) messages[assistantIndex].progress else RequestProgress.Generating)
+                    if (!isCurrentRequest()) return@launch
+                    liveUpdates.receiveAsFlow().collect { snap ->
+                        if (activeRequestId == requestId && myGen == analysisGeneration && currentModelEpoch == reqModelEpoch && _currentSessionId.value == activeSessionId && assistantIndex < messages.size && messages[assistantIndex].terminalStatus == null) {
+                            if (snap.answerText.isNotBlank() || snap.reasoningText.isNotBlank()) timing.recordFirstVisibleText()
+                            _answer.value = snap.answerText
+                            val displayText = snap.answerText.ifBlank {
+                                if (messages[assistantIndex].progress == RequestProgress.RecoveringOnCpu) "GPU failed; retrying on CPU…" else "Generating…"
+                            }
+                            messages[assistantIndex] = messages[assistantIndex].copy(
+                                text = displayText,
+                                reasoningText = snap.reasoningText,
+                                isThinkingActive = snap.isThinkingActive,
+                                revision = messages[assistantIndex].revision + 1,
+                                responseFormatVersion = 1,
+                                progress = if (snap.answerText.isBlank() && snap.reasoningText.isBlank()) messages[assistantIndex].progress else RequestProgress.Generating
+                            )
+                        }
                     }
                 }
-            }
 
                 try {
                     releaseJob?.join()
                     timing.startQueue()
+                    if (currentModelId.isNotBlank() && (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(currentModelId) || com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(currentModelId))) {
+                        throw IllegalStateException("Model is pending deletion or has been removed.")
+                    }
                     val execResult = ModelRuntimeCoordinator.withRuntime(ModelRuntimeOwner.Vision) {
                       ioMutex.withLock {
                         timing.endQueue()
@@ -1242,14 +1373,15 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                 placeholderTexts = PLACEHOLDER_ANSWERS,
                                 failedAnswerTexts = FAILED_ANSWER_STRINGS
                             )
-                            inferenceManager.resetConversation(thinkingMode = thinkingMode, initialMessages = restorationHistory)
+                            inferenceManager.resetConversation(thinkingMode = thinkingModeForRequest, initialMessages = restorationHistory)
                             resetRuntimeConversationBeforeNextAsk = false
                         }
-                        VisionRequestContextResolver.validatePreparedImageFile(persistentImageFile)
-                        val mediaPipeFallbackBitmap = if (inferenceManager.activeBackendDisplayName.contains("MediaPipe", ignoreCase = true)) {
-                            resolved.bitmapToUse ?: resolved.imageFileToUse?.let { VisionRequestContextResolver.decodeImageFile(it) }
-                        } else null
-                        val bitmapCopy = effectiveBitmap ?: mediaPipeFallbackBitmap
+                        val effectiveImageFile = persistentImageFile ?: resolved.imageFileToUse
+                        VisionRequestContextResolver.validatePreparedImageFile(effectiveImageFile)
+                        val fallbackBitmap = resolved.bitmapToUse ?: (if (inferenceManager.activeBackendDisplayName.contains("MediaPipe", ignoreCase = true)) {
+                            resolved.imageFileToUse?.let { VisionRequestContextResolver.decodeImageFile(it) }
+                        } else null)
+                        val bitmapCopy = effectiveBitmap ?: fallbackBitmap
                         val audioFile = persistentAudioFile ?: audioUri?.let {
                             copyUriToInferenceCache(
                                 context = getApplication(),
@@ -1258,14 +1390,23 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                 prefix = "audio-question"
                             )
                         }
+                        val previousMessages = historySnapshot.filter { it.id != userMessageId && it.id != assistantMessageId }
+                        val llamaMultimodalHistory = VisionRequestContextResolver.buildLlamaMultimodalHistory(
+                            sessionMessages = previousMessages,
+                            currentRequestId = requestId,
+                            placeholderTexts = PLACEHOLDER_ANSWERS,
+                            failedAnswerTexts = FAILED_ANSWER_STRINGS
+                        )
+                        val fullLlamaMessages = llamaMultimodalHistory.messages + listOf("user" to prompt)
+
                         timing.startInference()
                         inferenceManager.askStreaming(
                             bitmap = bitmapCopy,
                             question = prompt,
                             audioFile = audioFile,
                             audioBytes = audioBytes,
-                            thinkingMode = thinkingMode,
-                            preparedImageFile = persistentImageFile,
+                            thinkingMode = thinkingModeForRequest,
+                            preparedImageFile = effectiveImageFile,
                             requestId = requestId,
                             sessionId = activeSessionId,
                             timing = timing,
@@ -1277,11 +1418,19 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                         messages[assistantIndex] = messages[assistantIndex].copy(progress = if (messages[assistantIndex].terminalStatus == null) p else null)
                                     }
                                 }
-                            }
+                            },
+                            onSnapshot = { snap ->
+                                if (activeRequestId == requestId && myGen == analysisGeneration && currentModelEpoch == reqModelEpoch) {
+                                    latestStructuredSnapshot.set(snap)
+                                    liveUpdates.trySend(snap)
+                                }
+                            },
+                            messages = fullLlamaMessages,
+                            multiTurnImageFiles = llamaMultimodalHistory.imageFiles,
+                            multiTurnAudioFiles = llamaMultimodalHistory.audioFiles
                         ) { partial ->
                             timing.recordChunk(partial)
                             latestResponse.set(partial)
-                            liveUpdates.trySend(partial)
                         }
                     }
 
@@ -1290,15 +1439,28 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     liveUpdateJob.join()
                     if (myGen != analysisGeneration || execResult == null) return@launch
 
-                    val partialOrFinalText = execResult.text.ifBlank {
-                        latestResponse.get().takeUnless { it in PLACEHOLDER_ANSWERS }.orEmpty()
+                    val snap = latestStructuredSnapshot.get()
+                    val partialOrFinalText = when (execResult.status) {
+                        RequestTerminalStatus.Stopped -> {
+                            execResult.text.ifBlank {
+                                snap?.answerText?.trim()?.takeUnless { it in PLACEHOLDER_ANSWERS }.orEmpty()
+                            }
+                        }
+                        RequestTerminalStatus.Failed -> {
+                            execResult.text.ifBlank {
+                                snap?.answerText?.trim()?.takeUnless { it in PLACEHOLDER_ANSWERS }.orEmpty()
+                            }
+                        }
+                        RequestTerminalStatus.Completed -> {
+                            execResult.text.ifBlank {
+                                snap?.answerText?.trim()?.takeUnless { it in PLACEHOLDER_ANSWERS }.orEmpty()
+                            }
+                        }
                     }
+                    val finalReasoningText = execResult.reasoningText
+                        ?: snap?.reasoningText?.trim()?.takeIf { it.isNotBlank() }
                     val isError = execResult.status == RequestTerminalStatus.Failed || !execResult.error.isNullOrBlank()
-                    val textToDisplay = when (execResult.status) {
-                        RequestTerminalStatus.Completed -> partialOrFinalText
-                        RequestTerminalStatus.Stopped -> partialOrFinalText.ifBlank { "Stopped." }
-                        RequestTerminalStatus.Failed -> partialOrFinalText
-                    }
+                    val textToDisplay = partialOrFinalText
                     val errorMessageToDisplay = if (isError) {
                         execResult.error ?: "Inference failed."
                     } else null
@@ -1326,12 +1488,14 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                 ragTopMatchPct = currentRagTopMatchPct,
                                 progress = null,
                                 terminalStatus = execResult.status,
+                                isThinkingActive = false,
                                 metrics = execResult.metrics?.copy(firstVisibleTextLatencyMs = timing.buildMetrics(requestId, activeSessionId).firstVisibleTextLatencyMs),
                                 attemptId = targetAttemptId,
                                 requestId = requestId,
                                 userMessageId = userMessageId,
-                                reasoningText = execResult.reasoningText,
-                                emptyReason = execResult.emptyReason
+                                reasoningText = finalReasoningText,
+                                emptyReason = execResult.emptyReason,
+                                responseFormatVersion = 1
                             )
                             _lastInferenceTime.value = execResult.metrics?.decodeDurationMs ?: 0L
                             _tokensPerSecond.value = execResult.metrics?.decodeThroughputTokPerSec?.toFloat() ?: 0f
@@ -1370,26 +1534,29 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 } catch (exception: CancellationException) {
                     withContext(NonCancellable + Dispatchers.Main.immediate) {
                         if (!isCurrentRequest()) return@withContext
-                        val current = latestResponse.get()
-                        val finalMsg = if (current in PLACEHOLDER_ANSWERS || current.isBlank()) {
-                            "Stopped."
-                        } else {
-                            ModelOutputSanitizer.clean(current)
-                        }
+                        val snap = latestStructuredSnapshot.get()
+                        val currentText = messages[assistantIndex].text.takeUnless { it in PLACEHOLDER_ANSWERS }.orEmpty()
+                        val finalAnswer = snap?.answerText?.trim()?.takeUnless { it in PLACEHOLDER_ANSWERS }
+                            ?: currentText
+                        val finalReasoning = snap?.reasoningText?.trim()?.takeIf { it.isNotBlank() }
+                            ?: messages[assistantIndex].reasoningText?.trim()?.takeIf { it.isNotBlank() }
                         if (myGen == analysisGeneration && reqModelEpoch == currentModelEpoch && _currentSessionId.value == activeSessionId && assistantIndex < messages.size) {
                             messages[assistantIndex] = messages[assistantIndex].copy(
-                                text = finalMsg,
+                                text = finalAnswer,
+                                reasoningText = finalReasoning,
+                                isThinkingActive = false,
                                 bitmap = null,
                                 progress = null,
                                 terminalStatus = RequestTerminalStatus.Stopped,
                                 attemptId = targetAttemptId,
                                 requestId = requestId,
-                                userMessageId = userMessageId
+                                userMessageId = userMessageId,
+                                responseFormatVersion = 1
                             )
                         }
                         saveCurrentSession(
                             displayPrompt,
-                            finalMsg,
+                            finalAnswer.ifBlank { "Stopped." },
                             effectiveBitmap,
                             targetSessionId = activeSessionId,
                             imagePath = persistentImageFile?.absolutePath,
@@ -1414,23 +1581,31 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     withContext(Dispatchers.Main.immediate) {
                         if (!isCurrentRequest()) return@withContext
-                        val partial = latestResponse.get().takeUnless { it in PLACEHOLDER_ANSWERS }.orEmpty()
+                        val snap = latestStructuredSnapshot.get()
+                        val currentText = messages[assistantIndex].text.takeUnless { it in PLACEHOLDER_ANSWERS }.orEmpty()
+                        val partialAnswer = snap?.answerText?.trim()?.takeUnless { it in PLACEHOLDER_ANSWERS }
+                            ?: currentText
+                        val partialReasoning = snap?.reasoningText?.trim()?.takeIf { it.isNotBlank() }
+                            ?: messages[assistantIndex].reasoningText?.trim()?.takeIf { it.isNotBlank() }
                         val errorMsg = exception.message ?: "Image question failed."
                         if (myGen == analysisGeneration && reqModelEpoch == currentModelEpoch && _currentSessionId.value == activeSessionId && assistantIndex < messages.size) {
                             messages[assistantIndex] = messages[assistantIndex].copy(
-                                text = partial,
+                                text = partialAnswer,
+                                reasoningText = partialReasoning,
+                                isThinkingActive = false,
                                 errorMessage = errorMsg,
                                 bitmap = null,
                                 progress = null,
                                 terminalStatus = RequestTerminalStatus.Failed,
                                 attemptId = targetAttemptId,
                                 requestId = requestId,
-                                userMessageId = userMessageId
+                                userMessageId = userMessageId,
+                                responseFormatVersion = 1
                             )
                         }
                         saveCurrentSession(
                             displayPrompt,
-                            partial.ifBlank { "⚠️ Error: $errorMsg" },
+                            partialAnswer.ifBlank { "⚠️ Error: $errorMsg" },
                             effectiveBitmap,
                             targetSessionId = activeSessionId,
                             imagePath = persistentImageFile?.absolutePath,
@@ -1460,13 +1635,15 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         val status = if (stopped) RequestTerminalStatus.Stopped else RequestTerminalStatus.Failed
                         val errMsg = if (stopped) null else (failure.message ?: "Attachment/model error")
                         messages[assistantIndex] = messages[assistantIndex].copy(
-                            text = if (stopped) partial.ifBlank { "Stopped." } else partial,
+                            text = partial,
                             errorMessage = errMsg,
                             progress = null,
+                            isThinkingActive = false,
                             terminalStatus = status,
                             attemptId = targetAttemptId,
                             requestId = requestId,
-                            userMessageId = userMessageId
+                            userMessageId = userMessageId,
+                            responseFormatVersion = 1
                         )
                         saveCurrentSession(
                             displayPrompt,
@@ -1501,8 +1678,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun stopAnalyzing() {
-        if (!_isAnalyzing.value && !_isStopping.value) {
-            if (_isInitializing.value) {
+        val wasAnalyzing = _isAnalyzing.value
+        val wasInitializing = _isInitializing.value
+        if (!wasAnalyzing && !_isStopping.value && !wasInitializing) return
+        resetRuntimeConversationBeforeNextAsk = true
+        inferenceManager.cancelGeneration()
+        if (!wasAnalyzing && !_isStopping.value) {
+            if (wasInitializing) {
                 initGeneration++
                 initJob?.cancel()
                 initJob = null
@@ -1511,31 +1693,33 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             }
             return
         }
-        resetRuntimeConversationBeforeNextAsk = true
-        inferenceManager.cancelGeneration()
         val jobToCancel = analysisJob
         analysisJob = null
         jobToCancel?.cancel()
         _isAnalyzing.value = false
         _isStopping.value = false
 
-        // Immediately update UI state on the main thread so "Reading input..." changes to "Stopped."
+        // Immediately update UI state on the main thread so "Reading input..." changes to stopped card
         val assistantIndex = messages.indexOfLast { !it.isUser }
         if (assistantIndex >= 0 && assistantIndex < messages.size) {
-            val current = messages[assistantIndex].text
-            val finalText = if (current in PLACEHOLDER_ANSWERS || current.isBlank()) {
-                "Stopped."
-            } else {
-                ModelOutputSanitizer.clean(current)
+            val targetMsg = messages[assistantIndex]
+            if (activeRequestId == null || targetMsg.requestId == activeRequestId) {
+                val current = targetMsg.text
+                val finalText = if (current in PLACEHOLDER_ANSWERS || current.isBlank()) {
+                    ""
+                } else {
+                    ModelOutputSanitizer.clean(current)
+                }
+                messages[assistantIndex] = targetMsg.copy(
+                    text = finalText,
+                    progress = null,
+                    isThinkingActive = false,
+                    terminalStatus = RequestTerminalStatus.Stopped
+                )
+                saveVisibleConversationIfComplete()
             }
-            messages[assistantIndex] = messages[assistantIndex].copy(
-                text = finalText,
-                progress = null,
-                terminalStatus = RequestTerminalStatus.Stopped
-            )
-            saveVisibleConversationIfComplete()
         }
-        _answer.value = "Stopped."
+        _answer.value = ""
     }
 
     fun uninitializeModel() {
@@ -1586,8 +1770,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         if (!file.exists()) return null
         return try {
             android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (e: Throwable) {
+            Log.w("VisionViewModel", "Failed to decode session bitmap: ${e.message}")
             null
         }
     }
@@ -1637,7 +1821,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     if (resolvedImagePath != null && File(resolvedImagePath).exists()) {
                         try {
                             BitmapFactory.decodeFile(resolvedImagePath)
-                        } catch (_: Exception) {
+                        } catch (_: Throwable) {
                             null
                         }
                     } else if (index == 0) {
@@ -1659,7 +1843,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             val initialBmp = if (session.imagePath != null && File(session.imagePath).exists()) {
                 try {
                     BitmapFactory.decodeFile(session.imagePath)
-                } catch (e: Exception) {
+                } catch (_: Throwable) {
                     defaultSessionBitmap
                 }
             } else {
@@ -2378,51 +2562,72 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private fun releaseModel(clearCoordinator: Boolean, clearSelection: Boolean = false) {
         autoUnloadJob?.cancel()
         autoUnloadJob = null
-        currentModelEpoch++
-        activeRequestId = null
+        val jobToCancel = analysisJob
+        analysisJob = null
+        jobToCancel?.cancel()
+        inferenceManager.cancelGeneration()
         initGeneration++
         analysisGeneration++
         initJob?.cancel()
         initJob = null
-        analysisJob?.cancel()
-        analysisJob = null
-        inferenceManager.cancelGeneration()
-        if (releaseJob?.isActive != true) {
-            releaseJob = ModelRuntimeCoordinator.shutdownScope.launch {
-                val result = ioMutex.withLock {
-                    val res = inferenceManager.close()
-                    AppCacheCleaner.clearAppCache(getApplication())
-                    res
-                }
-                if (result !is com.shounak.localmeshai.ai.ShutdownResult.Success) {
-                    Log.e("VisionViewModel", "Model shutdown failed: $result")
-                    _isStopping.value = false
-                    return@launch
-                }
-                if (clearCoordinator) ModelRuntimeCoordinator.clear(ModelRuntimeOwner.Vision)
-                withContext(Dispatchers.Main.immediate) {
-                    if (clearSelection) {
-                        currentModelPath = null
-                        currentModelId = ""
-                        currentModelName = ""
-                        currentModelSize = ""
-                        currentContextWindowTokensTokens = null
-                        currentSupportsAudioInput = false
-                        currentAllowUnsafeOverride = false
-                    }
-                    lastLoadedBackendPreference = null
-                    _activeBackend.value = null
-                    currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
-                    resetRuntimeConversationBeforeNextAsk = false
-                    lastAttachedFileName = null
-                    _isInitializing.value = false
-                    _isAnalyzing.value = false
-                    _isStopping.value = false
-                    _isModelReady.value = false
-                }
-            }
+        if (jobToCancel != null && jobToCancel.isActive) {
+            _isStopping.value = true
         }
 
+        val priorReleaseJob = releaseJob
+        releaseJob = ModelRuntimeCoordinator.shutdownScope.launch {
+            priorReleaseJob?.join()
+            if (jobToCancel != null && jobToCancel.isActive) {
+                runCatching {
+                    kotlinx.coroutines.withTimeout(5_000L) {
+                        jobToCancel.join()
+                    }
+                }
+            }
+            currentModelEpoch++
+            withContext(Dispatchers.Main.immediate) {
+                activeRequestId = null
+            }
+            val result = ioMutex.withLock {
+                val res = inferenceManager.close()
+                AppCacheCleaner.clearAppCache(getApplication())
+                res
+            }
+            lastShutdownResult = result
+            if (!result.isSuccess) {
+                Log.e("VisionViewModel", "Model shutdown failed: $result")
+                withContext(Dispatchers.Main.immediate) {
+                    _isStopping.value = false
+                }
+                return@launch
+            }
+            if (clearCoordinator) ModelRuntimeCoordinator.clear(ModelRuntimeOwner.Vision)
+            activeLoadOperationId = null
+            withContext(Dispatchers.Main.immediate) {
+                currentRequestedIdentity = null
+                currentLoadedIdentity = null
+                currentResolvedThinkingCapability = ThinkingCapability.Unknown
+                if (clearSelection) {
+                    currentModelPath = null
+                    currentBundle = null
+                    currentModelId = ""
+                    currentModelName = ""
+                    currentModelSize = ""
+                    currentContextWindowTokensTokens = null
+                    currentSupportsAudioInput = false
+                    currentAllowUnsafeOverride = false
+                }
+                lastLoadedBackendPreference = null
+                _activeBackend.value = null
+                currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
+                resetRuntimeConversationBeforeNextAsk = false
+                lastAttachedFileName = null
+                _isInitializing.value = false
+                _isAnalyzing.value = false
+                _isStopping.value = false
+                _isModelReady.value = false
+            }
+        }
     }
 
     private companion object {

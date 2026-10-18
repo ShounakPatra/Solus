@@ -88,14 +88,17 @@ fun AudioMessagePlayer(
                 if (durationMs <= 0L) {
                     try {
                         val retriever = MediaMetadataRetriever()
-                        retriever.setDataSource(f.absolutePath)
-                        val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                        val dur = durStr?.toLongOrNull()
-                        retriever.release()
-                        if (dur != null && dur > 0L) {
-                            withContext(Dispatchers.Main) {
-                                durationMs = dur
+                        try {
+                            retriever.setDataSource(f.absolutePath)
+                            val durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                            val dur = durStr?.toLongOrNull()
+                            if (dur != null && dur > 0L) {
+                                withContext(Dispatchers.Main) {
+                                    durationMs = dur
+                                }
                             }
+                        } finally {
+                            runCatching { retriever.release() }
                         }
                     } catch (_: Exception) {}
                 }
@@ -139,6 +142,7 @@ fun AudioMessagePlayer(
         onDispose {
             mediaPlayer?.runCatching {
                 if (isPlaying) stop()
+                reset()
                 release()
             }
             mediaPlayer = null
@@ -161,6 +165,15 @@ fun AudioMessagePlayer(
                     if (AudioPlayerCoordinator.activeAudioPath.value == audioPath) {
                         AudioPlayerCoordinator.activeAudioPath.value = null
                     }
+                }
+                setOnErrorListener { mp, _, _ ->
+                    isPlaying = false
+                    currentPositionMs = 0L
+                    if (AudioPlayerCoordinator.activeAudioPath.value == audioPath) {
+                        AudioPlayerCoordinator.activeAudioPath.value = null
+                    }
+                    runCatching { mp.reset() }
+                    true
                 }
                 if (durationMs <= 0L && duration > 0) {
                     durationMs = duration.toLong()

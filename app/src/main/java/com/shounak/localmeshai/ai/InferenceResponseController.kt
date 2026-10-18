@@ -22,18 +22,22 @@ class InferenceResponseController(
     private val thinkingBuffer = StringBuilder()
     private val answerBuffer = StringBuilder()
     private var acceptedAnswer: String = ""
+    private var acceptedReasoning: String = ""
+    private var structuredThinkingActive: Boolean? = null
 
     private var isFinished: Boolean = false
+    var isStructuredMode: Boolean = false
 
     val isThinkingActive: Boolean
         get() = synchronized(lock) {
             if (isFinished) false
-            else (thinkingMode && ThinkingTextUtils.parse(ThinkingTextUtils.holdIncompleteTag(rawBuffer.toString()), allowActiveThinking = true).isThinkingActive)
+            else structuredThinkingActive ?: (thinkingMode && ThinkingTextUtils.parse(ThinkingTextUtils.holdIncompleteTag(rawBuffer.toString()), allowActiveThinking = true).isThinkingActive)
         }
 
     val hasThinkingBlock: Boolean
         get() = synchronized(lock) {
             if (isFinished) thinkingBuffer.isNotEmpty()
+            else if (structuredThinkingActive != null || isStructuredMode) (thinkingBuffer.isNotEmpty() || structuredThinkingActive == true)
             else (thinkingMode && ThinkingTextUtils.parse(ThinkingTextUtils.holdIncompleteTag(rawBuffer.toString()), allowActiveThinking = true).let {
                 it.isThinkingActive || !it.thinkingText.isNullOrBlank()
             })
@@ -46,56 +50,105 @@ class InferenceResponseController(
         synchronized(lock) {
             currentAttemptId = newAttemptId
             isFinished = false
+            isStructuredMode = false
             rawBuffer.clear()
             thinkingBuffer.clear()
             answerBuffer.clear()
             acceptedAnswer = ""
+            acceptedReasoning = ""
+            structuredThinkingActive = null
         }
     }
 
     /**
      * Ingests a new delta token or chunk from the model stream.
-     * Rejects callbacks from obsolete requests or attempts.
+     * Rejects callbacks from obsolete requests or attempts, or after finalization.
      * Appends tokens under synchronization without reparsing on every token.
      */
     fun appendDelta(delta: String, reqId: String? = null, attemptId: Int? = null) {
         if (delta.isEmpty()) return
         synchronized(lock) {
+            if (isFinished) return
             if (reqId != null && requestId.isNotEmpty() && reqId != requestId) return
             if (attemptId != null && attemptId != currentAttemptId) return
             rawBuffer.append(delta)
         }
     }
 
-data class StructuredResponseSnapshot(
-    val answer: String,
-    val reasoning: String,
-    val attempt: Int,
-    val revision: Int
-)
+    /**
+     * Ingests pre-parsed answer and reasoning snapshots from native/pipeline stream.
+     */
+    fun appendStructured(
+        answer: String,
+        reasoning: String,
+        isThinkingActive: Boolean,
+        reqId: String? = null,
+        attemptId: Int? = null
+    ) {
+        synchronized(lock) {
+            if (isFinished) return
+            if (reqId != null && requestId.isNotEmpty() && reqId != requestId) return
+            if (attemptId != null && attemptId != currentAttemptId) return
+            isStructuredMode = true
+            structuredThinkingActive = if (thinkingMode) isThinkingActive else false
+            if (reasoning.isNotEmpty()) {
+                val cleanReasoning = if (thinkingMode) reasoning.trim() else ""
+                thinkingBuffer.clear()
+                thinkingBuffer.append(cleanReasoning)
+                if (cleanReasoning.isNotBlank()) {
+                    acceptedReasoning = cleanReasoning
+                }
+            }
+            if (answer.isNotEmpty()) {
+                val cleaned = ModelOutputSanitizer.cleanAssistantText(answer, rawUserText)
+                answerBuffer.clear()
+                answerBuffer.append(cleaned)
+                if (cleaned.isNotBlank()) {
+                    acceptedAnswer = cleaned
+                }
+            }
+        }
+    }
 
     fun snapshot(revision: Int = 0): StructuredResponseSnapshot = synchronized(lock) {
-        val raw = rawBuffer.toString()
-        val safeRaw = ThinkingTextUtils.holdIncompleteTag(raw)
-        if (!thinkingMode) {
-            val extracted = ThinkingTextUtils.extractFinalAnswerOnly(safeRaw)
-            val cleaned = ModelOutputSanitizer.cleanAssistantText(extracted, rawUserText)
+        if (isStructuredMode || structuredThinkingActive != null || (thinkingBuffer.isNotEmpty() && answerBuffer.isNotEmpty())) {
+            val think = if (thinkingMode) thinkingBuffer.toString().trim() else ""
+            val ans = answerBuffer.toString().trim()
             StructuredResponseSnapshot(
-                answer = ThinkingTextUtils.removeLooseThinkTags(cleaned),
-                reasoning = "",
-                attempt = currentAttemptId,
-                revision = revision
+                requestId = requestId,
+                attemptId = currentAttemptId,
+                revision = revision,
+                answerText = ans,
+                reasoningText = think,
+                isThinkingActive = if (isFinished || !thinkingMode) false else (structuredThinkingActive ?: false)
             )
         } else {
-            val parsed = ThinkingTextUtils.parse(safeRaw, allowActiveThinking = true)
-            val thinking = parsed.thinkingText.orEmpty().trim()
-            val answer = ModelOutputSanitizer.cleanAssistantText(parsed.finalResponseText, rawUserText)
-            StructuredResponseSnapshot(
-                answer = answer,
-                reasoning = thinking,
-                attempt = currentAttemptId,
-                revision = revision
-            )
+            val raw = rawBuffer.toString()
+            val safeRaw = ThinkingTextUtils.holdIncompleteTag(raw)
+            if (!thinkingMode) {
+                val extracted = ThinkingTextUtils.extractFinalAnswerOnly(safeRaw)
+                val cleaned = ModelOutputSanitizer.cleanAssistantText(extracted, rawUserText)
+                StructuredResponseSnapshot(
+                    requestId = requestId,
+                    attemptId = currentAttemptId,
+                    revision = revision,
+                    answerText = ThinkingTextUtils.removeLooseThinkTags(cleaned),
+                    reasoningText = "",
+                    isThinkingActive = false
+                )
+            } else {
+                val parsed = ThinkingTextUtils.parse(safeRaw, allowActiveThinking = true)
+                val thinking = parsed.thinkingText.orEmpty().trim()
+                val answer = ModelOutputSanitizer.cleanAssistantText(parsed.finalResponseText, rawUserText)
+                StructuredResponseSnapshot(
+                    requestId = requestId,
+                    attemptId = currentAttemptId,
+                    revision = revision,
+                    answerText = answer,
+                    reasoningText = thinking,
+                    isThinkingActive = if (isFinished) false else parsed.isThinkingActive
+                )
+            }
         }
     }
 
@@ -140,17 +193,24 @@ data class StructuredResponseSnapshot(
     }
 
     /**
-     * Live formatting for current raw buffer.
+     * Live formatting for current raw buffer or structured response.
      */
-    fun currentFormattedText(): String {
-        val raw = synchronized(lock) { rawBuffer.toString() }
-        return formatSnapshot(raw)
+    fun currentFormattedText(): String = synchronized(lock) {
+        if (isStructuredMode) {
+            answerBuffer.toString().trim().ifBlank { acceptedAnswer.trim() }
+        } else {
+            val raw = rawBuffer.toString()
+            formatSnapshot(raw)
+        }
     }
 
     /**
      * Formats explicit finalized answer and reasoning for terminal publication.
      */
     fun formatFinal(answerText: String, reasoningText: String): String {
+        if (isStructuredMode) {
+            return answerText.trim()
+        }
         if (!thinkingMode) {
             return ThinkingTextUtils.removeLooseThinkTags(answerText.trim())
         }
@@ -170,41 +230,56 @@ data class StructuredResponseSnapshot(
      * the thinking block is safely closed without leaking its contents into the answer buffer.
      */
     fun finish(): InferenceResponseController {
-        val raw = synchronized(lock) { rawBuffer.toString() }
-        val parsed = ThinkingTextUtils.parse(raw, allowActiveThinking = false)
-        val thinking = if (thinkingMode) parsed.thinkingText.orEmpty().trim() else ""
-        val rawAnswer = if (!thinkingMode) {
-            ThinkingTextUtils.extractFinalAnswerOnly(raw)
-        } else {
-            ThinkingTextUtils.finalResponseOrReasoning(raw, allowReasoningFallback = false)
-        }
-        val cleanAnswer = ModelOutputSanitizer.cleanAssistantText(rawAnswer, rawUserText)
-
         synchronized(lock) {
             isFinished = true
-            thinkingBuffer.clear()
-            thinkingBuffer.append(thinking)
+            structuredThinkingActive = false
+            if (!isStructuredMode && rawBuffer.isNotEmpty()) {
+                val raw = rawBuffer.toString()
+                val parsed = ThinkingTextUtils.parse(raw, allowActiveThinking = false)
+                val thinking = if (thinkingMode) parsed.thinkingText.orEmpty().trim() else ""
+                val rawAnswer = if (!thinkingMode) {
+                    ThinkingTextUtils.extractFinalAnswerOnly(raw)
+                } else {
+                    ThinkingTextUtils.finalResponseOrReasoning(raw, allowReasoningFallback = false)
+                }
+                val cleanAnswer = ModelOutputSanitizer.cleanAssistantText(rawAnswer, rawUserText)
 
-            answerBuffer.clear()
-            answerBuffer.append(cleanAnswer)
-            if (cleanAnswer.isNotBlank()) {
-                acceptedAnswer = cleanAnswer
+                thinkingBuffer.clear()
+                thinkingBuffer.append(thinking)
+                if (thinking.isNotBlank()) {
+                    acceptedReasoning = thinking
+                }
+
+                answerBuffer.clear()
+                answerBuffer.append(cleanAnswer)
+                if (cleanAnswer.isNotBlank()) {
+                    acceptedAnswer = cleanAnswer
+                }
+            } else {
+                if (thinkingBuffer.isNotEmpty() && thinkingBuffer.isNotBlank()) {
+                    acceptedReasoning = thinkingBuffer.toString().trim()
+                }
+                if (answerBuffer.isNotEmpty() && answerBuffer.isNotBlank()) {
+                    acceptedAnswer = answerBuffer.toString().trim()
+                }
             }
         }
         return this
     }
 
     fun currentThinkingText(): String = synchronized(lock) {
-        if (thinkingBuffer.isNotEmpty()) thinkingBuffer.toString().trim()
-        else {
-            if (!thinkingMode) ""
-            else ThinkingTextUtils.parse(rawBuffer.toString(), allowActiveThinking = true).thinkingText.orEmpty().trim()
-        }
+        if (!thinkingMode) ""
+        else if (isStructuredMode) thinkingBuffer.toString().trim().ifBlank { acceptedReasoning.trim() }
+        else if (thinkingBuffer.isNotEmpty()) thinkingBuffer.toString().trim()
+        else ThinkingTextUtils.parse(rawBuffer.toString(), allowActiveThinking = true).thinkingText.orEmpty().trim()
     }
 
     fun currentAnswerText(): String = synchronized(lock) {
-        if (answerBuffer.isNotEmpty()) answerBuffer.toString().trim()
-        else {
+        if (isStructuredMode) {
+            answerBuffer.toString().trim().ifBlank { acceptedAnswer.trim() }
+        } else if (answerBuffer.isNotEmpty()) {
+            answerBuffer.toString().trim()
+        } else {
             val raw = rawBuffer.toString()
             val clean = if (!thinkingMode) ThinkingTextUtils.extractFinalAnswerOnly(raw)
             else ThinkingTextUtils.finalResponseOrReasoning(raw, allowReasoningFallback = false)
@@ -216,13 +291,20 @@ data class StructuredResponseSnapshot(
         acceptedAnswer.ifBlank { answerBuffer.toString().trim() }
     }
 
+    fun acceptedReasoningText(): String = synchronized(lock) {
+        if (!thinkingMode) ""
+        else acceptedReasoning.ifBlank { thinkingBuffer.toString().trim() }
+    }
+
     fun getRawText(): String = synchronized(lock) { rawBuffer.toString() }
 
     /**
      * Extracts the final answer text outside thinking blocks.
      */
     fun getFinalAnswer(): String = synchronized(lock) {
-        if (answerBuffer.isNotEmpty()) {
+        if (isStructuredMode) {
+            answerBuffer.toString().trim().ifBlank { acceptedAnswer.trim() }
+        } else if (answerBuffer.isNotEmpty()) {
             answerBuffer.toString().trim()
         } else {
             val raw = rawBuffer.toString()
@@ -240,7 +322,9 @@ data class StructuredResponseSnapshot(
      */
     fun getReasoningText(): String = synchronized(lock) {
         if (!thinkingMode) return ""
-        if (thinkingBuffer.isNotEmpty()) {
+        if (isStructuredMode) {
+            thinkingBuffer.toString().trim().ifBlank { acceptedReasoning.trim() }
+        } else if (thinkingBuffer.isNotEmpty()) {
             thinkingBuffer.toString().trim()
         } else {
             val raw = rawBuffer.toString()
@@ -256,7 +340,8 @@ data class StructuredResponseSnapshot(
         attemptId: Int = this.currentAttemptId,
         isStopped: Boolean = false,
         sdkError: Throwable? = null,
-        acceptedAnswerFallback: String = acceptedAnswerText()
+        acceptedAnswerFallback: String = acceptedAnswerText(),
+        acceptedReasoningFallback: String = acceptedReasoningText()
     ): FinalizedResponse {
         finish()
         val answer = getFinalAnswer()
@@ -270,6 +355,7 @@ data class StructuredResponseSnapshot(
             isStopped = isStopped,
             sdkError = sdkError,
             acceptedAnswerFallback = acceptedAnswerFallback,
+            acceptedReasoningFallback = acceptedReasoningFallback,
             thinkingMode = thinkingMode
         )
     }

@@ -258,7 +258,7 @@ class PcmRecorder(
                 }
             } finally {
                 runCatching { recorder.stop() }
-                recorder.release()
+                runCatching { recorder.release() }
                 activeRecorder = null
                 state = PcmRecorderState.STOPPED
             }
@@ -305,7 +305,7 @@ class PcmRecorder(
             val wavBytes = AudioUtils.createWavFromPcm16(rawPcmBytes, sampleRateHz, 1)
 
             val cacheFile = if (context != null) {
-                val cacheDir = File(context.cacheDir, "multimodal_inputs").apply { mkdirs() }
+                val cacheDir = File(context.applicationContext.cacheDir, "multimodal_inputs").apply { mkdirs() }
                 AudioUtils.pruneInferenceCache(cacheDir)
                 val file = File(cacheDir, "mic_recording_${System.currentTimeMillis()}.wav")
                 file.writeBytes(wavBytes)

@@ -39,6 +39,7 @@ data class MessagePresentation(
 ) {
     val parsedContent: ParsedThinkingContent get() = parsedThinking
     val segments: List<ModelAnswerSegment> get() = parsedSegments
+    val showThinking: Boolean get() = !reasoningText.isNullOrBlank() || parsedThinking.isThinkingActive
 }
 
 @Immutable
@@ -50,7 +51,9 @@ data class MessagePresentationKey(
     val isUser: Boolean,
     val isStreaming: Boolean,
     val revision: Int = 0,
-    val reasoningText: String? = null
+    val reasoningText: String? = null,
+    val isThinkingActive: Boolean = false,
+    val responseFormatVersion: Int = 0
 )
 
 object MessagePresentationCache {
@@ -74,13 +77,16 @@ object MessagePresentationCache {
         text: String,
         isUser: Boolean,
         isStreaming: Boolean,
-        reasoningText: String? = null
+        reasoningText: String? = null,
+        isThinkingActive: Boolean = false,
+        responseFormatVersion: Int = 0
     ): MessagePresentation {
         val showDots = isStreaming && isStreamingPlaceholder(text)
+        val cleanReasoning = reasoningText?.trim()?.takeIf { it.isNotBlank() }
         val thinkingContent = ParsedThinkingContent(
-            thinkingText = reasoningText,
+            thinkingText = cleanReasoning,
             finalResponseText = text,
-            isThinkingActive = isStreaming && !reasoningText.isNullOrBlank()
+            isThinkingActive = isStreaming && isThinkingActive
         )
         return MessagePresentation(
             messageId = messageId,
@@ -93,7 +99,7 @@ object MessagePresentationCache {
             hasRichBlock = false,
             showStreamingDots = showDots,
             answerText = text,
-            reasoningText = reasoningText
+            reasoningText = cleanReasoning
         )
     }
 
@@ -103,7 +109,8 @@ object MessagePresentationCache {
         text: String,
         isUser: Boolean,
         isStreaming: Boolean,
-        reasoningText: String? = null
+        reasoningText: String? = null,
+        isThinkingActive: Boolean = false
     ): MessagePresentation = getFastInitial(
         messageId = messageId,
         requestId = "",
@@ -112,7 +119,9 @@ object MessagePresentationCache {
         text = text,
         isUser = isUser,
         isStreaming = isStreaming,
-        reasoningText = reasoningText
+        reasoningText = reasoningText,
+        isThinkingActive = isThinkingActive,
+        responseFormatVersion = 0
     )
 
     fun getOrCompute(
@@ -127,7 +136,9 @@ object MessagePresentationCache {
         isUser = isUser,
         isStreaming = isStreaming,
         revision = 0,
-        reasoningText = null
+        reasoningText = null,
+        isThinkingActive = false,
+        responseFormatVersion = 0
     )
 
     fun getOrCompute(
@@ -136,7 +147,8 @@ object MessagePresentationCache {
         isUser: Boolean,
         isStreaming: Boolean,
         revision: Int = 0,
-        reasoningText: String? = null
+        reasoningText: String? = null,
+        isThinkingActive: Boolean = false
     ): MessagePresentation = getOrCompute(
         messageId = messageId,
         requestId = "",
@@ -145,7 +157,9 @@ object MessagePresentationCache {
         isUser = isUser,
         isStreaming = isStreaming,
         revision = revision,
-        reasoningText = reasoningText
+        reasoningText = reasoningText,
+        isThinkingActive = isThinkingActive,
+        responseFormatVersion = 0
     )
 
     fun getOrCompute(
@@ -156,7 +170,9 @@ object MessagePresentationCache {
         isUser: Boolean,
         isStreaming: Boolean,
         revision: Int = 0,
-        reasoningText: String? = null
+        reasoningText: String? = null,
+        isThinkingActive: Boolean = false,
+        responseFormatVersion: Int = 0
     ): MessagePresentation {
         val cacheKey = MessagePresentationKey(
             messageId = messageId,
@@ -166,7 +182,9 @@ object MessagePresentationCache {
             isUser = isUser,
             isStreaming = isStreaming,
             revision = revision,
-            reasoningText = reasoningText
+            reasoningText = reasoningText,
+            isThinkingActive = isThinkingActive,
+            responseFormatVersion = responseFormatVersion
         )
         if (!isStreaming) {
             completedCache.get(cacheKey)?.let { return it }
@@ -175,14 +193,29 @@ object MessagePresentationCache {
         // During streaming, show plain answer and separate plain reasoning section.
         // Do not repeatedly parse Markdown, code blocks, or mathematics.
         if (isStreaming) {
-            return getFastInitial(messageId, requestId, attemptId, revision, text, isUser, isStreaming, reasoningText)
+            return getFastInitial(messageId, requestId, attemptId, revision, text, isUser, isStreaming, reasoningText, isThinkingActive, responseFormatVersion)
         }
 
-        val parsedThinking = ThinkingTextUtils.parse(text, allowActiveThinking = false)
-        val effectiveThinking = if (parsedThinking.thinkingText.isNullOrBlank() && !reasoningText.isNullOrBlank()) {
-            parsedThinking.copy(thinkingText = reasoningText)
+        val cleanReasoning = reasoningText?.trim()?.takeIf { it.isNotBlank() }
+        val effectiveThinking = if (responseFormatVersion >= 1) {
+            val sanitizedText = if (!isUser && !cleanReasoning.isNullOrBlank()) {
+                ThinkingTextUtils.stripDuplicateLeadingThinkingEnvelope(text, cleanReasoning)
+            } else {
+                text
+            }
+            ParsedThinkingContent(
+                thinkingText = cleanReasoning,
+                finalResponseText = sanitizedText,
+                isThinkingActive = false
+            )
         } else {
-            parsedThinking
+            val parsedThinking = ThinkingTextUtils.parse(text, allowActiveThinking = false)
+            val parsedReasoning = parsedThinking.thinkingText?.trim()?.takeIf { it.isNotBlank() }
+            if (parsedReasoning.isNullOrBlank() && !cleanReasoning.isNullOrBlank()) {
+                parsedThinking.copy(thinkingText = cleanReasoning)
+            } else {
+                parsedThinking.copy(thinkingText = parsedReasoning)
+            }
         }
         val rawDisplay = if (isUser) {
             effectiveThinking.finalResponseText
@@ -227,7 +260,9 @@ fun rememberMessagePresentation(
     requestId: String = "",
     attemptId: Long = 0L,
     revision: Int = 0,
-    reasoningText: String? = null
+    reasoningText: String? = null,
+    isThinkingActive: Boolean = false,
+    responseFormatVersion: Int = 0
 ): MessagePresentation {
     if (isStreaming) {
         return MessagePresentationCache.getFastInitial(
@@ -238,7 +273,9 @@ fun rememberMessagePresentation(
             text = text,
             isUser = isUser,
             isStreaming = true,
-            reasoningText = reasoningText
+            reasoningText = reasoningText,
+            isThinkingActive = isThinkingActive,
+            responseFormatVersion = responseFormatVersion
         )
     }
 
@@ -250,7 +287,9 @@ fun rememberMessagePresentation(
         isUser = isUser,
         isStreaming = false,
         revision = revision,
-        reasoningText = reasoningText
+        reasoningText = reasoningText,
+        isThinkingActive = false,
+        responseFormatVersion = responseFormatVersion
     )
     MessagePresentationCache.getIfCached(cacheKey)?.let { return it }
 
@@ -269,7 +308,8 @@ fun rememberMessagePresentation(
             text = text,
             isUser = isUser,
             isStreaming = false,
-            reasoningText = reasoningText
+            reasoningText = reasoningText,
+            responseFormatVersion = responseFormatVersion
         )
     }
 
@@ -280,7 +320,8 @@ fun rememberMessagePresentation(
         attemptId,
         revision,
         text,
-        reasoningText
+        reasoningText,
+        responseFormatVersion
     ) {
         val presentation = withContext(Dispatchers.Default) {
             MessagePresentationCache.getOrCompute(
@@ -291,7 +332,8 @@ fun rememberMessagePresentation(
                 isUser = isUser,
                 isStreaming = false,
                 revision = revision,
-                reasoningText = reasoningText
+                reasoningText = reasoningText,
+                responseFormatVersion = responseFormatVersion
             )
         }
         if (presentation.messageId == messageId &&

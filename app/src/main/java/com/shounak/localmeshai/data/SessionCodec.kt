@@ -40,6 +40,7 @@ object SessionCodec {
                 if (msg.terminalStatus != null) mObj.put("terminalStatus", msg.terminalStatus.name)
                 if (!msg.errorMessage.isNullOrBlank()) mObj.put("errorMessage", msg.errorMessage)
                 if (msg.emptyReason != null) mObj.put("emptyReason", msg.emptyReason.toString())
+                if (msg.responseFormatVersion > 0) mObj.put("responseFormatVersion", msg.responseFormatVersion)
                 if (!msg.documentName.isNullOrBlank()) mObj.put("documentName", msg.documentName)
                 if (!msg.documentPath.isNullOrBlank()) mObj.put("documentPath", msg.documentPath)
 
@@ -118,6 +119,7 @@ object SessionCodec {
                 val docName = mObj.optString("documentName").takeIf { it.isNotBlank() }
                 val docPath = mObj.optString("documentPath").takeIf { it.isNotBlank() }
 
+                val responseFormatVersion = mObj.optInt("responseFormatVersion", 0)
                 val statusStr = mObj.optString("terminalStatus").takeIf { it.isNotBlank() }
                 val errorMsg = mObj.optString("errorMessage").takeIf { it.isNotBlank() }
                 val emptyReasonStr = mObj.optString("emptyReason").takeIf { it.isNotBlank() }
@@ -157,9 +159,15 @@ object SessionCodec {
                     lastUserMsgId = id
                 }
 
+                val sanitizedText = if (!isUser && !reasoningText.isNullOrBlank()) {
+                    com.shounak.localmeshai.utils.ThinkingTextUtils.stripDuplicateLeadingThinkingEnvelope(cleanText, reasoningText)
+                } else {
+                    cleanText
+                }
+
                 parsedMessages.add(
                     ChatMessage(
-                        text = cleanText,
+                        text = sanitizedText,
                         isUser = isUser,
                         id = id,
                         ragSources = ragSources,
@@ -173,7 +181,8 @@ object SessionCodec {
                         attemptId = attemptId,
                         reasoningText = reasoningText,
                         userMessageId = userMessageId,
-                        emptyReason = emptyReason
+                        emptyReason = emptyReason,
+                        responseFormatVersion = responseFormatVersion
                     )
                 )
             }
@@ -258,6 +267,7 @@ object SessionCodec {
                 if (msg.terminalStatus != null) mObj.put("terminalStatus", msg.terminalStatus.name)
                 if (!msg.errorMessage.isNullOrBlank()) mObj.put("errorMessage", msg.errorMessage)
                 if (msg.emptyReason != null) mObj.put("emptyReason", msg.emptyReason.toString())
+                if (msg.responseFormatVersion > 0) mObj.put("responseFormatVersion", msg.responseFormatVersion)
                 if (!msg.imagePath.isNullOrBlank()) mObj.put("imagePath", msg.imagePath)
                 if (!msg.audioPath.isNullOrBlank()) mObj.put("audioPath", msg.audioPath)
                 if (!msg.audioName.isNullOrBlank()) mObj.put("audioName", msg.audioName)
@@ -352,6 +362,7 @@ object SessionCodec {
                     val mDocName = mObj.optString("documentName").takeIf { it.isNotBlank() }
                     val mDocPath = mObj.optString("documentPath").takeIf { it.isNotBlank() }
 
+                    val responseFormatVersion = mObj.optInt("responseFormatVersion", 0)
                     val statusStr = mObj.optString("terminalStatus").takeIf { it.isNotBlank() }
                     val errorMsg = mObj.optString("errorMessage").takeIf { it.isNotBlank() }
                     val emptyReasonStr = mObj.optString("emptyReason").takeIf { it.isNotBlank() }
@@ -391,9 +402,15 @@ object SessionCodec {
                         lastUserMsgId = id
                     }
 
+                    val sanitizedText = if (!isUser && !reasoningText.isNullOrBlank()) {
+                        com.shounak.localmeshai.utils.ThinkingTextUtils.stripDuplicateLeadingThinkingEnvelope(cleanText, reasoningText)
+                    } else {
+                        cleanText
+                    }
+
                     parsedMessages.add(
                         VisionChatMessage(
-                            text = cleanText,
+                            text = sanitizedText,
                             isUser = isUser,
                             id = id,
                             ragSources = ragSources,
@@ -411,7 +428,8 @@ object SessionCodec {
                             attemptId = attemptId,
                             reasoningText = reasoningText,
                             userMessageId = userMessageId,
-                            emptyReason = emptyReason
+                            emptyReason = emptyReason,
+                            responseFormatVersion = responseFormatVersion
                         )
                     )
                 }

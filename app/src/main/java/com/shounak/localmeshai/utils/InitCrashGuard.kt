@@ -80,7 +80,8 @@ object InitCrashGuard {
     }
 
     fun blockedModelMessage(): String {
-        return "This model was blocked after it crashed during native initialization on ${DeviceUtils.currentDeviceChipLabel()}. Use a MediaPipe .task model on this device instead."
+        val chip = runCatching { DeviceUtils.currentDeviceChipLabel() }.getOrNull()?.takeIf { it.isNotBlank() } ?: "this device"
+        return "This model was blocked after it crashed during native initialization on $chip. Use a MediaPipe .task model on this device instead."
     }
 
     fun unblockModel(context: Context, modelId: String) {

@@ -97,4 +97,59 @@ class CustomModelStoreTest {
         assertNotNull(reopenedStore.getById(id))
         assertEquals(5L * 1024 * 1024, reopenedStorage.getPartialDownloadBytes(id, "custom.gguf"))
     }
+
+    @Test
+    fun tombstonePersistsAcrossRestartsAndBlocksOrdinaryAddition() {
+        val store1 = CustomModelStore(storeDir)
+        val url = "https://huggingface.co/org/repo/resolve/main/model.gguf?download=true"
+        val id = CustomModelStore.generateCustomModelId(url, ModelType.Text)
+        val definition = CustomModelDefinition(
+            id = id,
+            name = "Model To Delete",
+            url = url,
+            type = ModelType.Text,
+            fileName = "model.gguf"
+        )
+
+        assertTrue(store1.add(definition))
+        assertTrue(store1.remove(id))
+
+        com.shounak.localmeshai.utils.ModelRemovalCoordinator.recordPendingDeletion(
+            com.shounak.localmeshai.utils.DeletionRecord(modelId = id, isPending = true)
+        )
+        assertTrue(com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(id))
+
+        // Reopen store (restart)
+        val store2 = CustomModelStore(storeDir)
+
+        // Ordinary add without explicit reimport is rejected
+        assertFalse(store2.add(definition, isExplicitReimport = false))
+        assertNull(store2.getById(id))
+
+        // Explicit re-import is accepted and clears deletion record
+        assertTrue(store2.add(definition, isExplicitReimport = true))
+        assertNotNull(store2.getById(id))
+        assertFalse(com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(id))
+    }
+
+    @Test
+    fun mutationsRejectedWhenStoreIsRecoveryRequired() {
+        val corruptedFile = File(storeDir, "solus_custom_models.json")
+        corruptedFile.writeText("INVALID JSON NOT ARRAY OR OBJECT {{{")
+
+        val store = CustomModelStore(storeDir)
+        val url = "https://huggingface.co/org/repo/resolve/main/corrupt-test.gguf"
+        val id = CustomModelStore.generateCustomModelId(url, ModelType.Text)
+        val definition = CustomModelDefinition(
+            id = id,
+            name = "Corrupt Test",
+            url = url,
+            type = ModelType.Text,
+            fileName = "corrupt-test.gguf"
+        )
+
+        assertFalse("Store add must be rejected when corrupt", store.add(definition))
+        assertFalse("Store remove must be rejected when corrupt", store.remove(id))
+    }
 }
+

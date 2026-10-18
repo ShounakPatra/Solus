@@ -16,10 +16,10 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Lightbulb
-import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -60,7 +60,7 @@ fun QuickSuggestionPills(
         val suggestions = remember {
             listOf(
                 SuggestionItem("Explain Simply", "Explain simply in easy terms: ", Icons.Default.Lightbulb, Color(0xFF38BDF8)),
-                SuggestionItem("Summarize Text", "Summarize key points of: ", Icons.Default.MenuBook, Color(0xFFA855F7)),
+                SuggestionItem("Summarize Text", "Summarize key points of: ", Icons.AutoMirrored.Filled.MenuBook, Color(0xFFA855F7)),
                 SuggestionItem("Fix & Format Code", "Review and format this code snippet: ", Icons.Default.Code, Color(0xFF34D399)),
                 SuggestionItem("Brainstorm Ideas", "Brainstorm 5 creative ideas for: ", Icons.Default.AutoAwesome, Color(0xFFF59E0B)),
                 SuggestionItem("Step-by-Step", "Analyze step-by-step: ", Icons.Default.Psychology, Color(0xFFEC4899))

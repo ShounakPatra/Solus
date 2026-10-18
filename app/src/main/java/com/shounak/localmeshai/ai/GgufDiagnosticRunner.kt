@@ -3,6 +3,8 @@ package com.shounak.localmeshai.ai
 import android.content.Context
 import android.util.Log
 import com.shounak.localmeshai.models.ModelCatalog
+import com.shounak.localmeshai.models.ModelBundle
+import com.shounak.localmeshai.utils.ModelSourceResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -170,16 +172,61 @@ internal object GgufDiagnosticRunner {
         val fileSizeBytes = if (file.exists()) file.length() else 0L
         val fileName = file.name
 
-        // Find expected size in catalog if known
-        val catalogEntry = ModelCatalog.defaultModels.find {
-            it.fileName.equals(fileName, ignoreCase = true) || it.id.equals(file.nameWithoutExtension, ignoreCase = true)
-        }
+        // Find expected size in catalog if known (only for actual catalog models, not custom/storage)
+        val isCustomOrStoragePath = modelPath.contains("custom_") || modelPath.contains("storage_")
+        val catalogEntry = if (!isCustomOrStoragePath) {
+            ModelCatalog.defaultModels.find {
+                it.id.equals(file.nameWithoutExtension, ignoreCase = true) && it.fileName.equals(fileName, ignoreCase = true)
+            }
+        } else null
         val expectedBytes = catalogEntry?.expectedFileSizeBytes ?: 0L
-        val modelSha256 = GgufGpuValidator.resolveModelSha256(modelPath, catalogEntry?.id.orEmpty())
+        val modelSha256Result = runCatching {
+            GgufGpuValidator.resolveModelSha256(modelPath, catalogEntry?.id.orEmpty(), context = context)
+        }
+        val modelSha256Exception = modelSha256Result.exceptionOrNull()
+        if (modelSha256Exception is kotlinx.coroutines.CancellationException) {
+            throw modelSha256Exception
+        }
+        val modelSha256 = modelSha256Result.getOrNull().orEmpty()
 
         // Phase 1: Artifact validation
         val sizeWarning = LlamaCppEngine.validateGgufArtifactSize(modelPath, expectedBytes)
         val sizePassed = sizeWarning == null
+
+        if (modelSha256.isBlank()) {
+            val errorMsg = modelSha256Exception?.message ?: "Model fingerprint calculation failed or returned empty"
+            return@withContext GgufDiagnosticReport(
+                timestamp = timestamp,
+                modelPath = modelPath,
+                fileName = fileName,
+                modelSha256 = "",
+                backendUsed = "None",
+                backendPolicy = policy.name,
+                fileSizeBytes = fileSizeBytes,
+                expectedSizeBytes = expectedBytes,
+                artifactSizeValidationPassed = sizePassed,
+                artifactSizeWarning = sizeWarning,
+                inspectionValid = false,
+                architecture = "unknown",
+                primaryQuantization = "unknown",
+                tensorCount = 0L,
+                trainContextLength = 0,
+                isSupported = false,
+                inspectionError = errorMsg,
+                initSuccess = false,
+                initDurationMs = 0L,
+                threadsUsed = threads,
+                prefillThreadsUsed = prefillThreads,
+                contextWindowUsed = contextWindow,
+                nBatchUsed = nBatch,
+                nUbatchUsed = nUbatch,
+                initError = errorMsg,
+                promptResults = emptyList(),
+                closeSuccess = true,
+                numericalAnomalyReport = null,
+                overallSuccess = false
+            )
+        }
 
         // Phase 2: Inspection
         val inspection = if (customNativeBridge != null) {
@@ -237,6 +284,7 @@ internal object GgufDiagnosticRunner {
             initSuccess = engine.isInitialized
             initDurationMs = (System.nanoTime() - initStartNano) / 1_000_000L
         } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) throw t
             initDurationMs = (System.nanoTime() - initStartNano) / 1_000_000L
             initError = t.message ?: t.toString()
             Log.e(TAG, "GGUF diagnostic init failed for $fileName", t)
@@ -309,6 +357,7 @@ internal object GgufDiagnosticRunner {
                         )
                     )
                 } catch (t: Throwable) {
+                    if (t is kotlinx.coroutines.CancellationException) throw t
                     val totalDurationMs = (System.nanoTime() - promptStartNano) / 1_000_000L
                     promptResults.add(
                         GgufPromptDiagnosticResult(
@@ -402,6 +451,380 @@ internal object GgufDiagnosticRunner {
         GgufDiagnosticReport(
             timestamp = timestamp,
             modelPath = modelPath,
+            fileName = fileName,
+            modelSha256 = modelSha256,
+            backendUsed = backendUsed,
+            backendPolicy = policy.name,
+            fileSizeBytes = fileSizeBytes,
+            expectedSizeBytes = expectedBytes,
+            artifactSizeValidationPassed = sizePassed,
+            artifactSizeWarning = sizeWarning,
+            inspectionValid = inspection.valid,
+            architecture = inspection.architecture,
+            primaryQuantization = inspection.primaryQuantization,
+            tensorCount = inspection.tensorCount,
+            trainContextLength = inspection.trainContextLength,
+            isSupported = inspection.isSupported,
+            inspectionError = inspection.error,
+            initSuccess = initSuccess,
+            initDurationMs = initDurationMs,
+            threadsUsed = threads,
+            prefillThreadsUsed = prefillThreads,
+            contextWindowUsed = contextWindow,
+            nBatchUsed = nBatch,
+            nUbatchUsed = nUbatch,
+            initError = initError,
+            promptResults = promptResults,
+            closeSuccess = closeSuccess,
+            numericalAnomalyReport = anomalyReport,
+            numericalValidationPassed = numericalValidationPassed,
+            responseQualityVerified = responseQualityVerified,
+            humanReviewedCoherence = false,
+            overallSuccess = overallSuccess,
+            reportFilePath = savedPath
+        )
+    }
+
+    suspend fun runDiagnostics(
+        context: Context,
+        bundle: ModelBundle,
+        threads: Int = 4,
+        prefillThreads: Int = threads,
+        contextWindow: Int = 2048,
+        nBatch: Int = 256,
+        nUbatch: Int = 128,
+        policy: DiagnosticPolicy = DiagnosticPolicy.AUTO,
+        prompts: List<String> = STANDARD_PROMPTS,
+        customNativeBridge: LlamaNativeBridge? = null
+    ): GgufDiagnosticReport = withContext(Dispatchers.IO) {
+        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+        val primary = bundle.mainArtifacts.firstOrNull() ?: error("Bundle has no main artifacts")
+        val fileName = primary.displayName
+        val fileSizeBytes = bundle.totalSizeBytes
+        val fingerprintResult = runCatching {
+            GgufGpuValidator.resolveArtifactFingerprint(context, bundle)
+        }
+        val fingerprintException = fingerprintResult.exceptionOrNull()
+        if (fingerprintException is kotlinx.coroutines.CancellationException) {
+            throw fingerprintException
+        }
+        val modelSha256 = fingerprintResult.getOrNull().orEmpty()
+        val companionSummary = "${bundle.mainArtifacts.size}_parts_${bundle.projectorArtifact?.displayName.orEmpty()}"
+
+        val isCustomOrStorage = bundle.isStorageImport || bundle.id.startsWith("custom_") || bundle.id.startsWith("storage_")
+        val catalogEntry = if (!isCustomOrStorage && bundle.id.isNotBlank()) {
+            ModelCatalog.defaultModels.find { it.id.equals(bundle.id, ignoreCase = true) }
+        } else null
+        val expectedBytes = catalogEntry?.expectedFileSizeBytes ?: 0L
+
+        // Phase 1: Artifact validation
+        val sizeWarning = if (bundle.mainArtifacts.size == 1 && bundle.projectorArtifact == null && primary.source is com.shounak.localmeshai.models.ArtifactSource.AppManaged) {
+            LlamaCppEngine.validateGgufArtifactSize(primary.source.path, expectedBytes)
+        } else null
+        val sizePassed = sizeWarning == null
+
+        if (modelSha256.isBlank()) {
+            val errorMsg = fingerprintException?.message ?: "Bundle fingerprint calculation failed or returned empty"
+            return@withContext GgufDiagnosticReport(
+                timestamp = timestamp,
+                modelPath = primary.source.location,
+                fileName = fileName,
+                modelSha256 = "",
+                backendUsed = "None",
+                backendPolicy = policy.name,
+                fileSizeBytes = fileSizeBytes,
+                expectedSizeBytes = expectedBytes,
+                artifactSizeValidationPassed = sizePassed,
+                artifactSizeWarning = sizeWarning,
+                inspectionValid = false,
+                architecture = "unknown",
+                primaryQuantization = "unknown",
+                tensorCount = 0L,
+                trainContextLength = 0,
+                isSupported = false,
+                inspectionError = errorMsg,
+                initSuccess = false,
+                initDurationMs = 0L,
+                threadsUsed = threads,
+                prefillThreadsUsed = prefillThreads,
+                contextWindowUsed = contextWindow,
+                nBatchUsed = nBatch,
+                nUbatchUsed = nUbatch,
+                initError = errorMsg,
+                promptResults = emptyList(),
+                closeSuccess = true,
+                numericalAnomalyReport = null,
+                overallSuccess = false
+            )
+        }
+
+        // Phase 2: Inspection via ModelSourceResolver lease
+        val leaseResult = runCatching { ModelSourceResolver.resolve(context, bundle) }
+        val lease = leaseResult.getOrNull()
+        if (lease == null) {
+            val errorMsg = leaseResult.exceptionOrNull()?.message ?: "Failed to resolve bundle files"
+            return@withContext GgufDiagnosticReport(
+                timestamp = timestamp,
+                modelPath = primary.source.location,
+                fileName = fileName,
+                modelSha256 = modelSha256,
+                backendUsed = "None",
+                backendPolicy = policy.name,
+                fileSizeBytes = fileSizeBytes,
+                expectedSizeBytes = expectedBytes,
+                artifactSizeValidationPassed = sizePassed,
+                artifactSizeWarning = sizeWarning,
+                inspectionValid = false,
+                architecture = "unknown",
+                primaryQuantization = "unknown",
+                tensorCount = 0L,
+                trainContextLength = 0,
+                isSupported = false,
+                inspectionError = errorMsg,
+                initSuccess = false,
+                initDurationMs = 0L,
+                threadsUsed = threads,
+                prefillThreadsUsed = prefillThreads,
+                contextWindowUsed = contextWindow,
+                nBatchUsed = nBatch,
+                nUbatchUsed = nUbatch,
+                initError = errorMsg,
+                promptResults = emptyList(),
+                closeSuccess = true,
+                numericalAnomalyReport = null,
+                overallSuccess = false
+            )
+        }
+        val inspection = try {
+            if (customNativeBridge != null) {
+                val jsonStr = customNativeBridge.inspectModel(lease.paths[0])
+                if (jsonStr != null) {
+                    LlamaCppEngine.parseInspectionJson(jsonStr)
+                } else {
+                    LlamaModelInspectionResult(valid = false, error = "Inspection returned null")
+                }
+            } else {
+                LlamaCppEngine.inspectModel(lease.paths[0])
+            }
+        } finally {
+            lease.close()
+        }
+
+        // Phase 3: Resolve backend according to policy
+        val resolvedBackend = when (policy) {
+            DiagnosticPolicy.FORCED_CPU -> LlamaBackend.CPU
+            DiagnosticPolicy.FORCED_VULKAN -> LlamaBackend.VULKAN
+            DiagnosticPolicy.AUTO -> {
+                val decision = GgufBackendPolicy.selectBackend(
+                    context = context,
+                    modelSha256 = modelSha256,
+                    threads = threads,
+                    contextWindow = contextWindow,
+                    nBatch = nBatch,
+                    nUbatch = nUbatch,
+                    prefillThreads = prefillThreads,
+                    companionSummary = companionSummary
+                )
+                decision.selectedBackend
+            }
+        }
+
+        // Phase 4: Runtime Context Init
+        val engine = if (customNativeBridge != null) {
+            LlamaCppEngine(context, customNativeBridge)
+        } else {
+            LlamaCppEngine(context)
+        }
+
+        var initSuccess = false
+        var initDurationMs = 0L
+        var initError: String? = null
+
+        val initStartNano = System.nanoTime()
+        try {
+            engine.initializeBundle(
+                context = context,
+                bundle = bundle,
+                threads = threads,
+                prefillThreads = prefillThreads,
+                contextWindow = contextWindow,
+                nBatch = nBatch,
+                nUbatch = nUbatch,
+                backend = resolvedBackend,
+                nGpuLayers = if (resolvedBackend == LlamaBackend.VULKAN) 99 else 0,
+                expectedFileSizeBytes = expectedBytes
+            )
+            initSuccess = engine.isInitialized
+            initDurationMs = (System.nanoTime() - initStartNano) / 1_000_000L
+        } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) throw t
+            initDurationMs = (System.nanoTime() - initStartNano) / 1_000_000L
+            initError = t.message ?: t.toString()
+            runCatching { Log.e(TAG, "GGUF diagnostic init failed for bundle ${bundle.id}", t) }
+        }
+
+        // Phase 5: Standard prompt matrix execution
+        val promptResults = mutableListOf<GgufPromptDiagnosticResult>()
+        if (initSuccess) {
+            for (prompt in prompts) {
+                val promptStartNano = System.nanoTime()
+                var nativeFirstTokenMs = 0L
+                var firstCallbackMs = 0L
+                val tokens = mutableListOf<String>()
+                var generationMetrics: LlamaGenerationMetrics? = null
+
+                try {
+                    val messages = listOf("user" to prompt)
+                    val result = engine.generateStream(
+                        prompt = prompt,
+                        messages = messages,
+                        samplingParams = LlamaSamplingParams(maxTokens = 32, temperature = 0.6f),
+                        onMetrics = { m -> generationMetrics = m },
+                        onFirstToken = {
+                            if (nativeFirstTokenMs == 0L) {
+                                nativeFirstTokenMs = (System.nanoTime() - promptStartNano) / 1_000_000L
+                            }
+                        }
+                    ) { token ->
+                        if (tokens.isEmpty() && firstCallbackMs == 0L) {
+                            firstCallbackMs = (System.nanoTime() - promptStartNano) / 1_000_000L
+                        }
+                        tokens.add(token)
+                    }
+
+                    val totalDurationMs = (System.nanoTime() - promptStartNano) / 1_000_000L
+                    val tokCount = generationMetrics?.tokenCount ?: tokens.size
+                    val decodeMs = generationMetrics?.decodeDurationMs ?: run {
+                        val start = if (nativeFirstTokenMs > 0L) nativeFirstTokenMs else firstCallbackMs
+                        if (start > 0L && totalDurationMs >= start) totalDurationMs - start else totalDurationMs
+                    }
+                    val promptDecodeMs = generationMetrics?.prefillDurationMs ?: (if (nativeFirstTokenMs > 0L) nativeFirstTokenMs else firstCallbackMs)
+                    val tokPerSec = if (decodeMs > 0L && tokCount > 0) {
+                        tokCount.toDouble() / (decodeMs.toDouble() / 1000.0)
+                    } else if (totalDurationMs > 0L && tokCount > 0) {
+                        tokCount.toDouble() / (totalDurationMs.toDouble() / 1000.0)
+                    } else 0.0
+
+                    promptResults.add(
+                        GgufPromptDiagnosticResult(
+                            prompt = prompt,
+                            success = (result == LlamaGenerationResult.Completed),
+                            promptTokensCount = 0,
+                            promptDecodeDurationMs = promptDecodeMs,
+                            timeToFirstTokenMs = if (nativeFirstTokenMs > 0L) nativeFirstTokenMs else firstCallbackMs,
+                            generatedTokenCount = tokCount,
+                            totalGenerationDurationMs = totalDurationMs,
+                            tokensPerSecond = tokPerSec,
+                            generatedText = tokens.joinToString(""),
+                            errorMessage = if (result == LlamaGenerationResult.Failed) "Generation returned Failed" else null
+                        )
+                    )
+                } catch (e: LlamaExecutionException) {
+                    val totalDurationMs = (System.nanoTime() - promptStartNano) / 1_000_000L
+                    promptResults.add(
+                        GgufPromptDiagnosticResult(
+                            prompt = prompt,
+                            success = false,
+                            totalGenerationDurationMs = totalDurationMs,
+                            errorMessage = "${e.category}: ${e.message}"
+                        )
+                    )
+                } catch (t: Throwable) {
+                    if (t is kotlinx.coroutines.CancellationException) throw t
+                    val totalDurationMs = (System.nanoTime() - promptStartNano) / 1_000_000L
+                    promptResults.add(
+                        GgufPromptDiagnosticResult(
+                            prompt = prompt,
+                            success = false,
+                            totalGenerationDurationMs = totalDurationMs,
+                            errorMessage = t.message ?: t.toString()
+                        )
+                    )
+                }
+            }
+        }
+
+        // Capture actual runtime diagnostics BEFORE closing the engine
+        val backendUsed = engine.activeBackend.displayName
+        val activeBackend = engine.activeBackend
+        val anomalyReport = LlamaCppEngine.getLastError()?.takeIf { it.contains("[NUMERICAL_AUDIT]") }
+
+        val validationResult = if (activeBackend == LlamaBackend.VULKAN) {
+            val cacheKey = GgufGpuValidator.buildCacheKey(modelSha256, threads, contextWindow, nBatch, nUbatch, prefillThreads, companionSummary = companionSummary)
+            GgufGpuValidator.getCachedResult(context, cacheKey)
+        } else {
+            GgufGpuValidator.ValidationResult.Pass
+        }
+
+        val overallSuccess = initSuccess && promptResults.isNotEmpty() && promptResults.all { it.success }
+        val numericalValidationPassed = anomalyReport == null &&
+            (activeBackend != LlamaBackend.VULKAN || validationResult is GgufGpuValidator.ValidationResult.Pass)
+        val responseQualityVerified = overallSuccess &&
+            promptResults.all { it.generatedText.isNotBlank() } &&
+            numericalValidationPassed
+
+        // Phase 6: Cleanup
+        var closeSuccess = false
+        try {
+            engine.close()
+            closeSuccess = !engine.isInitialized
+        } catch (t: Throwable) {
+            runCatching { Log.w(TAG, "Error closing diagnostic engine: ${t.message}") }
+        }
+
+        // Save report to disk if context is provided
+        var savedPath: String? = null
+        try {
+            val baseFilesDir = runCatching { context.filesDir }.getOrNull()
+            if (baseFilesDir != null) {
+                val diagDir = File(baseFilesDir, "diagnostics").apply { mkdirs() }
+                val reportFile = File(diagDir, "gguf_diag_${System.currentTimeMillis()}.md")
+                val report = GgufDiagnosticReport(
+                    timestamp = timestamp,
+                    modelPath = primary.source.location,
+                    fileName = fileName,
+                    modelSha256 = modelSha256,
+                    backendUsed = backendUsed,
+                    backendPolicy = policy.name,
+                    fileSizeBytes = fileSizeBytes,
+                    expectedSizeBytes = expectedBytes,
+                    artifactSizeValidationPassed = sizePassed,
+                    artifactSizeWarning = sizeWarning,
+                    inspectionValid = inspection.valid,
+                    architecture = inspection.architecture,
+                    primaryQuantization = inspection.primaryQuantization,
+                    tensorCount = inspection.tensorCount,
+                    trainContextLength = inspection.trainContextLength,
+                    isSupported = inspection.isSupported,
+                    inspectionError = inspection.error,
+                    initSuccess = initSuccess,
+                    initDurationMs = initDurationMs,
+                    threadsUsed = threads,
+                    prefillThreadsUsed = prefillThreads,
+                    contextWindowUsed = contextWindow,
+                    nBatchUsed = nBatch,
+                    nUbatchUsed = nUbatch,
+                    initError = initError,
+                    promptResults = promptResults,
+                    closeSuccess = closeSuccess,
+                    numericalAnomalyReport = anomalyReport,
+                    numericalValidationPassed = numericalValidationPassed,
+                    responseQualityVerified = responseQualityVerified,
+                    humanReviewedCoherence = false,
+                    overallSuccess = overallSuccess,
+                    reportFilePath = reportFile.absolutePath
+                )
+                reportFile.writeText(report.toMarkdown())
+                savedPath = reportFile.absolutePath
+                runCatching { Log.i(TAG, "Saved GGUF diagnostic report to $savedPath") }
+            }
+        } catch (e: Throwable) {
+            runCatching { Log.w(TAG, "Could not save diagnostic report file: ${e.message}") }
+        }
+
+        GgufDiagnosticReport(
+            timestamp = timestamp,
+            modelPath = primary.source.location,
             fileName = fileName,
             modelSha256 = modelSha256,
             backendUsed = backendUsed,

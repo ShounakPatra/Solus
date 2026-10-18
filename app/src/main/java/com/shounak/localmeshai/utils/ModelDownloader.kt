@@ -2,12 +2,17 @@ package com.shounak.localmeshai.utils
 
 import android.content.Context
 import android.os.Environment
+import com.shounak.localmeshai.models.ArtifactRole
+import com.shounak.localmeshai.models.ModelCapabilities
+import com.shounak.localmeshai.models.ModelDownloadSpec
+import com.shounak.localmeshai.models.ModelFormat
 import com.shounak.localmeshai.models.ModelPackage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -19,6 +24,7 @@ import java.io.IOException
 import java.net.URI
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
@@ -71,6 +77,12 @@ open class ModelDownloader(
     val artifactStorage: ModelArtifactStorage = defaultStorage(context),
     val minValidModelBytes: Long = MIN_VALID_MODEL_BYTES
 ) {
+    private val activeCalls = ConcurrentHashMap<String, Call>()
+
+    fun cancelTransport(modelId: String) {
+        activeCalls.remove(modelId)?.cancel()
+    }
+
     val modelRoot: File
         get() = artifactStorage.rootDir
 
@@ -101,11 +113,11 @@ open class ModelDownloader(
     }
 
     fun getPartialDownloadBytes(modelId: String): Long {
-        val stagingBytes = artifactStorage.getStagingDir(modelId).listFiles()
-            ?.firstOrNull { it.name.endsWith(".download") }
-            ?.takeIf { it.isFile }
-            ?.length() ?: 0L
-        if (stagingBytes > 0L) return stagingBytes
+        val stagingDir = runCatching { artifactStorage.getStagingDir(modelId) }.getOrNull()
+        val stagingTotal = stagingDir?.listFiles()
+            ?.filter { it.isFile && !it.name.endsWith(".resume.json") && !it.name.endsWith(".meta") }
+            ?.sumOf { it.length() } ?: 0L
+        if (stagingTotal > 0L) return stagingTotal
 
         return modelRoot.resolve("$modelId.download")
             .takeIf { it.exists() && it.isFile }
@@ -145,8 +157,32 @@ open class ModelDownloader(
         fileName: String,
         packageType: ModelPackage,
         bearerToken: String?,
+        expectedSha256: String?,
+        eTag: String?,
+        onProgress: suspend (DownloadProgress) -> Unit
+    ): DownloadResult = downloadModel(
+        url = url,
+        modelId = modelId,
+        fileName = fileName,
+        packageType = packageType,
+        bearerToken = bearerToken,
+        expectedSha256 = expectedSha256,
+        eTag = eTag,
+        publishImmediately = true,
+        sourceIdentity = null,
+        onProgress = onProgress
+    )
+
+    open suspend fun downloadModel(
+        url: String,
+        modelId: String,
+        fileName: String,
+        packageType: ModelPackage,
+        bearerToken: String?,
         expectedSha256: String? = null,
         eTag: String? = null,
+        publishImmediately: Boolean = true,
+        sourceIdentity: String? = null,
         onProgress: suspend (DownloadProgress) -> Unit
     ): DownloadResult = withContext(Dispatchers.IO) {
         if (context != null && !NetworkUtils.isConnected(context)) {
@@ -163,6 +199,8 @@ open class ModelDownloader(
                     bearerToken = bearerToken,
                     expectedSha256 = expectedSha256,
                     eTag = eTag,
+                    publishImmediately = publishImmediately,
+                    sourceIdentity = sourceIdentity,
                     onProgress = onProgress
                 )
             } catch (exception: IOException) {
@@ -189,6 +227,210 @@ open class ModelDownloader(
             }
         }
         throw IOException("Download retry loop exited unexpectedly.")
+    }
+
+    open suspend fun downloadArtifactBundle(
+        spec: ModelDownloadSpec,
+        bearerToken: String?,
+        onProgress: suspend (DownloadProgress) -> Unit
+    ): DownloadResult = withContext(Dispatchers.IO) {
+        if (context != null && !NetworkUtils.isConnected(context)) {
+            throw IOException("No internet connection. Please connect to Wi-Fi or mobile data to download models.")
+        }
+
+        // Validate destination names: reject collisions
+        val safeTargetNames = spec.artifacts.map { ModelArtifactStorage.sanitizeFileName(it.fileName).lowercase(Locale.ROOT) }
+        if (safeTargetNames.distinct().size != safeTargetNames.size) {
+            throw IOException("Duplicate artifact target file names in bundle specification")
+        }
+
+        val stagedItems = mutableListOf<StagedArtifactItem>()
+        val totalExpectedBytes = spec.totalExpectedBytes
+        var completedArtifactsBytes = 0L
+        val expectedSourceIdentity = "spec:${spec.repository}@${spec.revision}"
+
+        for ((index, artifact) in spec.artifacts.withIndex()) {
+            ensureActive()
+            val targetStagingFile = artifactStorage.getStagingFile(spec.modelId, artifact.fileName)
+            val savedMeta = DownloadResumeMetadata.loadFor(targetStagingFile)
+            val hasExactExpectedSize = artifact.expectedSizeBytes > 0L && targetStagingFile.length() == artifact.expectedSizeBytes
+            val hasExactExpectedSha = !artifact.expectedSha256.isNullOrBlank() && verifyFileSha256(targetStagingFile, artifact.expectedSha256)
+            val hasMatchingLength = savedMeta != null && savedMeta.lastDownloadedBytes == targetStagingFile.length()
+            val matchesSource = savedMeta == null || savedMeta.sourceIdentity == null || savedMeta.sourceIdentity == expectedSourceIdentity
+            val hasVerifiedCompletion = savedMeta != null && savedMeta.isCompleted &&
+                savedMeta.normalizedUrl == ModelDownloadUrlPolicy.normalizeUrl(artifact.downloadUrl) &&
+                hasMatchingLength &&
+                targetStagingFile.length() > 0L
+
+            val isAlreadyComplete = targetStagingFile.exists() && targetStagingFile.length() > 0L && matchesSource && (
+                (hasExactExpectedSize && (artifact.expectedSha256.isNullOrBlank() || hasExactExpectedSha)) ||
+                (hasExactExpectedSha && (artifact.expectedSizeBytes <= 0L || hasExactExpectedSize)) ||
+                (artifact.expectedSizeBytes <= 0L && artifact.expectedSha256.isNullOrBlank() && hasVerifiedCompletion)
+            )
+
+            val downloadedLocalPath: String
+            val downloadedBytes: Long
+
+            if (isAlreadyComplete) {
+                downloadedLocalPath = targetStagingFile.absolutePath
+                downloadedBytes = targetStagingFile.length()
+                completedArtifactsBytes += downloadedBytes
+                val aggTotal = if (totalExpectedBytes > 0L) totalExpectedBytes else -1L
+                val aggProgress = if (aggTotal > 0L) {
+                    (completedArtifactsBytes.toFloat() / aggTotal.toFloat()).coerceIn(0f, 1f)
+                } else 1f
+                onProgress(
+                    DownloadProgress(
+                        progress = aggProgress,
+                        downloadedBytes = completedArtifactsBytes,
+                        totalBytes = aggTotal,
+                        bytesPerSecond = 0L
+                    )
+                )
+            } else {
+                val downloadedResult = downloadModel(
+                    url = artifact.downloadUrl,
+                    modelId = spec.modelId,
+                    fileName = artifact.fileName,
+                    packageType = ModelPackage.SingleFile,
+                    bearerToken = bearerToken,
+                    expectedSha256 = artifact.expectedSha256,
+                    publishImmediately = false,
+                    sourceIdentity = expectedSourceIdentity
+                ) { perFileProgress ->
+                    val currentAggregatedBytes = completedArtifactsBytes + perFileProgress.downloadedBytes
+                    val aggTotal = if (totalExpectedBytes > 0L) totalExpectedBytes else -1L
+                    val aggProgress = if (aggTotal > 0L) {
+                        (currentAggregatedBytes.toFloat() / aggTotal.toFloat()).coerceIn(0f, 1f)
+                    } else {
+                        perFileProgress.progress
+                    }
+                    onProgress(
+                        DownloadProgress(
+                            progress = aggProgress,
+                            downloadedBytes = currentAggregatedBytes,
+                            totalBytes = aggTotal,
+                            bytesPerSecond = perFileProgress.bytesPerSecond
+                        )
+                    )
+                }
+                downloadedLocalPath = downloadedResult.localPath
+                downloadedBytes = downloadedResult.bytesDownloaded
+                completedArtifactsBytes += downloadedBytes
+            }
+
+            val isPrimary = (artifact.role == ArtifactRole.Main ||
+                (index == 0 && spec.artifacts.none { it.role == ArtifactRole.Main }))
+            stagedItems.add(
+                StagedArtifactItem(
+                    stagedFile = File(downloadedLocalPath),
+                    relativeTargetName = artifact.fileName,
+                    expectedSha256 = artifact.expectedSha256,
+                    isPrimary = isPrimary,
+                    role = artifact.role,
+                    order = index
+                )
+            )
+        }
+
+        // Validate complete shard membership
+        val shardItems = stagedItems.filter { it.role == ArtifactRole.Shard }
+        if (shardItems.isNotEmpty()) {
+            val totalShards = spec.artifacts.firstOrNull { it.role == ArtifactRole.Shard }?.totalShards ?: shardItems.size
+            if (shardItems.size != totalShards) {
+                throw IOException("Incomplete shard bundle: expected $totalShards shards, but only ${shardItems.size} were downloaded.")
+            }
+        }
+
+        val format = spec.effectiveFormat
+        val validatedStagedItems = mutableListOf<StagedArtifactItem>()
+        val capabilities: ModelCapabilities
+        val primaryName: String
+        var derivedLoadRestriction: com.shounak.localmeshai.models.LoadRestriction? = null
+
+        if (format == ModelFormat.GGUF) {
+            // Validate complete artifact bundle via native GgufBundleInspector before atomic publication
+            val stagedFiles = stagedItems.map { it.stagedFile }
+            val expectedRolesMap = stagedItems.associate { it.relativeTargetName to it.role }
+            val expectedSizesMap = spec.artifacts.associate { it.fileName to it.expectedSizeBytes }
+            val bundleValidation = GgufBundleInspector.inspectAndValidateFiles(
+                files = stagedFiles,
+                expectedRoles = expectedRolesMap,
+                expectedSizes = expectedSizesMap,
+                logicalNames = stagedItems.map { it.relativeTargetName }
+            )
+            if (!bundleValidation.isValid) {
+                throw IOException("Bundle verification failed before publication: ${bundleValidation.errorMessage}")
+            }
+
+            val stagedByDisplayName = stagedItems.associateBy { it.relativeTargetName }
+            bundleValidation.orderedMainArtifacts.forEachIndexed { order, art ->
+                val orig = stagedByDisplayName[art.displayName] ?: error("Missing validated artifact ${art.displayName}")
+                val isMain = bundleValidation.orderedMainArtifacts.size == 1
+                validatedStagedItems.add(
+                    orig.copy(
+                        order = order,
+                        isPrimary = (order == 0),
+                        role = if (isMain) ArtifactRole.Main else ArtifactRole.Shard
+                    )
+                )
+            }
+            bundleValidation.projectorArtifact?.let { proj ->
+                val orig = stagedByDisplayName[proj.displayName] ?: error("Missing validated projector ${proj.displayName}")
+                validatedStagedItems.add(
+                    orig.copy(
+                        order = validatedStagedItems.size,
+                        isPrimary = false,
+                        role = ArtifactRole.Projector
+                    )
+                )
+            }
+            capabilities = bundleValidation.capabilities
+            primaryName = bundleValidation.orderedMainArtifacts.first().displayName
+        } else {
+            // Non-GGUF format (.task or .litertlm): validate container structure and derive real capabilities via NonGgufBundleInspector
+            var derivedCapabilities: ModelCapabilities? = null
+            stagedItems.forEachIndexed { order, item ->
+                if (!item.stagedFile.exists() || item.stagedFile.length() <= 0L) {
+                    throw IOException("Downloaded non-GGUF file is missing or empty: ${item.stagedFile.name}")
+                }
+                val inspection = NonGgufBundleInspector.inspectFile(item.stagedFile, format)
+                if (!inspection.isValid) {
+                    throw IOException("Downloaded file '${item.relativeTargetName}' failed bundle validation for $format: ${inspection.errorMessage}")
+                }
+                if (order == 0) {
+                    derivedCapabilities = inspection.capabilities
+                    derivedLoadRestriction = inspection.loadRestriction
+                }
+                validatedStagedItems.add(
+                    item.copy(
+                        order = order,
+                        isPrimary = (order == 0),
+                        role = ArtifactRole.Main
+                    )
+                )
+            }
+            capabilities = derivedCapabilities ?: spec.capabilities
+            primaryName = validatedStagedItems.first().relativeTargetName
+        }
+
+        val currentJob = coroutineContext[Job]
+        val publishedPrimary = artifactStorage.publishArtifactBundle(
+            modelId = spec.modelId,
+            stagedItems = validatedStagedItems,
+            primaryItemName = primaryName,
+            sourceIdentity = expectedSourceIdentity,
+            packageType = "ArtifactBundle",
+            capabilities = capabilities,
+            format = format,
+            loadRestriction = derivedLoadRestriction,
+            isCancelled = { currentJob?.isActive == false }
+        )
+
+        DownloadResult(
+            localPath = publishedPrimary.absolutePath,
+            bytesDownloaded = completedArtifactsBytes
+        )
     }
 
     private fun getHttpClient(bearerToken: String?): OkHttpClient {
@@ -219,6 +461,8 @@ open class ModelDownloader(
         bearerToken: String?,
         expectedSha256: String? = null,
         eTag: String? = null,
+        publishImmediately: Boolean = true,
+        sourceIdentity: String? = null,
         onProgress: suspend (DownloadProgress) -> Unit
     ): DownloadResult {
         val parsedUrl = url.toHttpUrlOrNull()
@@ -273,14 +517,19 @@ open class ModelDownloader(
 
             val client = getHttpClient(bearerToken)
             val call = client.newCall(requestBuilder.build())
+            activeCalls[modelId] = call
 
             val job = coroutineContext[Job]
-            val cancelReg = job?.invokeOnCompletion { call.cancel() }
+            val cancelReg = job?.invokeOnCompletion {
+                activeCalls.remove(modelId, call)
+                call.cancel()
+            }
 
             val response = try {
                 call.execute()
             } catch (e: IOException) {
                 cancelReg?.dispose()
+                activeCalls.remove(modelId, call)
                 if (job?.isCancelled == true) {
                     throw kotlinx.coroutines.CancellationException("Download cancelled", e)
                 }
@@ -292,6 +541,7 @@ open class ModelDownloader(
             if (responseCode == 416) {
                 response.close()
                 cancelReg?.dispose()
+                activeCalls.remove(modelId, call)
 
                 val contentRange = ContentRange.parse(response.header("Content-Range"))
                 val isBytesUnit = contentRange == null || contentRange.unit.equals("bytes", ignoreCase = true)
@@ -304,16 +554,17 @@ open class ModelDownloader(
                 val isMetaMatch = savedMeta == null || (savedMeta.normalizedUrl == normalizedUrl && savedMeta.packageType == packageType)
 
                 if (existingBytes > 0L && isMetaMatch && (matchesExpectedTotal || matchesChecksum)) {
-                    DownloadResumeMetadata.deleteFor(stagingFile)
                     onProgress(DownloadProgress(1f, existingBytes, existingBytes, 0L))
-                    return publishCompletedDownload(
+                    return handleDownloadSuccess(
                         stagingFile = stagingFile,
                         url = url,
                         modelId = modelId,
                         fileName = fileName,
                         packageType = packageType,
                         expectedSha256 = expectedSha256,
-                        downloaded = existingBytes
+                        downloaded = existingBytes,
+                        publishImmediately = publishImmediately,
+                        sourceIdentity = sourceIdentity
                     )
                 } else if (restartAllowed) {
                     restartAllowed = false
@@ -333,6 +584,7 @@ open class ModelDownloader(
                 val serverMessage = readBoundedResponseBody(response.body)
                 response.close()
                 cancelReg?.dispose()
+                activeCalls.remove(modelId, call)
                 throw IOException(downloadErrorMessage(url, responseCode, serverMessage))
             }
 
@@ -342,6 +594,7 @@ open class ModelDownloader(
                 val serverMessage = readBoundedResponseBody(body)
                 response.close()
                 cancelReg?.dispose()
+                activeCalls.remove(modelId, call)
                 throw IOException("Model host returned a web page instead of a model file. $serverMessage")
             }
 
@@ -356,6 +609,7 @@ open class ModelDownloader(
                 if (!isRangeValid) {
                     response.close()
                     cancelReg?.dispose()
+                    activeCalls.remove(modelId, call)
                     if (restartAllowed) {
                         restartAllowed = false
                         stagingFile.delete()
@@ -390,7 +644,8 @@ open class ModelDownloader(
                 expectedSha256 = expectedSha256,
                 validator = validator,
                 expectedTotalBytes = totalBytes,
-                lastDownloadedBytes = existingBytes
+                lastDownloadedBytes = existingBytes,
+                sourceIdentity = sourceIdentity
             )
             DownloadResumeMetadata.saveFor(stagingFile, currentMeta)
 
@@ -434,7 +689,10 @@ open class ModelDownloader(
                                 output = output,
                                 coroutineContext = coroutineContext,
                                 isCancelled = { job?.isCancelled == true || call.isCanceled() },
-                                onAbort = { call.cancel() }
+                                onAbort = {
+                                    activeCalls.remove(modelId, call)
+                                    call.cancel()
+                                }
                             ) { read, _ ->
                                 downloaded += read
                                 bytesReadThisStream += read
@@ -453,6 +711,7 @@ open class ModelDownloader(
                 throw e
             } finally {
                 cancelReg?.dispose()
+                activeCalls.remove(modelId, call)
                 call.cancel()
             }
 
@@ -467,18 +726,81 @@ open class ModelDownloader(
             }
 
             emitProgress(force = true)
-            DownloadResumeMetadata.deleteFor(stagingFile)
-
-            return publishCompletedDownload(
+            return handleDownloadSuccess(
                 stagingFile = stagingFile,
                 url = url,
                 modelId = modelId,
                 fileName = fileName,
                 packageType = packageType,
                 expectedSha256 = expectedSha256,
-                downloaded = downloaded
+                downloaded = downloaded,
+                publishImmediately = publishImmediately,
+                sourceIdentity = sourceIdentity
             )
         }
+    }
+
+    private suspend fun handleDownloadSuccess(
+        stagingFile: File,
+        url: String,
+        modelId: String,
+        fileName: String,
+        packageType: ModelPackage,
+        expectedSha256: String?,
+        downloaded: Long,
+        publishImmediately: Boolean,
+        sourceIdentity: String? = null
+    ): DownloadResult {
+        if (!publishImmediately) {
+            if (downloaded == 0L) {
+                stagingFile.delete()
+                DownloadResumeMetadata.deleteFor(stagingFile)
+                throw IOException("Downloaded file is empty.")
+            }
+            val currentJob = coroutineContext[Job]
+            val isCancelled = { currentJob?.isActive == false }
+            if (!expectedSha256.isNullOrBlank()) {
+                val actualSha256 = computeSha256(stagingFile, isCancelled = isCancelled)
+                if (!actualSha256.equals(expectedSha256.trim(), ignoreCase = true)) {
+                    stagingFile.delete()
+                    DownloadResumeMetadata.deleteFor(stagingFile)
+                    throw IOException("Checksum verification failed for $fileName: expected $expectedSha256, got $actualSha256")
+                }
+            }
+            val existingMeta = DownloadResumeMetadata.loadFor(stagingFile) ?: DownloadResumeMetadata(
+                normalizedUrl = ModelDownloadUrlPolicy.normalizeUrl(url),
+                packageType = packageType,
+                expectedSha256 = expectedSha256,
+                expectedTotalBytes = downloaded,
+                lastDownloadedBytes = downloaded,
+                sourceIdentity = sourceIdentity
+            )
+            DownloadResumeMetadata.saveFor(
+                stagingFile,
+                existingMeta.copy(
+                    isCompleted = true,
+                    lastDownloadedBytes = downloaded,
+                    updatedAt = System.currentTimeMillis(),
+                    sourceIdentity = sourceIdentity ?: existingMeta.sourceIdentity
+                )
+            )
+            return DownloadResult(
+                localPath = stagingFile.absolutePath,
+                bytesDownloaded = downloaded
+            )
+        }
+
+        DownloadResumeMetadata.deleteFor(stagingFile)
+
+        return publishCompletedDownload(
+            stagingFile = stagingFile,
+            url = url,
+            modelId = modelId,
+            fileName = fileName,
+            packageType = packageType,
+            expectedSha256 = expectedSha256,
+            downloaded = downloaded
+        )
     }
 
     private suspend fun publishCompletedDownload(
@@ -756,8 +1078,10 @@ open class ModelDownloader(
         }
 
         fun isLikelyTaskBundle(file: File): Boolean {
-            if (!file.isFile || file.length() < 4L) return false
-            return isZipArchive(file) || containsKnownTaskMarker(file)
+            if (!file.isFile || file.length() < 32L) return false
+            return runCatching {
+                NonGgufBundleInspector.inspectMediaPipeTask(file).isValid
+            }.getOrDefault(false) || containsKnownTaskMarker(file)
         }
 
         private fun isZipArchive(file: File): Boolean {

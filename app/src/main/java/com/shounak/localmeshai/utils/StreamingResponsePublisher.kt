@@ -1,5 +1,6 @@
 package com.shounak.localmeshai.utils
 
+import com.shounak.localmeshai.ai.StructuredResponseSnapshot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -15,12 +16,15 @@ internal class StreamingResponsePublisher(
     private val publish: (String) -> Unit,
     private val clock: () -> Long = System::nanoTime,
     private val intervalNanos: Long = 50_000_000L,
-    private val finalTransform: (String) -> String = transform
+    private val finalTransform: (String) -> String = transform,
+    private val snapshotProvider: (() -> StructuredResponseSnapshot)? = null,
+    private val publishSnapshot: ((StructuredResponseSnapshot) -> Unit)? = null
 ) {
     private val lock = Any()
     private val buffer = StringBuilder()
     private val notifications = Channel<Unit>(Channel.CONFLATED)
     @Volatile private var lastPublished: String? = null
+    @Volatile private var lastPublishedKey: String? = null
     private var version = 0
     private var finished = false
     private var lastAt: Long? = null
@@ -44,12 +48,20 @@ internal class StreamingResponsePublisher(
                 Triple(version, currentAttemptId, buffer.toString())
             }
             val formatted = transform(snapText)
+            val currentSnapshot = snapshotProvider?.invoke()
+            val hasContent = formatted.isNotBlank() || (currentSnapshot != null && (currentSnapshot.answerText.isNotBlank() || currentSnapshot.reasoningText.isNotBlank() || currentSnapshot.isThinkingActive))
             var shouldPublish = false
             var isFirst = false
             synchronized(lock) {
                 if (snapVersion == version && snapAttempt == currentAttemptId && !finished) {
-                    if (formatted.isNotBlank() && formatted != lastPublished) {
+                    val key = if (currentSnapshot != null) {
+                        "${currentSnapshot.answerText}|${currentSnapshot.reasoningText}|${currentSnapshot.isThinkingActive}|$formatted"
+                    } else {
+                        formatted
+                    }
+                    if (hasContent && key != lastPublishedKey) {
                         isFirst = lastPublished.isNullOrBlank()
+                        lastPublishedKey = key
                         lastPublished = formatted
                         lastAt = clock()
                         shouldPublish = true
@@ -61,7 +73,10 @@ internal class StreamingResponsePublisher(
                     AppTrace.beginSection("first_visible_publication")
                 }
                 try {
-                    publish(formatted)
+                    if (formatted.isNotBlank()) publish(formatted)
+                    if (publishSnapshot != null && currentSnapshot != null) {
+                        publishSnapshot(currentSnapshot)
+                    }
                 } finally {
                     if (isFirst) AppTrace.endSection()
                 }
@@ -90,6 +105,7 @@ internal class StreamingResponsePublisher(
      */
     fun beginAttempt(newAttemptId: Int) {
         var shouldPublishReset = false
+        var resetSnapshot: StructuredResponseSnapshot? = null
         synchronized(lock) {
             if (finished) return
             if (newAttemptId <= currentAttemptId && buffer.isNotEmpty()) return
@@ -98,10 +114,20 @@ internal class StreamingResponsePublisher(
             version++
             lastAt = null
             lastPublished = ""
+            lastPublishedKey = ""
             shouldPublishReset = true
+            resetSnapshot = snapshotProvider?.invoke() ?: StructuredResponseSnapshot(
+                requestId = "",
+                attemptId = newAttemptId,
+                revision = version,
+                answerText = "",
+                reasoningText = "",
+                isThinkingActive = false
+            )
         }
         if (shouldPublishReset) {
             publish("")
+            resetSnapshot?.let { publishSnapshot?.invoke(it) }
         }
         notifications.trySend(Unit)
     }
@@ -166,6 +192,7 @@ data class StreamingSnapshot(
         if (shouldPublish) {
             publish(formatted)
         }
+        snapshotProvider?.invoke()?.let { publishSnapshot?.invoke(it) }
         formatted
     }
 
@@ -198,6 +225,15 @@ data class StreamingSnapshot(
         if (shouldPublish) {
             publish(finalFormattedText)
         }
+        snapshotProvider?.invoke()?.let { publishSnapshot?.invoke(it) }
         finalFormattedText
+    }
+
+    fun notifyStructuredUpdate() {
+        synchronized(lock) {
+            if (finished) return
+            version++
+        }
+        notifications.trySend(Unit)
     }
 }

@@ -4,6 +4,8 @@
 #include "log.h"
 #include "llama.h"
 
+#include <algorithm>
+#include <clocale>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -37,29 +39,37 @@ struct ngram_container {
 };
 
 int main(int argc, char ** argv) {
+    std::setlocale(LC_NUMERIC, "C");
+
     common_params params;
+
+    common_init();
 
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_COMMON)) {
         return 1;
     }
 
-    common_init();
-
     const int W = 15; // lookahead window
     const int N = 5;  // n-gram size
     const int G = 15; // max verification n-grams
 
-    const bool dump_kv_cache = params.dump_kv_cache;
+    // lookahead requires W + G + 1 sequences for parallel Jacobi decoding
+    params.n_parallel = W + G + 1;
+
+    // unified KV cache is required for coupled sequences in batch splitting
+    params.kv_unified = true;
 
     // init llama.cpp
     llama_backend_init();
     llama_numa_init(params.numa);
 
     // load the target model
-    common_init_result llama_init = common_init_from_params(params);
+    auto llama_init = common_init_from_params(params);
 
-    llama_model * model = llama_init.model.get();
-    llama_context * ctx = llama_init.context.get();
+    auto * model = llama_init->model();
+    auto * ctx   = llama_init->context();
+
+    auto * mem = llama_get_memory(ctx);
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
 
@@ -91,11 +101,16 @@ int main(int argc, char ** argv) {
     const auto t_enc_start = ggml_time_us();
 
     // eval the prompt
-    llama_decode(ctx, llama_batch_get_one( inp.data(), n_input - 1));
-    llama_decode(ctx, llama_batch_get_one(&inp.back(),           1));
+    {
+        common_batch batch = common_batch_get_one(ctx, inp.data(), n_input - 1);
+        llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+
+        batch = common_batch_get_one(ctx, &inp.back(), 1);
+        llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+    }
 
     for (int s = 1; s < W + G + 1; ++s) {
-        llama_kv_cache_seq_cp(ctx, 0, s, -1, -1);
+        llama_memory_seq_cp(mem, 0, s, -1, -1);
     }
 
     const auto t_enc_end = ggml_time_us();
@@ -114,7 +129,7 @@ int main(int argc, char ** argv) {
     // seq_id == 0           : the current input token
     // seq_id [1, W]         : tokens from the past N - 1 Jacobi iterations
     // seq_id [W + 1, W + G] : verification n-grams
-    llama_batch batch = llama_batch_init(params.n_ctx, 0, W + G + 1);
+    common_batch batch(ctx);
 
     // target model sampling context
     struct common_sampler * smpl = common_sampler_init(model, params.sampling);
@@ -151,9 +166,6 @@ int main(int argc, char ** argv) {
     // here we keep adding new n-grams as we go
     ngram_container ngrams_observed(llama_vocab_n_tokens(vocab), N, G);
 
-    // debug
-    struct llama_kv_cache_view kvc_view = llama_kv_cache_view_init(ctx, W + G + 1);
-
     const auto t_dec_start = ggml_time_us();
 
     // sample first token
@@ -171,12 +183,6 @@ int main(int argc, char ** argv) {
     }
 
     while (true) {
-        // debug
-        if (dump_kv_cache) {
-            llama_kv_cache_view_update(ctx, &kvc_view);
-            common_kv_cache_dump_view_seqs(kvc_view, 40);
-        }
-
         // build the mask from https://lmsys.org/blog/2023-11-21-lookahead-decoding/
         //
         // Example for W = 5, N = 4, G = 2:
@@ -203,10 +209,10 @@ int main(int argc, char ** argv) {
         //                                                      V  V  V  V  V  V
         //                                                             id
         {
-            common_batch_clear(batch);
+            batch.clear();
 
             // current token - first token of the first level
-            common_batch_add(batch, id, n_past, seq_id_all, true);
+            batch.add(id, n_past, seq_id_all, true);
 
             // verification n-grams - queue this before the lookahead tokens for less KV cache fragmentation
             {
@@ -229,9 +235,9 @@ int main(int argc, char ** argv) {
                         const llama_token t = ngrams_observed.tokens[idx + j];
 
                         ngrams_cur[g].tokens [j + 1] = t;
-                        ngrams_cur[g].i_batch[j + 1] = batch.n_tokens;
+                        ngrams_cur[g].i_batch[j + 1] = batch.size();
 
-                        common_batch_add(batch, t, n_past + j + 1, { W + 1 + g }, true);
+                        batch.add(t, n_past + j + 1, W + 1 + g, true);
                     }
                 }
             }
@@ -243,18 +249,18 @@ int main(int argc, char ** argv) {
                     seq_id_look[j] = i + j + 1;
                 }
 
-                common_batch_add(batch, tokens_j[0][i], n_past + i, seq_id_look, false);
+                batch.add(tokens_j[0][i], n_past + i, seq_id_look, false);
             }
 
             // fill the rest of the levels
             for (int j = 1; j < N - 1; j++) {
                 for (int i = 0; i < W; i++) {
-                    common_batch_add(batch, tokens_j[j][i], n_past + j + i, { i + 1 }, j == N - 2);
+                    batch.add(tokens_j[j][i], n_past + j + i, i + 1, j == N - 2);
                 }
             }
         }
 
-        if (llama_decode(ctx, batch) != 0) {
+        if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0) {
             LOG_ERR("\n\n%s: llama_decode failed - increase KV cache size\n", __func__);
             return 1;
         }
@@ -437,17 +443,17 @@ int main(int argc, char ** argv) {
 
         // KV cache management
         // if no verification token matched, we simply remove all cells from this batch -> no fragmentation
-        llama_kv_cache_seq_rm(ctx, -1, n_past, -1);
+        llama_memory_seq_rm(mem, -1, n_past, -1);
 
         if (seq_id_best != 0) {
             // if a verification token matched, we keep the best sequence and remove the rest
             // this leads to some KV cache fragmentation
-            llama_kv_cache_seq_keep(ctx, seq_id_best);
-            llama_kv_cache_seq_cp  (ctx, seq_id_best, 0, -1, -1);
-            llama_kv_cache_seq_rm  (ctx, seq_id_best,    -1, -1);
+            llama_memory_seq_keep(mem, seq_id_best);
+            llama_memory_seq_cp  (mem, seq_id_best, 0, -1, -1);
+            llama_memory_seq_rm  (mem, seq_id_best,    -1, -1);
 
             for (int s = 1; s < W + G + 1; ++s) {
-                llama_kv_cache_seq_cp(ctx, 0, s, -1, -1);
+                llama_memory_seq_cp(mem, 0, s, -1, -1);
             }
         }
     }
@@ -472,9 +478,6 @@ int main(int argc, char ** argv) {
 
     common_sampler_free(smpl);
 
-    llama_kv_cache_view_free(&kvc_view);
-
-    llama_batch_free(batch);
 
     llama_backend_free();
 

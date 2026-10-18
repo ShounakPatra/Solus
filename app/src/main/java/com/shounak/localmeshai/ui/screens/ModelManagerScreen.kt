@@ -3,18 +3,32 @@ package com.shounak.localmeshai.ui.screens
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.shounak.localmeshai.models.ModelBundle
+import com.shounak.localmeshai.utils.LocalModelImporter
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.ClickableText
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import com.shounak.localmeshai.utils.ErrorClassifier
 import com.shounak.localmeshai.utils.CrashReportManager
 import com.shounak.localmeshai.utils.glassmorphic
@@ -25,6 +39,15 @@ import com.shounak.localmeshai.utils.animatedGlassHalo
 import com.shounak.localmeshai.utils.fluidReveal
 import com.shounak.localmeshai.utils.jellyOnTouch
 import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
+import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.horizontalScroll
@@ -48,11 +71,14 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Eject
+import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -127,6 +153,15 @@ enum class SizeTier(val display: String) {
     }
 }
 
+/**
+ * Source filter selector on the Models tab: "All models" or "Imported" (custom imported models).
+ */
+enum class ModelSourceFilter(val display: String) {
+    All("All models"),
+    Imported("Imported");
+}
+
+
 @Composable
 private fun ModelSectionTitle(
     title: String,
@@ -189,6 +224,8 @@ internal fun ModelInfo.isPinnedDownloadCard(): Boolean {
 
 internal fun ModelInfo.downloadTime(): Long {
     if (downloadedAt > 0L) return downloadedAt
+    val bundleTime = bundle?.addedAt ?: 0L
+    if (bundleTime > 0L) return bundleTime
     val path = localPath ?: return 0L
     return try {
         val file = File(path)
@@ -252,6 +289,7 @@ internal fun ModelInfo.matches(query: String, tier: SizeTier): Boolean {
             backendLower.contains(word) ||
             typeLower.contains(word) ||
             (word == "moe" && isMixtureOfExperts()) ||
+            (isCustom && (word == "imported" || word == "import" || q == "imported" || q == "import")) ||
             (cleanWord.isNotEmpty() && cleanName.contains(cleanWord))
     }
 }
@@ -300,6 +338,8 @@ internal fun ModelInfo.searchRelevance(query: String): Int {
         score += 200
     } else if (words.isNotEmpty() && words.all { description.lowercase().contains(it) }) {
         score += 150
+    } else if (isCustom && (q == "imported" || q == "import" || words.any { it == "imported" || it == "import" })) {
+        score += 250
     } else {
         score += 100
     }
@@ -320,51 +360,58 @@ fun ModelManagerScreen(
     val context = LocalContext.current
     val selectedTextModel by mainViewModel.selectedTextModelPath.collectAsState()
     val selectedVisionModel by mainViewModel.selectedVisionModelPath.collectAsState()
+    val unloadingModelIds by mainViewModel.unloadingModelIds.collectAsState()
     val huggingFaceToken by mainViewModel.huggingFaceToken.collectAsState()
     val appSettingsData by mainViewModel.appSettingsData.collectAsState()
     val enableDynamicThemes = appSettingsData.enableDynamicThemes
 
-    // Search + tier filter state. rememberSaveable so they survive config
+    val hiddenIds by mainViewModel.hiddenFromPresentationIds.collectAsState()
+
+    // Search + tier + source filter state. rememberSaveable so they survive config
     // changes (rotation, dark mode toggle, etc.).
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var selectedTier by rememberSaveable { mutableStateOf(SizeTier.All) }
+    var selectedSourceFilter by rememberSaveable { mutableStateOf(ModelSourceFilter.All) }
 
     val isSearching = searchQuery.isNotBlank()
 
-    val allTextModels = mainViewModel.availableModels.filter { it.type == ModelType.Text }
-    val allVisionModels = mainViewModel.availableModels.filter { it.type == ModelType.Vision }
-    val textModels = allTextModels.filter { it.matches(searchQuery, selectedTier) }
-    val visionModels = allVisionModels.filter { it.matches(searchQuery, selectedTier) }
-
-    val matchingModels = if (!isSearching) {
-        emptyList()
-    } else {
-        mainViewModel.availableModels
-            .filter { it.matches(searchQuery, selectedTier) }
-            .sortedWith(
-                compareByDescending<ModelInfo> { it.searchRelevance(searchQuery) }
-                    .thenBy { it.name }
-            )
+    val visibleAvailableModels = mainViewModel.availableModels.filter { it.id !in hiddenIds }
+    val filteredSourceModels = when (selectedSourceFilter) {
+        ModelSourceFilter.All -> visibleAvailableModels
+        ModelSourceFilter.Imported -> visibleAvailableModels.filter { it.isCustom }
     }
-
-    val filterActive = isSearching || selectedTier != SizeTier.All
-    val hasMatches = if (isSearching) {
-        matchingModels.isNotEmpty()
-    } else {
-        (textModels + visionModels).isNotEmpty()
-    }
-    val showEmpty = filterActive && !hasMatches
+    val filteredModels = filteredSourceModels.filter { it.matches(searchQuery, selectedTier) }
 
     // Active downloads and local files are pinned to the top so progress/status
     // does not jump around between catalog sections.
     // Downloaded models are sorted so the most recently downloaded appears at the top.
-    val downloadedModels = (allTextModels + allVisionModels)
+    val downloadedModels = filteredModels
         .filter { it.isPinnedDownloadCard() }
         .sortedWith(
             compareBy<ModelInfo> { it.downloadedSectionSortRank() }
                 .thenByDescending { it.downloadTime() }
         )
     val downloadedIds = downloadedModels.map { it.id }.toSet()
+
+    val textModels = filteredModels.filter { it.id !in downloadedIds && it.type == ModelType.Text }
+    val visionModels = filteredModels.filter { it.id !in downloadedIds && it.type == ModelType.Vision }
+
+    val matchingModels = if (!isSearching) {
+        emptyList()
+    } else {
+        filteredModels.sortedWith(
+            compareByDescending<ModelInfo> { it.searchRelevance(searchQuery) }
+                .thenBy { it.name }
+        )
+    }
+
+    val filterActive = isSearching || selectedTier != SizeTier.All || selectedSourceFilter != ModelSourceFilter.All
+    val hasMatches = if (isSearching) {
+        matchingModels.isNotEmpty()
+    } else {
+        filteredModels.isNotEmpty()
+    }
+    val showEmpty = filterActive && !hasMatches
 
     val readyTextModels = textModels.filter {
         it.id !in downloadedIds &&
@@ -422,20 +469,95 @@ fun ModelManagerScreen(
 
     val listState = rememberLazyListState()
     val isKeyboardOpen = WindowInsets.isImeVisible
+    var showAddModelSheet by rememberSaveable { mutableStateOf(false) }
+    var addModelSheetSessionId by rememberSaveable { mutableStateOf<String?>(null) }
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier
-            .fillMaxSize()
-            .imePadding(),
-        contentPadding = PaddingValues(
-            start = 16.dp,
-            top = 16.dp,
-            end = 16.dp,
-            bottom = if (isKeyboardOpen) 24.dp else 112.dp
-        ),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    val density = LocalDensity.current
+    val areAnimationsDisabled = remember(context) {
+        runCatching {
+            android.provider.Settings.Global.getFloat(
+                context.contentResolver,
+                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+                1.0f
+            ) == 0.0f
+        }.getOrDefault(false)
+    }
+
+    val itemFadeInSpec = if (areAnimationsDisabled) null else tween<Float>(durationMillis = 220)
+    val itemFadeOutSpec = if (areAnimationsDisabled) null else tween<Float>(durationMillis = 180)
+    val itemPlacementSpec = if (areAnimationsDisabled) null else tween<androidx.compose.ui.unit.IntOffset>(durationMillis = 260)
+
+    var isAddModelExpanded by rememberSaveable {
+        mutableStateOf(listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0)
+    }
+
+    LaunchedEffect(listState) {
+        var previousIndex = listState.firstVisibleItemIndex
+        var previousOffset = listState.firstVisibleItemScrollOffset
+        var accumulatedScroll = 0
+        val thresholdPx = with(density) { 16.dp.roundToPx() }
+
+        snapshotFlow {
+            Triple(
+                listState.firstVisibleItemIndex,
+                listState.firstVisibleItemScrollOffset,
+                listState.isScrollInProgress
+            )
+        }.collect { (currentIndex, currentOffset, isScrolling) ->
+            if (currentIndex == 0 && currentOffset == 0) {
+                if (!isAddModelExpanded) isAddModelExpanded = true
+                accumulatedScroll = 0
+                previousIndex = 0
+                previousOffset = 0
+                return@collect
+            }
+
+            val delta = if (currentIndex == previousIndex) {
+                currentOffset - previousOffset
+            } else if (currentIndex > previousIndex) {
+                thresholdPx + 1
+            } else {
+                -(thresholdPx + 1)
+            }
+
+            previousIndex = currentIndex
+            previousOffset = currentOffset
+
+            if (isScrolling) {
+                if (delta > 0) {
+                    if (accumulatedScroll < 0) accumulatedScroll = 0
+                    accumulatedScroll += delta
+                    if (accumulatedScroll >= thresholdPx && isAddModelExpanded) {
+                        isAddModelExpanded = false
+                    }
+                } else if (delta < 0) {
+                    if (accumulatedScroll > 0) accumulatedScroll = 0
+                    accumulatedScroll += delta
+                    if (accumulatedScroll <= -thresholdPx && !isAddModelExpanded) {
+                        isAddModelExpanded = true
+                    }
+                }
+            } else {
+                accumulatedScroll = 0
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .hazeSource(state = hazeState)
+                .imePadding(),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = 16.dp,
+                end = 16.dp,
+                bottom = if (isKeyboardOpen) 24.dp else 112.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
         item(key = "title_header") {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -472,6 +594,8 @@ fun ModelManagerScreen(
                     onSearchChange = { searchQuery = it },
                     selectedTier = selectedTier,
                     onTierChange = { selectedTier = it },
+                    selectedSourceFilter = selectedSourceFilter,
+                    onSourceFilterChange = { selectedSourceFilter = it },
                     hazeState = hazeState
                 )
             }
@@ -500,13 +624,15 @@ fun ModelManagerScreen(
 
         if (isSearching) {
             if (showEmpty) {
-                item {
+                item(key = "empty_matching_models") {
                     NoModelsMatchCard(
                         searchQuery = searchQuery,
                         selectedTier = selectedTier,
+                        selectedSourceFilter = selectedSourceFilter,
                         onClear = {
                             searchQuery = ""
                             selectedTier = SizeTier.All
+                            selectedSourceFilter = ModelSourceFilter.All
                         },
                         hazeState = hazeState
                     )
@@ -517,20 +643,29 @@ fun ModelManagerScreen(
                     key = { _, model -> model.id },
                     contentType = { _, _ -> "model_card" }
                 ) { _, model ->
-                    val isSelected = model.localPath != null && when (model.type) {
-                        ModelType.Text -> selectedTextModel == model.localPath
-                        ModelType.Vision -> selectedVisionModel == model.localPath
+                    val isSelected = when (model.type) {
+                        ModelType.Text -> selectedTextModel != null && (selectedTextModel == model.localPath || selectedTextModel == model.id)
+                        ModelType.Vision -> selectedVisionModel != null && (selectedVisionModel == model.localPath || selectedVisionModel == model.id)
                     }
                     ModelItem(
                         model = model,
                         isSelected = isSelected,
+                        modifier = Modifier.animateItem(
+                            fadeInSpec = itemFadeInSpec,
+                            fadeOutSpec = itemFadeOutSpec,
+                            placementSpec = itemPlacementSpec
+                        ),
+                        isRemoving = mainViewModel.removingModelIds.contains(model.id),
+                        isUnloading = unloadingModelIds.contains(model.id),
+                        onUnload = { mainViewModel.unloadModel(model.id) },
                         onOpenPage = model.modelPageUrl?.let { url -> { openUrl(context, url) } },
                         onAction = {
                             when {
-                                model.status == ModelStatus.Available && model.localPath != null -> {
+                                model.status == ModelStatus.Available && (model.localPath != null || model.isStorageImport) -> {
+                                    val targetPath = model.localPath ?: model.id
                                     when (model.type) {
-                                        ModelType.Text -> mainViewModel.selectTextModel(model.localPath)
-                                        ModelType.Vision -> mainViewModel.selectVisionModel(model.localPath)
+                                        ModelType.Text -> mainViewModel.selectTextModel(targetPath)
+                                        ModelType.Vision -> mainViewModel.selectVisionModel(targetPath)
                                     }
                                 }
                                 model.status == ModelStatus.Paused || model.status == ModelStatus.Failed -> {
@@ -542,7 +677,7 @@ fun ModelManagerScreen(
                                         mainViewModel.tryModelAnyway(model.id)
                                         onGoToChat?.invoke()
                                     } else {
-                                        mainViewModel.startDownloadAnyway(model.id)
+                                        mainViewModel.startDownload(model.id)
                                     }
                                 }
                                 else -> mainViewModel.startDownload(model.id)
@@ -551,11 +686,11 @@ fun ModelManagerScreen(
                         onPause = { mainViewModel.pauseDownload(model.id) },
                         onCancel = { mainViewModel.cancelDownload(model.id) },
                         onDelete = if (model.status == ModelStatus.NeedsConversion || model.status == ModelStatus.ComingSoon) null else { { mainViewModel.deleteModel(model.id) } },
-                        onUnsafeDownload = { mainViewModel.startDownloadAnyway(model.id) },
                         onUnsafeTry = {
                             mainViewModel.tryModelAnyway(model.id)
                             onGoToChat?.invoke()
                         },
+                        onRelinkBundle = { importResult -> mainViewModel.relinkModelBundle(model.id, importResult) },
                         isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                         onOpenSettings = { mainViewModel.openSettings(false) },
                         enableDynamicThemes = enableDynamicThemes,
@@ -565,13 +700,15 @@ fun ModelManagerScreen(
             }
         } else {
             if (showEmpty) {
-                item {
+                item(key = "empty_all_models") {
                     NoModelsMatchCard(
                         searchQuery = searchQuery,
                         selectedTier = selectedTier,
+                        selectedSourceFilter = selectedSourceFilter,
                         onClear = {
                             searchQuery = ""
                             selectedTier = SizeTier.All
+                            selectedSourceFilter = ModelSourceFilter.All
                         },
                         hazeState = hazeState
                     )
@@ -579,7 +716,7 @@ fun ModelManagerScreen(
             }
 
         if (downloadedModels.isNotEmpty()) {
-            item {
+            item(key = "section_downloaded") {
                 ModelSectionTitle("Downloaded models", delayMillis = 40)
             }
             itemsIndexed(
@@ -587,34 +724,43 @@ fun ModelManagerScreen(
                 key = { _, model -> model.id },
                 contentType = { _, _ -> "model_card" }
             ) { _, model ->
-                val isSelected = model.localPath != null && when (model.type) {
-                    ModelType.Text -> selectedTextModel == model.localPath
-                    ModelType.Vision -> selectedVisionModel == model.localPath
+                val isSelected = when (model.type) {
+                    ModelType.Text -> selectedTextModel != null && (selectedTextModel == model.localPath || selectedTextModel == model.id)
+                    ModelType.Vision -> selectedVisionModel != null && (selectedVisionModel == model.localPath || selectedVisionModel == model.id)
                 }
                 ModelItem(
                     model = model,
                     isSelected = isSelected,
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = itemFadeInSpec,
+                        fadeOutSpec = itemFadeOutSpec,
+                        placementSpec = itemPlacementSpec
+                    ),
+                    isRemoving = mainViewModel.removingModelIds.contains(model.id),
+                    isUnloading = unloadingModelIds.contains(model.id),
+                    onUnload = { mainViewModel.unloadModel(model.id) },
                     onOpenPage = model.modelPageUrl?.let { url -> { openUrl(context, url) } },
                     onAction = {
                         if (model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) {
                             mainViewModel.resumeDownload(model.id)
-                        } else if (model.status == ModelStatus.Blocked && model.localPath == null) {
-                            mainViewModel.startDownloadAnyway(model.id)
-                        } else if (model.localPath != null) {
+                        } else if (model.status == ModelStatus.Blocked && model.localPath == null && !model.isStorageImport) {
+                            mainViewModel.startDownload(model.id)
+                        } else if (model.localPath != null || model.isStorageImport) {
+                            val targetPath = model.localPath ?: model.id
                             when (model.type) {
-                                ModelType.Text -> mainViewModel.selectTextModel(model.localPath)
-                                ModelType.Vision -> mainViewModel.selectVisionModel(model.localPath)
+                                ModelType.Text -> mainViewModel.selectTextModel(targetPath)
+                                ModelType.Vision -> mainViewModel.selectVisionModel(targetPath)
                             }
                         }
                     },
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
-                    onUnsafeDownload = { mainViewModel.startDownloadAnyway(model.id) },
                     onUnsafeTry = {
                         mainViewModel.tryModelAnyway(model.id)
                         onGoToChat?.invoke()
                     },
+                    onRelinkBundle = { importResult -> mainViewModel.relinkModelBundle(model.id, importResult) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                     onOpenSettings = { mainViewModel.openSettings(false) },
                     enableDynamicThemes = enableDynamicThemes,
@@ -624,7 +770,7 @@ fun ModelManagerScreen(
         }
 
         if (recommendedModels.isNotEmpty()) {
-            item {
+            item(key = "section_recommended") {
                 ModelSectionTitle("Recommended downloads", delayMillis = 65, enterFromEnd = true)
             }
 
@@ -634,13 +780,22 @@ fun ModelManagerScreen(
                 contentType = { _, _ -> "model_card" }
             ) { _, model ->
                 val isSelected = (model.localPath != null) && when (model.type) {
-                    ModelType.Text -> selectedTextModel == model.localPath
-                    ModelType.Vision -> selectedVisionModel == model.localPath
+                    ModelType.Text -> selectedTextModel != null && (selectedTextModel == model.localPath || selectedTextModel == model.id)
+                    ModelType.Vision -> selectedVisionModel != null && (selectedVisionModel == model.localPath || selectedVisionModel == model.id)
                 }
 
                 ModelItem(
                     model = model,
                     isSelected = isSelected,
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = itemFadeInSpec,
+                        fadeOutSpec = itemFadeOutSpec,
+                        placementSpec = itemPlacementSpec
+                    ),
+                    isRemoving = mainViewModel.removingModelIds.contains(model.id),
+                    isCancelling = mainViewModel.cancellingModelIds.contains(model.id),
+                    isUnloading = unloadingModelIds.contains(model.id),
+                    onUnload = { mainViewModel.unloadModel(model.id) },
                     onOpenPage = model.modelPageUrl?.let { url ->
                         { openUrl(context, url) }
                     },
@@ -668,7 +823,7 @@ fun ModelManagerScreen(
         }
 
         if (standardTextModels.isNotEmpty()) {
-            item {
+            item(key = "section_standard_text") {
                 ModelSectionTitle("Text models", delayMillis = 80)
             }
 
@@ -678,11 +833,20 @@ fun ModelManagerScreen(
                 contentType = { _, _ -> "model_card" }
             ) { _, model ->
                 val isSelected = (model.localPath != null) &&
-                    selectedTextModel == model.localPath
+                    selectedTextModel != null && (selectedTextModel == model.localPath || selectedTextModel == model.id)
 
                 ModelItem(
                     model = model,
                     isSelected = isSelected,
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = itemFadeInSpec,
+                        fadeOutSpec = itemFadeOutSpec,
+                        placementSpec = itemPlacementSpec
+                    ),
+                    isRemoving = mainViewModel.removingModelIds.contains(model.id),
+                    isCancelling = mainViewModel.cancellingModelIds.contains(model.id),
+                    isUnloading = unloadingModelIds.contains(model.id),
+                    onUnload = { mainViewModel.unloadModel(model.id) },
                     onOpenPage = model.modelPageUrl?.let { url ->
                         { openUrl(context, url) }
                     },
@@ -709,7 +873,7 @@ fun ModelManagerScreen(
         }
 
         if (standardVisionModels.isNotEmpty()) {
-            item {
+            item(key = "section_standard_vision") {
                 ModelSectionTitle("Image and audio models", delayMillis = 95, enterFromEnd = true)
             }
             itemsIndexed(
@@ -717,11 +881,21 @@ fun ModelManagerScreen(
                 key = { _, model -> model.id },
                 contentType = { _, _ -> "model_card" }
             ) { _, model ->
-                val isSelected = model.localPath != null && selectedVisionModel == model.localPath
+                val isSelected = model.localPath != null &&
+                    selectedVisionModel != null && (selectedVisionModel == model.localPath || selectedVisionModel == model.id)
 
                 ModelItem(
                     model = model,
                     isSelected = isSelected,
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = itemFadeInSpec,
+                        fadeOutSpec = itemFadeOutSpec,
+                        placementSpec = itemPlacementSpec
+                    ),
+                    isRemoving = mainViewModel.removingModelIds.contains(model.id),
+                    isCancelling = mainViewModel.cancellingModelIds.contains(model.id),
+                    isUnloading = unloadingModelIds.contains(model.id),
+                    onUnload = { mainViewModel.unloadModel(model.id) },
                     onOpenPage = model.modelPageUrl?.let { url -> { openUrl(context, url) } },
                     onAction = {
                         if (model.status == ModelStatus.Available && model.localPath != null) {
@@ -744,7 +918,7 @@ fun ModelManagerScreen(
         }
 
         if (gatedTextModels.isNotEmpty() || gatedVisionModels.isNotEmpty()) {
-            item {
+            item(key = "section_gated") {
                 ModelSectionTitle("Requires license or Hugging Face token", delayMillis = 110)
             }
             itemsIndexed(
@@ -753,13 +927,22 @@ fun ModelManagerScreen(
                 contentType = { _, _ -> "model_card" }
             ) { _, model ->
                 val isSelected = model.localPath != null && when (model.type) {
-                    ModelType.Text -> selectedTextModel == model.localPath
-                    ModelType.Vision -> selectedVisionModel == model.localPath
+                    ModelType.Text -> selectedTextModel != null && (selectedTextModel == model.localPath || selectedTextModel == model.id)
+                    ModelType.Vision -> selectedVisionModel != null && (selectedVisionModel == model.localPath || selectedVisionModel == model.id)
                 }
 
                 ModelItem(
                     model = model,
                     isSelected = isSelected,
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = itemFadeInSpec,
+                        fadeOutSpec = itemFadeOutSpec,
+                        placementSpec = itemPlacementSpec
+                    ),
+                    isRemoving = mainViewModel.removingModelIds.contains(model.id),
+                    isCancelling = mainViewModel.cancellingModelIds.contains(model.id),
+                    isUnloading = unloadingModelIds.contains(model.id),
+                    onUnload = { mainViewModel.unloadModel(model.id) },
                     onOpenPage = model.modelPageUrl?.let { url -> { openUrl(context, url) } },
                     onAction = {
                         when {
@@ -785,7 +968,7 @@ fun ModelManagerScreen(
         }
 
         if (blockedTextModels.isNotEmpty() || blockedVisionModels.isNotEmpty()) {
-            item {
+            item(key = "section_blocked") {
                 ModelSectionTitle("Blocked by device safety profile", delayMillis = 125, enterFromEnd = true)
             }
             itemsIndexed(
@@ -794,12 +977,21 @@ fun ModelManagerScreen(
                 contentType = { _, _ -> "model_card" }
             ) { _, model ->
                 val isSelected = model.localPath != null && when (model.type) {
-                    ModelType.Text -> selectedTextModel == model.localPath
-                    ModelType.Vision -> selectedVisionModel == model.localPath
+                    ModelType.Text -> selectedTextModel != null && (selectedTextModel == model.localPath || selectedTextModel == model.id)
+                    ModelType.Vision -> selectedVisionModel != null && (selectedVisionModel == model.localPath || selectedVisionModel == model.id)
                 }
                 ModelItem(
                     model = model,
                     isSelected = isSelected,
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = itemFadeInSpec,
+                        fadeOutSpec = itemFadeOutSpec,
+                        placementSpec = itemPlacementSpec
+                    ),
+                    isRemoving = mainViewModel.removingModelIds.contains(model.id),
+                    isCancelling = mainViewModel.cancellingModelIds.contains(model.id),
+                    isUnloading = unloadingModelIds.contains(model.id),
+                    onUnload = { mainViewModel.unloadModel(model.id) },
                     onOpenPage = model.modelPageUrl?.let { url -> { openUrl(context, url) } },
                     onAction = {
                         if (model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) {
@@ -808,17 +1000,17 @@ fun ModelManagerScreen(
                             mainViewModel.tryModelAnyway(model.id)
                             onGoToChat?.invoke()
                         } else {
-                            mainViewModel.startDownloadAnyway(model.id)
+                            mainViewModel.startDownload(model.id)
                         }
                     },
                     onPause = { mainViewModel.pauseDownload(model.id) },
                     onCancel = { mainViewModel.cancelDownload(model.id) },
                     onDelete = { mainViewModel.deleteModel(model.id) },
-                    onUnsafeDownload = { mainViewModel.startDownloadAnyway(model.id) },
                     onUnsafeTry = {
                         mainViewModel.tryModelAnyway(model.id)
                         onGoToChat?.invoke()
                     },
+                    onRelinkBundle = { importResult -> mainViewModel.relinkModelBundle(model.id, importResult) },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -826,7 +1018,7 @@ fun ModelManagerScreen(
         }
 
         if (futureDenseTextModels.isNotEmpty() || futureDenseVisionModels.isNotEmpty()) {
-            item {
+            item(key = "section_future_dense") {
                 ModelSectionTitle("Future Android builds", delayMillis = 140)
             }
             itemsIndexed(
@@ -837,6 +1029,13 @@ fun ModelManagerScreen(
                 ModelItem(
                     model = model,
                     isSelected = false,
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = itemFadeInSpec,
+                        fadeOutSpec = itemFadeOutSpec,
+                        placementSpec = itemPlacementSpec
+                    ),
+                    isRemoving = mainViewModel.removingModelIds.contains(model.id),
+                    isCancelling = mainViewModel.cancellingModelIds.contains(model.id),
                     onOpenPage = model.modelPageUrl?.let { url -> { openUrl(context, url) } },
                     onAction = { mainViewModel.startDownload(model.id) },
                     onPause = { mainViewModel.pauseDownload(model.id) },
@@ -849,7 +1048,7 @@ fun ModelManagerScreen(
         }
 
         if (futureMoeTextModels.isNotEmpty() || futureMoeVisionModels.isNotEmpty()) {
-            item {
+            item(key = "section_future_moe") {
                 ModelSectionTitle("MoE future builds", delayMillis = 155, enterFromEnd = true)
             }
             itemsIndexed(
@@ -860,6 +1059,13 @@ fun ModelManagerScreen(
                 ModelItem(
                     model = model,
                     isSelected = false,
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = itemFadeInSpec,
+                        fadeOutSpec = itemFadeOutSpec,
+                        placementSpec = itemPlacementSpec
+                    ),
+                    isRemoving = mainViewModel.removingModelIds.contains(model.id),
+                    isCancelling = mainViewModel.cancellingModelIds.contains(model.id),
                     onOpenPage = model.modelPageUrl?.let { url -> { openUrl(context, url) } },
                     onAction = { mainViewModel.startDownload(model.id) },
                     onPause = { mainViewModel.pauseDownload(model.id) },
@@ -870,15 +1076,127 @@ fun ModelManagerScreen(
                 )
             }
         }
+    }
+}
 
-        item {
-            CustomModelCard(
-                onAddModel = { name, url, type, sha256 ->
-                    mainViewModel.addCustomModel(name = name, url = url, type = type, sha256 = sha256)
-                },
-                hazeState = hazeState
+    val animDuration = if (areAnimationsDisabled) 0 else 200
+    val addFabShape = RoundedCornerShape(28.dp)
+    val addFabInteractionSource = remember { MutableInteractionSource() }
+    val isAddFabPressed by addFabInteractionSource.collectIsPressedAsState()
+    val haptic = LocalHapticFeedback.current
+    val addFabScale by animateFloatAsState(
+        targetValue = if (isAddFabPressed) 0.94f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "add_model_scale"
+    )
+
+    Box(
+        modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .padding(end = 20.dp, bottom = 20.dp)
+            .height(56.dp)
+            .defaultMinSize(minWidth = 56.dp, minHeight = 56.dp)
+            .graphicsLayer {
+                scaleX = addFabScale
+                scaleY = addFabScale
+            }
+            .clip(addFabShape)
+            .hazeEffect(
+                state = hazeState,
+                style = HazeStyle(
+                    backgroundColor = MaterialTheme.colorScheme.surface,
+                    blurRadius = 26.dp,
+                    tint = HazeTint(MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)),
+                    noiseFactor = 0.08f
+                )
             )
+            .border(
+                width = 0.8.dp,
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.42f),
+                shape = addFabShape
+            )
+            .animateContentSize(
+                animationSpec = if (areAnimationsDisabled) androidx.compose.animation.core.snap()
+                else tween(durationMillis = animDuration)
+            )
+            .clickable(
+                interactionSource = addFabInteractionSource,
+                indication = null
+            ) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                val sessionId = java.util.UUID.randomUUID().toString()
+                addModelSheetSessionId = sessionId
+                mainViewModel.openImportSheet(sessionId)
+                showAddModelSheet = true
+            }
+            .semantics {
+                contentDescription = "Add model"
+                role = Role.Button
+            }
+            .padding(
+                if (isAddModelExpanded) {
+                    PaddingValues(start = 16.dp, end = 20.dp)
+                } else {
+                    PaddingValues(horizontal = 16.dp)
+                }
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            AnimatedVisibility(
+                visible = isAddModelExpanded,
+                enter = androidx.compose.animation.fadeIn(
+                    animationSpec = if (areAnimationsDisabled) androidx.compose.animation.core.snap()
+                    else tween(durationMillis = animDuration)
+                ) + androidx.compose.animation.expandHorizontally(
+                    animationSpec = if (areAnimationsDisabled) androidx.compose.animation.core.snap()
+                    else tween(durationMillis = animDuration)
+                ),
+                exit = androidx.compose.animation.fadeOut(
+                    animationSpec = if (areAnimationsDisabled) androidx.compose.animation.core.snap()
+                    else tween(durationMillis = if (animDuration > 50) animDuration - 50 else 0)
+                ) + androidx.compose.animation.shrinkHorizontally(
+                    animationSpec = if (areAnimationsDisabled) androidx.compose.animation.core.snap()
+                    else tween(durationMillis = if (animDuration > 50) animDuration - 50 else 0)
+                )
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Add model",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1
+                    )
+                }
+            }
         }
+    }
+
+    if (showAddModelSheet) {
+        val currentSessionId = addModelSheetSessionId ?: rememberSaveable { java.util.UUID.randomUUID().toString() }.also { addModelSheetSessionId = it }
+        AddModelSheet(
+            onDismiss = {
+                if (addModelSheetSessionId == currentSessionId) {
+                    showAddModelSheet = false
+                    addModelSheetSessionId = null
+                    mainViewModel.consumeCompletionEvent(currentSessionId)
+                    mainViewModel.dismissImportSheet(currentSessionId)
+                }
+            },
+            mainViewModel = mainViewModel,
+            sheetSessionId = currentSessionId,
+            hazeState = hazeState
+        )
     }
 }
 }
@@ -889,6 +1207,8 @@ private fun SearchAndFilterRow(
     onSearchChange: (String) -> Unit,
     selectedTier: SizeTier,
     onTierChange: (SizeTier) -> Unit,
+    selectedSourceFilter: ModelSourceFilter,
+    onSourceFilterChange: (ModelSourceFilter) -> Unit,
     hazeState: HazeState
 ) {
     val searchShape = RoundedCornerShape(14.dp)
@@ -927,6 +1247,49 @@ private fun SearchAndFilterRow(
                 focusedContainerColor = Color.Transparent
             )
         )
+
+        // Glass segmented selector for "All models" / "Imported"
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .glassEffect(
+                    hazeState = hazeState,
+                    shape = RoundedCornerShape(12.dp),
+                    tintColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.50f),
+                    borderAlpha = 0.28f
+                )
+                .padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            ModelSourceFilter.entries.forEach { filter ->
+                val isSelected = selectedSourceFilter == filter
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+                            else Color.Transparent
+                        )
+                        .border(
+                            if (isSelected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f))
+                            else BorderStroke(0.dp, Color.Transparent),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                        .clickable { onSourceFilterChange(filter) }
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = filter.display,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -987,6 +1350,7 @@ private fun SearchAndFilterRow(
 private fun NoModelsMatchCard(
     searchQuery: String,
     selectedTier: SizeTier,
+    selectedSourceFilter: ModelSourceFilter = ModelSourceFilter.All,
     onClear: () -> Unit,
     hazeState: HazeState
 ) {
@@ -1013,7 +1377,11 @@ private fun NoModelsMatchCard(
                 style = MaterialTheme.typography.titleSmall
             )
             val summary = buildString {
-                if (searchQuery.isNotBlank()) append("search \"$searchQuery\"")
+                if (selectedSourceFilter != ModelSourceFilter.All) append("source ${selectedSourceFilter.display}")
+                if (searchQuery.isNotBlank()) {
+                    if (isNotEmpty()) append(" + ")
+                    append("search \"$searchQuery\"")
+                }
                 if (selectedTier != SizeTier.All) {
                     if (isNotEmpty()) append(" + ")
                     append("tier ${selectedTier.display}")
@@ -1414,266 +1782,8 @@ private fun AccessCard(
     }
 }
 
-@OptIn(
-    androidx.compose.foundation.ExperimentalFoundationApi::class,
-    androidx.compose.foundation.layout.ExperimentalLayoutApi::class
-)
-@Composable
-private fun CustomModelCard(
-    onAddModel: (String, String, ModelType, String?) -> Unit,
-    hazeState: HazeState
-) {
-    var modelName by rememberSaveable { mutableStateOf("") }
-    var modelUrl by rememberSaveable { mutableStateOf("") }
-    var modelSha256 by rememberSaveable { mutableStateOf("") }
-    var textSelected by rememberSaveable { mutableStateOf(false) }
-    var imageSelected by rememberSaveable { mutableStateOf(false) }
-    val isGguf = modelUrl.trim().endsWith(".gguf", ignoreCase = true)
-    val effectiveTextSelected = textSelected || (isGguf && !imageSelected)
-    val hasTypeSelection = effectiveTextSelected || imageSelected
-    val selectedTypeCount = (if (effectiveTextSelected) 1 else 0) + (if (imageSelected) 1 else 0)
-    val cardTint = MaterialTheme.colorScheme.surfaceContainerLow
 
-    val coroutineScope = rememberCoroutineScope()
-    val isKeyboardOpen = WindowInsets.isImeVisible
 
-    val nameBringIntoViewRequester = remember { BringIntoViewRequester() }
-    var isNameFocused by remember { mutableStateOf(false) }
-
-    val urlBringIntoViewRequester = remember { BringIntoViewRequester() }
-    var isUrlFocused by remember { mutableStateOf(false) }
-
-    val shaBringIntoViewRequester = remember { BringIntoViewRequester() }
-    var isShaFocused by remember { mutableStateOf(false) }
-
-    LaunchedEffect(isKeyboardOpen, isNameFocused) {
-        if (isKeyboardOpen && isNameFocused) {
-            delay(160)
-            nameBringIntoViewRequester.bringIntoView()
-        }
-    }
-
-    LaunchedEffect(isKeyboardOpen, isUrlFocused) {
-        if (isKeyboardOpen && isUrlFocused) {
-            delay(160)
-            urlBringIntoViewRequester.bringIntoView()
-        }
-    }
-
-    LaunchedEffect(isKeyboardOpen, isShaFocused) {
-        if (isKeyboardOpen && isShaFocused) {
-            delay(160)
-            shaBringIntoViewRequester.bringIntoView()
-        }
-    }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .fluidReveal(
-                delayMillis = 220,
-                initialScale = 0.94f,
-                initialYOffset = 20.dp,
-                initialRotationZ = -0.75f
-            )
-            .glassEffect(hazeState = hazeState, shape = MaterialTheme.shapes.medium, blurRadius = 16.dp, tintColor = cardTint),
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        shape = MaterialTheme.shapes.medium
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Text("Custom model", style = MaterialTheme.typography.titleSmall)
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CustomModelTypeButton(
-                    label = "Text (LLM / GGUF)",
-                    selected = effectiveTextSelected,
-                    hazeState = hazeState,
-                    onClick = { textSelected = !effectiveTextSelected }
-                )
-                CustomModelTypeButton(
-                    label = "Image",
-                    selected = imageSelected,
-                    hazeState = hazeState,
-                    onClick = { imageSelected = !imageSelected }
-                )
-            }
-
-            OutlinedTextField(
-                value = modelName,
-                onValueChange = { modelName = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .bringIntoViewRequester(nameBringIntoViewRequester)
-                    .onFocusChanged { focusState ->
-                        isNameFocused = focusState.isFocused
-                        if (focusState.isFocused) {
-                            coroutineScope.launch {
-                                delay(160)
-                                nameBringIntoViewRequester.bringIntoView()
-                            }
-                        }
-                    },
-                singleLine = true,
-                label = { Text("Name (optional)") },
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                )
-            )
-            OutlinedTextField(
-                value = modelUrl,
-                onValueChange = { modelUrl = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .bringIntoViewRequester(urlBringIntoViewRequester)
-                    .onFocusChanged { focusState ->
-                        isUrlFocused = focusState.isFocused
-                        if (focusState.isFocused) {
-                            coroutineScope.launch {
-                                delay(160)
-                                urlBringIntoViewRequester.bringIntoView()
-                            }
-                        }
-                    },
-                label = { Text("Direct .gguf, .litertlm, .task URL or HF repo/file") },
-                leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
-                minLines = 1,
-                maxLines = 3,
-                shape = RoundedCornerShape(12.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                )
-            )
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .bringIntoViewRequester(shaBringIntoViewRequester),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                OutlinedTextField(
-                    value = modelSha256,
-                    onValueChange = { modelSha256 = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onFocusChanged { focusState ->
-                            isShaFocused = focusState.isFocused
-                            if (focusState.isFocused) {
-                                coroutineScope.launch {
-                                    delay(160)
-                                    shaBringIntoViewRequester.bringIntoView()
-                                }
-                            }
-                        },
-                    singleLine = true,
-                    label = { Text("SHA-256 Checksum (optional)") },
-                    leadingIcon = { Icon(Icons.Default.CheckCircle, contentDescription = null) },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow
-                    )
-                )
-                LiquidGlassButton(
-                    onClick = {
-                        val cleanSha = modelSha256.trim().ifBlank { null }
-                        if (effectiveTextSelected) {
-                            onAddModel(modelName, modelUrl, ModelType.Text, cleanSha)
-                        }
-                        if (imageSelected) {
-                            onAddModel(modelName, modelUrl, ModelType.Vision, cleanSha)
-                        }
-                        modelName = ""
-                        modelUrl = ""
-                        modelSha256 = ""
-                        textSelected = false
-                        imageSelected = false
-                    },
-                    enabled = modelUrl.isNotBlank() && hasTypeSelection,
-                    modifier = Modifier.align(Alignment.End).height(44.dp),
-                    hazeState = hazeState,
-                    shape = RoundedCornerShape(12.dp),
-                    tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f),
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        when (selectedTypeCount) {
-                            0 -> "Select type"
-                            2 -> "Add both"
-                            else -> "Add"
-                        }
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CustomModelTypeButton(
-    label: String,
-    selected: Boolean,
-    hazeState: HazeState,
-    onClick: () -> Unit
-) {
-    val shape = RoundedCornerShape(12.dp)
-    val accent = MaterialTheme.colorScheme.primary
-    LiquidGlassButton(
-        onClick = onClick,
-        hazeState = hazeState,
-        modifier = Modifier
-            .height(40.dp)
-            .border(
-                width = if (selected) 1.4.dp else 0.7.dp,
-                color = if (selected) {
-                    accent.copy(alpha = 0.86f)
-                } else {
-                    MaterialTheme.colorScheme.outlineVariant
-                },
-                shape = shape
-            ),
-        shape = shape,
-        tintColor = if (selected) {
-            accent.copy(alpha = 0.40f)
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHighest
-        },
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
-    ) {
-        if (selected) {
-            Icon(
-                Icons.Default.CheckCircle,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = accent
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-        }
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge.copy(
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-            ),
-            color = if (selected) {
-                accent
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            }
-        )
-    }
-}
 
 @Composable
 private fun GlassLabelChip(
@@ -1759,21 +1869,21 @@ fun ModelItem(
     onDelete: (() -> Unit)? = null,
     onUnsafeDownload: (() -> Unit)? = null,
     onUnsafeTry: (() -> Unit)? = null,
+    onRelinkBundle: ((LocalModelImporter.ImportResult) -> Result<Unit>)? = null,
     isHfTokenBlank: Boolean = false,
     onOpenSettings: (() -> Unit)? = null,
     enableDynamicThemes: Boolean = true,
-    hazeState: HazeState
+    hazeState: HazeState,
+    modifier: Modifier = Modifier,
+    isRemoving: Boolean = false,
+    isCancelling: Boolean = false,
+    isUnloading: Boolean = false,
+    onUnload: (() -> Unit)? = null
 ) {
     val isFuturePlaceholder = model.isFuturePlaceholder
-    val isCrashBlocked = model.errorMessage?.contains("crashed during native initialization", ignoreCase = true) == true
-    val canDownloadAnyway = model.status == ModelStatus.Blocked &&
-        model.localPath == null &&
-        model.hasDownloadUrl &&
-        !isCrashBlocked &&
-        onUnsafeDownload != null
     val canTryAnyway = model.status == ModelStatus.Blocked &&
         model.localPath != null &&
-        !isCrashBlocked &&
+        model.canTryAnyway &&
         onUnsafeTry != null
     val modelFamilyAccent = remember(model.id, model.name, enableDynamicThemes) {
         if (enableDynamicThemes) ModelTheme.getAccentColor(model.id, model.name) else Color(0xFF3B82F6)
@@ -1796,6 +1906,36 @@ fun ModelItem(
 
     val itemShape = MaterialTheme.shapes.large
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var relinkError by remember { mutableStateOf<String?>(null) }
+    val relinkLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty() && onRelinkBundle != null) {
+            coroutineScope.launch {
+                try {
+                    val bundleResult = withContext(Dispatchers.IO) {
+                        LocalModelImporter.importFromUris(context, uris)
+                    }
+                    bundleResult.onSuccess { importResult ->
+                        val relinkResult = onRelinkBundle(importResult)
+                        relinkResult.onSuccess {
+                            relinkError = null
+                        }.onFailure { error ->
+                            Log.e("ModelItem", "Failed to relink bundle: ${error.message}")
+                            relinkError = error.message ?: "Failed to relink model files"
+                        }
+                    }.onFailure { error ->
+                        Log.e("ModelItem", "Failed to relink bundle: ${error.message}")
+                        relinkError = error.message ?: "Failed to inspect model files"
+                    }
+                } catch (e: Exception) {
+                    Log.e("ModelItem", "Exception relinking bundle", e)
+                    relinkError = e.message ?: "Failed to relink model files"
+                }
+            }
+        }
+    }
     val targetTintColor = if (enableDynamicThemes) {
         if (isSelected) {
             modelFamilyAccent.copy(alpha = 0.24f)
@@ -1829,14 +1969,8 @@ fun ModelItem(
         label = "model_card_selection_motion"
     )
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .fluidReveal(
-                initialScale = 0.94f,
-                initialYOffset = 18.dp,
-                initialXOffset = if ((model.id.hashCode() and 1) == 0) (-16).dp else 16.dp,
-                initialRotationZ = if ((model.id.hashCode() and 1) == 0) -0.8f else 0.8f
-            )
             .graphicsLayer {
                 scaleX = 1f + selectionMotion * 0.012f
                 scaleY = 1f + selectionMotion * 0.012f
@@ -1935,6 +2069,30 @@ fun ModelItem(
                         accentColor = MaterialTheme.colorScheme.secondary
                     )
                 }
+                if (model.isCustom) {
+                    GlassLabelChip(
+                        label = "Imported",
+                        accentColor = MaterialTheme.colorScheme.primary
+                    )
+                }
+                if (model.isStorageImport) {
+                    GlassLabelChip(
+                        label = "Phone Storage",
+                        accentColor = MaterialTheme.colorScheme.primary
+                    )
+                }
+                if (model.isMultimodal) {
+                    GlassLabelChip(
+                        label = "Multimodal",
+                        accentColor = MaterialTheme.colorScheme.secondary
+                    )
+                }
+                if (model.isSplit) {
+                    GlassLabelChip(
+                        label = "Split GGUF",
+                        accentColor = MaterialTheme.colorScheme.tertiary
+                    )
+                }
             }
 
             Text(
@@ -1948,10 +2106,10 @@ fun ModelItem(
                 ((model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) && model.downloadedBytes > 0L)
             ) {
                 val cardAccent = if (model.status == ModelStatus.Failed) MaterialTheme.colorScheme.error else modelFamilyAccent
-                val cardTitle = when (model.status) {
-                    ModelStatus.Downloading -> "Downloading Model…"
-                    ModelStatus.Paused -> "Download Paused"
-                    ModelStatus.Failed -> "Download Failed"
+                val cardTitle = when {
+                    model.status == ModelStatus.Paused -> "Paused — download kept"
+                    model.status == ModelStatus.Downloading -> "Downloading Model…"
+                    model.status == ModelStatus.Failed -> "Download Failed"
                     else -> "Download Status"
                 }
                 Surface(
@@ -2037,7 +2195,8 @@ fun ModelItem(
                 }
             }
 
-            model.errorMessage?.let { error ->
+            val displayError = relinkError ?: model.errorMessage?.takeIf { it != "Paused — download kept" }
+            displayError?.let { error ->
                 val classified = remember(error) { ErrorClassifier.classify(error) }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -2155,16 +2314,26 @@ fun ModelItem(
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Delete button — shown for models that have local files
-                val canDelete = onDelete != null && model.localPath != null &&
-                    model.status in listOf(
-                        ModelStatus.Available, ModelStatus.Paused, ModelStatus.Failed, ModelStatus.Blocked
-                    )
+                // Delete button — shown for models that have local files, storage imports, custom models, or paused/failed downloads
+                val isPaused = model.status == ModelStatus.Paused
+                val canDelete = onDelete != null && (
+                    model.localPath != null ||
+                    model.isStorageImport ||
+                    model.isCustom ||
+                    isPaused ||
+                    (model.status == ModelStatus.Failed && model.downloadedBytes > 0L)
+                ) && model.status in listOf(
+                    ModelStatus.Available, ModelStatus.Paused, ModelStatus.Failed, ModelStatus.Blocked
+                )
                 var showDeleteConfirm by remember { mutableStateOf(false) }
+                val isCustomWithoutFile = (model.isCustom && model.localPath == null) || isPaused
 
                 if (showDeleteConfirm) {
                     DeleteModelGlassDialog(
                         modelName = model.name,
+                        isStorageImport = model.isStorageImport,
+                        isCustomWithoutFile = isCustomWithoutFile,
+                        isPaused = isPaused,
                         hazeState = hazeState,
                         onDismissRequest = { showDeleteConfirm = false },
                         onConfirm = {
@@ -2174,7 +2343,26 @@ fun ModelItem(
                     )
                 }
 
-                if (canDelete) {
+                if (isRemoving) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .height(40.dp)
+                            .padding(horizontal = 10.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Removing…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                } else if (canDelete) {
                     LiquidGlassButton(
                         onClick = { showDeleteConfirm = true },
                         hazeState = hazeState,
@@ -2185,26 +2373,43 @@ fun ModelItem(
                     ) {
                         Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Delete")
+                        Text(if (isCustomWithoutFile) "Remove" else "Delete")
+                    }
+                }
+
+                if (model.isStorageImport && onRelinkBundle != null) {
+                    LiquidGlassButton(
+                        onClick = { relinkLauncher.launch(arrayOf("*/*")) },
+                        hazeState = hazeState,
+                        modifier = Modifier.height(40.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Relink files")
                     }
                 }
 
                 var showBenchDialog by remember { mutableStateOf(false) }
                 var isRunningBench by remember { mutableStateOf(false) }
+                var isStoppingBench by remember { mutableStateOf(false) }
                 var benchProgress by remember { mutableStateOf<BenchmarkProgress?>(null) }
                 var benchResult by remember { mutableStateOf<BenchmarkResult?>(null) }
+                var benchError by remember { mutableStateOf<String?>(null) }
                 var benchJob by remember { mutableStateOf<Job?>(null) }
                 val benchScope = rememberCoroutineScope()
 
                 if (showBenchDialog) {
                     AlertDialog(
                         onDismissRequest = {
-                            if (!isRunningBench) {
+                            if (!isRunningBench && !isStoppingBench) {
                                 showBenchDialog = false
                             }
                         },
                         title = {
-                            val isGguf = ChatRuntimePolicy.isGgufModel(model.fileName)
+                            val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
                             Text(if (isGguf) "⚡ CPU / GPU Performance Check" else "⚡ Performance Benchmark")
                         },
                         text = {
@@ -2217,7 +2422,7 @@ fun ModelItem(
                                 Text("Model: ${model.name}", style = MaterialTheme.typography.titleSmall)
                                 Text("Backend: ${model.backend}", style = MaterialTheme.typography.bodySmall)
 
-                                if (isRunningBench) {
+                                if (isRunningBench || isStoppingBench) {
                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         LinearProgressIndicator(
                                             progress = {
@@ -2227,7 +2432,7 @@ fun ModelItem(
                                             modifier = Modifier.fillMaxWidth()
                                         )
                                         Text(
-                                            benchProgress?.phase ?: "Starting benchmark...",
+                                            if (isStoppingBench) "Stopping benchmark..." else (benchProgress?.phase ?: "Starting benchmark..."),
                                             style = MaterialTheme.typography.bodyMedium,
                                             fontWeight = FontWeight.SemiBold
                                         )
@@ -2239,9 +2444,15 @@ fun ModelItem(
                                             )
                                         }
                                     }
+                                } else if (benchError != null) {
+                                    Text(
+                                        "❌ Benchmark Error: $benchError",
+                                        color = MaterialTheme.colorScheme.error,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
                                 } else if (benchResult != null) {
                                     val r = benchResult!!
-                                    val isGguf = ChatRuntimePolicy.isGgufModel(model.fileName)
+                                    val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
                                     Text(
                                         if (isGguf) {
                                             if (r.qualifiesVulkan) "✅ Vulkan Qualified" else "ℹ️ CPU Preferred"
@@ -2267,12 +2478,13 @@ fun ModelItem(
                                     }
                                     Text("• Max UI Render Stall: ${r.maxRenderStallMs} ms", style = MaterialTheme.typography.bodySmall)
                                 } else {
-                                    if (ChatRuntimePolicy.isGgufModel(model.fileName) && model.localPath != null) {
+                                    val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
+                                    if (isGguf && (model.localPath != null || model.bundle != null)) {
                                         Text(
                                             "Runs 5 cold samples and 20 warm samples across CPU and Vulkan to verify if Vulkan improves latency by >= 10% without frame stalls or regressions.",
                                             style = MaterialTheme.typography.bodySmall
                                         )
-                                    } else if (model.localPath != null) {
+                                    } else if (model.localPath != null || model.bundle != null) {
                                         Text(
                                             "Runs cold load and warm prompt evaluations to measure Time to First Token (TTFT), sustained decode throughput (t/s), and UI frame smoothness.",
                                             style = MaterialTheme.typography.bodySmall
@@ -2287,41 +2499,52 @@ fun ModelItem(
                             }
                         },
                         confirmButton = {
-                            if (isRunningBench) {
+                            if (isRunningBench || isStoppingBench) {
                                 TextButton(
+                                    enabled = !isStoppingBench,
                                     onClick = {
+                                        isStoppingBench = true
                                         benchJob?.cancel()
-                                        isRunningBench = false
-                                        benchProgress = null
                                     }
                                 ) {
-                                    Text("Cancel")
+                                    Text(if (isStoppingBench) "Stopping..." else "Cancel")
                                 }
                             } else {
-                                if (benchResult == null && model.localPath != null) {
+                                if (benchResult == null && (model.localPath != null || model.bundle != null)) {
                                     TextButton(
+                                        enabled = !isRunningBench && !isStoppingBench && benchJob?.isActive != true,
                                         onClick = {
                                             isRunningBench = true
                                             benchResult = null
+                                            benchError = null
                                             benchJob = benchScope.launch {
                                                 try {
-                                                    val isGguf = ChatRuntimePolicy.isGgufModel(model.fileName)
+                                                    val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
                                                     val res = if (isGguf) {
-                                                        val sha = GgufGpuValidator.resolveModelSha256(
-                                                            modelPath = model.localPath!!,
-                                                            modelId = model.id,
-                                                            context = context
-                                                        )
-                                                        GgufBenchmarkRunner.runBenchmark(
-                                                            context = context,
-                                                            modelPath = model.localPath!!,
-                                                            modelSha256 = sha,
-                                                            onProgress = { p -> benchProgress = p }
-                                                        )
+                                                        if (model.bundle != null) {
+                                                            GgufBenchmarkRunner.runBenchmark(
+                                                                context = context,
+                                                                bundle = model.bundle,
+                                                                onProgress = { p -> benchProgress = p }
+                                                            )
+                                                        } else {
+                                                            val localPath = model.localPath ?: return@launch
+                                                            val sha = GgufGpuValidator.resolveModelSha256(
+                                                                modelPath = localPath,
+                                                                modelId = model.id,
+                                                                context = context
+                                                            )
+                                                            GgufBenchmarkRunner.runBenchmark(
+                                                                context = context,
+                                                                modelPath = localPath,
+                                                                modelSha256 = sha,
+                                                                onProgress = { p -> benchProgress = p }
+                                                            )
+                                                        }
                                                     } else {
                                                         NonGgufBenchmarkRunner.runBenchmark(
                                                             context = context,
-                                                            modelPath = model.localPath!!,
+                                                            modelPath = model.localPath ?: model.bundle?.mainArtifacts?.firstOrNull()?.source?.location ?: "",
                                                             modelId = model.id,
                                                             onProgress = { p -> benchProgress = p }
                                                         )
@@ -2330,9 +2553,12 @@ fun ModelItem(
                                                 } catch (t: Throwable) {
                                                     if (t !is CancellationException) {
                                                         Log.e("ModelManagerScreen", "Benchmark failed", t)
+                                                        benchError = t.message ?: "Benchmark failed: ${t.javaClass.simpleName}"
                                                     }
                                                 } finally {
                                                     isRunningBench = false
+                                                    isStoppingBench = false
+                                                    benchProgress = null
                                                 }
                                             }
                                         }
@@ -2347,10 +2573,11 @@ fun ModelItem(
                             }
                         },
                         dismissButton = {
-                            if (!isRunningBench && benchResult != null) {
+                            if (!isRunningBench && !isStoppingBench && benchResult != null) {
                                 TextButton(
                                     onClick = {
                                         benchResult = null
+                                        benchError = null
                                     }
                                 ) {
                                     Text("Re-test")
@@ -2362,7 +2589,11 @@ fun ModelItem(
 
                 if (model.status == ModelStatus.Available) {
                     LiquidGlassButton(
-                        onClick = { showBenchDialog = true },
+                        enabled = !isRunningBench && !isStoppingBench,
+                        onClick = {
+                            benchError = null
+                            showBenchDialog = true
+                        },
                         hazeState = hazeState,
                         modifier = Modifier.height(40.dp),
                         shape = RoundedCornerShape(12.dp),
@@ -2377,12 +2608,15 @@ fun ModelItem(
 
                 var showGgufDiagDialog by remember { mutableStateOf(false) }
                 var isRunningGgufDiag by remember { mutableStateOf(false) }
+                var isStoppingGgufDiag by remember { mutableStateOf(false) }
                 var ggufDiagReport by remember { mutableStateOf<GgufDiagnosticReport?>(null) }
+                var ggufDiagError by remember { mutableStateOf<String?>(null) }
+                var ggufDiagJob by remember { mutableStateOf<Job?>(null) }
                 val diagScope = rememberCoroutineScope()
 
                 if (showGgufDiagDialog) {
                     AlertDialog(
-                        onDismissRequest = { if (!isRunningGgufDiag) showGgufDiagDialog = false },
+                        onDismissRequest = { if (!isRunningGgufDiag && !isStoppingGgufDiag) showGgufDiagDialog = false },
                         title = { Text("🔬 GGUF Native Diagnostics") },
                         text = {
                             Column(
@@ -2391,17 +2625,23 @@ fun ModelItem(
                                     .verticalScroll(rememberScrollState()),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                if (isRunningGgufDiag) {
+                                if (isRunningGgufDiag || isStoppingGgufDiag) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                                     ) {
                                         CircularProgressIndicator(modifier = Modifier.size(24.dp))
                                         Text(
-                                            "Running native GGUF diagnostics (inspect → load → prompt decode → token generation → free)...",
+                                            if (isStoppingGgufDiag) "Stopping native diagnostics..." else "Running native GGUF diagnostics (inspect → load → prompt decode → token generation → free)...",
                                             style = MaterialTheme.typography.bodySmall
                                         )
                                     }
+                                } else if (ggufDiagError != null) {
+                                    Text(
+                                        "❌ Diagnostic Error: $ggufDiagError",
+                                        color = MaterialTheme.colorScheme.error,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
                                 } else if (ggufDiagReport != null) {
                                     val rep = ggufDiagReport!!
                                     Text(
@@ -2412,14 +2652,25 @@ fun ModelItem(
                             }
                         },
                         confirmButton = {
-                            if (!isRunningGgufDiag) {
+                            if (isRunningGgufDiag || isStoppingGgufDiag) {
+                                TextButton(
+                                    enabled = !isStoppingGgufDiag,
+                                    onClick = {
+                                        isStoppingGgufDiag = true
+                                        ggufDiagJob?.cancel()
+                                    }
+                                ) {
+                                    Text(if (isStoppingGgufDiag) "Stopping..." else "Cancel")
+                                }
+                            } else {
                                 TextButton(onClick = { showGgufDiagDialog = false }) {
                                     Text("Close")
                                 }
                             }
                         },
                         dismissButton = {
-                            if (!isRunningGgufDiag && ggufDiagReport != null) {
+                            if (!isRunningGgufDiag && !isStoppingGgufDiag && ggufDiagReport != null) {
+                                @Suppress("DEPRECATION")
                                 val clipboard = LocalClipboardManager.current
                                 TextButton(onClick = {
                                     clipboard.setText(AnnotatedString(ggufDiagReport!!.toMarkdown()))
@@ -2431,16 +2682,32 @@ fun ModelItem(
                     )
                 }
 
-                if (model.status == ModelStatus.Available && model.localPath != null && ChatRuntimePolicy.isGgufModel(model.fileName)) {
+                val isGgufForDiag = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
+                if (model.status == ModelStatus.Available && (model.localPath != null || model.bundle != null) && isGgufForDiag) {
                     LiquidGlassButton(
+                        enabled = !isRunningGgufDiag && !isStoppingGgufDiag,
                         onClick = {
                             showGgufDiagDialog = true
                             isRunningGgufDiag = true
                             ggufDiagReport = null
-                            diagScope.launch {
-                                val rep = GgufDiagnosticRunner.runDiagnostics(context, model.localPath!!)
-                                ggufDiagReport = rep
-                                isRunningGgufDiag = false
+                            ggufDiagError = null
+                            ggufDiagJob = diagScope.launch {
+                                try {
+                                    val rep = if (model.bundle != null) {
+                                        GgufDiagnosticRunner.runDiagnostics(context, model.bundle)
+                                    } else {
+                                        GgufDiagnosticRunner.runDiagnostics(context, model.localPath!!)
+                                    }
+                                    ggufDiagReport = rep
+                                } catch (t: Throwable) {
+                                    if (t !is CancellationException) {
+                                        Log.e("ModelManagerScreen", "Diagnostics failed", t)
+                                        ggufDiagError = t.message ?: "Diagnostic failed: ${t.javaClass.simpleName}"
+                                    }
+                                } finally {
+                                    isRunningGgufDiag = false
+                                    isStoppingGgufDiag = false
+                                }
                             }
                         },
                         hazeState = hazeState,
@@ -2471,44 +2738,45 @@ fun ModelItem(
                 }
 
                 if (
-                    (model.status in listOf(ModelStatus.Downloading, ModelStatus.Paused, ModelStatus.Failed)) &&
+                    model.status == ModelStatus.Downloading &&
                     onCancel != null
                 ) {
+                    var localCancelling by remember { mutableStateOf(false) }
+                    val activeCancelling = isCancelling || localCancelling
                     LiquidGlassButton(
-                        onClick = onCancel,
+                        onClick = {
+                            localCancelling = true
+                            onCancel()
+                        },
+                        enabled = !activeCancelling,
                         hazeState = hazeState,
                         modifier = Modifier.height(40.dp),
                         shape = RoundedCornerShape(12.dp),
                         tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.22f),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                     ) {
-                        Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Cancel")
+                        if (activeCancelling) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Cancelling…")
+                        } else {
+                            Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Cancel download")
+                        }
                     }
                 }
 
-                var showRiskyDownloadConfirm by remember { mutableStateOf(false) }
                 var showRiskyTryConfirm by remember { mutableStateOf(false) }
-                if (showRiskyDownloadConfirm) {
-                    RiskyModelActionDialog(
-                        modelName = model.name,
-                        title = "Download anyway?",
-                        message = "This model is blocked for this Android device profile. Downloading anyway can use a lot of storage and the model may still fail or crash during initialization.",
-                        confirmLabel = "Download Anyway",
-                        hazeState = hazeState,
-                        onDismissRequest = { showRiskyDownloadConfirm = false },
-                        onConfirm = {
-                            showRiskyDownloadConfirm = false
-                            onUnsafeDownload?.invoke()
-                        }
-                    )
-                }
                 if (showRiskyTryConfirm) {
                     RiskyModelActionDialog(
                         modelName = model.name,
                         title = "Try anyway?",
-                        message = "This can crash or close the app during native LiteRT-LM initialization. If that happens, the app will block this model on the next launch.",
+                        message = "This can crash or close the app during native model initialization. If that happens, the app will block this model on the next launch.",
                         confirmLabel = "Try Anyway",
                         hazeState = hazeState,
                         onDismissRequest = { showRiskyTryConfirm = false },
@@ -2529,17 +2797,25 @@ fun ModelItem(
                     )
                 }
 
+                val isButtonEnabled = when {
+                    isUnloading -> false
+                    isSelected -> onUnload != null
+                    isFuturePlaceholder -> false
+                    model.status == ModelStatus.Blocked -> canTryAnyway
+                    else -> true
+                }
+
                 LiquidGlassButton(
-                    onClick = when {
-                        model.status == ModelStatus.Downloading -> onPause
-                        canDownloadAnyway -> ({ showRiskyDownloadConfirm = true })
-                        canTryAnyway -> ({ showRiskyTryConfirm = true })
-                        model.requiresHuggingFaceToken && isHfTokenBlank && model.localPath == null -> ({ showHfTokenPromptDialog = true })
-                        else -> onAction
+                    onClick = {
+                        when {
+                            isSelected -> onUnload?.invoke()
+                            model.status == ModelStatus.Downloading -> onPause()
+                            canTryAnyway -> showRiskyTryConfirm = true
+                            model.requiresHuggingFaceToken && isHfTokenBlank && model.localPath == null -> showHfTokenPromptDialog = true
+                            else -> onAction()
+                        }
                     },
-                    enabled = !isSelected &&
-                        !isFuturePlaceholder &&
-                        (model.status != ModelStatus.Blocked || canDownloadAnyway || canTryAnyway),
+                    enabled = isButtonEnabled,
                     hazeState = hazeState,
                     modifier = Modifier.height(44.dp),
                     shape = RoundedCornerShape(12.dp),
@@ -2551,10 +2827,12 @@ fun ModelItem(
                     contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp)
                 ) {
                     Icon(
-                        imageVector = when (model.status) {
-                            ModelStatus.Available -> Icons.Default.CheckCircle
-                            ModelStatus.Downloading -> Icons.Default.Pause
-                            ModelStatus.Blocked -> if (canTryAnyway) Icons.Default.Info else Icons.Default.Download
+                        imageVector = when {
+                            isUnloading -> Icons.Default.HourglassTop
+                            isSelected -> Icons.Default.Eject
+                            model.status == ModelStatus.Available -> Icons.Default.CheckCircle
+                            model.status == ModelStatus.Downloading -> Icons.Default.Pause
+                            model.status == ModelStatus.Blocked -> if (canTryAnyway) Icons.Default.Info else Icons.Default.Download
                             else -> Icons.Default.Download
                         },
                         contentDescription = null,
@@ -2563,12 +2841,12 @@ fun ModelItem(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         when {
-                            isSelected -> "Selected"
+                            isUnloading -> "Ejecting…"
+                            isSelected -> "Eject"
                             model.status == ModelStatus.Downloading -> "Pause"
                             model.status == ModelStatus.Paused -> "Resume"
                             model.status == ModelStatus.Available -> "Select"
                             model.status == ModelStatus.Failed -> "Retry"
-                            canDownloadAnyway -> "Download Anyway"
                             canTryAnyway -> "Try Anyway"
                             model.status == ModelStatus.Blocked -> "Blocked"
                             isFuturePlaceholder && model.status == ModelStatus.NeedsConversion -> "Future"
@@ -2582,6 +2860,7 @@ fun ModelItem(
     }
 }
 
+@Suppress("DEPRECATION")
 @Composable
 private fun ClickableUrlText(
     text: String,
@@ -2634,6 +2913,9 @@ private fun ClickableUrlText(
 @Composable
 private fun DeleteModelGlassDialog(
     modelName: String,
+    isStorageImport: Boolean = false,
+    isCustomWithoutFile: Boolean = false,
+    isPaused: Boolean = false,
     hazeState: HazeState,
     onDismissRequest: () -> Unit,
     onConfirm: () -> Unit
@@ -2664,12 +2946,22 @@ private fun DeleteModelGlassDialog(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = "Delete model?",
+                        text = when {
+                            isPaused -> "Remove downloaded data?"
+                            isCustomWithoutFile -> "Remove imported model?"
+                            isStorageImport -> "Unlink model?"
+                            else -> "Delete model?"
+                        },
                         style = MaterialTheme.typography.headlineSmall,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "\"$modelName\" will be deleted from device storage. You can re-download it later.",
+                        text = when {
+                            isPaused -> "Partial download for \"$modelName\" will be removed. You can start the download again at any time."
+                            isCustomWithoutFile -> "\"$modelName\" will be removed from Solus. Original files will not be modified, and you can re-add or download it later."
+                            isStorageImport -> "\"$modelName\" will be unlinked from Solus. Original files on your device storage will not be modified or deleted."
+                            else -> "\"$modelName\" will be deleted from device storage. You can re-download it later."
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2699,7 +2991,13 @@ private fun DeleteModelGlassDialog(
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Delete")
+                            Text(
+                                when {
+                                    isPaused || isCustomWithoutFile -> "Remove"
+                                    isStorageImport -> "Unlink"
+                                    else -> "Delete"
+                                }
+                            )
                         }
                     }
                 }

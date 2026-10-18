@@ -2,8 +2,10 @@
 #include "common.h"
 #include "log.h"
 #include "llama.h"
+#include "sampling.h"
 
 #include <algorithm>
+#include <clocale>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -15,16 +17,18 @@ static void print_usage(int, char ** argv) {
 }
 
 int main(int argc, char ** argv) {
+    std::setlocale(LC_NUMERIC, "C");
+
     common_params params;
 
     params.prompt = "Hello my name is";
     params.n_predict = 32;
 
-    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_COMMON, print_usage)) {
+    common_init();
+
+    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_BATCHED, print_usage)) {
         return 1;
     }
-
-    common_init();
 
     // number of parallel batches
     int n_parallel = params.n_parallel;
@@ -41,7 +45,7 @@ int main(int argc, char ** argv) {
 
     llama_model_params model_params = common_model_params_to_llama(params);
 
-    llama_model * model = llama_model_load_from_file(params.model.c_str(), model_params);
+    llama_model * model = llama_model_load_from_file(params.model.path.c_str(), model_params);
 
     if (model == NULL) {
         LOG_ERR("%s: error: unable to load model\n" , __func__);
@@ -64,17 +68,28 @@ int main(int argc, char ** argv) {
     ctx_params.n_ctx   = n_kv_req;
     ctx_params.n_batch = std::max(n_predict, n_parallel);
 
-    llama_context * ctx = llama_init_from_model(model, ctx_params);
-
     auto sparams = llama_sampler_chain_default_params();
     sparams.no_perf = false;
 
-    llama_sampler * smpl = llama_sampler_chain_init(sparams);
+    std::vector<llama_sampler_seq_config> sampler_configs;
 
-    llama_sampler_chain_add(smpl, llama_sampler_init_top_k(params.sampling.top_k));
-    llama_sampler_chain_add(smpl, llama_sampler_init_top_p(params.sampling.top_p, params.sampling.min_keep));
-    llama_sampler_chain_add(smpl, llama_sampler_init_temp (params.sampling.temp));
-    llama_sampler_chain_add(smpl, llama_sampler_init_dist (params.sampling.seed));
+    for (int32_t i = 0; i < n_parallel; ++i) {
+        llama_sampler * smpl = llama_sampler_chain_init(sparams);
+
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_k(params.sampling.top_k));
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_p(params.sampling.top_p, params.sampling.min_keep));
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp (params.sampling.temp));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist (params.sampling.seed));
+
+        sampler_configs.push_back({ i, smpl });
+    }
+
+    if (params.sampling.backend_sampling) {
+        ctx_params.samplers   = sampler_configs.data();
+        ctx_params.n_samplers = sampler_configs.size();
+    }
+
+    llama_context * ctx = llama_init_from_model(model, ctx_params);
 
     if (ctx == NULL) {
         LOG_ERR("%s: error: failed to create the llama_context\n" , __func__);
@@ -102,7 +117,7 @@ int main(int argc, char ** argv) {
 
     // create a llama_batch
     // we use this object to submit token data for decoding
-    llama_batch batch = llama_batch_init(std::max(tokens_list.size(), (size_t) n_parallel), 0, n_parallel);
+    common_batch batch(ctx);
 
     std::vector<llama_seq_id> seq_ids(n_parallel, 0);
     for (int32_t i = 0; i < n_parallel; ++i) {
@@ -111,12 +126,12 @@ int main(int argc, char ** argv) {
 
     // evaluate the initial prompt
     for (size_t i = 0; i < tokens_list.size(); ++i) {
-        common_batch_add(batch, tokens_list[i], i, seq_ids, false);
+        batch.add(tokens_list[i], i, seq_ids, false);
     }
-    GGML_ASSERT(batch.n_tokens == (int) tokens_list.size());
+    GGML_ASSERT(batch.size() == (int) tokens_list.size());
 
     if (llama_model_has_encoder(model)) {
-        if (llama_encode(ctx, batch)) {
+        if (llama_process(ctx, LLAMA_PROCESS_TYPE_ENCODE, batch.get())) {
             LOG_ERR("%s : failed to eval\n", __func__);
             return 1;
         }
@@ -126,14 +141,14 @@ int main(int argc, char ** argv) {
             decoder_start_token_id = llama_vocab_bos(vocab);
         }
 
-        common_batch_clear(batch);
-        common_batch_add(batch, decoder_start_token_id, 0, seq_ids, false);
+        batch.clear();
+        batch.add(decoder_start_token_id, 0, seq_ids, false);
     }
 
     // llama_decode will output logits only for the last token of the prompt
-    batch.logits[batch.n_tokens - 1] = true;
+    batch.set_output(batch.size() - 1, true);
 
-    if (llama_decode(ctx, batch) != 0) {
+    if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0) {
         LOG_ERR("%s: llama_decode() failed\n", __func__);
         return 1;
     }
@@ -155,16 +170,16 @@ int main(int argc, char ** argv) {
 
     // remember the batch index of the last token for each parallel sequence
     // we need this to determine which logits to sample from
-    std::vector<int32_t> i_batch(n_parallel, batch.n_tokens - 1);
+    std::vector<int32_t> i_batch(n_parallel, batch.size() - 1);
 
-    int n_cur    = batch.n_tokens;
+    int n_cur    = batch.size();
     int n_decode = 0;
 
     const auto t_main_start = ggml_time_us();
 
     while (n_cur <= n_predict) {
         // prepare the next batch
-        common_batch_clear(batch);
+        batch.clear();
 
         // sample the next token for each parallel sequence / stream
         for (int32_t i = 0; i < n_parallel; ++i) {
@@ -173,7 +188,7 @@ int main(int argc, char ** argv) {
                 continue;
             }
 
-            const llama_token new_token_id = llama_sampler_sample(smpl, ctx, i_batch[i]);
+            const llama_token new_token_id = llama_sampler_sample(sampler_configs[i].sampler, ctx, i_batch[i]);
 
             // is it an end of generation? -> mark the stream as finished
             if (llama_vocab_is_eog(vocab, new_token_id) || n_cur == n_predict) {
@@ -193,23 +208,23 @@ int main(int argc, char ** argv) {
 
             streams[i] += common_token_to_piece(ctx, new_token_id);
 
-            i_batch[i] = batch.n_tokens;
+            i_batch[i] = batch.size();
 
             // push this new token for next evaluation
-            common_batch_add(batch, new_token_id, n_cur, { i }, true);
+            batch.add(new_token_id, n_cur, i, true);
 
             n_decode += 1;
         }
 
         // all streams are finished
-        if (batch.n_tokens == 0) {
+        if (batch.size() == 0) {
             break;
         }
 
         n_cur += 1;
 
         // evaluate the current batch with the transformer model
-        if (llama_decode(ctx, batch)) {
+        if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get())) {
             LOG_ERR("%s : failed to eval, return code %d\n", __func__, 1);
             return 1;
         }
@@ -229,14 +244,16 @@ int main(int argc, char ** argv) {
             __func__, n_decode, (t_main_end - t_main_start) / 1000000.0f, n_decode / ((t_main_end - t_main_start) / 1000000.0f));
 
     LOG("\n");
-    llama_perf_sampler_print(smpl);
+    llama_perf_sampler_print(sampler_configs[0].sampler);
     llama_perf_context_print(ctx);
 
     fprintf(stderr, "\n");
 
-    llama_batch_free(batch);
 
-    llama_sampler_free(smpl);
+    for (auto & sampler_config : sampler_configs) {
+        llama_sampler_free(sampler_config.sampler);
+    }
+
     llama_free(ctx);
     llama_model_free(model);
 

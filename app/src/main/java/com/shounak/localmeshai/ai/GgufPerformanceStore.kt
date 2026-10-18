@@ -69,6 +69,8 @@ data class GgufPerformanceReceipt(
                 if (obj.optString("native_build_id") != BuildConfig.NATIVE_BUILD_ID) return null
                 if (obj.optString("build_type") != BuildConfig.BUILD_TYPE) return null
                 if (obj.optInt("backend_policy_version", 0) != 1) return null
+                val modelSha = obj.getString("model_sha")
+                if (modelSha.startsWith("local_gguf_") || modelSha.startsWith("content:") || modelSha.startsWith("file:")) return null
 
                 GgufPerformanceReceipt(
                     modelSha256 = obj.getString("model_sha"),
@@ -112,10 +114,12 @@ object GgufPerformanceStore {
         contextWindow: Int,
         nBatch: Int,
         nUbatch: Int,
-        prefillThreads: Int = threads
+        prefillThreads: Int = threads,
+        companionSummary: String = ""
     ): String {
         val deviceId = GgufGpuValidator.getDeviceIdentity()
-        val configStr = "bp1_th${threads}_pth${prefillThreads}_ctx${contextWindow}_b${nBatch}_ub${nUbatch}"
+        val companionPart = if (companionSummary.isNotBlank()) "_comp$companionSummary" else ""
+        val configStr = "bp1_th${threads}_pth${prefillThreads}_ctx${contextWindow}_b${nBatch}_ub${nUbatch}$companionPart"
         return "$modelSha256:${BuildConfig.NATIVE_BUILD_ID}:${BuildConfig.BUILD_TYPE}:$deviceId:$configStr"
     }
 

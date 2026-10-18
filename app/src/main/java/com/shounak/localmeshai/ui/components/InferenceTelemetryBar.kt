@@ -30,6 +30,7 @@ import java.util.Locale
 fun InferenceTelemetryBar(
     tokensPerSecond: Float,
     lastInferenceMs: Long,
+    runtimeStatus: String = "Ready",
     activeBackend: String = "Local GPU/CPU",
     batteryTempC: Float? = null,
     availableRamMb: Long? = null,
@@ -64,7 +65,7 @@ fun InferenceTelemetryBar(
                     modifier = Modifier.size(13.dp)
                 )
                 Text(
-                    text = if (tokensPerSecond > 0f) String.format(Locale.US, "%.1f t/s", tokensPerSecond) else "Ready",
+                    text = if (runtimeStatus != "Ready") runtimeStatus else if (tokensPerSecond > 0f) String.format(Locale.US, "%.1f t/s", tokensPerSecond) else "Ready",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = accentColor,

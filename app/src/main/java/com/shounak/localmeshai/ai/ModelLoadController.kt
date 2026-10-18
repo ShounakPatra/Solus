@@ -38,7 +38,8 @@ data class ModelLoadIdentity(
     val batchSize: Int = 256,
     val ubatchSize: Int = 128,
     val gpuLayers: Int = 99,
-    val artifactGeneration: Long = 0L
+    val artifactGeneration: Long = 0L,
+    val companionFilesSummary: String = ""
 ) {
     companion object {
         fun fromFile(
@@ -51,7 +52,8 @@ data class ModelLoadIdentity(
             batchSize: Int = 256,
             ubatchSize: Int = 128,
             gpuLayers: Int = 99,
-            artifactGeneration: Long = 0L
+            artifactGeneration: Long = 0L,
+            companionFilesSummary: String = ""
         ): ModelLoadIdentity {
             val length = if (file.exists()) file.length() else 0L
             val lastMod = if (file.exists()) file.lastModified() else 0L
@@ -67,7 +69,46 @@ data class ModelLoadIdentity(
                 batchSize = batchSize,
                 ubatchSize = ubatchSize,
                 gpuLayers = gpuLayers,
-                artifactGeneration = artifactGeneration
+                artifactGeneration = artifactGeneration,
+                companionFilesSummary = companionFilesSummary
+            )
+        }
+
+        fun fromBundle(
+            bundle: com.shounak.localmeshai.models.ModelBundle,
+            runtimeKind: String,
+            backendPreference: String,
+            threads: Int = 4,
+            prefillThreads: Int = threads,
+            contextWindow: Int = 2048,
+            batchSize: Int = 256,
+            ubatchSize: Int = 128,
+            gpuLayers: Int = 99
+        ): ModelLoadIdentity {
+            val primary = bundle.mainArtifacts.firstOrNull()
+            val totalBytes = bundle.totalSizeBytes
+            val projectorDesc = bundle.projectorArtifact?.displayName.orEmpty()
+            val artifactSummary = buildString {
+                append(bundle.mainArtifacts.size).append("_parts")
+                if (bundle.projectorArtifact != null) {
+                    append("_proj:").append(projectorDesc)
+                }
+                append("_artifacts:").append(bundle.allArtifacts.joinToString(",") { "${it.displayName}:${it.sizeBytes}" })
+                append("_caps:text=${bundle.capabilities.supportsText},vis=${bundle.capabilities.supportsVision},aud=${bundle.capabilities.supportsAudio}")
+            }
+            return ModelLoadIdentity(
+                modelPath = primary?.source?.location ?: bundle.id,
+                fileLength = totalBytes,
+                fileLastModified = primary?.lastModified ?: 0L,
+                runtimeKind = runtimeKind,
+                backendPreference = backendPreference,
+                threads = threads,
+                prefillThreads = prefillThreads,
+                contextWindow = contextWindow,
+                batchSize = batchSize,
+                ubatchSize = ubatchSize,
+                gpuLayers = gpuLayers,
+                companionFilesSummary = artifactSummary
             )
         }
     }
@@ -101,7 +142,8 @@ class ModelLoadController internal constructor(
     private val _loadState = MutableStateFlow<ModelLoadState>(ModelLoadState.Unloaded)
     val loadState: StateFlow<ModelLoadState> = _loadState.asStateFlow()
 
-    @Volatile private var currentIdentity: ModelLoadIdentity? = null
+    @Volatile var currentIdentity: ModelLoadIdentity? = null
+        private set
     @Volatile private var currentOperationId: String? = null
     @Volatile private var currentNativeControlId: Long = 0L
     @Volatile private var currentEpoch: Long = 0L
@@ -116,6 +158,9 @@ class ModelLoadController internal constructor(
 
     val isReady: Boolean
         get() = _loadState.value is ModelLoadState.Ready
+
+    val activeOperationId: String?
+        get() = currentOperationId
 
     val currentConfig: ModelActualConfiguration?
         get() = (_loadState.value as? ModelLoadState.Ready)?.actualConfiguration
@@ -416,13 +461,26 @@ class ModelLoadController internal constructor(
                     pollingJob.cancel()
                     mutex.withLock {
                         if (myEpoch == currentEpoch && currentOperationId == operationId) {
-                            if (t is CancellationException) {
-                                val reason = timeoutReason ?: ModelLoadFailureReason.Cancellation(t.message ?: "Cancelled")
-                                _loadState.value = ModelLoadState.Failed(operationId, reason)
-                            } else {
-                                val reason = timeoutReason ?: ModelLoadFailureReason.InitializationFailure(t.message ?: "Failed to load model")
-                                _loadState.value = ModelLoadState.Failed(operationId, reason)
+                            val failureReason: ModelLoadFailureReason = when {
+                                timeoutReason != null -> timeoutReason
+                                t is CancellationException -> {
+                                    val detail = t.message.orEmpty()
+                                    when {
+                                        detail.contains("user", ignoreCase = true) || detail.contains("stopped", ignoreCase = true) ->
+                                            ModelLoadFailureReason.Cancellation("Model loading cancelled.")
+                                        detail.contains("superseded", ignoreCase = true) ->
+                                            ModelLoadFailureReason.Cancellation("Superseded by new load operation")
+                                        else -> ModelLoadFailureReason.Cancellation(detail.ifBlank { "Operation cancelled" })
+                                    }
+                                }
+                                t.message?.contains("CPU reference", ignoreCase = true) == true ->
+                                    ModelLoadFailureReason.CpuReferenceFailure(t.message ?: "CPU reference probe failed")
+                                t.message?.contains("GPU validation", ignoreCase = true) == true || t.message?.contains("GPU disagreement", ignoreCase = true) == true ->
+                                    ModelLoadFailureReason.GpuDisagreement(t.message ?: "GPU numerical validation failed")
+                                else ->
+                                    ModelLoadFailureReason.InitializationFailure(t.message ?: "Failed to load model")
                             }
+                            _loadState.value = ModelLoadState.Failed(operationId, failureReason)
                             inFlightJob = null
                             inFlightDeferred = null
                             activeCancellationAction = null
@@ -480,6 +538,7 @@ class ModelLoadController internal constructor(
      */
     suspend fun shutdown(
         reason: String = "Shutdown requested",
+        targetOperationId: String? = null,
         unloadAction: (suspend () -> Unit)? = null
     ): ShutdownResult = withContext(Dispatchers.IO) {
         val (opId, job, cancelAction, nativeToken, myEpoch) = mutex.withLock {
@@ -493,6 +552,10 @@ class ModelLoadController internal constructor(
                 currentNativeControlId = 0L
                 isShutdownStalled = false
                 return@withContext ShutdownResult.Success
+            }
+            if (targetOperationId != null && targetOperationId != op) {
+                safeLogI("Ignoring shutdown for mismatched operation: target=$targetOperationId, current=$op")
+                return@withContext ShutdownResult.StaleNoOp
             }
             val epoch = ++currentEpoch
             _loadState.value = ModelLoadState.Stopping(op)
@@ -539,7 +602,7 @@ class ModelLoadController internal constructor(
         try {
             mutex.withLock {
                 if (currentEpoch == myEpoch) {
-                    if (result !is ShutdownResult.Success) {
+                    if (!result.isSuccess) {
                         safeLogW("Native shutdown stalled for operation $opId")
                         isShutdownStalled = true
                         _loadState.value = ModelLoadState.ShutdownStalled(opId)
@@ -564,8 +627,18 @@ class ModelLoadController internal constructor(
     /**
      * Requests cancellation of the currently active initialization operation.
      */
-    suspend fun cancelActiveOperation(reason: String = "Cancelled by user") {
-        shutdown(reason)
+    suspend fun cancelActiveOperation(
+        targetOperationId: String?,
+        reason: String = "Cancelled by user"
+    ) {
+        val matches = mutex.withLock {
+            targetOperationId == null || currentOperationId == targetOperationId
+        }
+        if (!matches) {
+            safeLogI("Ignoring cancelActiveOperation for mismatched operation: target=$targetOperationId, current=$currentOperationId")
+            return
+        }
+        shutdown(reason = reason, targetOperationId = targetOperationId)
     }
 
     /**
@@ -573,9 +646,18 @@ class ModelLoadController internal constructor(
      * If an initialization job is running or an unload action is provided,
      * ensures completion before publishing Unloaded, or transitions to ShutdownStalled on failure/timeout.
      */
-    fun resetToUnloaded(unloadAction: (suspend () -> Unit)? = null): Job {
+    fun resetToUnloaded(
+        targetOperationId: String? = null,
+        unloadAction: (suspend () -> Unit)? = null
+    ): Job {
         val (opId, job, cancelAction, nativeToken, myEpoch, shouldLaunch) = synchronized(this) {
             val op = currentOperationId ?: UUID.randomUUID().toString()
+            if (targetOperationId != null && currentOperationId != null && targetOperationId != currentOperationId) {
+                safeLogI("Ignoring resetToUnloaded for mismatched operation: target=$targetOperationId, current=$currentOperationId")
+                val completedJob = Job()
+                completedJob.complete()
+                return completedJob
+            }
             val epoch = ++currentEpoch
             val j = inFlightJob
             val ca = activeCancellationAction

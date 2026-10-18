@@ -85,7 +85,8 @@ fun SettingsDialog(
     mainViewModel: MainViewModel,
     hazeState: HazeState,
     scrollToAbout: Boolean = false,
-    onDismissRequest: () -> Unit
+    onDismissRequest: () -> Unit,
+    onAutoHideToggleChanged: ((Boolean) -> Unit)? = null
 ) {
     val settingsData by mainViewModel.appSettingsData.collectAsState()
     val appSettings = mainViewModel.appSettings
@@ -268,6 +269,7 @@ fun SettingsDialog(
                             checked = settingsData.enableAutoHideBottomBar,
                             onCheckedChange = { enabled ->
                                 appSettings.updateSettings { it.copy(enableAutoHideBottomBar = enabled) }
+                                onAutoHideToggleChanged?.invoke(enabled)
                             }
                         )
                     }

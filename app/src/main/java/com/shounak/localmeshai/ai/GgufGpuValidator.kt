@@ -1,10 +1,14 @@
 package com.shounak.localmeshai.ai
 
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import com.shounak.localmeshai.BuildConfig
 import android.util.Log
 import androidx.annotation.VisibleForTesting
+import com.shounak.localmeshai.models.ArtifactSource
+import com.shounak.localmeshai.models.ModelArtifact
+import com.shounak.localmeshai.models.ModelBundle
 import com.shounak.localmeshai.models.ModelCatalog
 import com.shounak.localmeshai.utils.AppTrace
 import com.shounak.localmeshai.utils.ModelDownloader
@@ -14,6 +18,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
+import java.security.MessageDigest
 
 /**
  * Validates GPU computation once per model and configuration using versioned validation receipts.
@@ -92,6 +98,8 @@ internal object GgufGpuValidator {
                     val obj = JSONObject(jsonStr)
                     val protocol = obj.optInt("protocol", 0)
                     if (protocol != PROTOCOL_VERSION) return null // Stale or older protocol receipt -> treated as pending
+                    val modelSha = obj.getString("model_sha")
+                    if (modelSha.startsWith("local_gguf_") || modelSha.startsWith("content:") || modelSha.startsWith("file:")) return null
                     val reqTh = obj.getInt("req_threads")
                     val actTh = obj.getInt("act_threads")
                     ValidationReceipt(
@@ -176,10 +184,12 @@ internal object GgufGpuValidator {
         contextWindow: Int,
         nBatch: Int,
         nUbatch: Int,
-        prefillThreads: Int = threads
+        prefillThreads: Int = threads,
+        companionSummary: String = ""
     ): String {
         val deviceIdentity = getDeviceIdentity()
-        val configStr = "v${PROTOCOL_VERSION}_bp1_vk99_tv05_p8_th${threads}_pth${prefillThreads}_ctx${contextWindow}_b${nBatch}_ub${nUbatch}"
+        val companionPart = if (companionSummary.isNotBlank()) "_comp$companionSummary" else ""
+        val configStr = "v${PROTOCOL_VERSION}_bp1_vk99_tv05_p8_th${threads}_pth${prefillThreads}_ctx${contextWindow}_b${nBatch}_ub${nUbatch}$companionPart"
         return "$modelSha256:$NATIVE_BUILD_ID:${BuildConfig.BUILD_TYPE}:$deviceIdentity:$configStr"
     }
 
@@ -309,6 +319,133 @@ internal object GgufGpuValidator {
      */
     private val verifiedArtifacts = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+    private data class ArtifactStat(
+        val identity: String,
+        val size: Long,
+        val lastModified: Long,
+        val inodeCtime: String
+    ) {
+        fun stamp(): String = "$identity|$size|$lastModified|$inodeCtime"
+    }
+
+    private fun getArtifactStat(context: Context, artifact: ModelArtifact): ArtifactStat {
+        return when (val source = artifact.source) {
+            is ArtifactSource.AppManaged -> {
+                val file = File(source.path)
+                require(file.isFile && file.length() > 0L) { "Model artifact is missing or empty: ${file.name}" }
+                val stat = runCatching { android.system.Os.stat(file.absolutePath).let { "${it.st_ino}|${it.st_ctime}" } }.getOrDefault("")
+                ArtifactStat(file.canonicalPath, file.length(), file.lastModified(), stat)
+            }
+            is ArtifactSource.PersistedUri -> {
+                val uri = Uri.parse(source.uriString)
+                val pfd = context.contentResolver.openFileDescriptor(uri, "r")
+                    ?: throw java.io.IOException("Cannot open descriptor for URI: ${source.uriString}")
+                pfd.use { descriptor ->
+                    val stat = android.system.Os.fstat(descriptor.fileDescriptor)
+                    require(stat.st_size > 0L) { "Model artifact URI is empty: ${artifact.displayName}" }
+                    ArtifactStat(source.uriString, stat.st_size, stat.st_mtime, "${stat.st_ino}|${stat.st_ctime}")
+                }
+            }
+        }
+    }
+
+    private fun hashArtifact(
+        context: Context,
+        artifact: ModelArtifact,
+        isCancelled: (() -> Boolean)?,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)?
+    ): String {
+        val stampBefore = getArtifactStat(context, artifact)
+        val stampKey = "fp_v1:${stampBefore.stamp()}"
+        val receiptKey = MessageDigest.getInstance("SHA-256")
+            .digest(stampKey.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+
+        val receipts = context.getSharedPreferences("verified_gguf_artifacts_v3", Context.MODE_PRIVATE)
+        val cached = verifiedArtifacts[stampKey] ?: receipts.getString(receiptKey, null)
+        if (cached != null) {
+            onProgress?.invoke(stampBefore.size, stampBefore.size)
+            return cached
+        }
+
+        val digest = MessageDigest.getInstance("SHA-256")
+        val stream = when (val source = artifact.source) {
+            is ArtifactSource.AppManaged -> FileInputStream(File(source.path))
+            is ArtifactSource.PersistedUri -> context.contentResolver.openInputStream(Uri.parse(source.uriString))
+                ?: throw java.io.IOException("Cannot open input stream for ${source.uriString}")
+        }
+
+        var bytesReadTotal = 0L
+        val totalBytes = stampBefore.size
+        stream.use { input ->
+            val buffer = ByteArray(65536)
+            var read: Int
+            while (input.read(buffer).also { read = it } != -1) {
+                if (isCancelled?.invoke() == true) {
+                    throw CancellationException("Artifact hashing cancelled")
+                }
+                digest.update(buffer, 0, read)
+                bytesReadTotal += read
+                onProgress?.invoke(bytesReadTotal, totalBytes)
+            }
+        }
+
+        val stampAfter = getArtifactStat(context, artifact)
+        require(stampBefore.stamp() == stampAfter.stamp()) {
+            "Model artifact changed while verification was running: ${artifact.displayName}"
+        }
+
+        val hashHex = digest.digest().joinToString("") { "%02x".format(it) }
+        verifiedArtifacts[stampKey] = hashHex
+        receipts.edit().putString(receiptKey, hashHex).apply()
+        return hashHex
+    }
+
+    fun resolveArtifactFingerprint(
+        context: Context,
+        bundle: ModelBundle,
+        isCancelled: (() -> Boolean)? = null,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null
+    ): String {
+        require(bundle.mainArtifacts.isNotEmpty()) { "Bundle contains no main artifacts" }
+        val allArtifacts = bundle.mainArtifacts + listOfNotNull(bundle.projectorArtifact)
+
+        val hashes = mutableMapOf<ModelArtifact, String>()
+        for (artifact in allArtifacts) {
+            if (isCancelled?.invoke() == true) {
+                throw CancellationException("Artifact verification cancelled")
+            }
+            hashes[artifact] = hashArtifact(context, artifact, isCancelled, onProgress)
+        }
+
+        // For single-file main artifact without projector, use standard SHA-256 directly
+        if (bundle.mainArtifacts.size == 1 && bundle.projectorArtifact == null) {
+            val singleHash = hashes[bundle.mainArtifacts[0]]!!
+            val isCustomOrStorage = bundle.isStorageImport || bundle.id.startsWith("custom_") || bundle.id.startsWith("storage_")
+            val expected = if (!isCustomOrStorage && bundle.id.isNotBlank()) {
+                ModelCatalog.defaultModels.firstOrNull { it.id.equals(bundle.id, true) }?.sha256.orEmpty()
+            } else ""
+            require(expected.isBlank() || singleHash.equals(expected, true)) {
+                "Model checksum does not match the catalog. Download the model again."
+            }
+            return singleHash
+        }
+
+        // For sharded bundles or models with projector, create a composite fingerprint
+        val composite = buildString {
+            append("bundle_v1:")
+            bundle.mainArtifacts.forEachIndexed { idx, shard ->
+                append("shard$idx:${shard.displayName}:${hashes[shard]};")
+            }
+            bundle.projectorArtifact?.let { proj ->
+                append("proj:${proj.displayName}:${hashes[proj]};")
+            }
+        }
+        return MessageDigest.getInstance("SHA-256")
+            .digest(composite.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+    }
+
     fun resolveModelSha256(
         modelPath: String,
         modelId: String = "",
@@ -325,7 +462,7 @@ internal object GgufGpuValidator {
         val stamp = identity()
         val receiptKey = java.security.MessageDigest.getInstance("SHA-256").digest(stamp.toByteArray())
             .joinToString("") { "%02x".format(it) }
-        val receipts = context?.getSharedPreferences("verified_gguf_artifacts_v2", Context.MODE_PRIVATE)
+        val receipts = context?.getSharedPreferences("verified_gguf_artifacts_v3", Context.MODE_PRIVATE)
         val actual = verifiedArtifacts[stamp] ?: receipts?.getString(receiptKey, null)
             ?: AppTrace.section("hashing") {
                 ModelDownloader.computeSha256(file, isCancelled = isCancelled, onProgress = onProgress).also {
@@ -336,9 +473,10 @@ internal object GgufGpuValidator {
                     receipts?.edit()?.putString(receiptKey, it)?.apply()
                 }
             }
-        val expected = ModelCatalog.defaultModels.firstOrNull {
-            it.fileName.equals(file.name, true) || (modelId.isNotBlank() && it.id.equals(modelId, true))
-        }?.sha256.orEmpty()
+        val isCustomOrStorage = modelId.startsWith("custom_") || modelId.startsWith("storage_")
+        val expected = if (!isCustomOrStorage && modelId.isNotBlank()) {
+            ModelCatalog.defaultModels.firstOrNull { it.id.equals(modelId, true) }?.sha256.orEmpty()
+        } else ""
         require(expected.isBlank() || actual.equals(expected, true)) {
             "Model checksum does not match the catalog. Download the model again."
         }
@@ -364,9 +502,10 @@ internal object GgufGpuValidator {
         customNativeBridge: LlamaNativeBridge? = null,
         onValidatedEngine: ((LlamaCppEngine) -> Unit)? = null,
         operationControlId: Long = 0L,
-        onProgress: ((stage: ModelLoadStage, completed: Long?, total: Long?) -> Unit)? = null
+        onProgress: ((stage: ModelLoadStage, completed: Long?, total: Long?) -> Unit)? = null,
+        companionSummary: String = ""
     ): ValidationResult = withContext(Dispatchers.IO) {
-        val requestedCacheKey = buildCacheKey(modelSha256, threads, contextWindow, nBatch, nUbatch, prefillThreads)
+        val requestedCacheKey = buildCacheKey(modelSha256, threads, contextWindow, nBatch, nUbatch, prefillThreads, companionSummary)
 
         // Step 1: Check memory cache and candidate receipt
         testMemoryCache[requestedCacheKey]?.let { cached ->
@@ -624,7 +763,7 @@ internal object GgufGpuValidator {
                 )
                 saveReceipt(context, requestedCacheKey, passReceipt)
 
-                val actualCacheKey = buildCacheKey(modelSha256, actualTh, actualCtx, actualB, actualUb, actualPth)
+                val actualCacheKey = buildCacheKey(modelSha256, actualTh, actualCtx, actualB, actualUb, actualPth, companionSummary = companionSummary)
                 if (actualCacheKey != requestedCacheKey) {
                     saveReceipt(context, actualCacheKey, passReceipt)
                 }
@@ -639,6 +778,319 @@ internal object GgufGpuValidator {
                 if (!transferred) gpuEngine.close()
             }
 
+        } catch (e: CancellationException) {
+            safeLogI("GPU validation was cancelled; leaving validation pending")
+            throw e
+        } catch (t: Throwable) {
+            val fail = ValidationResult.Fail("Unexpected validation error: ${t.message ?: t.toString()}", if (gpuPhase) FailureKind.Transient else FailureKind.CpuReference, permanent = false)
+            safeLogE("GPU validation failed unexpectedly", t)
+            return@withContext fail
+        } finally {
+            (customNativeBridge ?: DefaultLlamaNativeBridge).clearProbeReferences()
+            AppTrace.endSection()
+        }
+    }
+
+    suspend fun validate(
+        context: Context,
+        bundle: ModelBundle,
+        threads: Int = 4,
+        prefillThreads: Int = threads,
+        contextWindow: Int = 2048,
+        nBatch: Int = 256,
+        nUbatch: Int = 128,
+        expectedFileSizeBytes: Long = 0L,
+        customNativeBridge: LlamaNativeBridge? = null,
+        onValidatedEngine: ((LlamaCppEngine) -> Unit)? = null,
+        operationControlId: Long = 0L,
+        onProgress: ((stage: ModelLoadStage, completed: Long?, total: Long?) -> Unit)? = null,
+        companionSummary: String = ""
+    ): ValidationResult = withContext(Dispatchers.IO) {
+        val modelSha256 = resolveArtifactFingerprint(
+            context = context,
+            bundle = bundle,
+            onProgress = { bytesRead, totalBytes ->
+                onProgress?.invoke(ModelLoadStage.VerifyingFile, bytesRead, totalBytes)
+            }
+        )
+        val effectiveCompanionSummary = if (companionSummary.isNotBlank()) {
+            companionSummary
+        } else {
+            "${bundle.mainArtifacts.size}_parts_${bundle.projectorArtifact?.displayName.orEmpty()}"
+        }
+
+        val requestedCacheKey = buildCacheKey(
+            modelSha256, threads, contextWindow, nBatch, nUbatch, prefillThreads, effectiveCompanionSummary
+        )
+
+        // Step 1: Check memory cache and candidate receipt
+        testMemoryCache[requestedCacheKey]?.let { cached ->
+            if (cached is ValidationResult.Pass && onValidatedEngine == null) {
+                safeLogI("Using memory-cached validation pass for key: $requestedCacheKey")
+                return@withContext cached
+            }
+            if (cached is ValidationResult.Fail && cached.permanent) {
+                return@withContext cached
+            }
+        }
+
+        val candidateReceipt = getReceipt(context, requestedCacheKey)
+        if (candidateReceipt != null) {
+            if (candidateReceipt.status == "FAIL" && candidateReceipt.permanent) {
+                safeLogI("Permanent failure receipt found for key: $requestedCacheKey")
+                return@withContext ValidationResult.Fail(
+                    candidateReceipt.failReason ?: "GPU disagreement",
+                    FailureKind.GpuDisagreement,
+                    permanent = true
+                )
+            }
+
+            if (candidateReceipt.status == "PASS") {
+                if (onValidatedEngine == null) {
+                    safeLogI("Using candidate receipt PASS (no retained engine requested) for key: $requestedCacheKey")
+                    return@withContext ValidationResult.Pass
+                }
+
+                val candidateEngine = if (customNativeBridge != null) {
+                    LlamaCppEngine(context, customNativeBridge)
+                } else {
+                    LlamaCppEngine(context)
+                }
+
+                var candidateMatched = false
+                try {
+                    onProgress?.invoke(ModelLoadStage.ContextPreparation("Vulkan"), null, null)
+                    candidateEngine.initializeBundle(
+                        context = context,
+                        bundle = bundle,
+                        threads = threads,
+                        prefillThreads = prefillThreads,
+                        contextWindow = contextWindow,
+                        nBatch = nBatch,
+                        nUbatch = nUbatch,
+                        backend = LlamaBackend.VULKAN,
+                        expectedFileSizeBytes = expectedFileSizeBytes,
+                        operationControlId = operationControlId
+                    )
+
+                    if (candidateEngine.isInitialized && candidateEngine.activeBackend == LlamaBackend.VULKAN) {
+                        val meta = candidateEngine.getMetadata()
+                        val actualCtx = meta?.contextSize?.takeIf { it > 0 } ?: contextWindow
+                        val actualB = meta?.batchSize?.takeIf { it > 0 } ?: nBatch
+                        val actualUb = meta?.microBatchSize?.takeIf { it > 0 } ?: nUbatch
+                        val actualConfig = candidateEngine.actualConfiguration
+
+                        if (actualCtx == candidateReceipt.actualContextWindow &&
+                            actualB == candidateReceipt.actualBatch &&
+                            actualUb == candidateReceipt.actualUbatch &&
+                            (actualConfig == null || (actualConfig.threads == candidateReceipt.actualThreads && actualConfig.prefillThreads == candidateReceipt.actualPrefillThreads))
+                        ) {
+                            candidateMatched = true
+                            candidateEngine.resetAfterValidation()
+                            onValidatedEngine(candidateEngine)
+                            safeLogI("Candidate GPU engine matched validation receipt; reused directly")
+                            return@withContext ValidationResult.Pass
+                        }
+                    }
+                } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
+                    safeLogW("Candidate GPU engine load check failed; falling back to sequential validation: ${t.message}")
+                } finally {
+                    if (!candidateMatched) {
+                        candidateEngine.close()
+                    }
+                }
+            }
+        }
+
+        safeLogI("Starting sequential CPU/Vulkan validation for bundle: ${bundle.id} (key: $requestedCacheKey)")
+
+        var gpuPhase = false
+        val totalProbeUnits = (VALIDATION_PROMPTS.size * PROBE_POSITIONS).toLong()
+
+        AppTrace.beginSection("validation")
+        try {
+            ensureActive()
+            val cpuEngine = if (customNativeBridge != null) {
+                LlamaCppEngine(context, customNativeBridge)
+            } else {
+                LlamaCppEngine(context)
+            }
+
+            try {
+                onProgress?.invoke(ModelLoadStage.ContextPreparation("CPU"), null, null)
+                cpuEngine.initializeBundle(
+                    context = context,
+                    bundle = bundle,
+                    threads = threads,
+                    prefillThreads = prefillThreads,
+                    contextWindow = contextWindow,
+                    nBatch = nBatch,
+                    nUbatch = nUbatch,
+                    backend = LlamaBackend.CPU,
+                    expectedFileSizeBytes = expectedFileSizeBytes,
+                    operationControlId = operationControlId
+                )
+                if (!cpuEngine.isInitialized) {
+                    val fail = ValidationResult.Fail("CPU reference initialization failed", FailureKind.CpuReference, permanent = false)
+                    return@withContext fail
+                }
+
+                val cpuMeta = cpuEngine.getMetadata()
+                if (cpuMeta == null || !cpuMeta.isCpuIsolated) {
+                    safeLogE("CPU reference engine rejected: CPU isolation not verified (meta=$cpuMeta)")
+                    val fail = ValidationResult.Fail("CPU reference probe rejected: CPU context is not verified CPU-isolated", FailureKind.CpuReference, permanent = false)
+                    return@withContext fail
+                }
+
+                for ((idx, prompt) in VALIDATION_PROMPTS.withIndex()) {
+                    ensureActive()
+                    onProgress?.invoke(
+                        ModelLoadStage.CpuReference(promptIndex = idx, position = 0),
+                        (idx * PROBE_POSITIONS).toLong(),
+                        totalProbeUnits
+                    )
+                    val messages = listOf("user" to prompt)
+                    val resJson = cpuEngine.probeReference(idx, messages, PROBE_POSITIONS, operationControlId)
+                    val outcome = parseProbeResponse(resJson)
+                    if (outcome.cancelled) {
+                        throw CancellationException("CPU reference probe cancelled by user")
+                    }
+                    if (!outcome.success) {
+                        val fail = ValidationResult.Fail(
+                            "CPU reference probe failed on prompt $idx: ${outcome.error.ifBlank { "Unknown CPU probe error" }}",
+                            FailureKind.CpuReference,
+                            permanent = false
+                        )
+                        return@withContext fail
+                    }
+                }
+            } finally {
+                cpuEngine.close()
+            }
+
+            gpuPhase = true
+            ensureActive()
+            val gpuEngine = if (customNativeBridge != null) {
+                LlamaCppEngine(context, customNativeBridge)
+            } else {
+                LlamaCppEngine(context)
+            }
+
+            var transferred = false
+            try {
+                onProgress?.invoke(ModelLoadStage.ContextPreparation("Vulkan"), null, null)
+                gpuEngine.initializeBundle(
+                    context = context,
+                    bundle = bundle,
+                    threads = threads,
+                    prefillThreads = prefillThreads,
+                    contextWindow = contextWindow,
+                    nBatch = nBatch,
+                    nUbatch = nUbatch,
+                    backend = LlamaBackend.VULKAN,
+                    expectedFileSizeBytes = expectedFileSizeBytes,
+                    operationControlId = operationControlId
+                )
+                if (!gpuEngine.isInitialized || gpuEngine.activeBackend != LlamaBackend.VULKAN) {
+                    val fail = ValidationResult.Fail("Vulkan GPU initialization failed or fell back to CPU", FailureKind.Initialization, permanent = false)
+                    return@withContext fail
+                }
+
+                val actualMeta = gpuEngine.getMetadata()
+                val actualCtx = actualMeta?.contextSize?.takeIf { it > 0 } ?: contextWindow
+                val actualB = actualMeta?.batchSize?.takeIf { it > 0 } ?: nBatch
+                val actualUb = actualMeta?.microBatchSize?.takeIf { it > 0 } ?: nUbatch
+                val actualConfig = gpuEngine.actualConfiguration
+                val actualTh = actualConfig?.threads ?: threads
+                val actualPth = actualConfig?.prefillThreads ?: prefillThreads
+
+                for ((idx, prompt) in VALIDATION_PROMPTS.withIndex()) {
+                    ensureActive()
+                    onProgress?.invoke(
+                        ModelLoadStage.GpuProbe(promptIndex = idx, position = 0),
+                        (idx * PROBE_POSITIONS).toLong(),
+                        totalProbeUnits
+                    )
+                    val messages = listOf("user" to prompt)
+                    val resJson = gpuEngine.probeCompare(idx, messages, PROBE_POSITIONS, operationControlId)
+                    val outcome = parseProbeResponse(resJson)
+                    if (outcome.cancelled) {
+                        throw CancellationException("Vulkan probe comparison cancelled by user")
+                    }
+                    if (!outcome.success) {
+                        val numerical = outcome.error.contains("variation", true) ||
+                            outcome.error.contains("TV", true) ||
+                            outcome.error.contains("non-finite", true) ||
+                            outcome.error.contains("numerical", true)
+                        val fail = ValidationResult.Fail(
+                            "GPU probe failed on prompt $idx (\"$prompt\"): ${outcome.error.ifBlank { "Unknown GPU probe failure" }}",
+                            if (numerical) FailureKind.GpuDisagreement else FailureKind.Transient,
+                            permanent = numerical
+                        )
+                        if (numerical) {
+                            val failReceipt = ValidationReceipt(
+                                protocolVersion = PROTOCOL_VERSION,
+                                modelSha256 = modelSha256,
+                                nativeBuildId = NATIVE_BUILD_ID,
+                                deviceIdentity = getDeviceIdentity(),
+                                requestedThreads = threads,
+                                requestedPrefillThreads = prefillThreads,
+                                requestedContextWindow = contextWindow,
+                                requestedBatch = nBatch,
+                                requestedUbatch = nUbatch,
+                                actualThreads = actualTh,
+                                actualPrefillThreads = actualPth,
+                                actualContextWindow = actualCtx,
+                                actualBatch = actualB,
+                                actualUbatch = actualUb,
+                                status = "FAIL",
+                                failReason = fail.reason,
+                                permanent = true
+                            )
+                            saveReceipt(context, requestedCacheKey, failReceipt)
+                        }
+                        return@withContext fail
+                    }
+                }
+
+                ensureActive()
+                gpuEngine.resetAfterValidation()
+
+                val passReceipt = ValidationReceipt(
+                    protocolVersion = PROTOCOL_VERSION,
+                    modelSha256 = modelSha256,
+                    nativeBuildId = NATIVE_BUILD_ID,
+                    deviceIdentity = getDeviceIdentity(),
+                    requestedThreads = threads,
+                    requestedPrefillThreads = prefillThreads,
+                    requestedContextWindow = contextWindow,
+                    requestedBatch = nBatch,
+                    requestedUbatch = nUbatch,
+                    actualThreads = actualTh,
+                    actualPrefillThreads = actualPth,
+                    actualContextWindow = actualCtx,
+                    actualBatch = actualB,
+                    actualUbatch = actualUb,
+                    status = "PASS",
+                    permanent = true
+                )
+                saveReceipt(context, requestedCacheKey, passReceipt)
+
+                val actualCacheKey = buildCacheKey(modelSha256, actualTh, actualCtx, actualB, actualUb, actualPth, companionSummary = effectiveCompanionSummary)
+                if (actualCacheKey != requestedCacheKey) {
+                    saveReceipt(context, actualCacheKey, passReceipt)
+                }
+
+                if (onValidatedEngine != null) {
+                    onValidatedEngine(gpuEngine)
+                    transferred = true
+                }
+                safeLogI("GPU validation PASSED for bundle ${bundle.id} (actual ctx=$actualCtx, b=$actualB, ub=$actualUb)")
+                ValidationResult.Pass
+            } finally {
+                if (!transferred) gpuEngine.close()
+            }
         } catch (e: CancellationException) {
             safeLogI("GPU validation was cancelled; leaving validation pending")
             throw e

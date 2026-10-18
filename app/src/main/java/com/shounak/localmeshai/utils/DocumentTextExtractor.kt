@@ -206,7 +206,7 @@ object DocumentTextExtractor {
 
     private fun extractPdf(context: Context, bytes: ByteArray): String {
         return runCatching {
-            PDFBoxResourceLoader.init(context)
+            PDFBoxResourceLoader.init(context.applicationContext)
             PDDocument.load(ByteArrayInputStream(bytes)).use { document ->
                 PDFTextStripper().apply {
                     setSortByPosition(true)

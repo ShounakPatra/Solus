@@ -16,11 +16,14 @@ import com.shounak.localmeshai.utils.ModelRuntimeCoordinator
 import com.shounak.localmeshai.utils.RegistrationToken
 import com.shounak.localmeshai.utils.ModelRuntimeOwner
 import com.shounak.localmeshai.utils.ThinkingTextUtils
+import com.shounak.localmeshai.utils.ThinkingModeConfig
 import com.shounak.localmeshai.utils.AppCacheCleaner
 import com.shounak.localmeshai.ai.ModelLoadController
 import com.shounak.localmeshai.ai.ModelLoadIdentity
 import com.shounak.localmeshai.ai.ModelLoadState
 import com.shounak.localmeshai.ai.ModelLoadStage
+import com.shounak.localmeshai.models.ModelBundle
+import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.ai.ModelActualConfiguration
 import com.shounak.localmeshai.ai.GgufExecutionProfile
 import com.shounak.localmeshai.utils.DeviceUtils
@@ -91,9 +94,11 @@ data class ChatMessage(
     val requestId: String? = null,
     val attemptId: Int = 1,
     val reasoningText: String? = null,
+    val isThinkingActive: Boolean = false,
     val userMessageId: String? = null,
     val emptyReason: EmptyResponseReason? = null,
-    val revision: Int = 0
+    val revision: Int = 0,
+    val responseFormatVersion: Int = 0
 )
 
 @Immutable
@@ -119,6 +124,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isGenerating = MutableStateFlow(false)
     val isGenerating = _isGenerating.asStateFlow()
+
+    private val _isStopping = MutableStateFlow(false)
+    val isStopping = _isStopping.asStateFlow()
 
     private val _isModelReady = MutableStateFlow(false)
     val isModelReady = _isModelReady.asStateFlow()
@@ -180,6 +188,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val activeBackend = _activeBackend.asStateFlow()
 
     private var currentModelPath: String? = null
+    private var currentBundle: ModelBundle? = null
     private var currentModelId: String = ""
     private var currentModelName: String = ""
     private var currentModelSize: String = ""
@@ -187,6 +196,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var currentSupportsThinkingMode: Boolean = false
     private var currentAllowUnsafeOverride: Boolean = false
     private var lastLoadedBackendPreference: String? = null
+    private var currentRequestedIdentity: ModelLoadIdentity? = null
+    private var currentLoadedIdentity: ModelLoadIdentity? = null
+    @Volatile var currentResolvedThinkingCapability: ThinkingCapability = ThinkingCapability.Unknown
+        private set
     @Volatile private var currentModelEpoch: Long = 0L
     private var initGeneration: Int = 0
     private var initJob: Job? = null
@@ -195,6 +208,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var resetRuntimeConversationBeforeNextSend = false
     @Volatile private var lastRuntimeThinkingMode: Boolean? = null
     private var coordinatorToken: RegistrationToken? = null
+    private var lastShutdownResult: com.shounak.localmeshai.ai.ShutdownResult? = null
 
     fun retryMessage(sessionId: String, userMessageId: String) {
         if (_isGenerating.value || generationJob?.isActive == true) return
@@ -315,8 +329,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val sessionPersistenceChannel = Channel<List<ChatSession>>(Channel.CONFLATED)
 
     fun cancelModelInitialization() {
+        val opId = modelLoadController.activeOperationId
         viewModelScope.launch {
-            modelLoadController.cancelActiveOperation("Cancelled by user")
+            if (opId != null) {
+                modelLoadController.cancelActiveOperation(targetOperationId = opId, reason = "Cancelled by user")
+            }
             inferenceManager.cancelGeneration()
         }
     }
@@ -380,14 +397,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-        coordinatorToken = ModelRuntimeCoordinator.register(ModelRuntimeOwner.Chat, requestStop = {
-            initJob?.cancel()
-            generationJob?.cancel()
-            inferenceManager.cancelGeneration()
-            viewModelScope.launch {
-                modelLoadController.cancelActiveOperation("Runtime coordinator displacement")
+        coordinatorToken = ModelRuntimeCoordinator.register(
+            owner = ModelRuntimeOwner.Chat,
+            loadedModelIdentity = { currentLoadedIdentity?.modelPath ?: currentModelPath ?: currentModelId },
+            stableModelIdProvider = { currentModelId },
+            modelPathProvider = { currentModelPath ?: currentLoadedIdentity?.modelPath.orEmpty() },
+            loadOperationIdProvider = { modelLoadController.activeOperationId.orEmpty() },
+            requestStop = {
+                initJob?.cancel()
+                generationJob?.cancel()
+                inferenceManager.cancelGeneration()
+                val opId = modelLoadController.activeOperationId
+                if (opId != null) {
+                    viewModelScope.launch {
+                        modelLoadController.cancelActiveOperation(targetOperationId = opId, reason = "Runtime coordinator displacement")
+                    }
+                }
             }
-        }) {
+        ) {
             releaseModel(clearCoordinator = false)
             val joinOk = withTimeoutOrNull(10_000L) {
                 releaseJob?.join()
@@ -396,7 +423,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             if (!joinOk) {
                 com.shounak.localmeshai.ai.ShutdownResult.TimedOut
             } else {
-                com.shounak.localmeshai.ai.ShutdownResult.Success
+                lastShutdownResult ?: if (inferenceManager.isReady) {
+                    com.shounak.localmeshai.ai.ShutdownResult.Failed(IllegalStateException("Chat inference manager still ready after release"))
+                } else {
+                    com.shounak.localmeshai.ai.ShutdownResult.Success
+                }
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -503,13 +534,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _currentSessionId.value = it
             }
             try {
-                val sessionDir = getApplication<Application>().filesDir.resolve("chat_attachments").resolve(activeSessionId)
-                sessionDir.mkdirs()
-                val targetFile = sessionDir.resolve(fileName)
-                getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
-                    targetFile.outputStream().use { output ->
-                        input.copyTo(output)
+                val sessionDir = getApplication<Application>().filesDir.resolve("chat_attachments").resolve(activeSessionId).apply { mkdirs() }
+                val safeFileName = File(fileName).name.replace(Regex("[^a-zA-Z0-9._-]"), "_").ifBlank { "document.bin" }
+                val targetFile = sessionDir.resolve(safeFileName)
+                val tempFile = sessionDir.resolve("$safeFileName.tmp")
+                try {
+                    getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
+                        tempFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
                     }
+                    if (targetFile.exists()) targetFile.delete()
+                    if (!tempFile.renameTo(targetFile)) {
+                        tempFile.copyTo(targetFile, overwrite = true)
+                        tempFile.delete()
+                    }
+                } catch (t: Throwable) {
+                    tempFile.delete()
+                    throw t
                 }
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Failed to copy ingested document to session attachments", e)
@@ -597,6 +639,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _draftText.value = ""
     }
 
+    fun updateSupportsThinkingMode(supports: Boolean) {
+        currentSupportsThinkingMode = supports
+    }
+
     fun initModel(
         path: String,
         modelId: String = "",
@@ -605,28 +651,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         contextWindowTokens: Int? = null,
         supportsThinkingMode: Boolean = false,
         allowUnsafeOverride: Boolean = false,
-        forceReload: Boolean = false
+        forceReload: Boolean = false,
+        bundle: ModelBundle? = null
     ) {
         val currentBackendPref = appSettings.settings.value.llamaBackendPreference
-        if (!forceReload && path == currentModelPath && _isModelReady.value && currentBackendPref == lastLoadedBackendPreference && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Chat)) {
-            currentContextWindowTokens = contextWindowTokens
-            return
-        }
-
-        currentModelPath = path
-        currentModelId = modelId
-        currentModelName = modelName
-        currentModelSize = modelSize
-        currentContextWindowTokens = contextWindowTokens
-        currentSupportsThinkingMode = supportsThinkingMode
-        currentAllowUnsafeOverride = allowUnsafeOverride
-
-        currentModelEpoch++
-        activeRequestId = null
-        val myGen = ++initGeneration
         val file = File(path)
-        val isGguf = ChatRuntimePolicy.isGgufModel(file.name)
-        val identity = if (isGguf) {
+        val isGguf = bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(file.name)
+        val identity = if (bundle != null) {
+            ModelLoadIdentity.fromBundle(
+                bundle = bundle,
+                runtimeKind = "LlamaCpp",
+                backendPreference = currentBackendPref,
+                threads = DeviceUtils.recommendedThreadCount(getApplication()),
+                contextWindow = contextWindowTokens ?: 2048
+            )
+        } else if (isGguf) {
             val profile = GgufExecutionProfile.resolve(
                 context = getApplication(),
                 modelNameOrId = modelName.ifBlank { modelId.ifBlank { file.nameWithoutExtension } },
@@ -644,6 +683,36 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 contextWindow = contextWindowTokens ?: 2048
             )
         }
+
+        if (!forceReload) {
+            if (_isModelReady.value && inferenceManager.isReady && currentLoadedIdentity == identity && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Chat)) {
+                currentSupportsThinkingMode = supportsThinkingMode
+                currentAllowUnsafeOverride = allowUnsafeOverride
+                currentContextWindowTokens = contextWindowTokens
+                return
+            }
+            val activeLoadState = modelLoadController.loadState.value
+            if (activeLoadState is ModelLoadState.Loading && (modelLoadController.currentIdentity == identity || currentRequestedIdentity == identity) && initJob?.isActive == true && !_isStopping.value) {
+                currentSupportsThinkingMode = supportsThinkingMode
+                currentAllowUnsafeOverride = allowUnsafeOverride
+                currentContextWindowTokens = contextWindowTokens
+                return
+            }
+        }
+
+        currentModelPath = path
+        currentBundle = bundle
+        currentModelId = modelId
+        currentModelName = modelName
+        currentModelSize = modelSize
+        currentContextWindowTokens = contextWindowTokens
+        currentSupportsThinkingMode = supportsThinkingMode
+        currentAllowUnsafeOverride = allowUnsafeOverride
+        currentRequestedIdentity = identity
+
+        currentModelEpoch++
+        activeRequestId = null
+        val myGen = ++initGeneration
 
         initJob?.cancel()
         generationJob?.cancel()
@@ -686,7 +755,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 allowUnsafeOverride = allowUnsafeOverride,
                                 contextWindowTokens = contextWindowTokens,
                                 operationControlId = operationControlId,
-                                onModelProgress = updateProgress
+                                onModelProgress = updateProgress,
+                                bundle = bundle
                             )
                             if (myGen != initGeneration || !inferenceManager.isReady) {
                                 inferenceManager.close()
@@ -694,6 +764,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             }
                             currentModelPath = path
                             lastLoadedBackendPreference = currentBackendPref
+                            currentLoadedIdentity = identity
+                            currentResolvedThinkingCapability = ThinkingModeConfig.resolveThinkingCapability(
+                                bundle = bundle,
+                                localPath = path,
+                                supportsThinkingFlag = supportsThinkingMode,
+                                id = modelId,
+                                name = modelName,
+                                context = getApplication()
+                            )
                             resetRuntimeConversationBeforeNextSend = false
                             lastRuntimeThinkingMode = null
                             withContext(Dispatchers.Main.immediate) {
@@ -715,9 +794,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.Main.immediate) {
                     _error.value = msg
                     lastLoadedBackendPreference = null
+                    currentLoadedIdentity = null
+                    currentRequestedIdentity = null
+                    currentResolvedThinkingCapability = ThinkingCapability.Unknown
                     _activeBackend.value = null
                     _isModelReady.value = false
-                    messages.add(ChatMessage("⚠️ $msg", false))
                 }
             } finally {
                 if (myGen == initGeneration) {
@@ -733,10 +814,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     ): Boolean {
         if (_isModelReady.value && inferenceManager.isReady) return true
         val path = currentModelPath ?: return false
+        val bundle = currentBundle
         val file = File(path)
         val currentBackendPref = appSettings.settings.value.llamaBackendPreference
-        val isGguf = ChatRuntimePolicy.isGgufModel(file.name)
-        val identity = if (isGguf) {
+        val isGguf = bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(file.name)
+        val identity = if (bundle != null) {
+            ModelLoadIdentity.fromBundle(
+                bundle = bundle,
+                runtimeKind = "LlamaCpp",
+                backendPreference = currentBackendPref,
+                threads = DeviceUtils.recommendedThreadCount(getApplication()),
+                contextWindow = currentContextWindowTokens ?: 2048
+            )
+        } else if (isGguf) {
             val profile = GgufExecutionProfile.resolve(
                 context = getApplication(),
                 modelNameOrId = currentModelName.ifBlank { currentModelId.ifBlank { file.nameWithoutExtension } },
@@ -775,7 +865,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             contextWindowTokens = currentContextWindowTokens,
                             operationControlId = operationControlId,
                             onModelProgress = updateProgress,
-                            onProgress = onProgress
+                            onProgress = onProgress,
+                            bundle = bundle
                         )
                         if (!inferenceManager.isReady) {
                             inferenceManager.close()
@@ -891,7 +982,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val preparation = inputUri?.let { documentPreparation.take(it, inputName) }
 
         timing.recordAcknowledged()
-        val thinkingModeForRequest = _thinkingMode.value
+        val capability = currentResolvedThinkingCapability.takeIf { it != ThinkingCapability.Unknown }
+            ?: ThinkingModeConfig.resolveThinkingCapability(
+                bundle = currentBundle,
+                localPath = currentModelPath,
+                supportsThinkingFlag = currentSupportsThinkingMode,
+                id = currentModelId,
+                name = currentModelName,
+                context = getApplication<Application>()
+            )
+        val thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(capability, _thinkingMode.value)
         activeRequestId = requestId
         val reqModelEpoch = currentModelEpoch
         val assistantMessageId = messages[assistantIndex].id
@@ -905,15 +1005,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             var preparedInput: PreparedAttachment? = null
             var documentForIndex: PreparedAttachment? = null
             val latestResponse = java.util.concurrent.atomic.AtomicReference("")
-                val liveUpdates = Channel<String>(Channel.CONFLATED)
+            val latestStructuredSnapshot = java.util.concurrent.atomic.AtomicReference<com.shounak.localmeshai.ai.StructuredResponseSnapshot?>(null)
+            val liveUpdates = Channel<com.shounak.localmeshai.ai.StructuredResponseSnapshot>(Channel.CONFLATED)
             val liveUpdateJob = launch(Dispatchers.Main.immediate) {
-                        if (!isCurrentRequest()) return@launch
-                liveUpdates.receiveAsFlow().collect { partial ->
+                if (!isCurrentRequest()) return@launch
+                liveUpdates.receiveAsFlow().collect { snap ->
                     if (activeRequestId == requestId && currentModelEpoch == reqModelEpoch && _currentSessionId.value == targetSessionId && assistantIndex < messages.size && messages[assistantIndex].terminalStatus == null) {
-                        if (partial.isNotBlank()) timing.recordFirstVisibleText()
+                        if (snap.answerText.isNotBlank() || snap.reasoningText.isNotBlank()) timing.recordFirstVisibleText()
+                        val displayText = snap.answerText.ifBlank {
+                            if (messages[assistantIndex].progress == RequestProgress.RecoveringOnCpu) "GPU failed; retrying on CPU…" else "Generating…"
+                        }
                         messages[assistantIndex] = messages[assistantIndex].copy(
-                            text = partial.ifBlank { if (messages[assistantIndex].progress == RequestProgress.RecoveringOnCpu) "GPU failed; retrying on CPU…" else "Generating…" },
-                            progress = if (partial.isBlank()) messages[assistantIndex].progress else RequestProgress.Generating)
+                            text = displayText,
+                            reasoningText = snap.reasoningText,
+                            isThinkingActive = snap.isThinkingActive,
+                            revision = messages[assistantIndex].revision + 1,
+                            responseFormatVersion = 1,
+                            progress = if (snap.answerText.isBlank() && snap.reasoningText.isBlank()) messages[assistantIndex].progress else RequestProgress.Generating
+                        )
                     }
                 }
             }
@@ -956,6 +1065,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (activeRequestId != requestId || currentModelEpoch != reqModelEpoch) {
                     throw CancellationException("Request configuration changed")
+                }
+
+                if (currentModelId.isNotBlank() && (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(currentModelId) || com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(currentModelId))) {
+                    throw IllegalStateException("Model is pending deletion or has been removed.")
                 }
 
                 if (!_isModelReady.value) {
@@ -1115,11 +1228,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                     }
                                 }
                             }
+                        },
+                        onSnapshot = { snap ->
+                            if (activeRequestId == requestId && currentModelEpoch == reqModelEpoch) {
+                                latestStructuredSnapshot.set(snap)
+                                liveUpdates.trySend(snap)
+                            }
                         }
                     ) { partial ->
                         if (activeRequestId == requestId && currentModelEpoch == reqModelEpoch) {
                             latestResponse.set(partial)
-                            liveUpdates.trySend(partial)
                         }
                     }
                 }
@@ -1146,23 +1264,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         if (!isCurrentRequest()) return@withContext
                         if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
                             val current = messages[assistantIndex].text
-                            val partialOrFinalText = execResult.text.ifBlank {
-                                current.takeUnless { it in PLACEHOLDER_TEXTS }.orEmpty()
-                            }
+                            val snap = latestStructuredSnapshot.get()
                             val isErrorResponse = execResult.status == RequestTerminalStatus.Failed ||
                                 !execResult.error.isNullOrBlank() ||
                                 execResult.error == GENERATION_FAILURE_TEXT
 
-                            val finalResponse = if (execResult.status == RequestTerminalStatus.Stopped) {
-                                partialOrFinalText.ifBlank { "Stopped." }
-                            } else if (isErrorResponse) {
-                                partialOrFinalText
-                            } else resolveFinalAssistantText(
-                                response = execResult.text,
-                                current = current,
-                                thinkingMode = thinkingModeForRequest,
-                                userText = userText
-                            )
+                            val finalResponse = when (execResult.status) {
+                                RequestTerminalStatus.Stopped -> {
+                                    execResult.text.ifBlank {
+                                        snap?.answerText?.trim()?.takeUnless { it in PLACEHOLDER_TEXTS }.orEmpty()
+                                    }
+                                }
+                                RequestTerminalStatus.Failed -> {
+                                    execResult.text.ifBlank {
+                                        snap?.answerText?.trim()?.takeUnless { it in PLACEHOLDER_TEXTS }.orEmpty()
+                                    }
+                                }
+                                RequestTerminalStatus.Completed -> {
+                                    resolveFinalAssistantText(
+                                        response = execResult.text,
+                                        current = current,
+                                        thinkingMode = thinkingModeForRequest,
+                                        userText = userText,
+                                        responseFormatVersion = 1
+                                    )
+                                }
+                            }
+                            val finalReasoningText = execResult.reasoningText
+                                ?: snap?.reasoningText?.trim()?.takeIf { it.isNotBlank() }
 
                             val errorMessageToDisplay = if (isErrorResponse) {
                                 execResult.error ?: "Generation failed."
@@ -1177,12 +1306,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 ragTopMatchPct = if (isErrorResponse) 0 else ragTopMatchPct,
                                 progress = null,
                                 terminalStatus = execResult.status,
+                                isThinkingActive = false,
                                 metrics = execResult.metrics?.copy(firstVisibleTextLatencyMs = timing.buildMetrics(requestId, targetSessionId ?: "").firstVisibleTextLatencyMs),
                                 requestId = requestId,
                                 attemptId = attemptId,
-                                reasoningText = execResult.reasoningText,
+                                reasoningText = finalReasoningText,
                                 userMessageId = userMsgId,
-                                emptyReason = execResult.emptyReason
+                                emptyReason = execResult.emptyReason,
+                                responseFormatVersion = 1
                             )
                             saveCurrentSession()
 
@@ -1210,19 +1341,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 if (activeRequestId == requestId && currentModelEpoch == reqModelEpoch && _currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
                     withContext(NonCancellable + Dispatchers.Main.immediate) {
                         if (!isCurrentRequest()) return@withContext
-                        val current = latestResponse.get().ifBlank { messages[assistantIndex].text }
-                        val finalText = if (current in PLACEHOLDER_TEXTS || current.isBlank()) {
-                            "Stopped."
-                        } else {
-                            ModelOutputSanitizer.clean(current)
-                        }
+                        val snap = latestStructuredSnapshot.get()
+                        val currentText = messages[assistantIndex].text.takeUnless { it in PLACEHOLDER_TEXTS }.orEmpty()
+                        val finalAnswer = snap?.answerText?.trim()?.takeUnless { it in PLACEHOLDER_TEXTS }
+                            ?: currentText
+                        val finalReasoning = snap?.reasoningText?.trim()?.takeIf { it.isNotBlank() }
+                            ?: messages[assistantIndex].reasoningText?.trim()?.takeIf { it.isNotBlank() }
                         messages[assistantIndex] = messages[assistantIndex].copy(
-                            text = finalText,
+                            text = finalAnswer,
+                            reasoningText = finalReasoning,
+                            isThinkingActive = false,
                             progress = null,
                             terminalStatus = RequestTerminalStatus.Stopped,
                             requestId = requestId,
                             attemptId = attemptId,
-                            userMessageId = userMsgId
+                            userMessageId = userMsgId,
+                            responseFormatVersion = 1
                         )
                         saveCurrentSession()
                     }
@@ -1250,15 +1384,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
                         launch(Dispatchers.Main.immediate) {
                             if (!isCurrentRequest()) return@launch
-                            val partial = latestResponse.get().takeUnless { it in PLACEHOLDER_TEXTS }.orEmpty()
+                            val snap = latestStructuredSnapshot.get()
+                            val currentText = messages[assistantIndex].text.takeUnless { it in PLACEHOLDER_TEXTS }.orEmpty()
+                            val partialAnswer = snap?.answerText?.trim()?.takeUnless { it in PLACEHOLDER_TEXTS }
+                                ?: currentText
+                            val partialReasoning = snap?.reasoningText?.trim()?.takeIf { it.isNotBlank() }
+                                ?: messages[assistantIndex].reasoningText?.trim()?.takeIf { it.isNotBlank() }
                             messages[assistantIndex] = messages[assistantIndex].copy(
-                                text = partial,
+                                text = partialAnswer,
+                                reasoningText = partialReasoning,
+                                isThinkingActive = false,
                                 errorMessage = t.message ?: "Model inference failure",
                                 progress = null,
                                 terminalStatus = RequestTerminalStatus.Failed,
                                 requestId = requestId,
                                 attemptId = attemptId,
-                                userMessageId = userMsgId
+                                userMessageId = userMsgId,
+                                responseFormatVersion = 1
                             )
                             saveCurrentSession()
                         }
@@ -1276,6 +1418,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 if (activeRequestId == requestId) {
                     generationJob = null
                     _isGenerating.value = false
+                    _isStopping.value = false
                     resetAutoUnloadTimer()
                 }
             }
@@ -1288,26 +1431,47 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (!wasGenerating && !wasInitializing) return
         resetRuntimeConversationBeforeNextSend = true
         inferenceManager.cancelGeneration()
-        viewModelScope.launch {
-            modelLoadController.cancelActiveOperation("Stopped by user")
+        if (wasInitializing) {
+            val opId = modelLoadController.activeOperationId
+            if (opId != null) {
+                viewModelScope.launch {
+                    modelLoadController.cancelActiveOperation(targetOperationId = opId, reason = "Stopped by user")
+                }
+            }
+            if (!wasGenerating) {
+                initGeneration++
+                initJob?.cancel()
+                initJob = null
+                _isInitializing.value = false
+                _isStopping.value = false
+                return
+            }
         }
-        generationJob?.cancel()
+        if (!wasGenerating) return
+        _isStopping.value = true
+        val jobToCancel = generationJob
+        generationJob = null
+        jobToCancel?.cancel()
 
         // Immediately update UI state on the main thread
         val assistantIndex = messages.indexOfLast { !it.isUser }
         if (assistantIndex >= 0 && assistantIndex < messages.size) {
-            val current = messages[assistantIndex].text
-            val finalText = if (current in PLACEHOLDER_TEXTS || current.isBlank()) {
-                "Stopped."
-            } else {
-                ModelOutputSanitizer.clean(current)
+            val targetMsg = messages[assistantIndex]
+            if (activeRequestId == null || targetMsg.requestId == activeRequestId) {
+                val current = targetMsg.text
+                val finalText = if (current in PLACEHOLDER_TEXTS || current.isBlank()) {
+                    ""
+                } else {
+                    ModelOutputSanitizer.clean(current)
+                }
+                messages[assistantIndex] = targetMsg.copy(
+                    text = finalText,
+                    progress = null,
+                    isThinkingActive = false,
+                    terminalStatus = RequestTerminalStatus.Stopped
+                )
+                saveCurrentSession()
             }
-            messages[assistantIndex] = messages[assistantIndex].copy(
-                text = finalText,
-                progress = null,
-                terminalStatus = RequestTerminalStatus.Stopped
-            )
-            saveCurrentSession()
         }
     }
 
@@ -1749,48 +1913,84 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun releaseModel(clearCoordinator: Boolean, clearSelection: Boolean = false) {
         autoUnloadJob?.cancel()
         autoUnloadJob = null
-        currentModelEpoch++
-        activeRequestId = null
+        val jobToCancel = generationJob
+        generationJob = null
+        jobToCancel?.cancel()
+        inferenceManager.cancelGeneration()
         initGeneration++
         initJob?.cancel()
         initJob = null
-        generationJob?.cancel()
-        generationJob = null
-        inferenceManager.cancelGeneration()
-        if (releaseJob?.isActive != true) {
-            releaseJob = ModelRuntimeCoordinator.shutdownScope.launch {
-                ioMutex.withLock {
-                    inferenceManager.close()
-                    AppCacheCleaner.clearAppCache(getApplication())
+        if (jobToCancel != null && jobToCancel.isActive) {
+            _isStopping.value = true
+        }
+
+        val priorReleaseJob = releaseJob
+        releaseJob = ModelRuntimeCoordinator.shutdownScope.launch {
+            priorReleaseJob?.join()
+            if (jobToCancel != null && jobToCancel.isActive) {
+                runCatching {
+                    kotlinx.coroutines.withTimeout(5_000L) {
+                        jobToCancel.join()
+                    }
                 }
+            }
+            currentModelEpoch++
+            withContext(Dispatchers.Main.immediate) {
+                activeRequestId = null
+            }
+            val closeResult = ioMutex.withLock {
+                val res = inferenceManager.close()
+                AppCacheCleaner.clearAppCache(getApplication())
+                res
+            }
+            lastShutdownResult = closeResult
+            if (closeResult.isSuccess) {
                 if (clearCoordinator) ModelRuntimeCoordinator.clear(ModelRuntimeOwner.Chat)
             }
-        }
-        if (clearSelection) {
-            currentModelPath = null
-            currentModelId = ""
-            currentModelName = ""
-            currentModelSize = ""
-            currentAllowUnsafeOverride = false
+            withContext(Dispatchers.Main.immediate) {
+                if (closeResult.isSuccess) {
+                    currentRequestedIdentity = null
+                    currentLoadedIdentity = null
+                    currentResolvedThinkingCapability = ThinkingCapability.Unknown
+                    if (clearSelection) {
+                        currentModelPath = null
+                        currentBundle = null
+                        currentModelId = ""
+                        currentModelName = ""
+                        currentModelSize = ""
+                        currentAllowUnsafeOverride = false
+                    }
+                    _isInitializing.value = false
+                    _isGenerating.value = false
+                    _isStopping.value = false
+                    _isModelReady.value = false
+                    modelLoadController.resetToUnloaded()
+                } else {
+                    _isInitializing.value = false
+                    _isStopping.value = false
+                    _isModelReady.value = inferenceManager.isReady
+                    _error.value = "Failed to cleanly unload chat model: ${if (closeResult is com.shounak.localmeshai.ai.ShutdownResult.Failed) (closeResult.error.message ?: closeResult.error.toString()) else "Timeout"}"
+                }
+            }
         }
         lastLoadedBackendPreference = null
         _activeBackend.value = null
         resetRuntimeConversationBeforeNextSend = false
         lastRuntimeThinkingMode = null
-        _isInitializing.value = false
-        _isGenerating.value = false
-        _isModelReady.value = false
-        modelLoadController.resetToUnloaded()
     }
 
     private fun resolveFinalAssistantText(
         response: String,
         current: String,
         thinkingMode: Boolean,
-        userText: String
+        userText: String,
+        responseFormatVersion: Int = 0
     ): String {
-        val clean = if (thinkingMode) ThinkingTextUtils.normalizeFinalOutput(response)
-            else ThinkingTextUtils.extractFinalAnswerOnly(ModelOutputSanitizer.clean(response))
+        if (responseFormatVersion >= 1) {
+            val clean = ModelOutputSanitizer.clean(response).trim()
+            return clean.ifBlank { current.takeUnless { it in PLACEHOLDER_TEXTS } ?: GENERATION_FAILURE_TEXT }
+        }
+        val clean = ThinkingTextUtils.extractFinalAnswerOnly(ModelOutputSanitizer.clean(response))
         return clean.ifBlank { current.takeUnless { it in PLACEHOLDER_TEXTS } ?: GENERATION_FAILURE_TEXT }
     }
 

@@ -10,7 +10,7 @@ data class BackendDecision(
 )
 
 object GgufBackendPolicy {
-    const val POLICY_VERSION = 1
+    const val POLICY_VERSION = 2
 
     /**
      * Decides the backend to use for GGUF model execution based on:
@@ -29,7 +29,8 @@ object GgufBackendPolicy {
         nBatch: Int = 256,
         nUbatch: Int = 128,
         prefillThreads: Int = threads,
-        requestedBackend: LlamaBackend? = null
+        requestedBackend: LlamaBackend? = null,
+        companionSummary: String = ""
     ): BackendDecision {
         val validationKey = GgufGpuValidator.buildCacheKey(
             modelSha256 = modelSha256,
@@ -37,7 +38,8 @@ object GgufBackendPolicy {
             contextWindow = contextWindow,
             nBatch = nBatch,
             nUbatch = nUbatch,
-            prefillThreads = prefillThreads
+            prefillThreads = prefillThreads,
+            companionSummary = companionSummary
         )
         val validationReceipt = GgufGpuValidator.getReceipt(context, validationKey)
 
@@ -90,7 +92,8 @@ object GgufBackendPolicy {
             contextWindow = contextWindow,
             nBatch = nBatch,
             nUbatch = nUbatch,
-            prefillThreads = prefillThreads
+            prefillThreads = prefillThreads,
+            companionSummary = companionSummary
         )
         val perfReceipt = GgufPerformanceStore.getReceipt(context, perfKey)
 

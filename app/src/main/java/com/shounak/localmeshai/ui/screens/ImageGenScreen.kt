@@ -39,6 +39,8 @@ import com.shounak.localmeshai.utils.ModelOutputSanitizer
 import com.shounak.localmeshai.utils.ModelAnswerFormatter
 import com.shounak.localmeshai.utils.ModelAnswerSegment
 import com.shounak.localmeshai.utils.ThinkingTextUtils
+import com.shounak.localmeshai.utils.ThinkingModeConfig
+import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.ui.models.rememberMessagePresentation
 import com.shounak.localmeshai.ui.components.ModelMathCard
 import com.shounak.localmeshai.ui.components.InlineMathListItem
@@ -334,8 +336,12 @@ fun ImageGenScreen(
                     modelName = selectedVisionModel?.name ?: "",
                     modelSize = selectedVisionModel?.size ?: "",
                     contextWindowTokens = selectedVisionModel?.effectiveContextWindowTokens,
-                    supportsThinkingMode = selectedVisionModel?.supportsThinkingMode == true,
-                    allowUnsafeOverride = selectedUnsafeOverride
+                    supportsAudioInput = selectedVisionModel?.supportsAudioInput == true,
+                    supportsThinkingMode = ThinkingModeConfig.resolveThinkingCapability(selectedVisionModel, context = context.applicationContext).let {
+                        it == ThinkingCapability.Toggleable || it == ThinkingCapability.ModelControlled
+                    },
+                    allowUnsafeOverride = selectedUnsafeOverride,
+                    bundle = selectedVisionModel?.bundle
                 )
             }
         }
@@ -480,6 +486,9 @@ fun ImageGenScreen(
                                         attemptId = message.attemptId.toLong(),
                                         revision = message.revision,
                                         reasoningText = message.reasoningText,
+                                        isThinkingActive = message.isThinkingActive,
+                                        responseFormatVersion = message.responseFormatVersion,
+                                        terminalStatus = message.terminalStatus,
                                         entryDelayMs = if (index == messages.lastIndex) 25 else 0,
                                         audioPath = message.audioPath,
                                         audioName = message.audioName,
@@ -652,7 +661,10 @@ fun ImageGenScreen(
                                     question = question,
                                     fileUri = selectedFileUri,
                                     fileName = selectedFileName,
-                                    thinkingMode = selectedVisionModel?.supportsThinkingMode == true
+                                    thinkingMode = ThinkingModeConfig.resolveRequestThinking(
+                                        ThinkingModeConfig.resolveThinkingCapability(selectedVisionModel, context = context.applicationContext),
+                                        userPreference = true
+                                    )
                                 )
                                 question = ""
                                 selectedBitmap = null
@@ -718,7 +730,15 @@ fun VisionFullscreenAnswerPanel(
     val message = messageProvider() ?: return
     val context = LocalContext.current
     val title = if (message.isUser) "Your question" else "Model response"
-    val presentation = rememberMessagePresentation(text = message.text, isUser = message.isUser, isStreaming = false)
+    val presentation = rememberMessagePresentation(
+        messageId = message.id,
+        text = message.text,
+        reasoningText = message.reasoningText,
+        revision = message.revision,
+        isUser = message.isUser,
+        isStreaming = false,
+        responseFormatVersion = message.responseFormatVersion
+    )
     val parsedContent = presentation.parsedContent
     var panelVisible by remember(message.id) { mutableStateOf(false) }
     LaunchedEffect(message.id) {
@@ -794,7 +814,7 @@ fun VisionFullscreenAnswerPanel(
                             val context = LocalContext.current
                             val imageBmp = message.bitmap ?: message.imagePath?.let { path ->
                                 if (File(path).exists()) {
-                                    try { BitmapFactory.decodeFile(path) } catch (_: Exception) { null }
+                                    try { BitmapFactory.decodeFile(path) } catch (_: Throwable) { null }
                                 } else null
                             }
                             if (imageBmp != null) {
@@ -864,11 +884,37 @@ fun VisionFullscreenAnswerPanel(
                             Spacer(modifier = Modifier.height(10.dp))
                         }
 
-                        if (!message.isUser && parsedContent.thinkingText != null) {
+                        if (!message.isUser && presentation.showThinking) {
                             ThinkingProcessCard(
-                                thinkingText = parsedContent.thinkingText,
-                                isThinkingActive = parsedContent.isThinkingActive
+                                thinkingText = presentation.reasoningText.orEmpty(),
+                                isThinkingActive = presentation.parsedThinking.isThinkingActive,
+                                messageId = message.id
                             )
+                        }
+                        if (!message.isUser && message.terminalStatus == RequestTerminalStatus.Stopped && presentation.displayText.isBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Stop,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Stopped before an answer was generated",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
 
                         val rawFilteredText = if (message.isUser && (!message.audioPath.isNullOrBlank() || !message.documentName.isNullOrBlank())) {
@@ -967,8 +1013,8 @@ fun loadBitmap(context: android.content.Context, uri: Uri, maxDimension: Int = 2
                     decoder.setTargetSize(targetW, targetH)
                 }
             }
-        } catch (e: Exception) {
-            throw IllegalArgumentException("Failed to decode image: ${e.message ?: "corrupted image file"}", e)
+        } catch (e: Throwable) {
+            throw IllegalArgumentException("Failed to decode image: ${e.message ?: "corrupted image file or out of memory"}", e)
         }
     } else {
         val options = BitmapFactory.Options().apply {
@@ -994,21 +1040,45 @@ fun loadBitmap(context: android.content.Context, uri: Uri, maxDimension: Int = 2
             inSampleSize = sampleSize
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
-        val decoded = context.contentResolver.openInputStream(uri)?.use { inStream ->
-            BitmapFactory.decodeStream(inStream, null, decodeOptions)
-        } ?: throw IllegalStateException("Could not open bitmap stream.")
+        val decoded = try {
+            context.contentResolver.openInputStream(uri)?.use { inStream ->
+                BitmapFactory.decodeStream(inStream, null, decodeOptions)
+            } ?: throw IllegalStateException("Could not open bitmap stream.")
+        } catch (e: Throwable) {
+            throw IllegalArgumentException("Failed to decode image: ${e.message ?: "corrupted image file or out of memory"}", e)
+        }
 
         if (decoded.width != targetW || decoded.height != targetH) {
-            val scaled = Bitmap.createScaledBitmap(decoded, targetW, targetH, true)
-            if (scaled != decoded) {
-                decoded.recycle()
+            val scaled = try {
+                Bitmap.createScaledBitmap(decoded, targetW, targetH, true)
+            } catch (_: Throwable) {
+                null
             }
-            scaled
+            if (scaled != null && scaled != decoded) {
+                decoded.recycle()
+                scaled
+            } else {
+                decoded
+            }
         } else {
             decoded
         }
     }
-    return bitmap.copy(Bitmap.Config.ARGB_8888, false)
+    return if (bitmap.config != Bitmap.Config.ARGB_8888) {
+        val copy = try {
+            bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        } catch (_: Throwable) {
+            null
+        }
+        if (copy != null && copy != bitmap) {
+            bitmap.recycle()
+            copy
+        } else {
+            bitmap
+        }
+    } else {
+        bitmap
+    }
 }
 
 @Composable
@@ -1960,9 +2030,10 @@ private fun CodeBlock(
 @Composable
 private fun ThinkingProcessCard(
     thinkingText: String,
-    isThinkingActive: Boolean
+    isThinkingActive: Boolean,
+    messageId: String = ""
 ) {
-    var isExpanded by remember { mutableStateOf(isThinkingActive) }
+    var isExpanded by rememberSaveable(messageId) { mutableStateOf(isThinkingActive) }
     LaunchedEffect(isThinkingActive) {
         if (isThinkingActive) {
             isExpanded = true
@@ -2316,6 +2387,9 @@ fun VisionChatBubble(
     attemptId: Long = 0L,
     revision: Int = 0,
     reasoningText: String? = null,
+    isThinkingActive: Boolean = false,
+    responseFormatVersion: Int = 0,
+    terminalStatus: RequestTerminalStatus? = null,
     entryDelayMs: Int = 0,
     ragSources: List<String> = emptyList(),
     ragChunkCount: Int = 0,
@@ -2362,7 +2436,9 @@ fun VisionChatBubble(
         requestId = requestId,
         attemptId = attemptId,
         revision = revision,
-        reasoningText = reasoningText
+        reasoningText = reasoningText,
+        isThinkingActive = isThinkingActive,
+        responseFormatVersion = responseFormatVersion
     )
     val parsedContent = presentation.parsedContent
     val rawText = presentation.displayText
@@ -2539,10 +2615,11 @@ fun VisionChatBubble(
                     }
                 }
 
-                if (!isUser && parsedContent.thinkingText != null) {
+                if (!isUser && presentation.showThinking) {
                     ThinkingProcessCard(
-                        thinkingText = parsedContent.thinkingText,
-                        isThinkingActive = parsedContent.isThinkingActive
+                        thinkingText = presentation.reasoningText.orEmpty(),
+                        isThinkingActive = presentation.parsedThinking.isThinkingActive,
+                        messageId = messageId
                     )
                 }
 
@@ -2582,6 +2659,30 @@ fun VisionChatBubble(
                                 .padding(end = if (needsTopActionClearance) 0.dp else MessageActionButtonReserveWidth),
                             textAlign = TextAlign.Start
                         )
+                    } else if (!isUser && terminalStatus == RequestTerminalStatus.Stopped && displayText.isBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Stop,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Stopped before an answer was generated",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     } else {
                         SelectionContainer {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

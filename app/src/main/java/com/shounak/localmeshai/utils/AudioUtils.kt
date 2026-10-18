@@ -61,9 +61,194 @@ object AudioUtils {
         )
     }
 
+    fun pcm16BytesToFloatPcm(pcmBytes: ByteArray): FloatArray {
+        val sampleCount = pcmBytes.size / 2
+        val floats = FloatArray(sampleCount)
+        var byteIdx = 0
+        for (i in 0 until sampleCount) {
+            val low = pcmBytes[byteIdx].toInt() and 0xFF
+            val high = pcmBytes[byteIdx + 1].toInt()
+            val sample = (high shl 8) or low
+            floats[i] = (sample / 32768.0f).coerceIn(-1.0f, 1.0f)
+            byteIdx += 2
+        }
+        return floats
+    }
+
+    fun parseWavOrPcmToFloatPcm(
+        audioBytes: ByteArray,
+        targetSampleRate: Int = TARGET_SAMPLE_RATE
+    ): FloatArray {
+        if (audioBytes.isEmpty()) return FloatArray(0)
+
+        var srcSampleRate = TARGET_SAMPLE_RATE
+        var srcChannels = 1
+        var bitsPerSample = 16
+        var pcmOffset = 0
+        var pcmLength = audioBytes.size
+        var isFloatPcm = false
+
+        // Check for RIFF WAVE header
+        if (audioBytes.size >= 12 &&
+            audioBytes[0] == 'R'.code.toByte() && audioBytes[1] == 'I'.code.toByte() &&
+            audioBytes[2] == 'F'.code.toByte() && audioBytes[3] == 'F'.code.toByte() &&
+            audioBytes[8] == 'W'.code.toByte() && audioBytes[9] == 'A'.code.toByte() &&
+            audioBytes[10] == 'V'.code.toByte() && audioBytes[11] == 'E'.code.toByte()
+        ) {
+            var offset = 12
+            var foundData = false
+            var formatCode = 1
+            while (offset + 8 <= audioBytes.size) {
+                val chunkId = String(audioBytes, offset, 4, Charsets.US_ASCII)
+                val chunkSize = ByteBuffer.wrap(audioBytes, offset + 4, 4).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xFFFFFFFFL
+                offset += 8
+
+                if (chunkId == "fmt " && offset + 16 <= audioBytes.size) {
+                    val bb = ByteBuffer.wrap(audioBytes, offset, 16).order(ByteOrder.LITTLE_ENDIAN)
+                    formatCode = bb.short.toInt() and 0xFFFF
+                    srcChannels = bb.short.toInt() and 0xFFFF
+                    srcSampleRate = bb.int
+                    bb.int // byteRate
+                    bb.short // blockAlign
+                    bitsPerSample = bb.short.toInt() and 0xFFFF
+                    isFloatPcm = (formatCode == 3)
+                    if (formatCode != 1 && formatCode != 3) {
+                        Log.e(TAG, "Unsupported WAV audio format code $formatCode: only PCM (1) and IEEE float (3) are supported.")
+                        return FloatArray(0)
+                    }
+                } else if (chunkId == "data") {
+                    pcmOffset = offset
+                    pcmLength = minOf(chunkSize.toInt(), audioBytes.size - offset)
+                    foundData = true
+                    break
+                }
+                val paddedSize = if ((chunkSize and 1L) != 0L) chunkSize + 1L else chunkSize
+                if (paddedSize <= 0 || offset + paddedSize > audioBytes.size) {
+                    break
+                }
+                offset += paddedSize.toInt()
+            }
+            if (!foundData) {
+                Log.e(TAG, "Invalid WAV audio: missing required 'data' chunk.")
+                return FloatArray(0)
+            }
+        }
+
+        if (pcmLength <= 0) return FloatArray(0)
+        if (srcChannels <= 0) srcChannels = 1
+        if (srcSampleRate <= 0) srcSampleRate = TARGET_SAMPLE_RATE
+
+        val effectiveTargetRate = if (targetSampleRate > 0) targetSampleRate else TARGET_SAMPLE_RATE
+
+        // Decode to mono floats at srcSampleRate
+        val monoFloats: FloatArray
+        if (isFloatPcm && bitsPerSample == 32) {
+            val bytesPerFrame = srcChannels * 4
+            val frames = pcmLength / bytesPerFrame
+            monoFloats = FloatArray(frames)
+            val bb = ByteBuffer.wrap(audioBytes, pcmOffset, pcmLength).order(ByteOrder.LITTLE_ENDIAN)
+            for (i in 0 until frames) {
+                var sum = 0.0f
+                for (ch in 0 until srcChannels) {
+                    sum += bb.float
+                }
+                monoFloats[i] = (sum / srcChannels).coerceIn(-1.0f, 1.0f)
+            }
+        } else if (bitsPerSample == 32) {
+            val bytesPerFrame = srcChannels * 4
+            val frames = pcmLength / bytesPerFrame
+            monoFloats = FloatArray(frames)
+            val bb = ByteBuffer.wrap(audioBytes, pcmOffset, pcmLength).order(ByteOrder.LITTLE_ENDIAN)
+            for (i in 0 until frames) {
+                var sum = 0.0
+                for (ch in 0 until srcChannels) {
+                    sum += bb.int.toDouble()
+                }
+                monoFloats[i] = ((sum / srcChannels) / 2147483648.0).toFloat().coerceIn(-1.0f, 1.0f)
+            }
+        } else if (bitsPerSample == 24) {
+            val bytesPerFrame = srcChannels * 3
+            val frames = pcmLength / bytesPerFrame
+            monoFloats = FloatArray(frames)
+            var idx = pcmOffset
+            for (i in 0 until frames) {
+                var sum = 0.0
+                for (ch in 0 until srcChannels) {
+                    val b0 = audioBytes[idx].toInt() and 0xFF
+                    val b1 = audioBytes[idx + 1].toInt() and 0xFF
+                    val b2 = audioBytes[idx + 2].toInt()
+                    val sample24 = (b2 shl 16) or (b1 shl 8) or b0
+                    sum += sample24.toDouble()
+                    idx += 3
+                }
+                monoFloats[i] = ((sum / srcChannels) / 8388608.0).toFloat().coerceIn(-1.0f, 1.0f)
+            }
+        } else if (bitsPerSample == 8) {
+            val bytesPerFrame = srcChannels
+            val frames = pcmLength / bytesPerFrame
+            monoFloats = FloatArray(frames)
+            var idx = pcmOffset
+            for (i in 0 until frames) {
+                var sum = 0.0
+                for (ch in 0 until srcChannels) {
+                    val u8 = audioBytes[idx].toInt() and 0xFF
+                    sum += (u8 - 128).toDouble()
+                    idx++
+                }
+                monoFloats[i] = ((sum / srcChannels) / 128.0).toFloat().coerceIn(-1.0f, 1.0f)
+            }
+        } else {
+            // Default: 16-bit signed PCM
+            val bytesPerFrame = srcChannels * 2
+            val frames = pcmLength / bytesPerFrame
+            monoFloats = FloatArray(frames)
+            val bb = ByteBuffer.wrap(audioBytes, pcmOffset, pcmLength).order(ByteOrder.LITTLE_ENDIAN)
+            for (i in 0 until frames) {
+                var sum = 0
+                for (ch in 0 until srcChannels) {
+                    sum += bb.short.toInt()
+                }
+                monoFloats[i] = ((sum / srcChannels) / 32768.0f).coerceIn(-1.0f, 1.0f)
+            }
+        }
+
+        if (srcSampleRate == effectiveTargetRate || monoFloats.isEmpty()) {
+            return monoFloats
+        }
+
+        val ratio = effectiveTargetRate.toDouble() / srcSampleRate.toDouble()
+        val targetFrames = (monoFloats.size * ratio).toInt()
+        if (targetFrames <= 0) return FloatArray(0)
+        val resampled = FloatArray(targetFrames)
+        for (i in 0 until targetFrames) {
+            val srcPos = i / ratio
+            val srcIdx = srcPos.toInt()
+            val frac = (srcPos - srcIdx).toFloat()
+            val s0 = monoFloats.getOrElse(srcIdx) { 0f }
+            val s1 = monoFloats.getOrElse(srcIdx + 1) { s0 }
+            resampled[i] = (s0 + frac * (s1 - s0)).coerceIn(-1.0f, 1.0f)
+        }
+        return resampled
+    }
+
+    suspend fun decodeAudioToFloatPcm(
+        context: Context,
+        uri: Uri,
+        maxDurationMs: Long = 30_000L,
+        targetSampleRate: Int = TARGET_SAMPLE_RATE
+    ): FloatArray = withContext(Dispatchers.IO) {
+        val rawPcm = decodeToRawPcm(context, uri, maxDurationMs, targetSampleRate)
+        pcm16BytesToFloatPcm(rawPcm.pcmBytes)
+    }
+
     private class PcmResult(val pcmBytes: ByteArray, val durationMs: Long)
 
-    private fun decodeToRawPcm(context: Context, uri: Uri, maxDurationMs: Long): PcmResult {
+    private fun decodeToRawPcm(
+        context: Context,
+        uri: Uri,
+        maxDurationMs: Long,
+        targetSampleRate: Int = TARGET_SAMPLE_RATE
+    ): PcmResult {
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(context, uri, null)
@@ -170,24 +355,27 @@ object AudioUtils {
                 throw IllegalStateException("Decoded 0 audio bytes from source file.")
             }
 
-            val mono16kPcm = convertToMono16kHz(
+            val effectiveRate = if (targetSampleRate > 0) targetSampleRate else TARGET_SAMPLE_RATE
+            val monoPcm = convertToMonoPcm(
                 inputPcm = rawDecodedBytes,
                 srcSampleRate = decodedSampleRate,
                 srcChannels = decodedChannels,
-                maxDurationMs = maxDurationMs
+                maxDurationMs = maxDurationMs,
+                targetSampleRate = effectiveRate
             )
-            val durationMs = (mono16kPcm.size / (TARGET_SAMPLE_RATE * 2.0) * 1000.0).roundToLong()
-            return PcmResult(mono16kPcm, durationMs)
+            val durationMs = (monoPcm.size / (effectiveRate * 2.0) * 1000.0).roundToLong()
+            return PcmResult(monoPcm, durationMs)
         } finally {
             extractor.release()
         }
     }
 
-    private fun convertToMono16kHz(
+    private fun convertToMonoPcm(
         inputPcm: ByteArray,
         srcSampleRate: Int,
         srcChannels: Int,
-        maxDurationMs: Long
+        maxDurationMs: Long,
+        targetSampleRate: Int = TARGET_SAMPLE_RATE
     ): ByteArray {
         val bytesPerSample = 2
         val srcFrameSize = srcChannels * bytesPerSample
@@ -205,11 +393,12 @@ object AudioUtils {
             monoShorts[i] = (sum / srcChannels).coerceIn(-32768, 32767).toShort()
         }
 
-        // Step 2: Resample to 16,000 Hz if needed
-        val resampledShorts: ShortArray = if (srcSampleRate == TARGET_SAMPLE_RATE) {
+        // Step 2: Resample to targetSampleRate if needed
+        val effectiveTargetRate = if (targetSampleRate > 0) targetSampleRate else TARGET_SAMPLE_RATE
+        val resampledShorts: ShortArray = if (srcSampleRate == effectiveTargetRate) {
             monoShorts
         } else {
-            val ratio = TARGET_SAMPLE_RATE.toDouble() / srcSampleRate.toDouble()
+            val ratio = effectiveTargetRate.toDouble() / srcSampleRate.toDouble()
             val targetFrames = (totalSrcFrames * ratio).toInt()
             val out = ShortArray(targetFrames)
             for (i in 0 until targetFrames) {
@@ -225,7 +414,7 @@ object AudioUtils {
         }
 
         // Step 3: Cap at maxDurationMs
-        val maxFrames = (TARGET_SAMPLE_RATE * (maxDurationMs / 1000.0)).toInt()
+        val maxFrames = (effectiveTargetRate * (maxDurationMs / 1000.0)).toInt()
         val finalFrames = if (resampledShorts.size > maxFrames) maxFrames else resampledShorts.size
 
         // Step 4: Convert back to little-endian ByteArray

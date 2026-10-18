@@ -75,13 +75,16 @@ object ResponseFinalizer {
         isStopped: Boolean = false,
         sdkError: Throwable? = null,
         acceptedAnswerFallback: String = "",
+        acceptedReasoningFallback: String = "",
         thinkingMode: Boolean = false
     ): FinalizedResponse {
         val trimmedRawAnswer = rawAnswer.trim()
         val trimmedFallback = acceptedAnswerFallback.trim()
         // Blank terminal event cannot overwrite an accepted answer from the same attempt
         val effectiveAnswer = if (trimmedRawAnswer.isNotEmpty()) trimmedRawAnswer else trimmedFallback
-        val effectiveReasoning = rawReasoning.trim()
+        val trimmedRawReasoning = rawReasoning.trim()
+        val trimmedReasoningFallback = acceptedReasoningFallback.trim()
+        val effectiveReasoning = if (trimmedRawReasoning.isNotEmpty()) trimmedRawReasoning else trimmedReasoningFallback
 
         if (isStopped) {
             return FinalizedResponse.Stopped(

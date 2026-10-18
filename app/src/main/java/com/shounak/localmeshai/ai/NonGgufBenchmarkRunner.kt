@@ -68,96 +68,100 @@ object NonGgufBenchmarkRunner {
         reportProgress("Starting LiteRT Benchmark", "Initializing cold model load")
 
         val runtimeCacheDir = LiteRtRuntimeCache.prepare(context, modelId, InferenceBackend.LITERT_CPU, file.absolutePath)
-        val coldStart = SystemClock.elapsedRealtime()
         var coldLoadFtMs = 0.0
-
-        var coldEngine: Engine? = null
-        try {
-            coldEngine = Engine(
-                EngineConfig(
-                    modelPath = file.absolutePath,
-                    backend = Backend.CPU(),
-                    maxNumTokens = 2048,
-                    cacheDir = runtimeCacheDir.absolutePath
-                )
-            )
-            coldEngine.initialize()
-            val conv = coldEngine.createConversation(ConversationConfig())
-            val adapter = LiteRtStreamAdapter(
-                requestId = "bench-cold",
-                onFirstToken = {
-                    if (coldLoadFtMs == 0.0) {
-                        coldLoadFtMs = (SystemClock.elapsedRealtime() - coldStart).toDouble()
-                    }
-                }
-            )
-            conv.sendMessageAsync(Message.of(WARM_PROMPTS[0]), adapter)
-            adapter.awaitDone()
-            if (coldLoadFtMs == 0.0) {
-                coldLoadFtMs = (SystemClock.elapsedRealtime() - coldStart).toDouble()
-            }
-        } finally {
-            try { coldEngine?.close() } catch (_: Throwable) {}
-        }
-
         val warmTtftList = mutableListOf<Double>()
         val decodeTokPerSecList = mutableListOf<Double>()
         val frameTimes = mutableListOf<Double>()
         var maxRenderStall = 0L
 
-        var warmEngine: Engine? = null
         try {
-            warmEngine = Engine(
-                EngineConfig(
-                    modelPath = file.absolutePath,
-                    backend = Backend.CPU(),
-                    maxNumTokens = 2048,
-                    cacheDir = runtimeCacheDir.absolutePath
+            val coldStart = SystemClock.elapsedRealtime()
+
+            var coldEngine: Engine? = null
+            try {
+                coldEngine = Engine(
+                    EngineConfig(
+                        modelPath = file.absolutePath,
+                        backend = Backend.CPU(),
+                        maxNumTokens = 2048,
+                        cacheDir = runtimeCacheDir.absolutePath
+                    )
                 )
-            )
-            warmEngine.initialize()
-            val conv = warmEngine.createConversation(ConversationConfig())
-
-            for ((index, prompt) in WARM_PROMPTS.withIndex()) {
-                reportProgress("Benchmarking LiteRT (Warm ${index + 1}/${WARM_PROMPTS.size})", "Prompt: ${prompt.take(25)}...")
-                val startGen = SystemClock.elapsedRealtime()
-                var ttft = 0.0
-                var firstTokenTime = 0L
-                var lastTokenTime = startGen
-
+                coldEngine.initialize()
+                val conv = coldEngine.createConversation(ConversationConfig())
                 val adapter = LiteRtStreamAdapter(
-                    requestId = "bench-warm-$index",
+                    requestId = "bench-cold",
                     onFirstToken = {
-                        val now = SystemClock.elapsedRealtime()
-                        ttft = (now - startGen).toDouble()
-                        firstTokenTime = now
-                        lastTokenTime = now
-                    },
-                    onDelta = { _ ->
-                        val now = SystemClock.elapsedRealtime()
-                        val frameDelta = (now - lastTokenTime).toDouble()
-                        frameTimes.add(frameDelta)
-                        if (frameDelta > 100.0) {
-                            maxRenderStall = max(maxRenderStall, frameDelta.toLong())
+                        if (coldLoadFtMs == 0.0) {
+                            coldLoadFtMs = (SystemClock.elapsedRealtime() - coldStart).toDouble()
                         }
-                        lastTokenTime = now
                     }
                 )
-
-                conv.sendMessageAsync(Message.of(prompt), adapter)
-                val snapshot = adapter.awaitDone()
-                val genEnd = SystemClock.elapsedRealtime()
-
-                if (ttft > 0.0) warmTtftList.add(ttft)
-                val decodeDuration = if (firstTokenTime > 0L) genEnd - firstTokenTime else genEnd - startGen
-                val tokens = if (adapter.tokenCount > 0) adapter.tokenCount else maxOf(1, Math.round(snapshot.answerText.length / 3.8).toInt())
-                if (decodeDuration > 0 && tokens > 0) {
-                    val tokPerSec = (tokens.toDouble() * 1000.0) / decodeDuration.toDouble()
-                    decodeTokPerSecList.add(tokPerSec)
+                conv.sendMessageAsync(Message.user(WARM_PROMPTS[0]), adapter)
+                adapter.awaitDone()
+                if (coldLoadFtMs == 0.0) {
+                    coldLoadFtMs = (SystemClock.elapsedRealtime() - coldStart).toDouble()
                 }
+            } finally {
+                try { coldEngine?.close() } catch (_: Throwable) {}
+            }
+
+            var warmEngine: Engine? = null
+            try {
+                warmEngine = Engine(
+                    EngineConfig(
+                        modelPath = file.absolutePath,
+                        backend = Backend.CPU(),
+                        maxNumTokens = 2048,
+                        cacheDir = runtimeCacheDir.absolutePath
+                    )
+                )
+                warmEngine.initialize()
+                val conv = warmEngine.createConversation(ConversationConfig())
+
+                for ((index, prompt) in WARM_PROMPTS.withIndex()) {
+                    reportProgress("Benchmarking LiteRT (Warm ${index + 1}/${WARM_PROMPTS.size})", "Prompt: ${prompt.take(25)}...")
+                    val startGen = SystemClock.elapsedRealtime()
+                    var ttft = 0.0
+                    var firstTokenTime = 0L
+                    var lastTokenTime = startGen
+
+                    val adapter = LiteRtStreamAdapter(
+                        requestId = "bench-warm-$index",
+                        onFirstToken = {
+                            val now = SystemClock.elapsedRealtime()
+                            ttft = (now - startGen).toDouble()
+                            firstTokenTime = now
+                            lastTokenTime = now
+                        },
+                        onDelta = { _ ->
+                            val now = SystemClock.elapsedRealtime()
+                            val frameDelta = (now - lastTokenTime).toDouble()
+                            frameTimes.add(frameDelta)
+                            if (frameDelta > 100.0) {
+                                maxRenderStall = max(maxRenderStall, frameDelta.toLong())
+                            }
+                            lastTokenTime = now
+                        }
+                    )
+
+                    conv.sendMessageAsync(Message.user(prompt), adapter)
+                    val snapshot = adapter.awaitDone()
+                    val genEnd = SystemClock.elapsedRealtime()
+
+                    if (ttft > 0.0) warmTtftList.add(ttft)
+                    val decodeDuration = if (firstTokenTime > 0L) genEnd - firstTokenTime else genEnd - startGen
+                    val tokens = if (adapter.tokenCount > 0) adapter.tokenCount else maxOf(1, Math.round(snapshot.answerText.length / 3.8).toInt())
+                    if (decodeDuration > 0 && tokens > 0) {
+                        val tokPerSec = (tokens.toDouble() * 1000.0) / decodeDuration.toDouble()
+                        decodeTokPerSecList.add(tokPerSec)
+                    }
+                }
+            } finally {
+                try { warmEngine?.close() } catch (_: Throwable) {}
             }
         } finally {
-            try { warmEngine?.close() } catch (_: Throwable) {}
+            LiteRtRuntimeCache.release(context, runtimeCacheDir)
         }
 
         val warmTtftMedian = if (warmTtftList.isNotEmpty()) {
@@ -195,6 +199,7 @@ object NonGgufBenchmarkRunner {
         )
     }
 
+    @Suppress("DEPRECATION")
     private suspend fun runMediaPipeBenchmark(
         context: Context,
         file: File,

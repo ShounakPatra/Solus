@@ -1,5 +1,6 @@
 package com.shounak.localmeshai.models
 
+import com.shounak.localmeshai.ui.screens.ModelSourceFilter
 import com.shounak.localmeshai.ui.screens.SizeTier
 import com.shounak.localmeshai.ui.screens.downloadTime
 import com.shounak.localmeshai.ui.screens.downloadedSectionSortRank
@@ -275,6 +276,109 @@ class ModelSearchAndSortingTest {
 
         assertTrue(failedWithBytes.isPinnedDownloadCard())
         assertTrue(failedZeroBytes.isPinnedDownloadCard())
+    }
+
+    @Test
+    fun matchesFindsCustomModelsByImportedKeywords() {
+        val customModel = createTestModel("custom_model_1", "FineTuned Chat", isRecommended = false)
+        val standardModel = createTestModel("standard_model_1", "FineTuned Chat", isRecommended = false)
+
+        assertTrue(customModel.isCustom)
+        assertFalse(standardModel.isCustom)
+
+        assertTrue(customModel.matches("imported", SizeTier.All))
+        assertTrue(customModel.matches("import", SizeTier.All))
+        assertTrue(customModel.matches("chat imported", SizeTier.All))
+
+        assertFalse(standardModel.matches("imported", SizeTier.All))
+        assertFalse(standardModel.matches("import", SizeTier.All))
+    }
+
+    @Test
+    fun testModelSourceFilterImportedIncludesOnlyCustomModelsAcrossAllStatuses() {
+        val customNotDownloaded = createTestModel("custom_nd", "Custom ND", status = ModelStatus.NotDownloaded)
+        val customDownloading = createTestModel("custom_dl", "Custom DL", status = ModelStatus.Downloading)
+        val customAvailable = createTestModel("custom_av", "Custom Avail", status = ModelStatus.Available, localPath = "/path/to/custom.gguf")
+        val customPaused = createTestModel("custom_ps", "Custom Paused", status = ModelStatus.Paused)
+        val customFailed = createTestModel("custom_fl", "Custom Failed", status = ModelStatus.Failed)
+
+        val catalogNotDownloaded = createTestModel("llama32_1b", "Llama 3.2 1B", status = ModelStatus.NotDownloaded)
+        val catalogAvailable = createTestModel("qwen25_7b", "Qwen 2.5 7B", status = ModelStatus.Available, localPath = "/path/to/qwen.gguf")
+
+        val allModels = listOf(
+            customNotDownloaded, customDownloading, customAvailable, customPaused, customFailed,
+            catalogNotDownloaded, catalogAvailable
+        )
+
+        // All models filter preserves everything
+        val allFiltered = when (ModelSourceFilter.All) {
+            ModelSourceFilter.All -> allModels
+            ModelSourceFilter.Imported -> allModels.filter { it.isCustom }
+        }
+        assertEquals(7, allFiltered.size)
+
+        // Imported filter retains ONLY custom models across every download status
+        val importedFiltered = when (ModelSourceFilter.Imported) {
+            ModelSourceFilter.All -> allModels
+            ModelSourceFilter.Imported -> allModels.filter { it.isCustom }
+        }
+        assertEquals(5, importedFiltered.size)
+        assertTrue(importedFiltered.all { it.isCustom })
+        assertTrue(importedFiltered.contains(customNotDownloaded))
+        assertTrue(importedFiltered.contains(customDownloading))
+        assertTrue(importedFiltered.contains(customAvailable))
+        assertTrue(importedFiltered.contains(customPaused))
+        assertTrue(importedFiltered.contains(customFailed))
+        assertFalse(importedFiltered.contains(catalogNotDownloaded))
+        assertFalse(importedFiltered.contains(catalogAvailable))
+    }
+
+    @Test
+    fun testModelSourceFilterAppliesBeforeSectionPartitioningIncludingPinnedDownloads() {
+        val catalogDownloaded = createTestModel("qwen25_7b", "Qwen 2.5 7B", status = ModelStatus.Available, localPath = "/models/qwen.gguf", downloadedAt = 1000L)
+        val customDownloaded = createTestModel("custom_model", "Custom Model", status = ModelStatus.Available, localPath = "/models/custom.gguf", downloadedAt = 2000L)
+        val customCatalogCandidate = createTestModel("custom_unpinned", "Custom Not Downloaded", status = ModelStatus.NotDownloaded)
+
+        val visibleModels = listOf(catalogDownloaded, customDownloaded, customCatalogCandidate)
+
+        // Under ModelSourceFilter.Imported, filter applies BEFORE section partitioning:
+        val filtered = visibleModels.filter { it.isCustom }
+
+        val downloadedSection = filtered.filter { it.isPinnedDownloadCard() }
+        assertEquals("Only custom downloaded models appear in downloaded section", 1, downloadedSection.size)
+        assertEquals("custom_model", downloadedSection.first().id)
+
+        val unpinnedSection = filtered.filter { !it.isPinnedDownloadCard() }
+        assertEquals("Only custom unpinned models appear in unpinned section", 1, unpinnedSection.size)
+        assertEquals("custom_unpinned", unpinnedSection.first().id)
+    }
+
+    @Test
+    fun testModelSourceFilterCombinesWithSearchAndSizeTier() {
+        // Size: 2.0 GB corresponds to ~1.0B params (Small tier: 0B-2B)
+        val customSmall = createTestModel("custom_small", "Custom Chat Small").copy(size = "1.2 GB")
+        val customLarge = createTestModel("custom_large", "Custom Chat Large").copy(size = "8.0 GB")
+        val catalogSmall = createTestModel("catalog_small", "Catalog Chat Small").copy(size = "1.2 GB")
+
+        val allModels = listOf(customSmall, customLarge, catalogSmall)
+
+        // 1. Filter by Imported source
+        val sourceFiltered = allModels.filter { it.isCustom }
+        assertEquals(listOf(customSmall, customLarge), sourceFiltered)
+
+        // 2. Combine with search "chat" and SizeTier.Small (Small: 0-2B params)
+        val searchAndTier = sourceFiltered.filter { it.matches("chat", SizeTier.Small) }
+        assertEquals(1, searchAndTier.size)
+        assertEquals("custom_small", searchAndTier.first().id)
+
+        // 3. SizeTier.Large (Large: 7-10B params)
+        val searchAndTierLarge = sourceFiltered.filter { it.matches("chat", SizeTier.Large) }
+        assertEquals(1, searchAndTierLarge.size)
+        assertEquals("custom_large", searchAndTierLarge.first().id)
+
+        // 4. Search mismatch results in empty
+        val searchMismatch = sourceFiltered.filter { it.matches("nonexistent", SizeTier.Small) }
+        assertTrue(searchMismatch.isEmpty())
     }
 }
 

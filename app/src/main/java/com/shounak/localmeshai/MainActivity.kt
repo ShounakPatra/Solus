@@ -263,6 +263,17 @@ fun MainNavigation(mainViewModel: MainViewModel) {
 
     val settingsDialogVisible by mainViewModel.settingsDialogVisible.collectAsState()
     val scrollToAboutRequested by mainViewModel.scrollToAboutRequested.collectAsState()
+    val appSettingsData by mainViewModel.appSettingsData.collectAsState()
+
+    var autoHideWasEnabledWhenSettingsOpened by remember { mutableStateOf(false) }
+    var autoHideTurnedOnInSettings by remember { mutableStateOf(false) }
+
+    LaunchedEffect(settingsDialogVisible) {
+        if (settingsDialogVisible) {
+            autoHideWasEnabledWhenSettingsOpened = appSettingsData.enableAutoHideBottomBar
+            autoHideTurnedOnInSettings = false
+        }
+    }
 
     if (settingsDialogVisible) {
         com.shounak.localmeshai.ui.screens.SettingsDialog(
@@ -270,12 +281,18 @@ fun MainNavigation(mainViewModel: MainViewModel) {
             hazeState = hazeState,
             scrollToAbout = scrollToAboutRequested,
             onDismissRequest = {
+                val shouldGoToChat = (autoHideTurnedOnInSettings || !autoHideWasEnabledWhenSettingsOpened) &&
+                    appSettingsData.enableAutoHideBottomBar
+                if (shouldGoToChat) {
+                    selectedIndex = 0
+                }
                 mainViewModel.dismissSettings()
+            },
+            onAutoHideToggleChanged = { enabled ->
+                autoHideTurnedOnInSettings = enabled
             }
         )
     }
-
-    val appSettingsData by mainViewModel.appSettingsData.collectAsState()
 
     LiquidGlassBackdrop(hazeState = hazeState) {
         Scaffold(

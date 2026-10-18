@@ -4,6 +4,7 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <clocale>
 #include <fstream>
 #include <iostream> // TODO: remove me
 
@@ -74,30 +75,30 @@ static std::vector<chunk> chunk_file(const std::string & filename, int chunk_siz
     return chunks;
 }
 
-static void batch_add_seq(llama_batch & batch, const std::vector<int32_t> & tokens, llama_seq_id seq_id) {
+static void batch_add_seq(common_batch & batch, const std::vector<int32_t> & tokens, llama_seq_id seq_id) {
     size_t n_tokens = tokens.size();
     for (size_t i = 0; i < n_tokens; i++) {
-        common_batch_add(batch, tokens[i], i, { seq_id }, true);
+        batch.add(tokens[i], i, seq_id, true);
     }
 }
 
-static void batch_decode(llama_context * ctx, llama_batch & batch, float * output, int n_seq, int n_embd) {
+static void batch_process(llama_context * ctx, common_batch & batch, float * output, int n_seq, int n_embd) {
     // clear previous kv_cache values (irrelevant for embeddings)
-    llama_kv_cache_clear(ctx);
+    llama_memory_clear(llama_get_memory(ctx), false);
 
     // run model
-    LOG_INF("%s: n_tokens = %d, n_seq = %d\n", __func__, batch.n_tokens, n_seq);
-    if (llama_decode(ctx, batch) < 0) {
-        LOG_ERR("%s : failed to decode\n", __func__);
+    LOG_INF("%s: n_tokens = %d, n_seq = %d\n", __func__, batch.size(), n_seq);
+    if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get()) < 0) {
+        LOG_ERR("%s : failed to process\n", __func__);
     }
 
-    for (int i = 0; i < batch.n_tokens; i++) {
-        if (!batch.logits[i]) {
+    for (int i = 0; i < batch.size(); i++) {
+        if (!batch.tokens[i].output) {
             continue;
         }
 
         // try to get sequence embeddings - supported only when pooling_type is not NONE
-        const float * embd = llama_get_embeddings_seq(ctx, batch.seq_id[i][0]);
+        const float * embd = llama_get_embeddings_seq(ctx, batch.tokens[i].seq_id);
         if (embd == NULL) {
             embd = llama_get_embeddings_ith(ctx, i);
             if (embd == NULL) {
@@ -106,19 +107,21 @@ static void batch_decode(llama_context * ctx, llama_batch & batch, float * outpu
             }
         }
 
-        float * out = output + batch.seq_id[i][0] * n_embd;
+        float * out = output + batch.tokens[i].seq_id * n_embd;
         common_embd_normalize(embd, out, n_embd, 2);
     }
 }
 
 int main(int argc, char ** argv) {
+    std::setlocale(LC_NUMERIC, "C");
+
     common_params params;
+
+    common_init();
 
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_RETRIEVAL, print_usage)) {
         return 1;
     }
-
-    common_init();
 
     // For BERT models, batch size must be equal to ubatch size
     params.n_ubatch = params.n_batch;
@@ -149,10 +152,10 @@ int main(int argc, char ** argv) {
     llama_numa_init(params.numa);
 
     // load the model
-    common_init_result llama_init = common_init_from_params(params);
+    auto llama_init = common_init_from_params(params);
 
-    llama_model * model = llama_init.model.get();
-    llama_context * ctx = llama_init.context.get();
+    auto * model = llama_init->model();
+    auto * ctx   = llama_init->context();
 
     if (model == NULL) {
         LOG_ERR("%s: unable to load model\n", __func__);
@@ -214,16 +217,16 @@ int main(int argc, char ** argv) {
 
     // initialize batch
     const int n_chunks = chunks.size();
-    struct llama_batch batch = llama_batch_init(n_batch, 0, 1);
+    common_batch batch(ctx);
 
     // allocate output
-    const int n_embd = llama_model_n_embd(model);
-    std::vector<float> embeddings(n_chunks * n_embd, 0);
+    const int n_embd_out = llama_model_n_embd_out(model);
+    std::vector<float> embeddings(n_chunks * n_embd_out, 0);
     float * emb = embeddings.data();
 
     // break into batches
-    int p = 0; // number of prompts processed already
-    int s = 0; // number of prompts in current batch
+    unsigned int p = 0; // number of prompts processed already
+    unsigned int s = 0; // number of prompts in current batch
     for (int k = 0; k < n_chunks; k++) {
         // clamp to n_batch tokens
         auto & inp = chunks[k].tokens;
@@ -231,10 +234,10 @@ int main(int argc, char ** argv) {
         const uint64_t n_toks = inp.size();
 
         // encode if at capacity
-        if (batch.n_tokens + n_toks > n_batch) {
-            float * out = emb + p * n_embd;
-            batch_decode(ctx, batch, out, s, n_embd);
-            common_batch_clear(batch);
+        if (batch.size() + n_toks > n_batch || s >= llama_n_seq_max(ctx)) {
+            float * out = emb + p * n_embd_out;
+            batch_process(ctx, batch, out, s, n_embd_out);
+            batch.clear();
             p += s;
             s = 0;
         }
@@ -245,17 +248,17 @@ int main(int argc, char ** argv) {
     }
 
     // final batch
-    float * out = emb + p * n_embd;
-    batch_decode(ctx, batch, out, s, n_embd);
+    float * out = emb + p * n_embd_out;
+    batch_process(ctx, batch, out, s, n_embd_out);
 
     // save embeddings to chunks
     for (int i = 0; i < n_chunks; i++) {
-        chunks[i].embedding = std::vector<float>(emb + i * n_embd, emb + (i + 1) * n_embd);
+        chunks[i].embedding = std::vector<float>(emb + i * n_embd_out, emb + (i + 1) * n_embd_out);
         // clear tokens as they are no longer needed
         chunks[i].tokens.clear();
     }
 
-    struct llama_batch query_batch = llama_batch_init(n_batch, 0, 1);
+    common_batch query_batch(ctx);
 
     // start loop, receive query and return top k similar chunks based on cosine similarity
     std::string query;
@@ -266,16 +269,16 @@ int main(int argc, char ** argv) {
 
         batch_add_seq(query_batch, query_tokens, 0);
 
-        std::vector<float> query_emb(n_embd, 0);
-        batch_decode(ctx, query_batch, query_emb.data(), 1, n_embd);
+        std::vector<float> query_emb(n_embd_out, 0);
+        batch_process(ctx, query_batch, query_emb.data(), 1, n_embd_out);
 
-        common_batch_clear(query_batch);
+        query_batch.clear();
 
         // compute cosine similarities
         {
             std::vector<std::pair<int, float>> similarities;
             for (int i = 0; i < n_chunks; i++) {
-                float sim = common_embd_similarity_cos(chunks[i].embedding.data(), query_emb.data(), n_embd);
+                float sim = common_embd_similarity_cos(chunks[i].embedding.data(), query_emb.data(), n_embd_out);
                 similarities.push_back(std::make_pair(i, sim));
             }
 
@@ -299,6 +302,5 @@ int main(int argc, char ** argv) {
     llama_perf_context_print(ctx);
 
     // clean up
-    llama_batch_free(query_batch);
     llama_backend_free();
 }

@@ -15,6 +15,7 @@ object ModelCatalog {
             deviceTarget = "8 GB RAM, flagship GPU or CPU-safe fallback",
             url = hf("litert-community/gemma-4-E2B-it-litert-lm", "gemma-4-E2B-it.litertlm"),
             modelPageUrl = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm",
+            supportsVisionInput = true,
             supportsAudioInput = true,
             supportsThinkingMode = true,
             isRecommended = true,
@@ -82,6 +83,7 @@ object ModelCatalog {
             modelPageUrl = "https://huggingface.co/google/gemma-3n-E2B-it-litert-preview",
             requiresHuggingFaceToken = true,
             isRecommended = true,
+            supportsVisionInput = true,
             supportsAudioInput = true,
             contextWindowTokens = 32768
         ),
@@ -111,9 +113,12 @@ object ModelCatalog {
             description = "⭐ Recommended lightweight Qwen 3 model for ultra-fast local reasoning, quick Q&A, and smooth step-by-step answers on any Android phone.",
             backend = "LiteRT-LM GPU",
             deviceTarget = "8 GB nominal RAM, all supported chipsets",
-            url = hf("litert-community/Qwen3-0.6B", "Qwen3-0.6B.litertlm"),
+            url = hf("litert-community/Qwen3-0.6B", "Qwen3-0.6B.litertlm", revision = "a3c5d805ae362dff7f580bc25f2dfb9a5a7eaa76"),
             modelPageUrl = "https://huggingface.co/litert-community/Qwen3-0.6B",
             isRecommended = true,
+            supportsThinkingMode = true,
+            sha256 = "555579ff2f4fd13379abe69c1c3ab5200f7338bc92471557f1d6614a6e5ab0b4",
+            expectedFileSizeBytes = 614_236_160L,
             contextWindowTokens = 4096
         ),
         ModelInfo(
@@ -610,6 +615,7 @@ object ModelCatalog {
             deviceTarget = "8 GB nominal RAM",
             url = hf("litert-community/FastVLM-0.5B", "FastVLM-0.5B.litertlm"),
             modelPageUrl = "https://huggingface.co/litert-community/FastVLM-0.5B",
+            supportsVisionInput = true,
             isRecommended = true,
             contextWindowTokens = 1280
         ),
@@ -625,6 +631,7 @@ object ModelCatalog {
             deviceTarget = "12 GB RAM recommended",
             url = hf("litert-community/gemma-4-E4B-it-litert-lm", "gemma-4-E4B-it.litertlm"),
             modelPageUrl = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm",
+            supportsVisionInput = true,
             supportsAudioInput = true,
             supportsThinkingMode = true,
             contextWindowTokens = 32768
@@ -642,6 +649,7 @@ object ModelCatalog {
             url = hf("google/gemma-3n-E4B-it-litert-preview", "gemma-3n-E4B-it-int4.task"),
             modelPageUrl = "https://huggingface.co/google/gemma-3n-E4B-it-litert-preview",
             requiresHuggingFaceToken = true,
+            supportsVisionInput = true,
             supportsAudioInput = true,
             contextWindowTokens = 32768
         )

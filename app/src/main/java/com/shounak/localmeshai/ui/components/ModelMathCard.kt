@@ -47,6 +47,7 @@ import dev.chrisbanes.haze.HazeState
  * The copy button uses [LiquidGlassButton] with the same circular glass style
  * as [MessageToolButton] in ChatScreen to keep the UI consistent.
  */
+@Suppress("DEPRECATION")
 @Composable
 fun ModelMathCard(
     latex: String,

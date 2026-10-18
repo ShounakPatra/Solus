@@ -35,3 +35,14 @@ dump_gguf.py
 scratch/
 *.log
 traces/
+/tools/llvm-mingw/
+/tools/llvm-mingw*/
+/tools/*.zip
+/temp_llama/
+/temp_spirv/
+
+# AI Model Files
+*.gguf
+*.tflite
+*.task
+*.litertlm

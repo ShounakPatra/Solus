@@ -16,7 +16,7 @@ data class AppSettingsData(
     val enablePersonaPresets: Boolean = true,
     val enableSolusBench: Boolean = true,
     val enableAutoHideBottomBar: Boolean = false,
-    val autoUnloadMinutes: Int = 1,
+    val autoUnloadMinutes: Int = 5,
     val huggingFaceToken: String = "",
     val autoCheckUpdates: Boolean = true,
     val llamaBackendPreference: String = "AUTO",
@@ -27,8 +27,8 @@ data class AppSettingsData(
     val autoExtractMemories: Boolean = true
 )
 
-class AppSettings private constructor(context: Context) {
-    private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+class AppSettings internal constructor(private val prefs: SharedPreferences) {
+    constructor(context: Context) : this(context.applicationContext.getSharedPreferences("app_settings", Context.MODE_PRIVATE))
 
     private val _settings = MutableStateFlow(loadSettings())
     val settings: StateFlow<AppSettingsData> = _settings.asStateFlow()
@@ -44,7 +44,7 @@ class AppSettings private constructor(context: Context) {
             enablePersonaPresets = prefs.getBoolean(KEY_PERSONA_PRESETS, true),
             enableSolusBench = prefs.getBoolean(KEY_SOLUS_BENCH, true),
             enableAutoHideBottomBar = prefs.getBoolean(KEY_AUTO_HIDE_BOTTOM_BAR, false),
-            autoUnloadMinutes = prefs.getInt(KEY_AUTO_UNLOAD_MINS, 1),
+            autoUnloadMinutes = prefs.getInt(KEY_AUTO_UNLOAD_MINS, 5),
             huggingFaceToken = prefs.getString(KEY_HF_TOKEN, "").orEmpty(),
             autoCheckUpdates = prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true),
             llamaBackendPreference = prefs.getString(KEY_LLAMA_BACKEND_PREF, "AUTO")?.let {
@@ -95,7 +95,7 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_PERSONA_PRESETS = "enable_persona_presets"
         private const val KEY_SOLUS_BENCH = "enable_solus_bench"
         private const val KEY_AUTO_HIDE_BOTTOM_BAR = "auto_hide_bottom_bar"
-        private const val KEY_AUTO_UNLOAD_MINS = "auto_unload_minutes"
+        internal const val KEY_AUTO_UNLOAD_MINS = "auto_unload_minutes"
         private const val KEY_HF_TOKEN = "hf_read_token"
         private const val KEY_AUTO_CHECK_UPDATES = "auto_check_updates"
         private const val KEY_LLAMA_BACKEND_PREF = "llama_backend_pref"

@@ -174,6 +174,29 @@ object ThinkingTextUtils {
         return null
     }
 
+    /**
+     * Conservatively removes a leading serialized thinking envelope ONLY when its inner contents
+     * exactly match the separately stored reasoningText. Preserves unrelated literal tags,
+     * code blocks, and user messages.
+     */
+    fun stripDuplicateLeadingThinkingEnvelope(text: String, reasoningText: String?): String {
+        if (reasoningText.isNullOrBlank() || text.isBlank()) return text
+        val trimmed = text.trimStart()
+        val cleanReasoning = reasoningText.trim()
+
+        val openMatch = openThinkTagRegex.find(trimmed)
+        if (openMatch != null && openMatch.range.first == 0) {
+            val closeMatch = closeThinkTagRegex.find(trimmed, openMatch.range.last + 1)
+            if (closeMatch != null) {
+                val inner = trimmed.substring(openMatch.range.last + 1, closeMatch.range.first).trim()
+                if (inner == cleanReasoning) {
+                    return trimmed.substring(closeMatch.range.last + 1).trimStart()
+                }
+            }
+        }
+        return text
+    }
+
     fun removeLooseThinkTags(text: String): String =
         closeThinkTagRegex.replace(openThinkTagRegex.replace(text, ""), "")
 

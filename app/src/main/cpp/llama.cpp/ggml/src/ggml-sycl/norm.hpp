@@ -15,21 +15,23 @@
 
 #include "common.hpp"
 
-void ggml_sycl_op_norm(ggml_backend_sycl_context& ctx, const ggml_tensor* src0, const ggml_tensor* src1,
-    ggml_tensor* dst, const float* src0_dd,
-    const float* src1_dd, float* dst_dd,
-    const queue_ptr& main_stream);
+void ggml_sycl_op_norm(ggml_backend_sycl_context& ctx, ggml_tensor* dst);
 
-void ggml_sycl_op_rms_norm(ggml_backend_sycl_context& ctx, const ggml_tensor* src0,
-    const ggml_tensor* src1, ggml_tensor* dst,
-    const float* src0_dd, const float* src1_dd,
-    float* dst_dd,
-    const queue_ptr& main_stream);
+void ggml_sycl_op_rms_norm(ggml_backend_sycl_context& ctx, ggml_tensor* dst);
 
-void ggml_sycl_op_group_norm(ggml_backend_sycl_context& ctx, const ggml_tensor* src0,
-    const ggml_tensor* src1, ggml_tensor* dst,
-    const float* src0_dd, const float* src1_dd,
-    float* dst_dd,
-    const queue_ptr& main_stream);
+void ggml_sycl_op_rms_norm_fused(ggml_backend_sycl_context& ctx, ggml_tensor* dst, ggml_tensor* mul);
+
+void ggml_sycl_op_rms_norm_scale_fused(ggml_backend_sycl_context& ctx, ggml_tensor* dst, ggml_tensor* scale_tensor);
+
+void ggml_sycl_op_rms_norm_fused_add(ggml_backend_sycl_context& ctx, ggml_tensor* dst, ggml_tensor* mul_tensor, ggml_tensor* add_tensor);
+
+void ggml_sycl_op_rms_norm_back(ggml_backend_sycl_context& ctx, ggml_tensor* dst);
+
+void ggml_sycl_op_group_norm(ggml_backend_sycl_context& ctx, ggml_tensor* dst);
+
+void ggml_sycl_op_l2_norm(ggml_backend_sycl_context& ctx, ggml_tensor* dst);
+
+#define GGML_SYCL_L2_BATCH_MAX 8
+void ggml_sycl_l2_norm_batch(ggml_backend_sycl_context & ctx, ggml_tensor ** nodes, int count);
 
 #endif // GGML_SYCL_NORM_HPP

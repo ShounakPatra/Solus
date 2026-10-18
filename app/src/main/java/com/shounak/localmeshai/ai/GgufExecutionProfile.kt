@@ -70,7 +70,12 @@ data class GgufExecutionProfile(
             backendPreference: String = "AUTO"
         ): GgufExecutionProfile {
             val paramsB = DeviceUtils.estimateModelParametersB(modelNameOrId, modelSize)
-            val contextWindow = customContextTokens ?: DeviceUtils.recommendedContextWindow(context, paramsB)
+            val maxDeviceContext = DeviceUtils.recommendedContextWindow(context, paramsB)
+            val contextWindow = if (customContextTokens != null && customContextTokens > 0) {
+                minOf(customContextTokens, maxDeviceContext)
+            } else {
+                maxDeviceContext
+            }
             val threads = RuntimeExecutionPolicy.resolve(context).cpuThreads
             val (batch, ubatch) = DeviceUtils.recommendedBatchSize(context)
             val isGpu = backendPreference.equals("VULKAN", ignoreCase = true) ||

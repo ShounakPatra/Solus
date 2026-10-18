@@ -3,6 +3,7 @@ package com.shounak.localmeshai.ai
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
@@ -12,6 +13,7 @@ import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.ThinkingConfig
 import com.shounak.localmeshai.utils.ThinkingModeConfig
 import com.shounak.localmeshai.utils.ThinkingTextUtils
 import com.google.mediapipe.framework.image.BitmapImageBuilder
@@ -34,6 +36,13 @@ import com.shounak.localmeshai.utils.ModelDownloader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
+import android.net.Uri
+import com.shounak.localmeshai.models.ArtifactSource
+import com.shounak.localmeshai.models.ModelBundle
+import com.shounak.localmeshai.models.ThinkingCapability
+import com.shounak.localmeshai.utils.ModelArtifactStorage
+import com.shounak.localmeshai.utils.ModelSourceResolver
+import com.shounak.localmeshai.utils.AudioUtils
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.CountDownLatch
@@ -47,16 +56,28 @@ data class VisionLabel(
     val score: Float
 )
 
-class VisionInferenceManager(private val context: Context) {
+class VisionInferenceManager(context: Context) {
+    private val context: Context = context.applicationContext
     private var mediaPipeInference: LlmInference? = null
     private var liteRtEngine: Engine? = null
     private var liteRtConversation: Conversation? = null
     private var liteRtCacheDir: File? = null
+    private var llamaCppEngine: LlamaCppEngine? = null
+    @Volatile private var currentGgufBundle: ModelBundle? = null
+    private var currentGgufModelPath: String = ""
+    private var currentGgufThreads: Int = 4
+    private var currentGgufPrefillThreads: Int = 4
+    private var currentGgufContext: Int = 2048
+    private var currentGgufBatch: Int = 512
+    private var currentGgufUbatch: Int = 256
+    private var currentGgufVerifiedSha: String = ""
+    private var currentGgufExpectedBytes: Long = 0L
     @Volatile private var runtime = RuntimeKind.None
     private var activeModelLease: AutoCloseable? = null
     val isReady: Boolean get() = when (runtime) {
         RuntimeKind.LiteRtLm -> liteRtConversation != null
         RuntimeKind.MediaPipeVision -> mediaPipeInference != null
+        RuntimeKind.LlamaCpp -> llamaCppEngine?.isInitialized == true
         RuntimeKind.None -> false
     }
     @Volatile private var activeMediaPipeSession: LlmInferenceSession? = null
@@ -77,6 +98,7 @@ class VisionInferenceManager(private val context: Context) {
      */
     @Volatile private var isBeingClosed = false
     @Volatile private var modelSupportsAudioInput = false
+    @Volatile private var resolvedThinkingCapability: ThinkingCapability = ThinkingCapability.Unknown
     @Volatile private var isDefaultThinkingModel = false
     @Volatile private var supportsThinkingMode = false
 
@@ -102,48 +124,155 @@ class VisionInferenceManager(private val context: Context) {
         supportsAudioInput: Boolean = false,
         supportsThinkingMode: Boolean = false,
         allowUnsafeOverride: Boolean = false,
-        contextWindowTokens: Int? = null
+        contextWindowTokens: Int? = null,
+        bundle: ModelBundle? = null
     ) {
-        val file = File(modelPath)
-        if (!file.exists()) {
-            throw IllegalArgumentException("Image model file not found.")
-        }
-        if (file.extension.equals("task", ignoreCase = true) && !ModelDownloader.isLikelyTaskBundle(file)) {
-            throw IllegalArgumentException("Selected .task file does not look like a MediaPipe or LiteRT task bundle. Download a verified Android multimodal .task model from the Models tab.")
+        val file = if (bundle != null && bundle.isStorageImport) null else File(modelPath)
+        if (file != null) {
+            if (!file.exists()) {
+                throw IllegalArgumentException("Image model file not found.")
+            }
+            if (file.extension.equals("task", ignoreCase = true) && !ModelDownloader.isLikelyTaskBundle(file)) {
+                throw IllegalArgumentException("Selected .task file does not look like a MediaPipe or LiteRT task bundle. Download a verified Android multimodal .task model from the Models tab.")
+            }
         }
 
-        val effectiveId = modelId.ifBlank { file.nameWithoutExtension }
-        close()
+        val effectiveId = modelId.ifBlank { bundle?.id ?: file?.nameWithoutExtension.orEmpty() }
+        val effectiveName = modelName.ifBlank { bundle?.displayName ?: file?.nameWithoutExtension.orEmpty() }
+        val shutdownResult = close()
+        if (shutdownResult is ShutdownResult.Failed) {
+            throw IllegalStateException("Cannot initialize model: previous engine failed to shut down cleanly (${shutdownResult.error.message})", shutdownResult.error)
+        }
         com.shounak.localmeshai.data.StartupCoordinator.getInstance(context).awaitCrashGuardChecked()
-        val modelLease = com.shounak.localmeshai.utils.ModelArtifactStorage.leaseArtifact(file)
+        var modelLease: AutoCloseable? = file?.let { com.shounak.localmeshai.utils.ModelArtifactStorage.leaseArtifact(it) }
         try {
             AppCacheCleaner.clearAppCache(context)
             this.supportsThinkingMode = supportsThinkingMode
-            isDefaultThinkingModel = ThinkingModeConfig.isThinkingSupported(
-                modelPath = modelPath,
-                effectiveId = effectiveId,
-                modelName = modelName,
-                supportsThinkingFlag = supportsThinkingMode
+            val resolvedCap = ThinkingModeConfig.resolveThinkingCapability(
+                bundle = bundle,
+                localPath = modelPath,
+                supportsThinkingFlag = supportsThinkingMode,
+                id = effectiveId,
+                name = effectiveName,
+                backend = "",
+                fileName = file?.name ?: "",
+                context = context
             )
+            resolvedThinkingCapability = resolvedCap
+            isDefaultThinkingModel = (resolvedCap == ThinkingCapability.ModelControlled || resolvedCap == ThinkingCapability.Toggleable)
         val isGemmaAudio = modelId.contains("gemma4", ignoreCase = true) ||
             modelId.contains("gemma3n", ignoreCase = true) ||
-            modelName.contains("gemma 4", ignoreCase = true) ||
-            modelName.contains("gemma 3n", ignoreCase = true) ||
-            file.name.contains("gemma-4", ignoreCase = true) ||
-            file.name.contains("gemma-3n", ignoreCase = true) ||
-            file.name.contains("gemma4", ignoreCase = true) ||
-            file.name.contains("gemma3n", ignoreCase = true)
+            effectiveName.contains("gemma 4", ignoreCase = true) ||
+            effectiveName.contains("gemma 3n", ignoreCase = true) ||
+            file?.name?.contains("gemma-4", ignoreCase = true) == true ||
+            file?.name?.contains("gemma-3n", ignoreCase = true) == true ||
+            file?.name?.contains("gemma4", ignoreCase = true) == true ||
+            file?.name?.contains("gemma3n", ignoreCase = true) == true
 
         val audioInputAvailable = (supportsAudioInput || isGemmaAudio) && (
-            file.extension.equals("litertlm", ignoreCase = true) ||
-                file.extension.equals("task", ignoreCase = true) ||
-                file.containsAudioModelAssets()
+            file?.extension?.equals("litertlm", ignoreCase = true) == true ||
+                file?.extension?.equals("task", ignoreCase = true) == true ||
+                file?.containsAudioModelAssets() == true ||
+                bundle?.capabilities?.supportsAudio == true
             )
         modelSupportsAudioInput = audioInputAvailable
         isBeingClosed = false   // Reset after close() so initialize() starts clean
+
+        val isGguf = bundle?.isGguf ?: (file != null && file.extension.equals("gguf", ignoreCase = true))
+        val effectivePath = file?.absolutePath
+            ?: (bundle?.mainArtifacts?.firstOrNull()?.source as? ArtifactSource.AppManaged)?.path
+            ?: bundle?.let {
+                val lease = ModelSourceResolver.resolve(context, it)
+                modelLease = lease
+                lease.paths.firstOrNull()
+            }
+        val effectiveFile: File? = effectivePath?.let { File(it) }
         when {
-            file.extension.equals("litertlm", ignoreCase = true) -> {
-                val effectiveId = modelId.ifBlank { file.nameWithoutExtension }
+            isGguf -> {
+                val appSettings = AppSettings.getInstance(context)
+                val pref = appSettings.settings.value.llamaBackendPreference.uppercase()
+                val profile = GgufExecutionProfile.resolve(
+                    context = context,
+                    modelNameOrId = effectiveName.ifBlank { effectiveId },
+                    modelSize = modelSize,
+                    customContextTokens = contextWindowTokens,
+                    backendPreference = pref
+                )
+                val companionSummary = if (bundle != null) {
+                    "${bundle.mainArtifacts.size}_parts_${bundle.projectorArtifact?.displayName.orEmpty()}"
+                } else ""
+                val verifiedSha = if (bundle != null) {
+                    GgufGpuValidator.resolveArtifactFingerprint(
+                        context = context,
+                        bundle = bundle,
+                        isCancelled = { stopRequested }
+                    )
+                } else {
+                    GgufGpuValidator.resolveModelSha256(
+                        modelPath = file!!.absolutePath,
+                        modelId = effectiveId,
+                        context = context,
+                        isCancelled = { stopRequested }
+                    )
+                }
+                val requestedBackend = when (pref) {
+                    "VULKAN", "GPU" -> LlamaBackend.VULKAN
+                    "CPU" -> LlamaBackend.CPU
+                    else -> null
+                }
+                val decision = GgufBackendPolicy.selectBackend(
+                    context = context,
+                    modelSha256 = verifiedSha,
+                    threads = profile.decodeThreads,
+                    contextWindow = profile.contextTokens,
+                    nBatch = profile.batchTokens,
+                    nUbatch = profile.microBatchTokens,
+                    prefillThreads = profile.prefillThreads,
+                    requestedBackend = requestedBackend,
+                    companionSummary = companionSummary
+                )
+                val engine = LlamaCppEngine(context)
+                if (bundle != null) {
+                    engine.initializeBundle(
+                        context = context,
+                        bundle = bundle,
+                        threads = profile.decodeThreads,
+                        prefillThreads = profile.prefillThreads,
+                        contextWindow = profile.contextTokens,
+                        nBatch = profile.batchTokens,
+                        nUbatch = profile.microBatchTokens,
+                        backend = decision.selectedBackend,
+                        nGpuLayers = if (decision.selectedBackend == LlamaBackend.VULKAN) 99 else 0
+                    )
+                } else {
+                    engine.initialize(
+                        modelPath = file!!.absolutePath,
+                        threads = profile.decodeThreads,
+                        prefillThreads = profile.prefillThreads,
+                        contextWindow = profile.contextTokens,
+                        nBatch = profile.batchTokens,
+                        nUbatch = profile.microBatchTokens,
+                        backend = decision.selectedBackend,
+                        nGpuLayers = if (decision.selectedBackend == LlamaBackend.VULKAN) 99 else 0
+                    )
+                }
+                llamaCppEngine = engine
+                currentGgufBundle = bundle
+                currentGgufModelPath = bundle?.mainArtifacts?.firstOrNull()?.source?.location ?: file?.absolutePath.orEmpty()
+                currentGgufThreads = profile.decodeThreads
+                currentGgufPrefillThreads = profile.prefillThreads
+                currentGgufContext = profile.contextTokens
+                currentGgufBatch = profile.batchTokens
+                currentGgufUbatch = profile.microBatchTokens
+                currentGgufVerifiedSha = verifiedSha
+                currentGgufExpectedBytes = bundle?.totalSizeBytes ?: file?.length() ?: 0L
+                runtime = RuntimeKind.LlamaCpp
+                activeBackendDisplayName = if (engine.activeBackend == LlamaBackend.VULKAN) "GGUF Vulkan GPU" else "GGUF CPU"
+                modelSupportsAudioInput = bundle?.capabilities?.supportsAudio == true || engine.getMetadata()?.supportsAudio == true
+            }
+            bundle?.isLiteRt == true || (effectiveFile != null && effectiveFile.extension.equals("litertlm", ignoreCase = true)) -> {
+                val resolvedModelPath = effectiveFile?.absolutePath ?: modelPath
+                val modelIdForLiteRt = modelId.ifBlank { bundle?.id ?: effectiveFile?.nameWithoutExtension.orEmpty() }
                 val appSettings = AppSettings.getInstance(context)
                 val pref = appSettings.settings.value.llamaBackendPreference.uppercase()
                 val inferenceBackend = when (pref) {
@@ -153,32 +282,29 @@ class VisionInferenceManager(private val context: Context) {
                         if (allowUnsafeOverride) {
                             InferenceBackend.LITERT_GPU
                         } else {
-                            DeviceUtils.selectBackendForModelFile(context, file.name)
+                            DeviceUtils.selectBackendForModelFile(context, effectiveFile?.name.orEmpty())
                         }
                     }
                 }
                 val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                     context = context,
-                    modelId = effectiveId,
-                    modelName = modelName.ifBlank { file.nameWithoutExtension },
+                    modelId = modelIdForLiteRt,
+                    modelName = effectiveName,
                     modelSize = modelSize,
-                    fileName = file.name,
+                    fileName = effectiveFile?.name.orEmpty(),
                     isMultimodalLiteRt = true
                 )
-                if (InitCrashGuard.isModelBlocked(context, effectiveId) && canRetryOnCpu) {
-                    InitCrashGuard.unblockModel(context, effectiveId)
-                }
-                if (InitCrashGuard.isModelBlocked(context, effectiveId)) {
+                if (InitCrashGuard.isModelBlocked(context, modelIdForLiteRt)) {
                     throw IllegalStateException(InitCrashGuard.blockedModelMessage())
                 }
                 if (!allowUnsafeOverride && inferenceBackend != InferenceBackend.LITERT_CPU) {
                     val (allowed, reason) = DeviceUtils.canInitializeLiteRtLm(
                         context = context,
-                        modelId = effectiveId,
-                        modelName = modelName.ifBlank { file.nameWithoutExtension },
+                        modelId = modelIdForLiteRt,
+                        modelName = effectiveName,
                         modelSize = modelSize,
                         isVision = true,
-                        fileName = file.name,
+                        fileName = effectiveFile?.name.orEmpty(),
                         backendLabel = "LiteRT-LM multimodal",
                         supportsAudioInput = audioInputAvailable
                     )
@@ -187,25 +313,26 @@ class VisionInferenceManager(private val context: Context) {
                     }
                 }
                 initializeLiteRtLm(
-                    modelPath = modelPath,
-                    modelId = effectiveId,
+                    modelPath = resolvedModelPath,
+                    modelId = modelIdForLiteRt,
                     inferenceBackend = inferenceBackend,
                     supportsAudioInput = audioInputAvailable,
                     contextWindowTokens = contextWindowTokens
                 )
                 activeBackendDisplayName = if (inferenceBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
             }
-            file.extension.equals("task", ignoreCase = true) -> {
-                initializeMediaPipeVision(modelPath, audioInputAvailable, contextWindowTokens)
+            bundle?.isMediaPipe == true || (effectiveFile != null && effectiveFile.extension.equals("task", ignoreCase = true)) -> {
+                val resolvedModelPath = effectiveFile?.absolutePath ?: modelPath
+                initializeMediaPipeVision(resolvedModelPath, audioInputAvailable, contextWindowTokens)
                 activeBackendDisplayName = "MediaPipe CPU"
             }
             else -> {
-                throw IllegalArgumentException("Unsupported vision model format (${file.extension}). Solus multimodal models require LiteRT (.litertlm) or MediaPipe (.task) bundles.")
+                throw IllegalArgumentException("Unsupported vision model format. Solus multimodal models require GGUF, LiteRT (.litertlm), or MediaPipe (.task) bundles.")
             }
         }
-        activeModelLease = modelLease
+        activeModelLease = modelLease ?: effectiveFile?.let { ModelArtifactStorage.leaseArtifact(it) }
         } catch (t: Throwable) {
-            modelLease.close()
+            modelLease?.close()
             throw t
         }
     }
@@ -226,6 +353,10 @@ class VisionInferenceManager(private val context: Context) {
         timing: InferenceTiming? = null,
         isRetry: Boolean = false,
         onProgress: ((RequestProgress) -> Unit)? = null,
+        onSnapshot: ((StructuredResponseSnapshot) -> Unit)? = null,
+        messages: List<Pair<String, String>>? = null,
+        multiTurnImageFiles: Map<Int, File> = emptyMap(),
+        multiTurnAudioFiles: Map<Int, File> = emptyMap(),
         onUpdate: (String) -> Unit
     ): InferenceExecutionResult = withContext(Dispatchers.IO) {
         stopRequested = false
@@ -241,16 +372,26 @@ class VisionInferenceManager(private val context: Context) {
             scope = this,
             transform = { rawSnapshot -> responseController.formatSnapshot(rawSnapshot) },
             finalTransform = { rawSnapshot -> responseController.formatSnapshot(rawSnapshot) },
+            snapshotProvider = { responseController.snapshot() },
+            publishSnapshot = onSnapshot,
             publish = onUpdate
         )
+        var currentAttemptId = 1
         val effectiveOnUpdate: (String) -> Unit = { delta ->
             if (delta.isNotEmpty()) {
-                responseController.appendDelta(delta, reqId = requestId, attemptId = 1)
-                publisher.appendDelta(delta)
+                responseController.appendDelta(delta, reqId = requestId, attemptId = currentAttemptId)
+                if (!responseController.isStructuredMode) {
+                    publisher.appendDelta(delta)
+                }
             }
         }
 
         onProgress?.invoke(RequestProgress.ProcessingPrompt)
+
+        val decodedBitmap = if (bitmap == null && preparedImageFile != null && preparedImageFile.exists()) {
+            runCatching { BitmapFactory.decodeFile(preparedImageFile.absolutePath) }.getOrNull()
+        } else null
+        val effectiveBitmap = bitmap ?: decodedBitmap
 
         var lastGeneratedTokens: Int? = null
         try {
@@ -267,10 +408,12 @@ class VisionInferenceManager(private val context: Context) {
                     onProgress = onProgress,
                     onTokensGenerated = { lastGeneratedTokens = it },
                     responseSnapshot = publisher::rawText,
+                    publisher = publisher,
+                    responseController = responseController,
                     onUpdate = effectiveOnUpdate
                 )
                 RuntimeKind.MediaPipeVision -> streamMediaPipeVision(
-                    bitmap = bitmap,
+                    bitmap = effectiveBitmap,
                     prompt = prompt,
                     audioFile = audioFile,
                     audioBytes = audioBytes,
@@ -280,6 +423,28 @@ class VisionInferenceManager(private val context: Context) {
                     responseSnapshot = publisher::rawText,
                     onUpdate = effectiveOnUpdate
                 )
+                RuntimeKind.LlamaCpp -> {
+                    responseController.isStructuredMode = true
+                    streamLlamaCppVision(
+                        bitmap = effectiveBitmap,
+                        prompt = prompt,
+                        messages = messages.orEmpty(),
+                        multiTurnImageFiles = multiTurnImageFiles,
+                        multiTurnAudioFiles = multiTurnAudioFiles,
+                        thinkingMode = thinkingMode,
+                        requestId = requestId,
+                        audioFile = audioFile,
+                        audioBytes = audioBytes,
+                        timing = timing,
+                        onProgress = onProgress,
+                        onTokensGenerated = { lastGeneratedTokens = it },
+                        responseController = responseController,
+                        publisher = publisher,
+                        responseSnapshot = publisher::rawText,
+                        onUpdate = effectiveOnUpdate,
+                        onAttemptChanged = { currentAttemptId = it }
+                    )
+                }
                 RuntimeKind.None -> throw IllegalStateException("Choose and initialise a multimodal model first.")
             }
             responseController.finish()
@@ -295,11 +460,12 @@ class VisionInferenceManager(private val context: Context) {
             }
             val finalized = ResponseFinalizer.finalize(
                 requestId = requestId,
-                attemptId = 1,
+                attemptId = currentAttemptId,
                 rawAnswer = cleanResponse,
                 rawReasoning = rawReasoning,
                 isStopped = stopRequested,
                 acceptedAnswerFallback = responseController.acceptedAnswerText(),
+                acceptedReasoningFallback = responseController.acceptedReasoningText(),
                 thinkingMode = thinkingMode
             )
             val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
@@ -309,7 +475,7 @@ class VisionInferenceManager(private val context: Context) {
             val metrics = timing?.buildMetrics(
                 requestId = requestId,
                 sessionId = sessionId,
-                attempt = 1,
+                attempt = currentAttemptId,
                 generatedTokens = totalTokens,
                 isTokenCountEstimated = true
             )
@@ -321,11 +487,12 @@ class VisionInferenceManager(private val context: Context) {
             timing?.endGeneration()
             val finalized = ResponseFinalizer.finalize(
                 requestId = requestId,
-                attemptId = 1,
+                attemptId = currentAttemptId,
                 rawAnswer = acceptedAnswer,
                 rawReasoning = rawReasoning,
                 isStopped = true,
                 acceptedAnswerFallback = responseController.acceptedAnswerText(),
+                acceptedReasoningFallback = responseController.acceptedReasoningText(),
                 thinkingMode = thinkingMode
             )
             val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
@@ -334,7 +501,7 @@ class VisionInferenceManager(private val context: Context) {
             val metrics = timing?.buildMetrics(
                 requestId = requestId,
                 sessionId = sessionId,
-                attempt = 1,
+                attempt = currentAttemptId,
                 generatedTokens = partialTokens,
                 isTokenCountEstimated = true
             )
@@ -346,12 +513,13 @@ class VisionInferenceManager(private val context: Context) {
             timing?.endGeneration()
             val finalized = ResponseFinalizer.finalize(
                 requestId = requestId,
-                attemptId = 1,
+                attemptId = currentAttemptId,
                 rawAnswer = acceptedAnswer,
                 rawReasoning = rawReasoning,
                 isStopped = stopRequested,
                 sdkError = if (stopRequested) null else t,
                 acceptedAnswerFallback = responseController.acceptedAnswerText(),
+                acceptedReasoningFallback = responseController.acceptedReasoningText(),
                 thinkingMode = thinkingMode
             )
             val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
@@ -360,11 +528,15 @@ class VisionInferenceManager(private val context: Context) {
             val metrics = timing?.buildMetrics(
                 requestId = requestId,
                 sessionId = sessionId,
-                attempt = 1,
+                attempt = currentAttemptId,
                 generatedTokens = partialTokens,
                 isTokenCountEstimated = true
             )
             finalized.toExecutionResult(metrics)
+        } finally {
+            if (decodedBitmap != null && decodedBitmap != bitmap) {
+                runCatching { decodedBitmap.recycle() }
+            }
         }
     }
 
@@ -380,47 +552,98 @@ class VisionInferenceManager(private val context: Context) {
 
         val sessionToClose = activeMediaPipeSession
         val callbackDone = activeMediaPipeCallbackDone
-        activeMediaPipeSession = null    // null first so finally block skips it
-        activeMediaPipeCallbackDone = null
-        if (!wasMediaPipeVision && sessionToClose != null && waitForCallbackToReturn(callbackDone)) {
-            try { sessionToClose.close() } catch (t: Throwable) { if (closeError == null) closeError = t }
-        } else if (wasMediaPipeVision && sessionToClose != null) {
-            Log.w(TAG, "Skipping MediaPipe vision session.close(); native close is unstable on this device")
-        }
         if (wasMediaPipeVision) {
-            Log.w(TAG, "Skipping MediaPipe vision inference.close(); native close is unstable on this device")
-        } else {
-            try { mediaPipeInference?.close() } catch (t: Throwable) { if (closeError == null) closeError = t }
+            Log.w(TAG, "MediaPipe vision native runtime cannot be safely closed without process restart")
+            if (closeError == null) {
+                closeError = IllegalStateException("MediaPipe vision native runtime cannot be safely closed without process restart")
+            }
+        } else if (sessionToClose != null) {
+            if (waitForCallbackToReturn(callbackDone)) {
+                try {
+                    sessionToClose.close()
+                    activeMediaPipeSession = null
+                    activeMediaPipeCallbackDone = null
+                } catch (t: Throwable) {
+                    if (closeError == null) closeError = t
+                }
+            } else {
+                Log.w(TAG, "MediaPipe callback did not return before timeout during close")
+                if (closeError == null) {
+                    closeError = IllegalStateException("MediaPipe callback timed out during close")
+                }
+            }
         }
-        mediaPipeInference = null
 
-        try { liteRtConversation?.close() } catch (t: Throwable) { if (closeError == null) closeError = t }
-        liteRtConversation = null
-        try { liteRtEngine?.close() } catch (t: Throwable) { if (closeError == null) closeError = t }
-        liteRtEngine = null
+        if (!wasMediaPipeVision && mediaPipeInference != null) {
+            try {
+                mediaPipeInference?.close()
+                mediaPipeInference = null
+            } catch (t: Throwable) {
+                if (closeError == null) closeError = t
+            }
+        }
+
+        if (liteRtConversation != null) {
+            try {
+                liteRtConversation?.close()
+                liteRtConversation = null
+            } catch (t: Throwable) {
+                if (closeError == null) closeError = t
+            }
+        }
+
+        if (liteRtEngine != null) {
+            try {
+                liteRtEngine?.close()
+                liteRtEngine = null
+            } catch (t: Throwable) {
+                if (closeError == null) closeError = t
+            }
+        }
+
+        if (llamaCppEngine != null) {
+            try {
+                llamaCppEngine?.close()
+                llamaCppEngine = null
+            } catch (t: Throwable) {
+                if (closeError == null) closeError = t
+            }
+        }
+
+        if (closeError != null) {
+            isBeingClosed = false
+            return ShutdownResult.Failed(closeError)
+        }
+
+        currentGgufBundle = null
+        currentGgufModelPath = ""
+        currentGgufVerifiedSha = ""
+
         LiteRtRuntimeCache.release(context, liteRtCacheDir)
         liteRtCacheDir = null
 
-        // Release model file lease strictly AFTER native engines and sessions have cleanly closed
-        try { activeModelLease?.close() } catch (t: Throwable) { if (closeError == null) closeError = t }
-        activeModelLease = null
+        try {
+            activeModelLease?.close()
+            activeModelLease = null
+        } catch (t: Throwable) {
+            isBeingClosed = false
+            return ShutdownResult.Failed(t)
+        }
 
         runtime = RuntimeKind.None
         activeBackendDisplayName = ""
+        resolvedThinkingCapability = ThinkingCapability.Unknown
         isDefaultThinkingModel = false
         supportsThinkingMode = false
         isBeingClosed = false
         AppCacheCleaner.clearAppCache(context)
 
-        return if (closeError != null) {
-            ShutdownResult.Failed(closeError)
-        } else {
-            ShutdownResult.Success
-        }
+        return ShutdownResult.Success
     }
 
     fun cancelGeneration() {
         stopRequested = true
+        llamaCppEngine?.stop()
         activeLiteRtAdapter?.cancel(liteRtConversation)
         runCatching { liteRtConversation?.cancelProcess() }
         val session = activeMediaPipeSession
@@ -442,12 +665,10 @@ class VisionInferenceManager(private val context: Context) {
         runCatching { liteRtConversation?.close() }.onFailure { t ->
             Log.w(TAG, "LiteRT-LM vision conversation close during reset failed", t)
         }
-        val extraCtx = if (isDefaultThinkingModel) {
-            ThinkingModeConfig.liteRtExtraContext(
-                isDefaultThinkingModel = true,
-                thinkingMode = thinkingMode
-            )
-        } else emptyMap()
+        val extraCtx = ThinkingModeConfig.liteRtExtraContext(
+            capability = resolvedThinkingCapability,
+            userPreference = thinkingMode
+        )
 
         val config = if (!initialMessages.isNullOrEmpty() || extraCtx.isNotEmpty()) {
             ConversationConfig(
@@ -656,6 +877,8 @@ class VisionInferenceManager(private val context: Context) {
         onProgress: ((RequestProgress) -> Unit)? = null,
         onTokensGenerated: ((Int) -> Unit)? = null,
         responseSnapshot: () -> String,
+        publisher: StreamingResponsePublisher? = null,
+        responseController: InferenceResponseController? = null,
         onUpdate: (String) -> Unit
     ): String {
         require(bitmap?.isRecycled != true) { "Image was recycled before analysis" }
@@ -673,9 +896,13 @@ class VisionInferenceManager(private val context: Context) {
         val imageFile = reusableImageFile ?: bitmap?.writeToCacheFile()
         val effectiveAudioFile = audioFile
         var firstChunkRecorded = false
+        val requestedThinking = ThinkingModeConfig.resolveRequestThinking(
+            capability = resolvedThinkingCapability,
+            userPreference = thinkingMode
+        )
         val requestContext = ThinkingModeConfig.liteRtExtraContext(
-            isDefaultThinkingModel = isDefaultThinkingModel,
-            thinkingMode = thinkingMode
+            capability = resolvedThinkingCapability,
+            userPreference = thinkingMode
         )
         Log.i(
             TAG,
@@ -722,11 +949,26 @@ class VisionInferenceManager(private val context: Context) {
                     }
                     timing?.recordChunk(delta)
                     runCatching { onUpdate(delta) }
+                },
+                onSnapshot = { snap ->
+                    responseController?.appendStructured(
+                        answer = snap.answerText,
+                        reasoning = snap.reasoningText,
+                        isThinkingActive = snap.isThinkingActive,
+                        reqId = requestId,
+                        attemptId = 1
+                    )
+                    publisher?.notifyStructuredUpdate()
                 }
             )
             activeLiteRtAdapter = adapter
             try {
-                conversation.sendMessageAsync(message, adapter, requestContext)
+                conversation.sendMessageAsync(
+                    message,
+                    adapter,
+                    requestContext,
+                    thinkingConfig = ThinkingConfig(enableThinking = requestedThinking)
+                )
                 val finalSnapshot = adapter.awaitDone()
                 lastLiteRtSnapshot = finalSnapshot
                 val answerText = finalSnapshot.answerText
@@ -969,6 +1211,239 @@ class VisionInferenceManager(private val context: Context) {
         }
     }
 
+    private suspend fun streamLlamaCppVision(
+        bitmap: Bitmap?,
+        prompt: String,
+        messages: List<Pair<String, String>> = emptyList(),
+        multiTurnImageFiles: Map<Int, File> = emptyMap(),
+        multiTurnAudioFiles: Map<Int, File> = emptyMap(),
+        thinkingMode: Boolean = false,
+        requestId: String = "",
+        audioFile: File? = null,
+        audioBytes: ByteArray? = null,
+        timing: InferenceTiming? = null,
+        onProgress: ((RequestProgress) -> Unit)? = null,
+        onTokensGenerated: ((Int) -> Unit)? = null,
+        responseController: InferenceResponseController? = null,
+        publisher: StreamingResponsePublisher? = null,
+        responseSnapshot: () -> String,
+        onUpdate: (String) -> Unit,
+        onAttemptChanged: ((Int) -> Unit)? = null
+    ): String {
+        val engine = llamaCppEngine ?: throw IllegalStateException("LlamaCpp multimodal engine not initialized")
+        val conversationMessages = if (messages.isNotEmpty()) messages else listOf("user" to prompt)
+        val targetMessageIndex = conversationMessages.lastIndex.coerceAtLeast(0)
+        val mediaInputs = mutableListOf<MultimodalMediaInput>()
+
+        // Multi-turn prior images
+        for ((msgIdx, file) in multiTurnImageFiles) {
+            if (msgIdx != targetMessageIndex && file.exists() && file.isFile) {
+                val decoded = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
+                if (decoded != null) {
+                    val width = decoded.width
+                    val height = decoded.height
+                    val pixels = IntArray(width * height)
+                    decoded.getPixels(pixels, 0, width, 0, 0, width, height)
+                    val rgb = ByteArray(width * height * 3)
+                    var outIdx = 0
+                    for (pixel in pixels) {
+                        rgb[outIdx++] = ((pixel shr 16) and 0xFF).toByte()
+                        rgb[outIdx++] = ((pixel shr 8) and 0xFF).toByte()
+                        rgb[outIdx++] = (pixel and 0xFF).toByte()
+                    }
+                    mediaInputs.add(MultimodalMediaInput.Image(rgb, width, height, messageIndex = msgIdx))
+                    decoded.recycle()
+                }
+            }
+        }
+
+        if (bitmap != null) {
+            val width = bitmap.width
+            val height = bitmap.height
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+            val rgb = ByteArray(width * height * 3)
+            var outIdx = 0
+            for (pixel in pixels) {
+                rgb[outIdx++] = ((pixel shr 16) and 0xFF).toByte()
+                rgb[outIdx++] = ((pixel shr 8) and 0xFF).toByte()
+                rgb[outIdx++] = (pixel and 0xFF).toByte()
+            }
+            mediaInputs.add(MultimodalMediaInput.Image(rgb, width, height, messageIndex = targetMessageIndex))
+        }
+
+        val targetSampleRate = engine.getMetadata()?.audioSampleRate?.takeIf { it > 0 } ?: AudioUtils.TARGET_SAMPLE_RATE
+
+        // Multi-turn prior audio
+        for ((msgIdx, file) in multiTurnAudioFiles) {
+            if (msgIdx != targetMessageIndex && file.exists() && file.isFile) {
+                val floatPcm = AudioUtils.decodeAudioToFloatPcm(context, Uri.fromFile(file), targetSampleRate = targetSampleRate)
+                mediaInputs.add(MultimodalMediaInput.Audio(floatPcm, messageIndex = msgIdx))
+            }
+        }
+
+        if (audioBytes != null && audioBytes.isNotEmpty()) {
+            val floatPcm = AudioUtils.parseWavOrPcmToFloatPcm(audioBytes, targetSampleRate = targetSampleRate)
+            mediaInputs.add(MultimodalMediaInput.Audio(floatPcm, messageIndex = targetMessageIndex))
+        } else if (audioFile != null && audioFile.exists()) {
+            val floatPcm = AudioUtils.decodeAudioToFloatPcm(context, Uri.fromFile(audioFile), targetSampleRate = targetSampleRate)
+            mediaInputs.add(MultimodalMediaInput.Audio(floatPcm, messageIndex = targetMessageIndex))
+        }
+
+        // Sort media inputs strictly by messageIndex to match the sequential order of message markers
+        mediaInputs.sortBy { it.messageIndex }
+
+        var firstTokenRecorded = false
+        var generatedTokens = 0
+        val isVulkan = engine.activeBackend == LlamaBackend.VULKAN
+
+        try {
+            val result = engine.generateMultimodalStream(
+                prompt = prompt,
+                messages = conversationMessages,
+                mediaInputs = mediaInputs,
+                samplingParams = LlamaSamplingParams(temperature = DEFAULT_VISION_TEMPERATURE),
+                enableThinking = thinkingMode,
+                onMetrics = { metrics ->
+                    generatedTokens = metrics.tokenCount
+                },
+                onFirstToken = {
+                    timing?.recordFirstToken()
+                    onProgress?.invoke(RequestProgress.Generating)
+                },
+                onStructuredToken = { answer, reasoning, isThinkingActive ->
+                    responseController?.appendStructured(
+                        answer = answer,
+                        reasoning = reasoning,
+                        isThinkingActive = isThinkingActive,
+                        reqId = requestId,
+                        attemptId = 1
+                    )
+                    publisher?.notifyStructuredUpdate()
+                }
+            ) { token ->
+                if (stopRequested) return@generateMultimodalStream
+                if (!firstTokenRecorded) {
+                    firstTokenRecorded = true
+                    onProgress?.invoke(RequestProgress.Generating)
+                }
+                timing?.recordChunk(token)
+                onUpdate(token)
+            }
+
+            if (result == LlamaGenerationResult.Stopped || stopRequested) {
+                throw kotlinx.coroutines.CancellationException("Generation stopped by user")
+            }
+
+            onTokensGenerated?.invoke(generatedTokens)
+            return responseSnapshot()
+        } catch (e: LlamaExecutionException) {
+            val isRecoverable = isVulkan && (
+                e.category == LlamaFailureCategory.NumericalInstability ||
+                e.category == LlamaFailureCategory.BackendExecution ||
+                e.category == LlamaFailureCategory.GenerationDecodeFailed ||
+                e.category == LlamaFailureCategory.PromptDecodeFailed
+            )
+
+            if (isRecoverable && !stopRequested && (currentGgufModelPath.isNotBlank() || currentGgufBundle != null)) {
+                Log.w(TAG, "Recoverable Vulkan error (${e.category}: ${e.message}). Releasing GPU context and retrying on CPU...")
+                onProgress?.invoke(RequestProgress.RecoveringOnCpu)
+                engine.close()
+
+                // Clear failed partial response
+                onAttemptChanged?.invoke(2)
+                responseController?.beginAttempt(2)
+                publisher?.beginAttempt(2) ?: onUpdate("")
+
+                val cpuEngine = LlamaCppEngine(context)
+                try {
+                    val bundleToUse = currentGgufBundle
+                    if (bundleToUse != null) {
+                        val actualSha = GgufGpuValidator.resolveArtifactFingerprint(context, bundleToUse)
+                        check(actualSha == currentGgufVerifiedSha) { "Selected model changed during generation; reload it" }
+                        cpuEngine.initializeBundle(
+                            context = context,
+                            bundle = bundleToUse,
+                            threads = currentGgufThreads,
+                            prefillThreads = currentGgufPrefillThreads,
+                            contextWindow = currentGgufContext,
+                            nBatch = currentGgufBatch,
+                            nUbatch = currentGgufUbatch,
+                            backend = LlamaBackend.CPU,
+                            nGpuLayers = 0,
+                            expectedFileSizeBytes = currentGgufExpectedBytes
+                        )
+                    } else {
+                        val actualSha = GgufGpuValidator.resolveModelSha256(currentGgufModelPath, context = context)
+                        check(actualSha == currentGgufVerifiedSha) { "Selected model changed during generation; reload it" }
+                        cpuEngine.initialize(
+                            modelPath = currentGgufModelPath,
+                            threads = currentGgufThreads,
+                            prefillThreads = currentGgufPrefillThreads,
+                            contextWindow = currentGgufContext,
+                            nBatch = currentGgufBatch,
+                            nUbatch = currentGgufUbatch,
+                            backend = LlamaBackend.CPU,
+                            nGpuLayers = 0,
+                            expectedFileSizeBytes = currentGgufExpectedBytes
+                        )
+                    }
+                } catch (failure: Throwable) {
+                    cpuEngine.close()
+                    llamaCppEngine = null
+                    runtime = RuntimeKind.None
+                    throw failure
+                }
+                llamaCppEngine = cpuEngine
+                activeBackendDisplayName = "GGUF CPU (Vulkan recovery fallback: ${e.category})"
+
+                // Retry generation once on CPU
+                var retryFirstTokenRecorded = false
+                var retryGeneratedTokens = 0
+                val retryResult = cpuEngine.generateMultimodalStream(
+                    prompt = prompt,
+                    messages = conversationMessages,
+                    mediaInputs = mediaInputs,
+                    samplingParams = LlamaSamplingParams(temperature = DEFAULT_VISION_TEMPERATURE),
+                    enableThinking = thinkingMode,
+                    onMetrics = { metrics ->
+                        retryGeneratedTokens = metrics.tokenCount
+                    },
+                    onFirstToken = {
+                        timing?.recordFirstToken()
+                        onProgress?.invoke(RequestProgress.Generating)
+                    },
+                    onStructuredToken = { answer, reasoning, isThinkingActive ->
+                        responseController?.appendStructured(
+                            answer = answer,
+                            reasoning = reasoning,
+                            isThinkingActive = isThinkingActive,
+                            reqId = requestId,
+                            attemptId = 2
+                        )
+                        publisher?.notifyStructuredUpdate()
+                    }
+                ) { token ->
+                    if (stopRequested) return@generateMultimodalStream
+                    if (!retryFirstTokenRecorded) {
+                        retryFirstTokenRecorded = true
+                        onProgress?.invoke(RequestProgress.Generating)
+                    }
+                    timing?.recordChunk(token)
+                    onUpdate(token)
+                }
+
+                if (retryResult == LlamaGenerationResult.Stopped || stopRequested) {
+                    throw kotlinx.coroutines.CancellationException("Generation stopped by user")
+                }
+
+                onTokensGenerated?.invoke(retryGeneratedTokens)
+                return responseSnapshot()
+            }
+            throw e
+        }
+    }
+
     private fun waitForCallbackToReturn(callbackDone: CountDownLatch?): Boolean {
         if (callbackDone == null || callbackDone.count == 0L) return true
         if (stopRequested) return false
@@ -1035,12 +1510,16 @@ class VisionInferenceManager(private val context: Context) {
         pruneVisionQuestionCache(dir)
         val file = File(dir, "vision-question-${System.currentTimeMillis()}.jpg")
         val maxDimension = 1024
-        val scaledBitmap = if (width > maxDimension || height > maxDimension) {
-            val scale = maxDimension.toFloat() / maxOf(width, height)
-            val destW = (width * scale).toInt().coerceAtLeast(1)
-            val destH = (height * scale).toInt().coerceAtLeast(1)
-            Bitmap.createScaledBitmap(this, destW, destH, true)
-        } else {
+        val scaledBitmap = try {
+            if (width > maxDimension || height > maxDimension) {
+                val scale = maxDimension.toFloat() / maxOf(width, height)
+                val destW = (width * scale).toInt().coerceAtLeast(1)
+                val destH = (height * scale).toInt().coerceAtLeast(1)
+                Bitmap.createScaledBitmap(this, destW, destH, true)
+            } else {
+                null
+            }
+        } catch (_: Throwable) {
             null
         }
         val target = scaledBitmap ?: this
@@ -1090,6 +1569,7 @@ class VisionInferenceManager(private val context: Context) {
     private enum class RuntimeKind {
         None,
         MediaPipeVision,
-        LiteRtLm
+        LiteRtLm,
+        LlamaCpp
     }
 }

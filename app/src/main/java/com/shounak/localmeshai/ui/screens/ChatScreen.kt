@@ -6,6 +6,9 @@ import com.shounak.localmeshai.ai.RequestProgress
 import com.shounak.localmeshai.ai.ModelLoadState
 import com.shounak.localmeshai.ai.ModelLoadStage
 import com.shounak.localmeshai.ui.models.rememberMessagePresentation
+import com.shounak.localmeshai.models.ThinkingCapability
+import com.shounak.localmeshai.models.ModelCapabilityPolicy
+import com.shounak.localmeshai.utils.ThinkingModeConfig
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -82,6 +85,7 @@ import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
 import androidx.compose.ui.draw.rotate
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
@@ -138,6 +142,7 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Mic
@@ -489,6 +494,7 @@ fun ChatScreen(
     val modelLoadState by chatViewModel.modelLoadState.collectAsState()
     val isInitializing by chatViewModel.isInitializing.collectAsState()
     val isGenerating by chatViewModel.isGenerating.collectAsState()
+    val isChatStopping by chatViewModel.isStopping.collectAsState()
     val isModelReady by chatViewModel.isModelReady.collectAsState()
     val thinkingMode by chatViewModel.thinkingMode.collectAsState()
     val textState by chatViewModel.draftText.collectAsState()
@@ -536,37 +542,49 @@ fun ChatScreen(
     val isKeyboardOpen = WindowInsets.isImeVisible
     val downloadedChatModels = mainViewModel.availableModels.filter {
         it.type in listOf(ModelType.Text, ModelType.Vision) &&
-            (it.status == ModelStatus.Available ||
-                (it.status == ModelStatus.Blocked && mainViewModel.unsafeInitOverrideIds.contains(it.id))) &&
-            it.localPath != null
+            (it.localPath != null || it.bundle != null) &&
+            it.status in listOf(ModelStatus.Available, ModelStatus.Blocked, ModelStatus.Failed)
     }
     val selectedModel = selectedModelPath?.let { path ->
-        mainViewModel.availableModels.firstOrNull { it.localPath == path }
+        mainViewModel.availableModels.firstOrNull { it.id == path || it.localPath == path }
     }
     val selectedUnsafeOverride = selectedModel?.id?.let { modelId ->
         mainViewModel.unsafeInitOverrideIds.contains(modelId)
     } == true
-    val selectedSupportsAttachments = selectedModel?.type == ModelType.Vision
+    val selectedSupportsAttachments = selectedVisionModelPath != null || selectedModel?.isMultimodal == true
     val selectedVisionModelSupportsFiles = selectedVisionModelPath?.let { path ->
-        path.endsWith(".task", ignoreCase = true) || path.endsWith(".litertlm", ignoreCase = true)
+        path.endsWith(".task", ignoreCase = true) || path.endsWith(".litertlm", ignoreCase = true) || path.endsWith(".gguf", ignoreCase = true)
     } ?: false
-    val selectedSupportsAudio = selectedSupportsAttachments && remember(
-        selectedModel.localPath,
-        selectedModel.id,
-        selectedModel.supportsAudioInput
+    val selectedSupportsAudio = remember(
+        selectedModel?.localPath,
+        selectedModel?.id,
+        selectedModel?.supportsAudioInput,
+        selectedModel?.bundle
     ) {
         selectedModel.supportsAudioInputByMetadata()
     }
-    val selectedSupportsThinking = remember(
-        selectedModel?.id,
-        selectedModel?.name,
-        selectedModel?.fileName,
-        selectedModel?.backend,
-        selectedModel?.type,
-        selectedModel?.supportsThinkingMode
-    ) {
-        selectedModel.supportsThinkingMode()
+    var selectedThinkingCapability by remember(selectedModel?.id, selectedModel?.localPath) {
+        mutableStateOf(
+            selectedModel?.thinkingCapability ?: ThinkingCapability.Unknown
+        )
     }
+    var isCheckingThinking by remember(selectedModel?.id, selectedModel?.localPath) {
+        mutableStateOf(false)
+    }
+    LaunchedEffect(selectedModel?.id, selectedModel?.localPath, selectedModel?.bundle) {
+        if (selectedModel != null) {
+            isCheckingThinking = true
+            val capability = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                ThinkingModeConfig.resolveThinkingCapability(selectedModel, context = context.applicationContext)
+            }
+            selectedThinkingCapability = capability
+            isCheckingThinking = false
+        } else {
+            selectedThinkingCapability = ThinkingCapability.Unsupported
+            isCheckingThinking = false
+        }
+    }
+    val selectedSupportsThinking = selectedThinkingCapability == ThinkingCapability.Toggleable || selectedThinkingCapability == ThinkingCapability.ModelControlled
     val isCurrentModelReady = if (selectedSupportsAttachments) isVisionModelReady else isModelReady
     val isCurrentModelResponding = if (selectedSupportsAttachments) {
         isVisionAnalyzing || isVisionStopping
@@ -588,8 +606,8 @@ fun ChatScreen(
     val effectiveSupportsAttachments = when {
         activeHistoryChatType == HistorySessionType.Vision -> true
         activeHistoryChatType == HistorySessionType.Text -> false
-        selectedModel?.type == ModelType.Vision -> true
-        selectedModel?.type == ModelType.Text -> false
+        selectedModel?.isMultimodal == true -> true
+        selectedModel != null && !selectedModel.isMultimodal -> false
         else -> visionMessages.isNotEmpty() && textMessages.isEmpty()
     }
     val hasTextHistory = textMessages.isNotEmpty() || chatViewModel.chatSessions.isNotEmpty()
@@ -829,7 +847,7 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(selectedTextModelPath, selectedModel?.id, selectedSupportsThinking, selectedUnsafeOverride) {
+    LaunchedEffect(selectedTextModelPath, selectedModel?.id, selectedUnsafeOverride) {
         if (selectedTextModelPath == null) {
             chatViewModel.uninitializeModel()
         } else {
@@ -841,13 +859,14 @@ fun ChatScreen(
                     modelSize = selectedModel?.size ?: "",
                     contextWindowTokens = selectedModel?.effectiveContextWindowTokens,
                     supportsThinkingMode = selectedSupportsThinking,
-                    allowUnsafeOverride = selectedUnsafeOverride
+                    allowUnsafeOverride = selectedUnsafeOverride,
+                    bundle = selectedModel?.bundle
                 )
             }
         }
     }
 
-    LaunchedEffect(selectedVisionModelPath, selectedModel?.id, selectedSupportsAudio, selectedSupportsThinking, selectedUnsafeOverride) {
+    LaunchedEffect(selectedVisionModelPath, selectedModel?.id, selectedUnsafeOverride) {
         if (selectedVisionModelPath == null) {
             visionViewModel.uninitializeModel()
         } else {
@@ -860,15 +879,26 @@ fun ChatScreen(
                     contextWindowTokens = selectedModel?.effectiveContextWindowTokens,
                     supportsAudioInput = selectedSupportsAudio,
                     supportsThinkingMode = selectedSupportsThinking,
-                    allowUnsafeOverride = selectedUnsafeOverride
+                    allowUnsafeOverride = selectedUnsafeOverride,
+                    bundle = selectedModel?.bundle
                 )
             }
         }
     }
 
-    LaunchedEffect(selectedModel?.id, selectedSupportsThinking, thinkingMode) {
-        if (!selectedSupportsThinking && thinkingMode) {
+    LaunchedEffect(selectedSupportsThinking) {
+        chatViewModel.updateSupportsThinkingMode(selectedSupportsThinking)
+        visionViewModel.updateSupportsThinkingMode(selectedSupportsThinking)
+    }
+
+    LaunchedEffect(selectedSupportsAudio) {
+        visionViewModel.updateSupportsAudioInput(selectedSupportsAudio)
+    }
+
+    LaunchedEffect(selectedModel?.id, selectedThinkingCapability, thinkingMode) {
+        if (selectedThinkingCapability == ThinkingCapability.Unsupported && thinkingMode) {
             chatViewModel.setThinkingMode(false)
+            visionViewModel.setThinkingMode(false)
         }
     }
 
@@ -933,10 +963,10 @@ fun ChatScreen(
                 selectedAudioUri = null
                 selectedAudioName = null
                 selectedAudioBytes = null
-                if (selectedModel?.type != ModelType.Text) {
-                    val preferredTextModel = downloadedChatModels.firstOrNull { it.type == ModelType.Text }
-                    preferredTextModel?.localPath?.let { path ->
-                        mainViewModel.selectTextModel(path)
+                if (selectedModel?.isMultimodal == true) {
+                    val preferredTextModel = downloadedChatModels.firstOrNull { !it.isMultimodal && it.status == ModelStatus.Available }
+                    preferredTextModel?.let { model ->
+                        mainViewModel.selectTextModel(model.localPath ?: model.id)
                     }
                 }
                 showHistory = false
@@ -952,10 +982,10 @@ fun ChatScreen(
                 selectedAudioUri = null
                 selectedAudioName = null
                 selectedAudioBytes = null
-                if (selectedModel?.type != ModelType.Vision) {
-                    val preferredVisionModel = downloadedChatModels.firstOrNull { it.type == ModelType.Vision }
-                    preferredVisionModel?.localPath?.let { path ->
-                        mainViewModel.selectVisionModel(path)
+                if (selectedModel?.isMultimodal != true) {
+                    val preferredVisionModel = downloadedChatModels.firstOrNull { it.isMultimodal && it.status == ModelStatus.Available }
+                    preferredVisionModel?.let { model ->
+                        mainViewModel.selectVisionModel(model.localPath ?: model.id)
                     }
                 }
                 showHistory = false
@@ -1004,18 +1034,20 @@ fun ChatScreen(
                     onClick = {
                         chatViewModel.clearHistory()
                         visionViewModel.clearHistory()
-                        val attachmentsDir = context.filesDir.resolve("chat_attachments")
-                        if (attachmentsDir.exists()) {
-                            attachmentsDir.deleteRecursively()
-                            attachmentsDir.mkdirs()
-                        }
-                        val multimodalDir = context.cacheDir.resolve("multimodal_inputs")
-                        if (multimodalDir.exists()) {
-                            multimodalDir.deleteRecursively()
-                        }
-                        val cameraDir = context.cacheDir.resolve("camera_inputs")
-                        if (cameraDir.exists()) {
-                            cameraDir.deleteRecursively()
+                        scope.launch(Dispatchers.IO) {
+                            val attachmentsDir = context.filesDir.resolve("chat_attachments")
+                            if (attachmentsDir.exists()) {
+                                attachmentsDir.deleteRecursively()
+                                attachmentsDir.mkdirs()
+                            }
+                            val multimodalDir = context.cacheDir.resolve("multimodal_inputs")
+                            if (multimodalDir.exists()) {
+                                multimodalDir.deleteRecursively()
+                            }
+                            val cameraDir = context.cacheDir.resolve("camera_inputs")
+                            if (cameraDir.exists()) {
+                                cameraDir.deleteRecursively()
+                            }
                         }
                         showClearConfirm = false
                         showHistory = false
@@ -1094,13 +1126,13 @@ fun ChatScreen(
                 hasHistory = hasTextHistory || hasVisionHistory,
                 onSelectModel = { model ->
                     attachmentMenuExpanded = false
-                    activeHistoryChatType = if (model.type == ModelType.Vision) HistorySessionType.Vision else HistorySessionType.Text
-                    model.localPath?.let { path ->
-                        if (model.type == ModelType.Vision) {
-                            mainViewModel.selectVisionModel(path)
-                        } else {
-                            mainViewModel.selectTextModel(path)
-                        }
+                    val isVisionTarget = model.supportsVision
+                    activeHistoryChatType = if (isVisionTarget) HistorySessionType.Vision else HistorySessionType.Text
+                    val target = model.localPath ?: model.id
+                    if (isVisionTarget) {
+                        mainViewModel.selectVisionModel(target)
+                    } else {
+                        mainViewModel.selectTextModel(target)
                     }
                     selectedBitmap = null
                     selectedFileUri = null
@@ -1108,6 +1140,10 @@ fun ChatScreen(
                     selectedAudioUri = null
                     selectedAudioName = null
                     selectedAudioBytes = null
+                },
+                onTryAnyway = { model ->
+                    attachmentMenuExpanded = false
+                    mainViewModel.tryModelAnyway(model.id)
                 },
                 onNewChat = {
                     attachmentMenuExpanded = false
@@ -1166,9 +1202,30 @@ fun ChatScreen(
                 else -> chatLastInferenceMs
             }
 
+            val runtimeStatus = if (effectiveSupportsAttachments) {
+                when {
+                    selectedVisionModelPath == null -> "Not loaded"
+                    isVisionStopping -> "Stopping"
+                    isVisionInitializing -> "Loading…"
+                    !isVisionModelReady && (activeError != null || visionError != null) -> "Load failed"
+                    isVisionModelReady -> "Ready"
+                    else -> "Not loaded"
+                }
+            } else {
+                when {
+                    selectedTextModelPath == null -> "Not loaded"
+                    isChatStopping -> "Stopping"
+                    isInitializing || modelLoadState is ModelLoadState.Loading -> "Loading…"
+                    modelLoadState is ModelLoadState.Failed || (!isModelReady && activeError != null) -> "Load failed"
+                    isModelReady -> "Ready"
+                    else -> "Not loaded"
+                }
+            }
+
             InferenceTelemetryBar(
                 tokensPerSecond = effectiveTokensPerSecond,
                 lastInferenceMs = effectiveLastInferenceMs,
+                runtimeStatus = runtimeStatus,
                 activeBackend = effectiveBackend,
                 batteryTempC = batteryTempC,
                 availableRamMb = availableRamMb,
@@ -1320,7 +1377,9 @@ fun ChatScreen(
                             (!effectiveSupportsAttachments && textMessages.isNotEmpty()) -> {
                             LazyColumn(
                                 state = listState,
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .hazeSource(state = hazeState),
                                 contentPadding = PaddingValues(vertical = 8.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
@@ -1351,6 +1410,9 @@ fun ChatScreen(
                                             attemptId = message.attemptId.toLong(),
                                             revision = message.revision,
                                             reasoningText = message.reasoningText,
+                                            isThinkingActive = message.isThinkingActive,
+                                            responseFormatVersion = message.responseFormatVersion,
+                                            terminalStatus = message.terminalStatus,
                                             entryDelayMs = if (index == visionMessages.lastIndex) 25 else 0,
                                             ragSources = message.ragSources,
                                             ragChunkCount = message.ragChunkCount,
@@ -1390,6 +1452,9 @@ fun ChatScreen(
                                             attemptId = message.attemptId.toLong(),
                                             revision = message.revision,
                                             reasoningText = message.reasoningText,
+                                            isThinkingActive = message.isThinkingActive,
+                                            responseFormatVersion = message.responseFormatVersion,
+                                            terminalStatus = message.terminalStatus,
                                             entryDelayMs = if (index == textMessages.lastIndex) 25 else 0,
                                             ragSources = message.ragSources,
                                             ragChunkCount = message.ragChunkCount,
@@ -1428,7 +1493,7 @@ fun ChatScreen(
                         selectedModelPath == null -> {
                             EmptyState(
                                 title = "No model selected",
-                                subtitle = if (downloadedChatModels.isEmpty()) {
+                                subtitle = if (downloadedChatModels.none { it.status == ModelStatus.Available }) {
                                     "Open Models and download a phone-ready model."
                                 } else {
                                     "Choose a model above to begin."
@@ -1842,6 +1907,8 @@ fun ChatScreen(
                         } else {
                             ChatComposerActions(
                                 thinkingMode = thinkingMode,
+                                thinkingCapability = selectedThinkingCapability,
+                                isCheckingThinking = isCheckingThinking,
                                 canSend = selectedModelPath != null &&
                                     !isCurrentModelResponding &&
                                     !isDecodingAudioFile &&
@@ -1850,12 +1917,16 @@ fun ChatScreen(
                                 canThink = selectedSupportsThinking && !isCurrentModelResponding,
                                 supportsAttachments = selectedModelPath != null,
                                 hasAttachment = hasVisionAttachment,
-                                supportsVision = selectedSupportsAttachments,
+                                supportsVision = selectedModel?.supportsVision == true,
                                 supportsAudioInput = selectedSupportsAudio,
+                                visionDisabledReason = ModelCapabilityPolicy.visionDisabledReason(selectedModel, isCheckingThinking),
                                 hazeState = hazeState,
                                 attachmentMenuExpanded = attachmentMenuExpanded,
                                 onToggleAttachmentMenu = { attachmentMenuExpanded = it },
-                                onToggleThinking = { enabled -> chatViewModel.setThinkingMode(enabled) },
+                                onToggleThinking = { enabled ->
+                                    chatViewModel.setThinkingMode(enabled)
+                                    visionViewModel.setThinkingMode(enabled)
+                                },
                                 onCameraSelect = {
                                     val request = createCameraCaptureRequest(context)
                                     cameraTempFilePath = request.file.absolutePath
@@ -1886,6 +1957,7 @@ fun ChatScreen(
                                     val documentUri = selectedFileUri
                                     val documentName = selectedFileName ?: "document"
                                     val accepted = if (selectedSupportsAttachments) {
+                                        val reqThinking = ThinkingModeConfig.resolveRequestThinking(selectedThinkingCapability, thinkingMode)
                                         visionViewModel.ask(
                                             bitmap = selectedBitmap,
                                             question = textState.trim(),
@@ -1894,7 +1966,7 @@ fun ChatScreen(
                                             audioUri = selectedAudioUri,
                                             audioName = selectedAudioName,
                                             audioBytes = selectedAudioBytes,
-                                            thinkingMode = thinkingMode && selectedSupportsThinking)
+                                            thinkingMode = reqThinking)
                                     } else {
                                         chatViewModel.sendMessage(
                                             text = textState.trim(), documentUri = documentUri,
@@ -1999,32 +2071,12 @@ private tailrec fun Context.findLifecycleOwner(): LifecycleOwner? {
 
 private fun ModelInfo?.supportsAudioInputByMetadata(): Boolean {
     val model = this ?: return false
-    if (model.type != ModelType.Vision) return false
-    if (model.supportsAudioInput || model.isGemmaAudioModel()) {
-        return true
-    }
-    val localPath = model.localPath ?: return false
-    val localFile = File(localPath)
-    return localFile.containsAudioModelAssets()
-}
-
-private fun ModelInfo?.isGemmaAudioModel(): Boolean {
-    val m = this ?: return false
-    val text = "${m.id} ${m.name} ${m.fileName}".lowercase(Locale.US)
-    return text.contains("gemma 4") || text.contains("gemma4") || text.contains("gemma-4") ||
-        text.contains("gemma 3n") || text.contains("gemma3n") || text.contains("gemma-3n")
+    return model.supportsAudio
 }
 
 private fun ModelInfo?.supportsThinkingMode(): Boolean {
     val model = this ?: return false
-    if (model.supportsThinkingMode) return true
-    val searchString = listOf(
-        model.id,
-        model.name,
-        model.fileName,
-        model.backend
-    ).joinToString(separator = "|").lowercase(Locale.US)
-    return ThinkingModelMarkers.any { marker -> searchString.contains(marker) }
+    return ThinkingModeConfig.resolveThinkingCapability(model) != ThinkingCapability.Unsupported
 }
 
 private val ThinkingModelMarkers = listOf(
@@ -2245,6 +2297,8 @@ private fun StarterPrompts(hazeState: HazeState, onPromptSelected: (String) -> U
 @Composable
 private fun ChatComposerActions(
     thinkingMode: Boolean,
+    thinkingCapability: ThinkingCapability = ThinkingCapability.Unknown,
+    isCheckingThinking: Boolean = false,
     canSend: Boolean,
     isGenerating: Boolean,
     canThink: Boolean,
@@ -2252,6 +2306,7 @@ private fun ChatComposerActions(
     hasAttachment: Boolean,
     supportsVision: Boolean,
     supportsAudioInput: Boolean,
+    visionDisabledReason: String? = null,
     hazeState: HazeState,
     attachmentMenuExpanded: Boolean,
     onToggleAttachmentMenu: (Boolean) -> Unit,
@@ -2283,9 +2338,28 @@ private fun ChatComposerActions(
         ),
         label = "attachment_menu_icon_rotation"
     )
-    val thinkActive = canThink && thinkingMode
+    val isToggleable = thinkingCapability == ThinkingCapability.Toggleable
+    val isModelControlled = thinkingCapability == ThinkingCapability.ModelControlled
+    val isUnknown = thinkingCapability == ThinkingCapability.Unknown
+    val isUnsupported = thinkingCapability == ThinkingCapability.Unsupported
+
+    val thinkButtonEnabled = canThink && isToggleable
+    val thinkActive = when {
+        isModelControlled -> true
+        isToggleable -> thinkingMode
+        else -> false
+    }
+    val thinkButtonText = when {
+        isModelControlled -> "Thinking (model controlled)"
+        isUnknown && isCheckingThinking -> "Checking thinking…"
+        isUnknown -> "Thinking capability unavailable"
+        isUnsupported -> "Thinking unavailable"
+        thinkActive -> "Think on"
+        else -> "Think off"
+    }
     val thinkContentColor = when {
-        !canThink -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+        isUnsupported -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+        isUnknown -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.60f)
         thinkActive -> MaterialTheme.colorScheme.onPrimaryContainer
         else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.86f)
     }
@@ -2323,6 +2397,7 @@ private fun ChatComposerActions(
                 hazeState = hazeState,
                 supportsVision = supportsVision,
                 supportsAudio = supportsAudioInput,
+                visionDisabledReason = visionDisabledReason,
                 onCameraSelect = {
                     onToggleAttachmentMenu(false)
                     onCameraSelect()
@@ -2408,9 +2483,13 @@ private fun ChatComposerActions(
                 )
             }
             LiquidGlassButton(
-                onClick = { onToggleThinking(!thinkingMode) },
+                onClick = {
+                    if (thinkButtonEnabled) {
+                        onToggleThinking(!thinkingMode)
+                    }
+                },
                 hazeState = hazeState,
-                enabled = canThink,
+                enabled = thinkButtonEnabled,
                 modifier = Modifier
                     .height(42.dp)
                     .widthIn(min = 112.dp)
@@ -2418,20 +2497,26 @@ private fun ChatComposerActions(
                 shape = RoundedCornerShape(topStart = 14.dp, topEnd = 24.dp, bottomStart = 24.dp, bottomEnd = 14.dp),
                 tintColor = when {
                     thinkActive -> MaterialTheme.colorScheme.primaryContainer
-                    canThink -> MaterialTheme.colorScheme.surfaceContainerHighest
+                    thinkButtonEnabled -> MaterialTheme.colorScheme.surfaceContainerHighest
                     else -> MaterialTheme.colorScheme.surfaceContainerLow
                 },
                 contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp)
             ) {
                 Icon(
                     Icons.Default.Psychology,
-                    contentDescription = if (thinkActive) "Disable thinking mode" else "Enable thinking mode",
+                    contentDescription = when {
+                        isModelControlled -> "Model-controlled thinking"
+                        isUnknown -> "Checking thinking capability"
+                        isUnsupported -> "Selected model does not support thinking mode"
+                        thinkActive -> "Disable thinking mode"
+                        else -> "Enable thinking mode"
+                    },
                     tint = thinkContentColor,
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(Modifier.width(7.dp))
                 Text(
-                    text = if (thinkActive) "Think on" else "Think off",
+                    text = thinkButtonText,
                     style = MaterialTheme.typography.labelMedium,
                     color = thinkContentColor,
                     maxLines = 1
@@ -2509,6 +2594,7 @@ private fun AttachmentInlineMenu(
     hazeState: HazeState,
     supportsVision: Boolean,
     supportsAudio: Boolean,
+    visionDisabledReason: String? = null,
     onCameraSelect: () -> Unit,
     onPhotosSelect: () -> Unit,
     onAudioSelect: () -> Unit,
@@ -2528,19 +2614,20 @@ private fun AttachmentInlineMenu(
             .padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
+        val isVisionEnabled = supportsVision && visionDisabledReason == null
         listOf(
             AttachmentMenuSpec(
                 icon = Icons.Default.CameraAlt,
                 title = "Camera",
-                subtitle = if (supportsVision) null else "Multimodal model required",
-                enabled = supportsVision,
+                subtitle = visionDisabledReason,
+                enabled = isVisionEnabled,
                 onClick = onCameraSelect
             ),
             AttachmentMenuSpec(
                 icon = Icons.Default.PhotoLibrary,
                 title = "Photos",
-                subtitle = if (supportsVision) null else "Multimodal model required",
-                enabled = supportsVision,
+                subtitle = visionDisabledReason,
+                enabled = isVisionEnabled,
                 onClick = onPhotosSelect
             ),
             AttachmentMenuSpec(
@@ -2826,6 +2913,7 @@ private fun ChatControlRow(
     selectedPath: String?,
     hasHistory: Boolean,
     onSelectModel: (ModelInfo) -> Unit,
+    onTryAnyway: (ModelInfo) -> Unit,
     onNewChat: () -> Unit,
     onHistory: () -> Unit,
     onSettings: (() -> Unit)? = null,
@@ -2840,6 +2928,7 @@ private fun ChatControlRow(
             models = models,
             selectedPath = selectedPath,
             onSelect = onSelectModel,
+            onTryAnyway = onTryAnyway,
             modifier = Modifier.weight(1f),
             hazeState = hazeState
         )
@@ -2881,11 +2970,14 @@ private fun ChatModelPicker(
     models: List<ModelInfo>,
     selectedPath: String?,
     onSelect: (ModelInfo) -> Unit,
+    onTryAnyway: (ModelInfo) -> Unit,
     modifier: Modifier = Modifier,
     hazeState: HazeState
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val selected = models.firstOrNull { it.localPath == selectedPath }
+    var blockedModelForDetails by remember { mutableStateOf<ModelInfo?>(null) }
+    var failedModelForDetails by remember { mutableStateOf<ModelInfo?>(null) }
+    val selected = models.firstOrNull { it.id == selectedPath || it.localPath == selectedPath }
     val selectedName = selected?.let { "${it.name} · ${it.type.label}" } ?: "Choose model"
     val pickerTint = MaterialTheme.colorScheme.surfaceContainerHigh
     val arrowRotation by animateFloatAsState(
@@ -2924,12 +3016,205 @@ private fun ChatModelPicker(
         GlassDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, hazeState = hazeState) {
             models.forEach { model ->
                 androidx.compose.material3.DropdownMenuItem(
-                    text = { Text("${model.name} · ${model.type.label}") },
+                    text = {
+                        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    model.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    "· ${model.type.label}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            val stateLabel = when (model.status) {
+                                ModelStatus.Blocked -> "Blocked · ${model.loadRestriction?.reason ?: "Device restriction"}"
+                                ModelStatus.Failed -> "Needs attention · ${model.errorMessage ?: "Validation error"}"
+                                ModelStatus.Downloading -> "Checking · In progress"
+                                else -> null
+                            }
+                            if (stateLabel != null) {
+                                Text(
+                                    text = stateLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    },
                     onClick = {
                         expanded = false
-                        onSelect(model)
+                        when (model.status) {
+                            ModelStatus.Blocked -> {
+                                blockedModelForDetails = model
+                            }
+                            ModelStatus.Failed -> {
+                                failedModelForDetails = model
+                            }
+                            else -> {
+                                onSelect(model)
+                            }
+                        }
                     }
                 )
+            }
+        }
+    }
+
+    blockedModelForDetails?.let { blockedModel ->
+        val isCrash = blockedModel.isCrashBlocked
+        val canTry = blockedModel.canTryAnyway && !isCrash
+        Dialog(onDismissRequest = { blockedModelForDetails = null }) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                GlassDispersionCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .wrapContentHeight()
+                        .widthIn(max = 540.dp),
+                    hazeState = hazeState,
+                    cornerRadius = 20.dp,
+                    blurRadius = 34.dp,
+                    tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    borderAlpha = 0.50f,
+                    contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 14.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            text = if (isCrash) "Model Blocked" else "Model Load Restriction",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = blockedModel.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        val restrictionReason = blockedModel.loadRestriction?.reason
+                            ?: blockedModel.errorMessage
+                            ?: "This model cannot run safely on this device due to system limitations."
+                        Text(
+                            text = restrictionReason,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (isCrash) {
+                            Text(
+                                text = "This model previously crashed the app during native initialization. Native-crash blocks cannot be bypassed for stability.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        } else if (canTry) {
+                            Text(
+                                text = "Trying this model anyway may cause out-of-memory errors or app instability.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                        ) {
+                            LiquidGlassButton(
+                                onClick = { blockedModelForDetails = null },
+                                hazeState = hazeState,
+                                modifier = Modifier.height(40.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                tintColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
+                            ) {
+                                Text("Cancel")
+                            }
+                            if (canTry) {
+                                LiquidGlassButton(
+                                    onClick = {
+                                        val m = blockedModel
+                                        blockedModelForDetails = null
+                                        onTryAnyway(m)
+                                    },
+                                    hazeState = hazeState,
+                                    modifier = Modifier.height(40.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.30f),
+                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
+                                ) {
+                                    Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Try Anyway")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    failedModelForDetails?.let { failedModel ->
+        Dialog(onDismissRequest = { failedModelForDetails = null }) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                GlassDispersionCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .wrapContentHeight()
+                        .widthIn(max = 540.dp),
+                    hazeState = hazeState,
+                    cornerRadius = 20.dp,
+                    blurRadius = 34.dp,
+                    tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    borderAlpha = 0.50f,
+                    contentPadding = PaddingValues(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 14.dp)
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            text = "Model Needs Attention",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = failedModel.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = failedModel.errorMessage ?: "Validation failed for this model file. It may be incomplete, corrupted, or an unsupported architecture variant.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            LiquidGlassButton(
+                                onClick = { failedModelForDetails = null },
+                                hazeState = hazeState,
+                                modifier = Modifier.height(40.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                tintColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
+                            ) {
+                                Text("Close")
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -3268,9 +3553,13 @@ private fun ErrorCard(message: String) {
 @Composable
 private fun ThinkingProcessCard(
     thinkingText: String,
-    isThinkingActive: Boolean
+    isThinkingActive: Boolean,
+    messageId: String = ""
 ) {
-    var isExpanded by remember { mutableStateOf(isThinkingActive) }
+    if (thinkingText.isBlank() && !isThinkingActive) {
+        return
+    }
+    var isExpanded by rememberSaveable(messageId) { mutableStateOf(isThinkingActive) }
     LaunchedEffect(isThinkingActive) {
         if (isThinkingActive) {
             isExpanded = true
@@ -3445,6 +3734,9 @@ private fun ChatBubble(
     attemptId: Long = 0L,
     revision: Int = 0,
     reasoningText: String? = null,
+    isThinkingActive: Boolean = false,
+    responseFormatVersion: Int = 0,
+    terminalStatus: RequestTerminalStatus? = null,
     entryDelayMs: Int = 0,
     ragSources: List<String> = emptyList(),
     ragChunkCount: Int = 0,
@@ -3480,7 +3772,9 @@ private fun ChatBubble(
         requestId = requestId,
         attemptId = attemptId,
         revision = revision,
-        reasoningText = reasoningText
+        reasoningText = reasoningText,
+        isThinkingActive = isThinkingActive,
+        responseFormatVersion = responseFormatVersion
     )
     val parsedContent = presentation.parsedContent
     val displayText = presentation.displayText
@@ -3540,10 +3834,11 @@ private fun ChatBubble(
                     )
                 }
 
-                if (!isUser && parsedContent.thinkingText != null) {
+                if (!isUser && presentation.showThinking) {
                     ThinkingProcessCard(
-                        thinkingText = parsedContent.thinkingText,
-                        isThinkingActive = parsedContent.isThinkingActive
+                        thinkingText = presentation.reasoningText.orEmpty(),
+                        isThinkingActive = presentation.parsedThinking.isThinkingActive,
+                        messageId = messageId
                     )
                 }
 
@@ -3583,6 +3878,30 @@ private fun ChatBubble(
                                 .padding(end = if (needsTopActionClearance) 0.dp else MessageActionButtonReserveWidth),
                             textAlign = TextAlign.Start
                         )
+                    } else if (!isUser && terminalStatus == RequestTerminalStatus.Stopped && displayText.isBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Stop,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Stopped before an answer was generated",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     } else {
                         SelectionContainer {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -4271,7 +4590,15 @@ private fun FullscreenAnswerPanel(
     val message = messageProvider() ?: return
     val context = LocalContext.current
     val title = if (message.isUser) "Your question" else "Model response"
-    val presentation = rememberMessagePresentation(text = message.text, isUser = message.isUser, isStreaming = false)
+    val presentation = rememberMessagePresentation(
+        messageId = message.id,
+        text = message.text,
+        reasoningText = message.reasoningText,
+        revision = message.revision,
+        isUser = message.isUser,
+        isStreaming = false,
+        responseFormatVersion = message.responseFormatVersion
+    )
     val parsedContent = presentation.parsedContent
     var panelVisible by remember(message.id) { mutableStateOf(false) }
     LaunchedEffect(message.id) {
@@ -4339,11 +4666,37 @@ private fun FullscreenAnswerPanel(
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        if (!message.isUser && parsedContent.thinkingText != null) {
+                        if (!message.isUser && presentation.showThinking) {
                             ThinkingProcessCard(
-                                thinkingText = parsedContent.thinkingText,
-                                isThinkingActive = parsedContent.isThinkingActive
+                                thinkingText = presentation.reasoningText.orEmpty(),
+                                isThinkingActive = presentation.parsedThinking.isThinkingActive,
+                                messageId = message.id
                             )
+                        }
+                        if (!message.isUser && message.terminalStatus == RequestTerminalStatus.Stopped && presentation.displayText.isBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Stop,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Stopped before an answer was generated",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
                         val rawVisibleText = presentation.displayText.ifBlank { if (message.isUser) "" else "Answers will appear here." }
                         val answerSegments = if (message.isUser || presentation.displayText.isBlank()) {

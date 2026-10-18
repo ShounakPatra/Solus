@@ -43,6 +43,7 @@ data class PreparedAttachment(
     val audioFile: File? = null,
     val audioBytes: ByteArray? = null,
     val audioDurationMs: Long = 0L,
+    val audioSampleRate: Int = 16_000,
     val ownsResources: Boolean = false,
     val temporaryFiles: List<File> = emptyList(),
     val resourceLease: AutoCloseable? = null
@@ -136,6 +137,7 @@ data class StructuredResponseSnapshot(
     val revision: Int = 0,
     val answerText: String = "",
     val reasoningText: String = "",
+    val isThinkingActive: Boolean = false,
     val channels: Map<String, String> = emptyMap()
 )
 

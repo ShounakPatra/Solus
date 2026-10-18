@@ -124,6 +124,8 @@ sealed class ShutdownResult {
     object Success : ShutdownResult()
     data class Failed(val error: Throwable) : ShutdownResult()
     object TimedOut : ShutdownResult()
+    object StaleNoOp : ShutdownResult()
 
     val isSuccess: Boolean get() = this is Success
+    val isStaleNoOp: Boolean get() = this is StaleNoOp
 }

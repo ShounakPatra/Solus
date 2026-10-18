@@ -63,6 +63,15 @@ object DownloadStateStore {
         persist(snapshot)
     }
 
+    @Synchronized
+    fun remove(modelId: String): Boolean {
+        _snapshots.value = _snapshots.value - modelId
+        lastPersisted.remove(modelId)
+        lastPersistedAt.remove(modelId)
+        val prefs = preferences ?: return true
+        return prefs.edit().remove(KEY_PREFIX + modelId).commit()
+    }
+
     fun get(modelId: String): DownloadSnapshot? = _snapshots.value[modelId]
 
     private fun persist(snapshot: DownloadSnapshot) {

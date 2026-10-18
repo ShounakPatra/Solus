@@ -65,10 +65,20 @@ object CrashReportManager {
                 arrayOf("logcat", "-d", "-v", "time", "-t", maxLines.toString())
             )
             val lines = mutableListOf<String>()
-            BufferedReader(InputStreamReader(process.inputStream)).useLines { seq ->
-                seq.forEach { lines.add(it) }
+            try {
+                BufferedReader(InputStreamReader(process.inputStream)).useLines { seq ->
+                    seq.forEach { lines.add(it) }
+                }
+                val finished = process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+                if (!finished) {
+                    process.destroyForcibly()
+                }
+            } finally {
+                runCatching { process.errorStream.close() }
+                runCatching { process.outputStream.close() }
+                runCatching { process.inputStream.close() }
+                runCatching { process.destroy() }
             }
-            process.waitFor()
 
             if (lines.isEmpty()) {
                 return "No system logcat entries captured for process $pid."

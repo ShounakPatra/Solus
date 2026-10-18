@@ -1,6 +1,7 @@
 package com.shounak.localmeshai.utils
 
 import com.shounak.localmeshai.ui.viewmodels.MainViewModel
+import com.shounak.localmeshai.ui.viewmodels.ModelInputClassification
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.mockwebserver.MockResponse
@@ -75,7 +76,7 @@ class CustomModelUrlTest {
         val normalized = MainViewModel.normalizeCustomModelUrl(evilUrl)
 
         assertEquals(evilUrl, normalized)
-        assertFalse(ModelDownloadUrlPolicy.requiresHuggingFaceToken(evilUrl))
+        assertFalse(ModelDownloadUrlPolicy.isTokenEligible(evilUrl))
     }
 
     @Test
@@ -84,7 +85,7 @@ class CustomModelUrlTest {
         val normalized = MainViewModel.normalizeCustomModelUrl(searchUrl)
 
         assertEquals(searchUrl, normalized)
-        assertFalse(ModelDownloadUrlPolicy.requiresHuggingFaceToken(searchUrl))
+        assertFalse(ModelDownloadUrlPolicy.isTokenEligible(searchUrl))
     }
 
     @Test
@@ -99,13 +100,16 @@ class CustomModelUrlTest {
     }
 
     @Test
-    fun requiresHuggingFaceTokenClassification() {
-        assertTrue(ModelDownloadUrlPolicy.requiresHuggingFaceToken("https://huggingface.co/org/repo/model.gguf"))
-        assertTrue(ModelDownloadUrlPolicy.requiresHuggingFaceToken("https://HUGGINGFACE.CO/org/repo/model.gguf"))
-        assertFalse(ModelDownloadUrlPolicy.requiresHuggingFaceToken("http://huggingface.co/org/repo/model.gguf"))
-        assertFalse(ModelDownloadUrlPolicy.requiresHuggingFaceToken("https://evil-huggingface.co/model.gguf"))
-        assertFalse(ModelDownloadUrlPolicy.requiresHuggingFaceToken("https://huggingface.co.evil.com/model.gguf"))
-        assertFalse(ModelDownloadUrlPolicy.requiresHuggingFaceToken("https://example.com/?query=huggingface.co"))
+    fun tokenEligibilityAndRequirementsClassification() {
+        assertTrue(ModelDownloadUrlPolicy.isTokenEligible("https://huggingface.co/org/repo/model.gguf"))
+        assertTrue(ModelDownloadUrlPolicy.isTokenEligible("https://HUGGINGFACE.CO/org/repo/model.gguf"))
+        assertFalse(ModelDownloadUrlPolicy.isTokenEligible("http://huggingface.co/org/repo/model.gguf"))
+        assertFalse(ModelDownloadUrlPolicy.isTokenEligible("https://evil-huggingface.co/model.gguf"))
+        assertFalse(ModelDownloadUrlPolicy.isTokenEligible("https://huggingface.co.evil.com/model.gguf"))
+        assertFalse(ModelDownloadUrlPolicy.isTokenEligible("https://example.com/?query=huggingface.co"))
+
+        // Origin check alone does not mandate authentication; unknown requirements permit anonymous attempts
+        assertFalse(ModelDownloadUrlPolicy.requiresHuggingFaceToken("https://huggingface.co/org/repo/model.gguf"))
     }
 
     @Test
@@ -177,5 +181,96 @@ class CustomModelUrlTest {
             .build()
 
         client.newCall(request).execute()
+    }
+
+    @Test
+    fun publicHuggingFaceUrlIsTokenEligibleWithoutRequiringToken() {
+        val publicUrl = "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+        // Eligible for token attachment if the user supplies one
+        assertTrue(ModelDownloadUrlPolicy.isTokenEligible(publicUrl))
+        // Does NOT require authentication; anonymous attempt is permitted
+        assertFalse(ModelDownloadUrlPolicy.requiresHuggingFaceToken(publicUrl))
+    }
+
+    @Test
+    fun gatedCatalogHuggingFaceModelRequiresToken() {
+        val gatedGemmaUrl = "https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/gemma3-1b-it-int4.task"
+        assertTrue(ModelDownloadUrlPolicy.isTokenEligible(gatedGemmaUrl))
+        assertTrue(ModelDownloadUrlPolicy.requiresHuggingFaceToken(gatedGemmaUrl))
+    }
+
+    @Test
+    fun externalGgufLinksReachDirectDownloadingClassification() {
+        val externalGguf = "https://example.com/models/deepseek-r1-distill-qwen-1.5b.gguf"
+        val classification = MainViewModel.classifyModelInput(externalGguf)
+        assertEquals(ModelInputClassification.DirectDownload, classification)
+    }
+
+    @Test
+    fun externalTfliteAndLitertlmLinksReachDirectDownloadingClassification() {
+        val externalTflite = "https://example.com/models/vision_model.tflite"
+        assertEquals(ModelInputClassification.DirectDownload, MainViewModel.classifyModelInput(externalTflite))
+
+        val externalTask = "https://storage.googleapis.com/mediapipe/gemma2-2b-it-gpu.task"
+        assertEquals(ModelInputClassification.DirectDownload, MainViewModel.classifyModelInput(externalTask))
+
+        val externalLitertlm = "https://example.com/models/model.litertlm"
+        assertEquals(ModelInputClassification.DirectDownload, MainViewModel.classifyModelInput(externalLitertlm))
+
+        val externalZip = "https://example.com/models/bundle.zip"
+        assertEquals(ModelInputClassification.DirectDownload, MainViewModel.classifyModelInput(externalZip))
+    }
+
+    @Test
+    fun huggingFaceLinksReachHuggingFaceClassification() {
+        val hfFileUrl = "https://huggingface.co/unsloth/gemma-3-4b-it-GGUF/blob/main/gemma-3-4b-it-Q4_K_M.gguf"
+        assertEquals(ModelInputClassification.HuggingFace, MainViewModel.classifyModelInput(hfFileUrl))
+
+        val hfRepoUrl = "https://huggingface.co/unsloth/gemma-3-4b-it-GGUF"
+        assertEquals(ModelInputClassification.HuggingFace, MainViewModel.classifyModelInput(hfRepoUrl))
+
+        val hfShorthand = "unsloth/gemma-3-4b-it-GGUF"
+        assertEquals(ModelInputClassification.HuggingFace, MainViewModel.classifyModelInput(hfShorthand))
+    }
+
+    @Test
+    fun invalidLinksAreRejected() {
+        assertEquals(ModelInputClassification.Invalid, MainViewModel.classifyModelInput(""))
+        assertEquals(ModelInputClassification.Invalid, MainViewModel.classifyModelInput("https://example.com/page.html"))
+        assertEquals(ModelInputClassification.Invalid, MainViewModel.classifyModelInput("https://example.com/software.exe"))
+        assertEquals(ModelInputClassification.Invalid, MainViewModel.classifyModelInput("just_random_string"))
+    }
+
+    @Test
+    fun resolveModelPageUrlFromRepositorySpec() {
+        val spec = com.shounak.localmeshai.models.ModelDownloadSpec(
+            modelId = "test_hf_model",
+            repository = "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+            artifacts = emptyList()
+        )
+        val resolved = MainViewModel.resolveModelPageUrl(spec, null)
+        assertEquals("https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF", resolved)
+    }
+
+    @Test
+    fun resolveModelPageUrlFromHuggingFaceSourceUrl() {
+        val blobUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/main/model.gguf"
+        assertEquals(
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+            MainViewModel.resolveModelPageUrl(null, blobUrl)
+        )
+
+        val resolveUrl = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/model.gguf?download=true"
+        assertEquals(
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+            MainViewModel.resolveModelPageUrl(null, resolveUrl)
+        )
+    }
+
+    @Test
+    fun resolveModelPageUrlReturnsNullForNonHuggingFace() {
+        assertNull(MainViewModel.resolveModelPageUrl(null, "content://com.android.providers.downloads/123"))
+        assertNull(MainViewModel.resolveModelPageUrl(null, "https://example.com/models/model.gguf"))
+        assertNull(MainViewModel.resolveModelPageUrl(null, null))
     }
 }

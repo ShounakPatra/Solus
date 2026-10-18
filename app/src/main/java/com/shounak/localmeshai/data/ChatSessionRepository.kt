@@ -122,7 +122,7 @@ class ChatSessionRepository(
                             if (migrated.isNotEmpty()) {
                                 val saved = saveChatSessionsInternal(migrated)
                                 if (saved) {
-                                    legacyChatPrefs?.let { it.edit().remove("sessions_json").apply() }
+                                    legacyChatPrefs.edit().remove("sessions_json").apply()
                                 }
                             }
                             isChatUnsupportedVersion = false
@@ -229,7 +229,7 @@ class ChatSessionRepository(
                             if (migrated.isNotEmpty()) {
                                 val saved = saveVisionSessionsInternal(migrated)
                                 if (saved) {
-                                    legacyVisionPrefs?.let { it.edit().remove("sessions_json").apply() }
+                                    legacyVisionPrefs.edit().remove("sessions_json").apply()
                                 }
                             }
                             isVisionUnsupportedVersion = false

@@ -265,4 +265,94 @@ class ModelArtifactStorageTest {
 
         assertNull(storage.getPublishedArtifact(modelId))
     }
+
+    @Test
+    fun sameNamedPhoneImports_getIsolatedDirectories_andDoNotOverwrite() {
+        val modelId1 = "phone_import_11111"
+        val modelId2 = "phone_import_22222"
+        val sharedFileName = "model.task"
+
+        val stagingDir1 = storage.getStagingDir(modelId1)
+        val stagingDir2 = storage.getStagingDir(modelId2)
+        stagingDir1.mkdirs()
+        stagingDir2.mkdirs()
+
+        val stagedFile1 = File(stagingDir1, "$sharedFileName.tmp")
+        val stagedFile2 = File(stagingDir2, "$sharedFileName.tmp")
+        stagedFile1.writeText("MediaPipe Model 1")
+        stagedFile2.writeText("MediaPipe Model 2")
+
+        val item1 = StagedArtifactItem(
+            stagedFile = stagedFile1,
+            relativeTargetName = sharedFileName,
+            isPrimary = true,
+            role = com.shounak.localmeshai.models.ArtifactRole.Main,
+            order = 0
+        )
+        val item2 = StagedArtifactItem(
+            stagedFile = stagedFile2,
+            relativeTargetName = sharedFileName,
+            isPrimary = true,
+            role = com.shounak.localmeshai.models.ArtifactRole.Main,
+            order = 0
+        )
+
+        val published1 = storage.publishArtifactBundle(
+            modelId = modelId1,
+            stagedItems = listOf(item1),
+            primaryItemName = sharedFileName,
+            sourceIdentity = "phone_uri_1",
+            format = com.shounak.localmeshai.models.ModelFormat.MediaPipeTask
+        )
+        val published2 = storage.publishArtifactBundle(
+            modelId = modelId2,
+            stagedItems = listOf(item2),
+            primaryItemName = sharedFileName,
+            sourceIdentity = "phone_uri_2",
+            format = com.shounak.localmeshai.models.ModelFormat.MediaPipeTask
+        )
+
+        assertNotEquals(published1.absolutePath, published2.absolutePath)
+        assertEquals("MediaPipe Model 1", published1.readText())
+        assertEquals("MediaPipe Model 2", published2.readText())
+
+        val bundle1 = storage.getPublishedBundle(modelId1)
+        val bundle2 = storage.getPublishedBundle(modelId2)
+        assertNotNull(bundle1)
+        assertNotNull(bundle2)
+        assertEquals(com.shounak.localmeshai.models.ModelFormat.MediaPipeTask, bundle1?.format)
+        assertEquals(com.shounak.localmeshai.models.ModelFormat.MediaPipeTask, bundle2?.format)
+    }
+
+    @Test
+    fun atomicReservation_blocksConcurrentReaders() {
+        val modelId = "atomic_reservation_test"
+        val staging = storage.getStagingFile(modelId, "model.gguf")
+        staging.writeText("GGUF Data")
+        val published = storage.publishArtifact(modelId, staging, "model.gguf", "source_1")
+
+        // Hold a lease
+        val lease = ModelArtifactStorage.leaseArtifact(published)
+        assertNotNull(lease)
+
+        // Attempt deletion reservation while leased -> must fail
+        val reservedWhileLeased = ModelArtifactStorage.reserveAndExecuteDeletion(published) {
+            fail("Block should not execute while file is actively leased")
+            false
+        }
+        assertFalse("reserveAndExecuteDeletion must return false while reader lease is held", reservedWhileLeased)
+
+        // Close lease
+        lease.close()
+
+        // Deletion reservation after lease closed -> must succeed
+        var executed = false
+        val reservedAfterClose = ModelArtifactStorage.reserveAndExecuteDeletion(published) {
+            executed = true
+            published.delete()
+        }
+        assertTrue("reserveAndExecuteDeletion must succeed once reader lease is closed", reservedAfterClose)
+        assertTrue("Deletion block must have executed", executed)
+        assertFalse(published.exists())
+    }
 }

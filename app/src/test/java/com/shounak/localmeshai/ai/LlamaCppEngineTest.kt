@@ -66,6 +66,7 @@ class LlamaCppEngineTest {
         @Volatile var onBeforeFreeHook: ((handle: Long) -> Unit)? = null
         @Volatile var onMetadataHook: ((handle: Long) -> Unit)? = null
         val failInitNext = AtomicBoolean(false)
+        val failFreeNext = AtomicBoolean(false)
 
         val lastBackendRequested = AtomicInteger(0)
         val lastGpuLayersRequested = AtomicInteger(0)
@@ -230,6 +231,9 @@ class LlamaCppEngineTest {
             if (handle == 0L) throw AssertionError("free called with 0L handle")
             if (freedHandles.contains(handle)) {
                 throw AssertionError("DOUBLE FREE: handle $handle was freed more than once!")
+            }
+            if (failFreeNext.getAndSet(false)) {
+                throw RuntimeException("Simulated native free failure")
             }
             onBeforeFreeHook?.invoke(handle)
             liveHandles.remove(handle)
@@ -1496,6 +1500,27 @@ class LlamaCppEngineTest {
     }
 
     @Test
+    fun testGgufDiagnosticRunner_NonExistentModelFailsWithoutNativeInit() = runBlocking {
+        val fakeBridge = FakeLlamaNativeBridge()
+        val nonExistentPath = File(tempFolder.root, "non_existent.gguf").absolutePath
+
+        val report = GgufDiagnosticRunner.runDiagnostics(
+            context = null,
+            modelPath = nonExistentPath,
+            threads = 4,
+            contextWindow = 2048,
+            nBatch = 256,
+            nUbatch = 128,
+            customNativeBridge = fakeBridge
+        )
+
+        assertFalse(report.overallSuccess)
+        assertFalse(report.initSuccess)
+        assertEquals(0, fakeBridge.initCallCount.get())
+        assertTrue(report.inspectionError != null)
+    }
+
+    @Test
     fun testRepeatedLoadGenerateFreeCycles_ZeroLeasesLeaked() = runBlocking {
         val fakeBridge = FakeLlamaNativeBridge()
         val file = createDummyModelFile("repeat_cycle.gguf")
@@ -1774,6 +1799,58 @@ class LlamaCppEngineTest {
         assertEquals(2, capturedMetrics?.tokenCount)
 
         engine.close()
+    }
+
+    @Test
+    fun testMetadataFailureWithSuccessfulNativeCleanup() {
+        val fakeBridge = FakeLlamaNativeBridge()
+        fakeBridge.onMetadataHook = {
+            throw RuntimeException("Simulated metadata read failure")
+        }
+        val engine = LlamaCppEngine(null, fakeBridge)
+        val file = createDummyModelFile("meta_fail_clean.gguf")
+        var leaseClosed = false
+        val dummyLease = AutoCloseable { leaseClosed = true }
+
+        val thrown = try {
+            engine.initialize(listOf(file.absolutePath), lease = dummyLease)
+            false
+        } catch (e: Exception) {
+            true
+        }
+
+        assertTrue("Initialize must throw when metadata extraction fails", thrown)
+        assertFalse("Engine must not report initialized", engine.isInitialized)
+        assertEquals("Engine must transition to CLOSED on successful native cleanup", "CLOSED", engine.testEngineStateName)
+        assertTrue("Lease must be closed on successful cleanup", leaseClosed)
+        assertEquals("Native free must be called for the discarded handle", 1, fakeBridge.freeCallCount.get())
+        assertTrue("No live handles should remain", fakeBridge.liveHandles.isEmpty())
+    }
+
+    @Test
+    fun testMetadataFailureWithFailedNativeCleanup() {
+        val fakeBridge = FakeLlamaNativeBridge()
+        fakeBridge.onMetadataHook = {
+            throw RuntimeException("Simulated metadata read failure")
+        }
+        fakeBridge.failFreeNext.set(true)
+        val engine = LlamaCppEngine(null, fakeBridge)
+        val file = createDummyModelFile("meta_fail_close_fail.gguf")
+        var leaseClosed = false
+        val dummyLease = AutoCloseable { leaseClosed = true }
+
+        val thrown = try {
+            engine.initialize(listOf(file.absolutePath), lease = dummyLease)
+            false
+        } catch (e: Exception) {
+            true
+        }
+
+        assertTrue("Initialize must throw when metadata extraction and free fail", thrown)
+        assertEquals("Engine must transition to CLOSE_FAILED when native free fails", "CLOSE_FAILED", engine.testEngineStateName)
+        assertFalse("Lease must be retained and NOT closed when free fails", leaseClosed)
+        assertTrue("Engine must retain failed handle", engine.testFailedHandle != 0L)
+        assertNotNull("Engine must retain failed lease", engine.testFailedBundleLease)
     }
 }
 

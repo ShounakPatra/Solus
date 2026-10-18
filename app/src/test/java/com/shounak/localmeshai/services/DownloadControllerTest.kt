@@ -12,6 +12,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -48,22 +49,24 @@ class DownloadControllerTest {
         )
     }
 
+    private val activeTestScopes = mutableListOf<CoroutineScope>()
+
+    private fun createTestScope(): CoroutineScope =
+        CoroutineScope(Dispatchers.Default).also { activeTestScopes.add(it) }
+
     @After
     fun tearDown() {
         DownloadController.setInstanceForTesting(null)
+        activeTestScopes.forEach { it.cancel() }
+        activeTestScopes.clear()
     }
 
     @Test
     fun testStartPauseAndResume() = runBlocking {
-        var progressEmitted = false
-        var completedEmitted = false
+        val progressSignal = CompletableDeferred<Unit>()
+        val pauseSignal = CompletableDeferred<Unit>()
 
-        val testScope = CoroutineScope(Dispatchers.Default)
-        val controller = DownloadController(
-            downloader = fakeDownloader,
-            scope = testScope,
-            networkChecker = { true }
-        )
+        val testScope = createTestScope()
 
         // Mock download that pauses when asked
         val request = DownloadRequest(
@@ -88,29 +91,39 @@ class DownloadControllerTest {
                     bearerToken: String?,
                     expectedSha256: String?,
                     eTag: String?,
+                    publishImmediately: Boolean,
+                    sourceIdentity: String?,
                     onProgress: suspend (DownloadProgress) -> Unit
                 ): DownloadResult {
                     onProgress(DownloadProgress(0.5f, 500L, 1000L, 100L))
-                    progressEmitted = true
-                    delay(500)
-                    completedEmitted = true
+                    progressSignal.complete(Unit)
+                    runCatching { pauseSignal.await() }
                     return DownloadResult(
                         localPath = artifactStorage.getModelDir(modelId).resolve(fileName).absolutePath,
                         bytesDownloaded = 1000L
                     )
                 }
+
+                override suspend fun downloadModel(
+                    url: String,
+                    modelId: String,
+                    fileName: String,
+                    packageType: ModelPackage,
+                    bearerToken: String?,
+                    expectedSha256: String?,
+                    eTag: String?,
+                    onProgress: suspend (DownloadProgress) -> Unit
+                ): DownloadResult = downloadModel(
+                    url, modelId, fileName, packageType, bearerToken, expectedSha256, eTag,
+                    true, null, onProgress
+                )
             },
             scope = testScope,
             networkChecker = { true }
         )
 
         controllerSpy.start(request)
-        // Wait briefly for download to start and progress to emit
-        var attempts = 0
-        while (!progressEmitted && attempts++ < 20) {
-            delay(50)
-        }
-        assertTrue("Progress should have been emitted", progressEmitted)
+        progressSignal.await()
         assertTrue("Controller should report downloading", controllerSpy.isDownloading("test_model_1"))
 
         // Pause download
@@ -121,7 +134,9 @@ class DownloadControllerTest {
 
     @Test
     fun testCancelAndResumeResetsState() = runBlocking {
-        val testScope = CoroutineScope(Dispatchers.Default)
+        val testScope = createTestScope()
+        val progressSignal = CompletableDeferred<Unit>()
+        val cancelSignal = CompletableDeferred<Unit>()
         val request = DownloadRequest(
             modelId = "test_cancel_model",
             name = "Cancel Model",
@@ -144,19 +159,36 @@ class DownloadControllerTest {
                     bearerToken: String?,
                     expectedSha256: String?,
                     eTag: String?,
+                    publishImmediately: Boolean,
+                    sourceIdentity: String?,
                     onProgress: suspend (DownloadProgress) -> Unit
                 ): DownloadResult {
                     onProgress(DownloadProgress(0.3f, 300L, 1000L, 50L))
-                    delay(1000)
+                    progressSignal.complete(Unit)
+                    runCatching { cancelSignal.await() }
                     return DownloadResult("path", 1000L)
                 }
+
+                override suspend fun downloadModel(
+                    url: String,
+                    modelId: String,
+                    fileName: String,
+                    packageType: ModelPackage,
+                    bearerToken: String?,
+                    expectedSha256: String?,
+                    eTag: String?,
+                    onProgress: suspend (DownloadProgress) -> Unit
+                ): DownloadResult = downloadModel(
+                    url, modelId, fileName, packageType, bearerToken, expectedSha256, eTag,
+                    true, null, onProgress
+                )
             },
             scope = testScope,
             networkChecker = { true }
         )
 
         controller.start(request)
-        delay(100)
+        progressSignal.await()
         assertTrue(controller.isDownloading(request.modelId))
 
         // Cancel
@@ -169,7 +201,7 @@ class DownloadControllerTest {
 
     @Test
     fun testStaleAttemptDoesNotOverwriteNewAttempt() = runBlocking {
-        val testScope = CoroutineScope(Dispatchers.Default)
+        val testScope = createTestScope()
         val request = DownloadRequest(
             modelId = "test_stale_model",
             name = "Stale Model",
@@ -197,18 +229,34 @@ class DownloadControllerTest {
                     bearerToken: String?,
                     expectedSha256: String?,
                     eTag: String?,
+                    publishImmediately: Boolean,
+                    sourceIdentity: String?,
                     onProgress: suspend (DownloadProgress) -> Unit
                 ): DownloadResult {
                     val currentAttempt = ++attemptCount
                     if (currentAttempt == 1) {
                         attempt1Started.complete(Unit)
-                        attempt1Hold.await() // block until test releases
+                        runCatching { attempt1Hold.await() }
                         return DownloadResult("stale_path", 500L)
                     } else {
                         attempt2Completed.complete(Unit)
                         return DownloadResult("new_path", 1000L)
                     }
                 }
+
+                override suspend fun downloadModel(
+                    url: String,
+                    modelId: String,
+                    fileName: String,
+                    packageType: ModelPackage,
+                    bearerToken: String?,
+                    expectedSha256: String?,
+                    eTag: String?,
+                    onProgress: suspend (DownloadProgress) -> Unit
+                ): DownloadResult = downloadModel(
+                    url, modelId, fileName, packageType, bearerToken, expectedSha256, eTag,
+                    true, null, onProgress
+                )
             },
             scope = testScope,
             networkChecker = { true }
@@ -336,7 +384,7 @@ class DownloadControllerTest {
 
     @Test
     fun testRestartDuringCancellationDoesNotPrematurelyFireAllDownloadsFinished() = runBlocking {
-        val testScope = CoroutineScope(Dispatchers.Default)
+        val testScope = createTestScope()
         val request = DownloadRequest(
             modelId = "test_no_early_finish",
             name = "Finish Model",
@@ -365,18 +413,34 @@ class DownloadControllerTest {
                     bearerToken: String?,
                     expectedSha256: String?,
                     eTag: String?,
+                    publishImmediately: Boolean,
+                    sourceIdentity: String?,
                     onProgress: suspend (DownloadProgress) -> Unit
                 ): DownloadResult {
                     val attempt = ++count
                     if (attempt == 1) {
                         attempt1Started.complete(Unit)
-                        attempt1Hold.await()
+                        runCatching { attempt1Hold.await() }
                         return DownloadResult("p1", 100L)
                     } else {
                         attempt2Completed.complete(Unit)
                         return DownloadResult("p2", 200L)
                     }
                 }
+
+                override suspend fun downloadModel(
+                    url: String,
+                    modelId: String,
+                    fileName: String,
+                    packageType: ModelPackage,
+                    bearerToken: String?,
+                    expectedSha256: String?,
+                    eTag: String?,
+                    onProgress: suspend (DownloadProgress) -> Unit
+                ): DownloadResult = downloadModel(
+                    url, modelId, fileName, packageType, bearerToken, expectedSha256, eTag,
+                    true, null, onProgress
+                )
             },
             scope = testScope,
             networkChecker = { true },
@@ -407,7 +471,7 @@ class DownloadControllerTest {
 
     @Test
     fun testRapidToggleSpamSettlesToConsistentState() = runBlocking {
-        val testScope = CoroutineScope(Dispatchers.Default)
+        val testScope = createTestScope()
         val request = DownloadRequest(
             modelId = "test_toggle_spam",
             name = "Spam Model",
@@ -430,11 +494,27 @@ class DownloadControllerTest {
                     bearerToken: String?,
                     expectedSha256: String?,
                     eTag: String?,
+                    publishImmediately: Boolean,
+                    sourceIdentity: String?,
                     onProgress: suspend (DownloadProgress) -> Unit
                 ): DownloadResult {
                     delay(300)
                     return DownloadResult("spam_path", 500L)
                 }
+
+                override suspend fun downloadModel(
+                    url: String,
+                    modelId: String,
+                    fileName: String,
+                    packageType: ModelPackage,
+                    bearerToken: String?,
+                    expectedSha256: String?,
+                    eTag: String?,
+                    onProgress: suspend (DownloadProgress) -> Unit
+                ): DownloadResult = downloadModel(
+                    url, modelId, fileName, packageType, bearerToken, expectedSha256, eTag,
+                    true, null, onProgress
+                )
             },
             scope = testScope,
             networkChecker = { true }
@@ -450,5 +530,151 @@ class DownloadControllerTest {
         assertFalse("Should not be downloading after final pause", controller.isDownloading(request.modelId))
         val snapshot = DownloadStateStore.get(request.modelId)
         assertEquals(ModelStatus.Paused, snapshot?.status)
+    }
+
+    @Test
+    fun testRepeatedRemovalAfterFailedShutdown() = runBlocking {
+        var shutdownCallCount = 0
+        val controller = DownloadController(
+            downloader = fakeDownloader,
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            networkChecker = { true }
+        )
+        controller.inferenceShutdownAwaiter = {
+            shutdownCallCount++
+            false // Simulate failed shutdown
+        }
+        val file = File(rootDir, "test-model.gguf").apply { writeText("data") }
+        val snapshot = DownloadSnapshot("test_model", ModelStatus.Available, localPath = file.absolutePath)
+        DownloadStateStore.update(snapshot)
+
+        var thrown = false
+        try {
+            controller.removeModel("test_model")
+        } catch (e: Exception) {
+            thrown = true
+        }
+        assertTrue("removeModel must throw if inference shutdown fails", thrown)
+        assertEquals("Awaiter must have been called once", 1, shutdownCallCount)
+        assertTrue("File must still exist", file.exists())
+
+        // Subsequent attempt must still call shutdown awaiter (not bypassed)
+        thrown = false
+        try {
+            controller.removeModel("test_model")
+        } catch (e: Exception) {
+            thrown = true
+        }
+        assertTrue("Second removeModel attempt must also throw", thrown)
+        assertEquals("Awaiter must be invoked again on retry", 2, shutdownCallCount)
+    }
+
+    @Test
+    fun testDeletionRefusedByActiveLease() = runBlocking {
+        val controller = DownloadController(
+            downloader = fakeDownloader,
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            networkChecker = { true }
+        )
+        controller.inferenceShutdownAwaiter = { true }
+        val modelId = "leased_model"
+        val modelDir = File(rootDir, modelId).apply { mkdirs() }
+        val file = File(modelDir, "model.gguf").apply { writeText("model data") }
+        val snapshot = DownloadSnapshot(modelId, ModelStatus.Available, localPath = file.absolutePath)
+        DownloadStateStore.update(snapshot)
+
+        // Acquire active lease on the artifact storage
+        val lease = ModelArtifactStorage.leaseArtifact(file)
+        assertNotNull("Lease should be acquired", lease)
+
+        var thrown = false
+        try {
+            controller.removeModel(modelId)
+        } catch (e: Exception) {
+            thrown = true
+        }
+
+        assertTrue("removeModel must throw if deletion is refused due to active lease", thrown)
+        assertTrue("Model file must be retained", file.exists())
+        val currentState = DownloadStateStore.get(modelId)
+        assertEquals("Status must not be reset to NotDownloaded when deletion is refused", ModelStatus.Available, currentState?.status)
+
+        // Release lease and verify removal can now succeed
+        lease.close()
+        controller.removeModel(modelId)
+        assertFalse("Model file should be deleted after lease release", file.exists())
+        assertEquals(ModelStatus.NotDownloaded, DownloadStateStore.get(modelId)?.status)
+    }
+
+    @Test
+    fun testCancelDownloadWhenModelAlreadyAvailablePreservesAvailableStatus() = runBlocking {
+        val testScope = createTestScope()
+        val controller = DownloadController(
+            downloader = fakeDownloader,
+            scope = testScope,
+            networkChecker = { true }
+        )
+
+        val modelId = "completed_model_cancel_test"
+        val modelDir = artifactStorage.getModelDir(modelId, create = true)
+        val publishedFile = modelDir.resolve("model.gguf")
+        publishedFile.writeText("completed model binary")
+
+        // Model is already marked Available with published file and unknown total bytes (-1L)
+        val completedSnapshot = DownloadSnapshot(
+            modelId = modelId,
+            status = ModelStatus.Available,
+            downloadedBytes = 1000L,
+            totalBytes = -1L,
+            localPath = publishedFile.absolutePath,
+            downloadedAt = System.currentTimeMillis()
+        )
+        DownloadStateStore.update(completedSnapshot)
+
+        // Calling cancelDownload after completion has already won must preserve Available and downloadedBytes
+        controller.cancelDownload(modelId, retainStaging = false)
+
+        val current = DownloadStateStore.get(modelId)
+        assertNotNull(current)
+        assertEquals("Status must remain Available when completion already won", ModelStatus.Available, current?.status)
+        assertEquals("Path must remain pointing to published file", publishedFile.absolutePath, current?.localPath)
+        assertEquals("Valid completed bytes preserved when totalBytes is unknown (-1L)", 1000L, current?.downloadedBytes)
+        assertEquals("Total bytes preserved as -1L", -1L, current?.totalBytes)
+        assertTrue("Published file must still exist", publishedFile.exists())
+    }
+
+    @Test
+    fun testCancelWithRetainStagingPreservesPartialDownloadsAndPausedState() = runBlocking {
+        val testScope = createTestScope()
+        val controller = DownloadController(
+            downloader = fakeDownloader,
+            scope = testScope,
+            networkChecker = { true }
+        )
+
+        val modelId = "partial_model_retain_test"
+        val fileName = "partial.gguf"
+        val stagingFile = artifactStorage.getStagingFile(modelId, fileName)
+        stagingFile.parentFile?.mkdirs()
+        stagingFile.writeText("50% downloaded partial data")
+
+        // Set downloading state
+        val downloadingSnapshot = DownloadSnapshot(
+            modelId = modelId,
+            status = ModelStatus.Downloading,
+            progress = 0.5f,
+            downloadedBytes = 500L,
+            totalBytes = 1000L
+        )
+        DownloadStateStore.update(downloadingSnapshot)
+
+        // Cancel with retainStaging = true
+        controller.cancelDownload(modelId, retainStaging = true)
+
+        val current = DownloadStateStore.get(modelId)
+        assertNotNull(current)
+        assertEquals("Status must be Paused when retainStaging is true", ModelStatus.Paused, current?.status)
+        assertTrue("Staging file must be preserved on retainStaging = true", stagingFile.exists())
+        assertEquals("50% downloaded partial data", stagingFile.readText())
     }
 }

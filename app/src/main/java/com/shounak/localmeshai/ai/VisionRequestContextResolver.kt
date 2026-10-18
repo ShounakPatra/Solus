@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Message
 import com.shounak.localmeshai.ui.viewmodels.VisionChatMessage
 import java.io.File
@@ -199,7 +200,7 @@ object VisionRequestContextResolver {
                     contents.add(Content.Text(DEFAULT_IMAGE_PROMPT))
                 }
                 if (contents.isNotEmpty()) {
-                    initialMessages.add(Message.of(contents))
+                    initialMessages.add(Message.user(Contents.of(contents)))
                 }
             } else {
                 if (msg.text.isNotBlank()) {
@@ -209,4 +210,97 @@ object VisionRequestContextResolver {
         }
         return initialMessages
     }
+
+    /**
+     * Seeds bounded history as role-text pairs with associated media files indexed by message position
+     * for llama.cpp Jinja template multimodal generation.
+     * Excludes placeholders, failed-answer strings, and in-flight/current messages.
+     */
+    fun buildLlamaMultimodalHistory(
+        sessionMessages: List<VisionChatMessage>,
+        currentRequestId: String = "",
+        maxTurns: Int = 10,
+        placeholderTexts: Set<String> = emptySet(),
+        failedAnswerTexts: Set<String> = emptySet()
+    ): LlamaMultimodalHistory {
+        val filtered = sessionMessages
+            .filter { msg ->
+                val text = msg.text.trim()
+                val hasUserMedia = msg.isUser && (
+                    !msg.imagePath.isNullOrBlank() ||
+                    !msg.audioPath.isNullOrBlank() ||
+                    (msg.bitmap != null && !msg.bitmap.isRecycled)
+                )
+                val isValidText = text.isNotBlank() && text !in placeholderTexts && text !in failedAnswerTexts
+                (isValidText || hasUserMedia) &&
+                    msg.id != currentRequestId &&
+                    msg.terminalStatus != RequestTerminalStatus.Failed
+            }
+            .takeLast(maxTurns * 2)
+
+        val history = mutableListOf<Pair<String, String>>()
+        val imageFiles = mutableMapOf<Int, File>()
+        val audioFiles = mutableMapOf<Int, File>()
+
+        for (msg in filtered) {
+            val role = if (msg.isUser) "user" else "assistant"
+            val text = msg.text.trim().ifBlank {
+                if (msg.isUser) DEFAULT_IMAGE_PROMPT else ""
+            }
+            if (text.isNotBlank()) {
+                val messageIndex = history.size
+                history.add(role to text)
+                if (msg.isUser) {
+                    val imgPath = msg.imagePath
+                    if (!imgPath.isNullOrBlank()) {
+                        val file = File(imgPath)
+                        if (file.exists() && file.isFile) {
+                            imageFiles[messageIndex] = file
+                        }
+                    }
+                    val audPath = msg.audioPath
+                    if (!audPath.isNullOrBlank()) {
+                        val file = File(audPath)
+                        if (file.exists() && file.isFile) {
+                            audioFiles[messageIndex] = file
+                        }
+                    }
+                }
+            }
+        }
+        return LlamaMultimodalHistory(
+            messages = history,
+            imageFiles = imageFiles,
+            audioFiles = audioFiles
+        )
+    }
+
+    /**
+     * Seeds bounded history as role-text pairs for llama.cpp Jinja template multimodal generation.
+     * Excludes placeholders, failed-answer strings, and in-flight/current messages.
+     */
+    fun buildLlamaChatHistory(
+        sessionMessages: List<VisionChatMessage>,
+        currentRequestId: String = "",
+        maxTurns: Int = 10,
+        placeholderTexts: Set<String> = emptySet(),
+        failedAnswerTexts: Set<String> = emptySet()
+    ): List<Pair<String, String>> {
+        return buildLlamaMultimodalHistory(
+            sessionMessages = sessionMessages,
+            currentRequestId = currentRequestId,
+            maxTurns = maxTurns,
+            placeholderTexts = placeholderTexts,
+            failedAnswerTexts = failedAnswerTexts
+        ).messages
+    }
 }
+
+/**
+ * Multi-turn history with media references indexed by message turn position for llama.cpp multimodal models.
+ */
+data class LlamaMultimodalHistory(
+    val messages: List<Pair<String, String>>,
+    val imageFiles: Map<Int, File> = emptyMap(),
+    val audioFiles: Map<Int, File> = emptyMap()
+)

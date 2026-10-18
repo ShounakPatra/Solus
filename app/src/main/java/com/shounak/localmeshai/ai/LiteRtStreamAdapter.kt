@@ -51,6 +51,7 @@ class LiteRtStreamAdapter(
 
     @Volatile private var isThinkingOpen = false
     @Volatile private var hasEmittedThinkingStart = false
+    @Volatile private var hasEmittedThinkingEnd = false
 
     var terminalError: Throwable? = null
         private set
@@ -92,6 +93,16 @@ class LiteRtStreamAdapter(
                 }
             }
 
+            // Update thinking phase state BEFORE constructing snapshot and message presentation
+            if (thinkingMode) {
+                if (newReasoningDelta.isNotEmpty()) {
+                    isThinkingOpen = true
+                }
+                if (newAnswerDelta.isNotEmpty()) {
+                    isThinkingOpen = false
+                }
+            }
+
             // If message was completely empty or channel-only without text,
             // that is a valid non-answer event — NEVER a reset.
             val currentRev = revisionCounter.incrementAndGet()
@@ -103,6 +114,7 @@ class LiteRtStreamAdapter(
                     revision = currentRev,
                     answerText = answerBuffer.toString(),
                     reasoningText = reasoningBuffer.toString(),
+                    isThinkingActive = isThinkingOpen && !isCompleted.get(),
                     channels = channelSnapshots
                 )
             }
@@ -121,14 +133,13 @@ class LiteRtStreamAdapter(
             if (newReasoningDelta.isNotEmpty()) {
                 if (!hasEmittedThinkingStart) {
                     hasEmittedThinkingStart = true
-                    isThinkingOpen = true
                     onDelta?.invoke("<think>\n")
                 }
                 onDelta?.invoke(newReasoningDelta)
             }
             if (newAnswerDelta.isNotEmpty()) {
-                if (isThinkingOpen) {
-                    isThinkingOpen = false
+                if (hasEmittedThinkingStart && !hasEmittedThinkingEnd) {
+                    hasEmittedThinkingEnd = true
                     onDelta?.invoke("\n</think>\n\n")
                 }
                 onDelta?.invoke(newAnswerDelta)
@@ -146,8 +157,11 @@ class LiteRtStreamAdapter(
         if (!isCompleted.compareAndSet(false, true)) {
             return
         }
-        if (thinkingMode && isThinkingOpen) {
+        synchronized(lock) {
             isThinkingOpen = false
+        }
+        if (thinkingMode && hasEmittedThinkingStart && !hasEmittedThinkingEnd) {
+            hasEmittedThinkingEnd = true
             onDelta?.invoke("\n</think>")
         }
         val finalSnapshot = currentSnapshot()
@@ -169,6 +183,13 @@ class LiteRtStreamAdapter(
             return
         }
         runCatching { conversation?.cancelProcess() }
+        synchronized(lock) {
+            isThinkingOpen = false
+        }
+        if (thinkingMode && hasEmittedThinkingStart && !hasEmittedThinkingEnd) {
+            hasEmittedThinkingEnd = true
+            onDelta?.invoke("\n</think>\n\n")
+        }
         if (isCompleted.compareAndSet(false, true)) {
             completionDeferred.completeExceptionally(CancellationException("LiteRT inference cancelled"))
         }
@@ -181,6 +202,7 @@ class LiteRtStreamAdapter(
             revision = revisionCounter.get(),
             answerText = answerBuffer.toString(),
             reasoningText = reasoningBuffer.toString(),
+            isThinkingActive = isThinkingOpen && !isCompleted.get(),
             channels = namedChannels.mapValues { it.value.toString() }
         )
     }

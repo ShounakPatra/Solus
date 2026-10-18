@@ -144,7 +144,8 @@ class ModelLoadControllerTest {
         }
 
         loadStarted.await()
-        controller.cancelActiveOperation("User cancelled")
+        val opId = controller.activeOperationId
+        controller.cancelActiveOperation(targetOperationId = opId, reason = "User cancelled")
         loadJob.join()
 
         assertTrue(cancelActionInvoked.get())
@@ -399,4 +400,64 @@ class ModelLoadControllerTest {
         assertTrue("Shutdown must return Failed", result is ShutdownResult.Failed)
         assertTrue("Controller state must be ShutdownStalled", controller.loadState.value is ModelLoadState.ShutdownStalled)
     }
+
+    @Test
+    fun testScopedCancellationIgnoresMismatchedOperationId() = runBlocking {
+        val controller = ModelLoadController()
+        val identity = ModelLoadIdentity(
+            modelPath = "/path/to/scoped-test.gguf",
+            runtimeKind = "Gguf"
+        )
+        val hold = CompletableDeferred<Unit>()
+        val config = ModelActualConfiguration("Gguf", "CPU", 4, 1024, 128, 64, 0)
+
+        val loadJob = async {
+            controller.loadOrAttach(identity, this) { _, _ ->
+                hold.await()
+                config
+            }
+        }
+
+        while (!controller.isInitializing) {
+            delay(10)
+        }
+
+        // Cancel with wrong operation ID -> must be ignored
+        controller.cancelActiveOperation(targetOperationId = "non-matching-op-id", reason = "Stale stop")
+        assertTrue("Controller should still be initializing", controller.isInitializing)
+
+        // Now release hold and verify it succeeds
+        hold.complete(Unit)
+        val result = loadJob.await()
+        assertEquals(config, result)
+        assertTrue(controller.isReady)
+    }
+
+    @Test
+    fun testScopedShutdownReturnsStaleNoOpForMismatchedTarget(): Unit = runBlocking {
+        val controller = ModelLoadController()
+        val identity = ModelLoadIdentity(
+            modelPath = "/path/to/scoped-shutdown.gguf",
+            runtimeKind = "Gguf"
+        )
+        val hold = CompletableDeferred<Unit>()
+        val loadJob = async {
+            controller.loadOrAttach(identity, this) { _, _ ->
+                hold.await()
+                ModelActualConfiguration("Gguf", "CPU", 4, 1024, 128, 64, 0)
+            }
+        }
+
+        while (!controller.isInitializing) {
+            delay(10)
+        }
+
+        val result = controller.shutdown(targetOperationId = "wrong-op-id")
+        assertEquals(ShutdownResult.StaleNoOp, result)
+
+        hold.complete(Unit)
+        loadJob.await()
+        Unit
+    }
 }
+

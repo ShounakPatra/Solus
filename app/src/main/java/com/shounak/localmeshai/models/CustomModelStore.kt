@@ -23,7 +23,7 @@ import java.util.Locale
 data class CustomModelDefinition(
     val id: String,
     val name: String,
-    val url: String,
+    val url: String = "",
     val type: ModelType,
     val fileName: String,
     val packageType: ModelPackage = ModelPackage.SingleFile,
@@ -31,7 +31,9 @@ data class CustomModelDefinition(
     val description: String = "",
     val backend: String = "",
     val deviceTarget: String = "All supported chipsets",
-    val addedAt: Long = System.currentTimeMillis()
+    val addedAt: Long = System.currentTimeMillis(),
+    val bundle: ModelBundle? = null,
+    val downloadSpec: ModelDownloadSpec? = null
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -45,14 +47,27 @@ data class CustomModelDefinition(
         put("backend", backend)
         put("deviceTarget", deviceTarget)
         put("addedAt", addedAt)
+        if (bundle != null) {
+            put("bundle", bundle.toJson())
+        }
+        if (downloadSpec != null) {
+            put("downloadSpec", downloadSpec.toJson())
+        }
     }
 
     companion object {
         fun fromJson(obj: JSONObject): CustomModelDefinition {
+            val bundleObj = if (obj.has("bundle") && !obj.isNull("bundle")) {
+                ModelBundle.fromJson(obj.getJSONObject("bundle"))
+            } else null
+            val specObj = if (obj.has("downloadSpec") && !obj.isNull("downloadSpec")) {
+                ModelDownloadSpec.fromJson(obj.getJSONObject("downloadSpec"))
+            } else null
+
             return CustomModelDefinition(
                 id = obj.getString("id"),
                 name = obj.getString("name"),
-                url = obj.getString("url"),
+                url = obj.optString("url", ""),
                 type = ModelType.valueOf(obj.getString("type")),
                 fileName = obj.getString("fileName"),
                 packageType = if (obj.has("packageType")) ModelPackage.valueOf(obj.getString("packageType")) else ModelPackage.SingleFile,
@@ -60,10 +75,19 @@ data class CustomModelDefinition(
                 description = obj.optString("description", ""),
                 backend = obj.optString("backend", ""),
                 deviceTarget = obj.optString("deviceTarget", "All supported chipsets"),
-                addedAt = obj.optLong("addedAt", System.currentTimeMillis())
+                addedAt = obj.optLong("addedAt", System.currentTimeMillis()),
+                bundle = bundleObj,
+                downloadSpec = specObj
             )
         }
     }
+}
+
+sealed class StoreRemovalResult {
+    object Removed : StoreRemovalResult()
+    object AlreadyAbsent : StoreRemovalResult()
+    data class Failed(val error: Throwable) : StoreRemovalResult()
+    val isSuccess: Boolean get() = this is Removed || this is AlreadyAbsent
 }
 
 /**
@@ -76,7 +100,6 @@ class CustomModelStore(
 ) {
     private val file = File(storageDir, fileName)
     private val atomicFile = if (transaction != null) AtomicJsonFile<List<CustomModelDefinition>>(file, transaction) else AtomicJsonFile(file)
-    private val lock = Any()
 
     @Volatile
     private var isLoaded: Boolean = false
@@ -89,7 +112,7 @@ class CustomModelStore(
 
     private fun ensureLoaded() {
         if (!isLoaded) {
-            synchronized(lock) {
+            synchronized(globalLock) {
                 if (!isLoaded) {
                     load()
                 }
@@ -98,7 +121,7 @@ class CustomModelStore(
     }
 
     suspend fun loadAsync(): StoreLoadState = withContext(Dispatchers.IO) {
-        synchronized(lock) {
+        synchronized(globalLock) {
             storageDir.mkdirs()
             when (val result = atomicFile.read { deserializeDefinitions(it) }) {
                 is AtomicReadResult.Success -> {
@@ -129,18 +152,49 @@ class CustomModelStore(
 
     fun getAll(): List<CustomModelDefinition> {
         ensureLoaded()
-        return definitionsState
+        synchronized(globalLock) {
+            return definitionsState.filter { !com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(it.id) }
+        }
     }
 
     fun getById(id: String): CustomModelDefinition? {
         ensureLoaded()
-        return definitionsState.firstOrNull { it.id == id }
+        synchronized(globalLock) {
+            if (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(id)) return null
+            return definitionsState.firstOrNull { it.id == id }
+        }
     }
 
-    fun add(definition: CustomModelDefinition): Boolean {
+    fun getRawById(id: String): CustomModelDefinition? {
+        ensureLoaded()
+        synchronized(globalLock) {
+            return definitionsState.firstOrNull { it.id == id }
+        }
+    }
+
+    fun add(definition: CustomModelDefinition, isExplicitReimport: Boolean = false): Boolean {
         ensureLoaded()
         storageDir.mkdirs()
-        synchronized(lock) {
+        synchronized(globalLock) {
+            if (_loadState.value is StoreLoadState.RecoveryRequired) {
+                return false
+            }
+            if (!isExplicitReimport && (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(definition.id) ||
+                com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(definition.id))) {
+                return false
+            }
+            when (val refresh = atomicFile.read { deserializeDefinitions(it) }) {
+                is AtomicReadResult.Success -> definitionsState = refresh.data
+                is AtomicReadResult.Missing -> definitionsState = emptyList()
+                is AtomicReadResult.Corrupt -> {
+                    _loadState.value = StoreLoadState.RecoveryRequired("Custom models file corrupt: ${refresh.cause.message}", refresh.file)
+                    return false
+                }
+                is AtomicReadResult.UnsupportedVersion -> {
+                    _loadState.value = StoreLoadState.RecoveryRequired("Custom models unsupported version ${refresh.foundVersion}", refresh.file)
+                    return false
+                }
+            }
             val existingIndex = definitionsState.indexOfFirst { it.id == definition.id }
             val nextList = if (existingIndex >= 0) {
                 definitionsState.toMutableList().apply { set(existingIndex, definition) }
@@ -149,6 +203,13 @@ class CustomModelStore(
             }
             val result = atomicFile.write(nextList) { serializeDefinitions(it) }
             if (result.isSuccess) {
+                if (isExplicitReimport) {
+                    val cleared = com.shounak.localmeshai.utils.ModelRemovalCoordinator.clearDeletionRecord(definition.id)
+                    if (!cleared) {
+                        atomicFile.write(definitionsState) { serializeDefinitions(it) }
+                        return false
+                    }
+                }
                 definitionsState = nextList
                 return true
             }
@@ -156,12 +217,37 @@ class CustomModelStore(
         }
     }
 
-    fun remove(id: String): Boolean {
+    fun updateBundle(id: String, updatedBundle: ModelBundle): Boolean {
         ensureLoaded()
         storageDir.mkdirs()
-        synchronized(lock) {
-            val nextList = definitionsState.filter { it.id != id }
-            if (nextList.size == definitionsState.size) return false
+        synchronized(globalLock) {
+            if (_loadState.value is StoreLoadState.RecoveryRequired) {
+                return false
+            }
+            when (val refresh = atomicFile.read { deserializeDefinitions(it) }) {
+                is AtomicReadResult.Success -> definitionsState = refresh.data
+                is AtomicReadResult.Missing -> definitionsState = emptyList()
+                is AtomicReadResult.Corrupt -> {
+                    _loadState.value = StoreLoadState.RecoveryRequired("Custom models file corrupt: ${refresh.cause.message}", refresh.file)
+                    return false
+                }
+                is AtomicReadResult.UnsupportedVersion -> {
+                    _loadState.value = StoreLoadState.RecoveryRequired("Custom models unsupported version ${refresh.foundVersion}", refresh.file)
+                    return false
+                }
+            }
+            val existingIndex = definitionsState.indexOfFirst { it.id == id }
+            if (existingIndex < 0) return false
+            val existing = definitionsState[existingIndex]
+            val updated = existing.copy(
+                bundle = updatedBundle.copy(id = id),
+                name = updatedBundle.displayName.ifBlank { existing.name },
+                fileName = updatedBundle.mainArtifacts.firstOrNull()?.displayName ?: existing.fileName,
+                type = if (updatedBundle.capabilities.supportsVision || updatedBundle.capabilities.supportsAudio) ModelType.Vision else ModelType.Text,
+                description = updatedBundle.description.ifBlank { existing.description },
+                backend = updatedBundle.backend.ifBlank { existing.backend }
+            )
+            val nextList = definitionsState.toMutableList().apply { set(existingIndex, updated) }
             val result = atomicFile.write(nextList) { serializeDefinitions(it) }
             if (result.isSuccess) {
                 definitionsState = nextList
@@ -171,10 +257,43 @@ class CustomModelStore(
         }
     }
 
+    fun removeResult(id: String): StoreRemovalResult {
+        ensureLoaded()
+        storageDir.mkdirs()
+        synchronized(globalLock) {
+            if (_loadState.value is StoreLoadState.RecoveryRequired) {
+                return StoreRemovalResult.Failed(IllegalStateException("Store recovery required"))
+            }
+            when (val refresh = atomicFile.read { deserializeDefinitions(it) }) {
+                is AtomicReadResult.Success -> definitionsState = refresh.data
+                is AtomicReadResult.Missing -> definitionsState = emptyList()
+                is AtomicReadResult.Corrupt -> {
+                    _loadState.value = StoreLoadState.RecoveryRequired("Custom models file corrupt: ${refresh.cause.message}", refresh.file)
+                    return StoreRemovalResult.Failed(refresh.cause)
+                }
+                is AtomicReadResult.UnsupportedVersion -> {
+                    _loadState.value = StoreLoadState.RecoveryRequired("Custom models unsupported version ${refresh.foundVersion}", refresh.file)
+                    return StoreRemovalResult.Failed(IllegalStateException("Unsupported version ${refresh.foundVersion}"))
+                }
+            }
+            val existingIndex = definitionsState.indexOfFirst { it.id == id }
+            if (existingIndex < 0) return StoreRemovalResult.AlreadyAbsent
+            val nextList = definitionsState.filter { it.id != id }
+            val result = atomicFile.write(nextList) { serializeDefinitions(it) }
+            if (result.isSuccess) {
+                definitionsState = nextList
+                return StoreRemovalResult.Removed
+            }
+            return StoreRemovalResult.Failed(result.exceptionOrNull() ?: java.io.IOException("Failed to write updated custom models"))
+        }
+    }
+
+    fun remove(id: String): Boolean = removeResult(id).isSuccess
+
     fun clear(): Boolean {
         ensureLoaded()
         storageDir.mkdirs()
-        synchronized(lock) {
+        synchronized(globalLock) {
             val nextList = emptyList<CustomModelDefinition>()
             val result = atomicFile.write(nextList) { serializeDefinitions(it) }
             if (result.isSuccess) {
@@ -186,7 +305,7 @@ class CustomModelStore(
     }
 
     fun load() {
-        synchronized(lock) {
+        synchronized(globalLock) {
             storageDir.mkdirs()
             when (val result = atomicFile.read { deserializeDefinitions(it) }) {
                 is AtomicReadResult.Success -> {
@@ -215,6 +334,7 @@ class CustomModelStore(
     }
 
     companion object {
+        val globalLock = Any()
         /**
          * Generates a stable deterministic custom model ID using SHA-256 of the normalized URL and model type.
          */

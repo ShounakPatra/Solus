@@ -129,7 +129,12 @@ class ModelDownloadService : Service() {
                 controller.pause(intent.getStringExtra(EXTRA_MODEL_ID).orEmpty())
             }
             ACTION_CANCEL -> serviceScope.launch {
-                controller.cancel(intent.getStringExtra(EXTRA_MODEL_ID).orEmpty())
+                val modelId = intent.getStringExtra(EXTRA_MODEL_ID).orEmpty()
+                val request = controller.getRequest(modelId)
+                val retainStaging = intent.getBooleanExtra(EXTRA_RETAIN_STAGING, false) ||
+                    request?.retainStagingOnCancel == true ||
+                    com.shounak.localmeshai.models.CustomModelStore(applicationContext.filesDir).getById(modelId) != null
+                controller.cancel(modelId, retainStaging = retainStaging)
             }
             ACTION_RESUME -> {
                 val modelId = intent.getStringExtra(EXTRA_MODEL_ID).orEmpty()
@@ -181,17 +186,21 @@ class ModelDownloadService : Service() {
             ongoing = true,
             showActions = true
         )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                request.modelId.notificationId(),
-                initialNotification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            )
-        } else {
-            startForeground(
-                request.modelId.notificationId(),
-                initialNotification
-            )
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    request.modelId.notificationId(),
+                    initialNotification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                startForeground(
+                    request.modelId.notificationId(),
+                    initialNotification
+                )
+            }
+        } catch (t: Throwable) {
+            android.util.Log.e("ModelDownloadService", "Failed to startForeground: ${t.message}", t)
         }
     }
 
@@ -322,6 +331,11 @@ class ModelDownloadService : Service() {
             .putExtra(EXTRA_PACKAGE_TYPE, request.packageType.name)
             .putExtra(EXTRA_TOKEN, request.bearerToken)
             .putExtra(EXTRA_SHA256, request.sha256)
+        request.downloadSpec?.let { spec ->
+            intent.putExtra(EXTRA_DOWNLOAD_SPEC, spec.toJson().toString())
+        }
+        val isCustom = com.shounak.localmeshai.models.CustomModelStore(applicationContext.filesDir).getById(request.modelId) != null || request.retainStagingOnCancel
+        intent.putExtra(EXTRA_RETAIN_STAGING, isCustom)
         return PendingIntent.getService(
             this,
             (request.modelId + action).hashCode().let { if (it == Int.MIN_VALUE) 3 else kotlin.math.abs(it) },
@@ -357,14 +371,31 @@ class ModelDownloadService : Service() {
         val fileName = getStringExtra(EXTRA_FILE_NAME) ?: return null
         val packageTypeName = getStringExtra(EXTRA_PACKAGE_TYPE) ?: ModelPackage.SingleFile.name
 
+        val specJson = getStringExtra(EXTRA_DOWNLOAD_SPEC)
+        val parsedSpec = if (!specJson.isNullOrBlank()) {
+            runCatching {
+                com.shounak.localmeshai.models.ModelDownloadSpec.fromJson(org.json.JSONObject(specJson))
+            }.getOrNull()
+        } else null
+
+        val effectiveDownloadSpec = parsedSpec
+            ?: com.shounak.localmeshai.models.CustomModelStore(applicationContext.filesDir).getById(modelId)?.downloadSpec
+            ?: com.shounak.localmeshai.models.ModelCatalog.defaultModels.find { it.id == modelId }?.downloadSpec
+
+        val tokenFromIntent = getStringExtra(EXTRA_TOKEN)?.ifBlank { null }
+        val effectiveToken = tokenFromIntent ?: com.shounak.localmeshai.utils.AppSettings.getInstance(this@ModelDownloadService)
+            .settings.value.huggingFaceToken.ifBlank { null }
+
         return DownloadRequest(
             modelId = modelId,
             name = getStringExtra(EXTRA_NAME) ?: modelId,
             url = url,
             fileName = fileName,
             packageType = ModelPackage.valueOf(packageTypeName),
-            bearerToken = getStringExtra(EXTRA_TOKEN)?.ifBlank { null },
-            sha256 = getStringExtra(EXTRA_SHA256)?.ifBlank { null }
+            bearerToken = effectiveToken,
+            sha256 = getStringExtra(EXTRA_SHA256)?.ifBlank { null },
+            downloadSpec = effectiveDownloadSpec,
+            retainStagingOnCancel = getBooleanExtra(EXTRA_RETAIN_STAGING, false)
         )
     }
 
@@ -397,6 +428,8 @@ class ModelDownloadService : Service() {
         private const val EXTRA_PACKAGE_TYPE = "package_type"
         private const val EXTRA_TOKEN = "token"
         private const val EXTRA_SHA256 = "sha256"
+        private const val EXTRA_DOWNLOAD_SPEC = "download_spec"
+        private const val EXTRA_RETAIN_STAGING = "retain_staging"
 
         fun start(
             context: Context,
@@ -406,7 +439,9 @@ class ModelDownloadService : Service() {
             fileName: String,
             packageType: ModelPackage,
             token: String?,
-            sha256: String? = null
+            sha256: String? = null,
+            downloadSpec: com.shounak.localmeshai.models.ModelDownloadSpec? = null,
+            retainStagingOnCancel: Boolean = false
         ) {
             val intent = Intent(context, ModelDownloadService::class.java)
                 .setAction(ACTION_START)
@@ -417,6 +452,10 @@ class ModelDownloadService : Service() {
                 .putExtra(EXTRA_PACKAGE_TYPE, packageType.name)
                 .putExtra(EXTRA_TOKEN, token)
                 .putExtra(EXTRA_SHA256, sha256)
+                .putExtra(EXTRA_RETAIN_STAGING, retainStagingOnCancel)
+            if (downloadSpec != null) {
+                intent.putExtra(EXTRA_DOWNLOAD_SPEC, downloadSpec.toJson().toString())
+            }
             androidx.core.content.ContextCompat.startForegroundService(context, intent)
         }
 
@@ -436,7 +475,8 @@ class ModelDownloadService : Service() {
             fileName: String,
             packageType: ModelPackage,
             token: String?,
-            sha256: String? = null
+            sha256: String? = null,
+            retainStaging: Boolean = false
         ) {
             context.startService(
                 Intent(context, ModelDownloadService::class.java)
@@ -448,6 +488,7 @@ class ModelDownloadService : Service() {
                     .putExtra(EXTRA_PACKAGE_TYPE, packageType.name)
                     .putExtra(EXTRA_TOKEN, token)
                     .putExtra(EXTRA_SHA256, sha256)
+                    .putExtra(EXTRA_RETAIN_STAGING, retainStaging)
             )
         }
 
@@ -459,9 +500,10 @@ class ModelDownloadService : Service() {
             fileName: String,
             packageType: ModelPackage,
             token: String?,
-            sha256: String? = null
+            sha256: String? = null,
+            downloadSpec: com.shounak.localmeshai.models.ModelDownloadSpec? = null
         ) {
-            start(context, modelId, name, url, fileName, packageType, token, sha256)
+            start(context, modelId, name, url, fileName, packageType, token, sha256, downloadSpec)
         }
     }
 }

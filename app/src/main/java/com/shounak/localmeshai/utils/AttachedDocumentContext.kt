@@ -26,7 +26,7 @@ internal object AttachedDocumentContext {
             text.substringAfter(marker).let { "$marker$it" }.trim()
         }
 
-        val cleanText = if (truncationNotice != null && truncationMarker != null) {
+        val cleanText = if (truncationMarker != null) {
             text.substringBefore(truncationMarker).trim()
         } else text
 

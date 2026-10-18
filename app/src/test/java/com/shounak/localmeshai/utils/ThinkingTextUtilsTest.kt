@@ -76,4 +76,35 @@ class ThinkingTextUtilsTest {
         val cutOff = "Okay, the user greeted me with \"hi,\" so I should respond naturally. Maybe say something like, \"Hi! I love pizza and"
         assertEquals("", ThinkingTextUtils.extractFinalAnswerOnly(cutOff))
     }
+
+    @Test
+    fun stripDuplicateLeadingThinkingEnvelopeRemovesMatchingEnvelopeOnly() {
+        val reasoning = "First, examine the premises."
+        val textWithDup = "<think>\nFirst, examine the premises.\n</think>\n\nTherefore, the answer is valid."
+        assertEquals(
+            "Therefore, the answer is valid.",
+            ThinkingTextUtils.stripDuplicateLeadingThinkingEnvelope(textWithDup, reasoning)
+        )
+
+        // Does NOT strip when reasoning doesn't match
+        val mismatched = "<think>\nDifferent thoughts\n</think>\n\nTherefore, the answer is valid."
+        assertEquals(
+            mismatched,
+            ThinkingTextUtils.stripDuplicateLeadingThinkingEnvelope(mismatched, reasoning)
+        )
+
+        // Preserves code blocks containing <think> tags
+        val codeSnippet = "Here is some code:\n```xml\n<think>not reasoning</think>\n```"
+        assertEquals(
+            codeSnippet,
+            ThinkingTextUtils.stripDuplicateLeadingThinkingEnvelope(codeSnippet, reasoning)
+        )
+    }
+
+    @Test
+    fun removeLooseThinkTagsStripsOpenAndCloseTags() {
+        val text = "<think>some thought</think>answer"
+        assertEquals("some thoughtanswer", ThinkingTextUtils.removeLooseThinkTags(text))
+    }
 }
+

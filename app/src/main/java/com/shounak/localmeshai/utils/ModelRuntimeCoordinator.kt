@@ -32,6 +32,10 @@ object ModelRuntimeCoordinator {
         val token: RegistrationToken,
         val stop: () -> Unit,
         val release: suspend () -> ShutdownResult,
+        val loadedModelIdentity: (() -> String)? = null,
+        val stableModelIdProvider: (() -> String)? = null,
+        val modelPathProvider: (() -> String)? = null,
+        val loadOperationIdProvider: (() -> String)? = null,
         var onReleased: ((RegistrationToken) -> Unit)?
     )
     private val registrations = mutableMapOf<ModelRuntimeOwner, Registration>()
@@ -40,6 +44,10 @@ object ModelRuntimeCoordinator {
     fun register(
         owner: ModelRuntimeOwner,
         onReleased: ((RegistrationToken) -> Unit)? = null,
+        loadedModelIdentity: (() -> String)? = null,
+        stableModelIdProvider: (() -> String)? = null,
+        modelPathProvider: (() -> String)? = null,
+        loadOperationIdProvider: (() -> String)? = null,
         requestStop: () -> Unit = {},
         release: suspend () -> ShutdownResult
     ): RegistrationToken {
@@ -49,10 +57,34 @@ object ModelRuntimeCoordinator {
                 token = token,
                 stop = requestStop,
                 release = release,
+                loadedModelIdentity = loadedModelIdentity,
+                stableModelIdProvider = stableModelIdProvider,
+                modelPathProvider = modelPathProvider,
+                loadOperationIdProvider = loadOperationIdProvider,
                 onReleased = onReleased
             )
         }
         return token
+    }
+
+    fun getActiveStableModelId(owner: ModelRuntimeOwner): String? = synchronized(lock) {
+        if (activeOwner == owner) registrations[owner]?.stableModelIdProvider?.invoke()?.ifBlank { null } else null
+    }
+
+    fun getActiveModelPath(owner: ModelRuntimeOwner): String? = synchronized(lock) {
+        if (activeOwner == owner) registrations[owner]?.modelPathProvider?.invoke()?.ifBlank { null } else null
+    }
+
+    fun getActiveLoadOperationId(owner: ModelRuntimeOwner): String? = synchronized(lock) {
+        if (activeOwner == owner) registrations[owner]?.loadOperationIdProvider?.invoke()?.ifBlank { null } else null
+    }
+
+    fun getActiveToken(owner: ModelRuntimeOwner): RegistrationToken? = synchronized(lock) {
+        if (activeOwner == owner) registrations[owner]?.token else null
+    }
+
+    fun getActiveLoadedModelId(owner: ModelRuntimeOwner): String? = synchronized(lock) {
+        if (activeOwner == owner) registrations[owner]?.loadedModelIdentity?.invoke() else null
     }
 
     fun unregister(owner: ModelRuntimeOwner, token: RegistrationToken? = null): Boolean {
@@ -150,6 +182,88 @@ object ModelRuntimeCoordinator {
     }
 
     fun isActive(owner: ModelRuntimeOwner): Boolean = synchronized(lock) { activeOwner == owner }
+
+    suspend fun releaseIfActive(
+        owner: ModelRuntimeOwner,
+        expectedModelId: String = "",
+        expectedModelPath: String = "",
+        expectedLoadOperationId: String = "",
+        expectedToken: RegistrationToken? = null,
+        currentLoadedModelIdProvider: (() -> String)? = null
+    ): ShutdownResult = withContext(Dispatchers.IO) {
+        fun matchesIdentity(reg: Registration): Boolean {
+            val regStableId = reg.stableModelIdProvider?.invoke().orEmpty()
+            val regPath = reg.modelPathProvider?.invoke().orEmpty()
+            val regOpId = reg.loadOperationIdProvider?.invoke().orEmpty()
+            val fallbackId = currentLoadedModelIdProvider?.invoke() ?: reg.loadedModelIdentity?.invoke().orEmpty()
+
+            if (expectedLoadOperationId.isNotBlank()) {
+                if (regOpId.isBlank() || regOpId != expectedLoadOperationId) return false
+            }
+
+            if (expectedModelId.isNotBlank()) {
+                val matchesId = (regStableId.isNotBlank() && regStableId == expectedModelId) ||
+                    (fallbackId.isNotBlank() && fallbackId == expectedModelId) ||
+                    (regPath.isNotBlank() && regPath == expectedModelId)
+                if (!matchesId) return false
+            }
+
+            if (expectedModelPath.isNotBlank()) {
+                val matchesPath = (regPath.isNotBlank() && regPath == expectedModelPath) ||
+                    (fallbackId.isNotBlank() && fallbackId == expectedModelPath)
+                if (!matchesPath) return false
+            }
+
+            return true
+        }
+
+        val reg = synchronized(lock) {
+            if (activeOwner != owner) return@withContext ShutdownResult.StaleNoOp
+            val currentReg = registrations[owner] ?: return@withContext ShutdownResult.StaleNoOp
+            if (expectedToken != null && currentReg.token != expectedToken) {
+                return@withContext ShutdownResult.StaleNoOp
+            }
+            if (!matchesIdentity(currentReg)) {
+                return@withContext ShutdownResult.StaleNoOp
+            }
+            currentReg
+        }
+
+        reg.stop()
+        operations.withLock {
+            val isStillOwner = synchronized(lock) { activeOwner == owner }
+            if (!isStillOwner) return@withLock ShutdownResult.StaleNoOp
+
+            val currentReg = synchronized(lock) { registrations[owner] }
+                ?: return@withLock ShutdownResult.StaleNoOp
+            if (expectedToken != null && currentReg.token != expectedToken) {
+                return@withLock ShutdownResult.StaleNoOp
+            }
+
+            if (!matchesIdentity(currentReg)) {
+                return@withLock ShutdownResult.StaleNoOp
+            }
+
+            val shutdownResult = withTimeoutOrNull(10_000L) {
+                try {
+                    reg.release()
+                } catch (e: Throwable) {
+                    ShutdownResult.Failed(e)
+                }
+            } ?: ShutdownResult.TimedOut
+
+            if (shutdownResult.isSuccess) {
+                synchronized(lock) {
+                    if (activeOwner == owner) {
+                        activeOwner = null
+                        _isRuntimeBusy.value = false
+                    }
+                }
+                reg.onReleased?.invoke(reg.token)
+            }
+            shutdownResult
+        }
+    }
 
     suspend fun releaseAll(): ShutdownResult = withContext(Dispatchers.IO) {
         // 1. Signal stop to all registered runtimes outside operationGate
