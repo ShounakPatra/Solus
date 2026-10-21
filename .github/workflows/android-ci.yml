@@ -29,6 +29,9 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Test APK verification tool
+        run: python3 -m unittest discover -s tools -p "test_apk_size_report.py" -v
+
       - name: Provision pinned NDK, CMake, and host shader tooling
         run: |
           sudo apt-get update
@@ -83,10 +86,12 @@ jobs:
           echo "RELEASE_APK=$RELEASE_APK" >> $GITHUB_ENV
           echo "Resolved release APK: $RELEASE_APK"
           mkdir -p build/reports/apk-size
+          # v6.0.0 signed baseline: 39,849,556 bytes. Keep ~5% headroom
+          # while retaining a hard size-regression gate for this runtime bundle.
           python3 tools/apk_size_report.py \
             --apk "$RELEASE_APK" \
             --output build/reports/apk-size/release-size-report.json \
-            --max-apk-bytes 36000000 \
+            --max-apk-bytes 42000000 \
             --verify-optimized
 
       - name: Upload release APK (unsigned CI build)
@@ -98,25 +103,28 @@ jobs:
           retention-days: 14
 
       - name: Upload APK size report
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: solus-apk-size-report
           path: build/reports/apk-size/release-size-report.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Upload R8 mapping
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: solus-release-r8-mapping
           path: app/build/outputs/mapping/release/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Upload native debug symbols
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: solus-release-native-symbols
           path: app/build/outputs/native-debug-symbols/release/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14

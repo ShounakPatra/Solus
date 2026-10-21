@@ -1,5 +1,15 @@
 # Solus Release APK Size Optimization Report
 
+> Historical optimization measurements below describe the pre-v6 runtime bundle.
+> For v6.0.0, the verified signed APK is 39,849,556 bytes (39.85 MB / 38.00 MiB),
+> and CI enforces a 42,000,000-byte ceiling. LiteRT-LM 0.18.0 ships
+> `liblitertlm_jni.so` without the older separate `libLiteRt.so` and
+> `libLiteRtClGlAccelerator.so`. The current checker requires that JNI library,
+> `libllm_inference_engine_jni.so`, `libsolus_llama.so` and
+> `libandroidx.graphics.path.so`, while retaining ABI, emoji-font and DEX-compression
+> checks. The historical sizes, six-library list and 36 MB budget below are not
+> current v6 release requirements.
+
 ## 1. Executive Summary
 
 This document details the optimizations performed to reduce the **Solus release APK** footprint from **48,187,140 bytes (~48.19 MB / 45.95 MiB)** down to **33,070,919 bytes (33.07 MB / 31.54 MiB)**, achieving an absolute reduction of **15,116,221 bytes (-15.12 MB / -14.42 MiB, -31.37%)**. This exceeds the target budget of 36,000,000 bytes by nearly 3 MB while preserving 100% of Solus runtime features, including GGUF (`llama.cpp`), LiteRT-LM, MediaPipe, CPU/Vulkan acceleration, vision, audio, PDF parsing, RAG, and offline operation.

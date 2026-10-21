@@ -23,8 +23,8 @@ import zipfile
 
 REQUIRED_NATIVE_LIBRARIES = [
     "libandroidx.graphics.path.so",
-    "libLiteRt.so",
-    "libLiteRtClGlAccelerator.so",
+    # LiteRT-LM 0.18.0's Android AAR ships its runtime in this JNI library;
+    # it does not include the older separate LiteRT/CL-GL shared libraries.
     "liblitertlm_jni.so",
     "libllm_inference_engine_jni.so",
     "libsolus_llama.so",

@@ -16,6 +16,10 @@ local.properties
 .vscode/
 .kotlin/
 
+# Python tooling bytecode
+__pycache__/
+*.py[cod]
+
 # Signing keys and release artifacts
 *.jks
 *.keystore
