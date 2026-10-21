@@ -14,12 +14,35 @@ import java.util.zip.ZipInputStream
 object DocumentTextExtractor {
     private const val DEFAULT_MAX_EXTRACTED_CHARS = 64_000
     private const val DEFAULT_MAX_INPUT_BYTES = 8L * 1024L * 1024L
-    private const val MAX_ZIP_ENTRIES = 120
-    private const val MAX_ZIP_LISTED_ENTRIES = 80
-    private const val MAX_ZIP_SKIPPED_ENTRIES = 24
-    private const val MAX_ZIP_ENTRY_BYTES = 12L * 1024L * 1024L
-    private const val MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 96L * 1024L * 1024L
-    private const val MAX_ZIP_TEXT_CHARS_PER_ENTRY = 16_000
+
+    fun extract(
+        context: Context,
+        uri: Uri,
+        fileName: String,
+        mimeType: String = "",
+        budget: DocumentExtractionBudget = DocumentExtractionBudget.DEFAULT,
+        isCancelled: (() -> Boolean)? = null
+    ): String {
+        val safeInputLimit = budget.maxInputBytes.coerceAtLeast(1L)
+        val sizeLimitLabel = formatBytes(safeInputLimit)
+        val reportedSize = queryFileSize(context, uri)
+        if (reportedSize != null && reportedSize > safeInputLimit) {
+            return "The attached file is ${formatBytes(reportedSize)}, but the selected model can read files up to $sizeLimitLabel based on its context window."
+        }
+        val readResult = readBytesWithinLimit(context, uri, safeInputLimit, isCancelled)
+            ?: return "Could not open the attached file stream."
+        if (readResult.exceededLimit) {
+            return "The attached file is larger than $sizeLimitLabel, which is the selected model's current context-based file limit."
+        }
+        return extractBytes(
+            bytes = readResult.bytes,
+            fileName = fileName,
+            mimeType = mimeType,
+            context = context,
+            budget = budget,
+            isCancelled = isCancelled
+        )
+    }
 
     fun extract(
         context: Context,
@@ -29,60 +52,102 @@ object DocumentTextExtractor {
         maxExtractedChars: Int = DEFAULT_MAX_EXTRACTED_CHARS,
         limitDescription: String = "$DEFAULT_MAX_EXTRACTED_CHARS characters",
         maxInputBytes: Long = DEFAULT_MAX_INPUT_BYTES
-    ): String {
-        val extension = fileName.substringAfterLast('.', "").lowercase(Locale.US)
-        val safeInputLimit = maxInputBytes.coerceAtLeast(1L)
-        val sizeLimitLabel = formatBytes(safeInputLimit)
-        val reportedSize = queryFileSize(context, uri)
-        if (reportedSize != null && reportedSize > safeInputLimit) {
-            return "The attached file is ${formatBytes(reportedSize)}, but the selected model can read files up to $sizeLimitLabel based on its context window."
-        }
-        val readResult = readBytesWithinLimit(context, uri, safeInputLimit)
-            ?: return "Could not open the attached file stream."
-        if (readResult.exceededLimit) {
-            return "The attached file is larger than $sizeLimitLabel, which is the selected model's current context-based file limit."
-        }
-        val bytes = readResult.bytes
+    ): String = extract(
+        context = context,
+        uri = uri,
+        fileName = fileName,
+        mimeType = mimeType,
+        budget = DocumentExtractionBudget(
+            maxExtractedChars = maxExtractedChars,
+            maxInputBytes = maxInputBytes,
+            limitDescription = limitDescription
+        )
+    )
 
-        val extracted = when {
-            extension == "pdf" || mimeType.contains("pdf", ignoreCase = true) ->
-                extractPdf(context, bytes)
-            extension == "docx" ->
-                extractDocx(bytes)
-            extension == "pptx" ->
-                extractOfficeOpenXml(bytes, "ppt/slides/", listOf("a:t"))
-            extension == "xlsx" ->
-                extractOfficeOpenXml(bytes, "xl/", listOf("t", "v"))
-            extension == "odt" || extension == "ods" || extension == "odp" ->
-                extractZipXmlEntries(bytes, listOf("content.xml"))
-            extension == "zip" || mimeType.contains("zip", ignoreCase = true) ->
-                extractZipArchive(
-                    context = context,
-                    bytes = bytes,
-                    archiveName = fileName,
-                    maxExtractedChars = maxExtractedChars,
-                    maxInputBytes = safeInputLimit
+    fun extractBytes(
+        bytes: ByteArray,
+        fileName: String,
+        mimeType: String = "",
+        context: Context? = null,
+        budget: DocumentExtractionBudget = DocumentExtractionBudget.DEFAULT,
+        extractionContext: SharedExtractionContext? = null,
+        isCancelled: (() -> Boolean)? = null
+    ): String {
+        val effectiveCancelled = isCancelled ?: extractionContext?.isCancelled
+        val effectiveContext = when {
+            extractionContext == null ->
+                SharedExtractionContext(budget = budget, isCancelled = effectiveCancelled)
+            extractionContext.isCancelled == null && effectiveCancelled != null ->
+                SharedExtractionContext(
+                    budget = extractionContext.budget,
+                    currentDepth = extractionContext.currentDepth,
+                    isCancelled = effectiveCancelled,
+                    state = extractionContext.state
                 )
-            extension == "html" || extension == "htm" || mimeType.contains("html", ignoreCase = true) ->
-                extractHtml(bytes.decodeText())
-            extension == "rtf" ->
-                extractRtf(bytes.decodeText())
-            isPlainTextExtension(extension) || mimeType.startsWith("text/", ignoreCase = true) ||
-                mimeType.contains("json", ignoreCase = true) || mimeType.contains("xml", ignoreCase = true) ->
-                bytes.decodeText()
-            else -> fallbackExtract(bytes, extension)
+            else ->
+                extractionContext
+        }
+        val extension = fileName.substringAfterLast('.', "").lowercase(Locale.US)
+        val safeInputLimit = budget.maxInputBytes.coerceAtLeast(1L)
+        if (bytes.size > safeInputLimit) {
+            val sizeLimitLabel = formatBytes(safeInputLimit)
+            return "The attached file is ${formatBytes(bytes.size.toLong())}, but the selected model can read files up to $sizeLimitLabel based on its context window."
+        }
+
+        val extracted = try {
+            when {
+                extension == "pdf" || mimeType.contains("pdf", ignoreCase = true) ->
+                    if (context != null) extractPdf(context, bytes) else "PDF extraction requires Context"
+                extension == "docx" ->
+                    extractDocx(bytes, effectiveContext)
+                extension == "pptx" ->
+                    extractOfficeOpenXml(bytes, "ppt/slides/", listOf("a:t"), effectiveContext)
+                extension == "xlsx" ->
+                    extractOfficeOpenXml(bytes, "xl/", listOf("t", "v"), effectiveContext)
+                extension == "odt" || extension == "ods" || extension == "odp" ->
+                    extractZipXmlEntries(bytes, listOf("content.xml"), effectiveContext)
+                ArchiveTextExtractor.isArchive(fileName, mimeType) ->
+                    ArchiveTextExtractor.extract(
+                        context = context,
+                        bytes = bytes,
+                        archiveName = fileName,
+                        budget = budget,
+                        sharedContext = effectiveContext,
+                        isCancelled = effectiveCancelled
+                    )
+                extension == "html" || extension == "htm" || mimeType.contains("html", ignoreCase = true) ->
+                    extractHtml(bytes.decodeText())
+                extension == "rtf" ->
+                    extractRtf(bytes.decodeText())
+                isPlainTextExtension(extension) || mimeType.startsWith("text/", ignoreCase = true) ||
+                    mimeType.contains("json", ignoreCase = true) || mimeType.contains("xml", ignoreCase = true) ->
+                    bytes.decodeText()
+                else -> fallbackExtract(bytes, extension)
+            }
+        } catch (e: DecompressionBombException) {
+            return "Could not extract $fileName: ${e.message}"
+        } catch (e: ExtractionTimeoutException) {
+            return "Could not extract $fileName: extraction timed out to stay within safety limits."
+        } catch (e: ExtractionLimitExceededException) {
+            return "Could not extract $fileName: ${e.message}"
+        } catch (e: NestedArchiveException) {
+            return "Could not extract $fileName: ${e.message}"
+        } catch (e: ExtractionCancelledException) {
+            throw e
+        } catch (e: Exception) {
+            return "Could not extract $fileName: ${e.message ?: e::class.java.simpleName}"
         }
 
         val normalized = extracted.normalizeDocumentWhitespace()
-        val safeLimit = maxExtractedChars.coerceAtLeast(1)
+        val safeLimit = budget.maxExtractedChars.coerceAtLeast(1)
         val clipped = if (normalized.length > safeLimit) {
             normalized.take(safeLimit).trimEnd() +
-                "\n\n[The document was longer than this model's input budget, so only the first $limitDescription were sent.]"
+                "\n\n[Truncated at $safeLimit characters: the document was longer than this model's input budget, so only the first ${budget.limitDescription} were sent.]"
         } else {
             normalized
         }
         return clipped.ifBlank {
-                "No readable text could be extracted from $fileName. If this is a scanned image-only document, OCR is required before the model can analyze it."
+            "No readable text could be extracted from $fileName. If this is a scanned image-only document, OCR is required before the model can analyze it."
         }
     }
 
@@ -113,12 +178,20 @@ object DocumentTextExtractor {
         val exceededLimit: Boolean
     )
 
-    private fun readBytesWithinLimit(context: Context, uri: Uri, maxInputBytes: Long): ReadBytesResult? {
+    private fun readBytesWithinLimit(
+        context: Context,
+        uri: Uri,
+        maxInputBytes: Long,
+        isCancelled: (() -> Boolean)? = null
+    ): ReadBytesResult? {
         return context.contentResolver.openInputStream(uri)?.use { input ->
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
             var total = 0L
             while (true) {
+                if (isCancelled?.invoke() == true) {
+                    throw ExtractionCancelledException("Document reading was cancelled.")
+                }
                 val read = input.read(buffer)
                 if (read == -1) break
                 total += read
@@ -133,7 +206,7 @@ object DocumentTextExtractor {
 
     private fun extractPdf(context: Context, bytes: ByteArray): String {
         return runCatching {
-            PDFBoxResourceLoader.init(context)
+            PDFBoxResourceLoader.init(context.applicationContext)
             PDDocument.load(ByteArrayInputStream(bytes)).use { document ->
                 PDFTextStripper().apply {
                     setSortByPosition(true)
@@ -144,7 +217,7 @@ object DocumentTextExtractor {
         }
     }
 
-    private fun extractDocx(bytes: ByteArray): String {
+    private fun extractDocx(bytes: ByteArray, extractionContext: SharedExtractionContext): String {
         val entries = listOf(
             "word/document.xml",
             "word/header",
@@ -153,255 +226,113 @@ object DocumentTextExtractor {
             "word/endnotes.xml",
             "word/comments.xml"
         )
-        return extractZipXmlEntries(bytes, entries)
+        return extractZipXmlEntries(bytes, entries, extractionContext)
     }
 
     private fun extractOfficeOpenXml(
         bytes: ByteArray,
         entryPrefix: String,
-        textTags: List<String>
+        textTags: List<String>,
+        extractionContext: SharedExtractionContext
     ): String {
         val builder = StringBuilder()
+        val maxEntryBytes = extractionContext.budget.maxEntryBytes
         ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
-            generateSequence { zip.nextEntry }.forEach { entry ->
+            while (true) {
+                extractionContext.checkCancellationAndDeadline()
+                val entry = zip.nextEntry ?: break
+                extractionContext.onEntryScanned(entry.isDirectory)
                 if (!entry.isDirectory && entry.name.startsWith(entryPrefix) && entry.name.endsWith(".xml")) {
-                    val xml = zip.readBytes().toString(Charsets.UTF_8)
-                    builder.append(extractXmlText(xml, textTags)).append("\n")
-                }
-            }
-        }
-        return builder.toString()
-    }
-
-    private fun extractZipXmlEntries(bytes: ByteArray, matchingNames: List<String>): String {
-        val builder = StringBuilder()
-        ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
-            generateSequence { zip.nextEntry }.forEach { entry ->
-                if (!entry.isDirectory && matchingNames.any { entry.name == it || entry.name.startsWith(it) }) {
-                    val xml = zip.readBytes().toString(Charsets.UTF_8)
-                    builder.append(extractXmlText(xml, listOf("w:t", "a:t", "text:p", "text:span", "t"))).append("\n")
-                }
-            }
-        }
-        return builder.toString()
-    }
-
-    private fun extractZipArchive(
-        context: Context,
-        bytes: ByteArray,
-        archiveName: String,
-        maxExtractedChars: Int,
-        maxInputBytes: Long
-    ): String {
-        val listedEntries = mutableListOf<String>()
-        val skippedEntries = mutableListOf<String>()
-        val extractedSections = StringBuilder()
-        val maxArchiveBytes = (maxInputBytes * 4)
-            .coerceAtMost(MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES)
-            .coerceAtLeast(1L)
-        val maxEntryBytes = minOf(MAX_ZIP_ENTRY_BYTES, maxArchiveBytes)
-        val maxEntryChars = maxExtractedChars
-            .coerceAtLeast(1)
-            .coerceAtMost(MAX_ZIP_TEXT_CHARS_PER_ENTRY)
-
-        var entriesScanned = 0
-        var foldersScanned = 0
-        var filesScanned = 0
-        var readableFiles = 0
-        var skippedFiles = 0
-        var truncatedEntries = 0
-        var stoppedBecauseEntryLimit = false
-        var stoppedBecauseSizeLimit = false
-        var totalUncompressedBytes = 0L
-
-        val extractionError = runCatching {
-            ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
-                while (true) {
-                    val entry = zip.nextEntry ?: break
-                    entriesScanned++
-                    val safeName = entry.name.toSafeZipEntryName()
-                    val entryLabel = safeName ?: entry.name.substringAfterLast('/').ifBlank { "unnamed entry" }
-
-                    if (entry.isDirectory) {
-                        foldersScanned++
-                        if (safeName != null && listedEntries.size < MAX_ZIP_LISTED_ENTRIES) {
-                            listedEntries.add("- $safeName/")
-                        }
-                        zip.closeEntry()
-                        continue
+                    val remaining = minOf(maxEntryBytes, extractionContext.remainingArchiveBytes())
+                    if (remaining <= 0L) {
+                        throw DecompressionBombException("Decompression limit exceeded on entry ${entry.name}.")
                     }
-
-                    filesScanned++
-                    if (filesScanned > MAX_ZIP_ENTRIES) {
-                        stoppedBecauseEntryLimit = true
-                        zip.closeEntry()
-                        break
+                    val entryBytes = with(ArchiveTextExtractor) {
+                        zip.readCurrentEntryWithinLimit(remaining, extractionContext)
                     }
-
-                    if (safeName == null) {
-                        skippedFiles++
-                        if (skippedEntries.size < MAX_ZIP_SKIPPED_ENTRIES) {
-                            skippedEntries.add("- $entryLabel (unsafe entry name)")
-                        }
-                        zip.closeEntry()
-                        continue
-                    }
-
-                    val entrySizeLabel = entry.size.takeIf { it >= 0L }?.let { " (${formatBytes(it)})" }.orEmpty()
-                    if (listedEntries.size < MAX_ZIP_LISTED_ENTRIES) {
-                        listedEntries.add("- $safeName$entrySizeLabel")
-                    }
-
-                    val extension = safeName.substringAfterLast('.', "").lowercase(Locale.US)
-                    if (!isZipReadableExtension(extension)) {
-                        skippedFiles++
-                        if (skippedEntries.size < MAX_ZIP_SKIPPED_ENTRIES) {
-                            skippedEntries.add("- $safeName$entrySizeLabel (binary or unsupported)")
-                        }
-                        if (entry.size > maxEntryBytes) {
-                            stoppedBecauseSizeLimit = true
-                            break
-                        }
-                        zip.closeEntry()
-                        continue
-                    }
-
-                    val remainingArchiveBytes = maxArchiveBytes - totalUncompressedBytes
-                    if (remainingArchiveBytes <= 0L) {
-                        stoppedBecauseSizeLimit = true
-                        zip.closeEntry()
-                        break
-                    }
-
-                    val readLimit = minOf(maxEntryBytes, remainingArchiveBytes)
-                    val entryBytes = zip.readCurrentEntryWithinLimit(readLimit)
-                    totalUncompressedBytes += entryBytes.bytes.size
-                    val stopAfterThisEntry = entryBytes.exceededLimit
                     if (entryBytes.exceededLimit) {
-                        truncatedEntries++
-                        stoppedBecauseSizeLimit = true
+                        throw DecompressionBombException("Decompression limit exceeded: XML entry ${entry.name} exceeded safety limit.")
                     }
-
-                    val entryText = extractZipEntryText(context, safeName, entryBytes.bytes)
-                        .normalizeDocumentWhitespace()
-                    if (entryText.isBlank() || entryText.isUnsupportedExtractionText()) {
-                        skippedFiles++
-                        if (skippedEntries.size < MAX_ZIP_SKIPPED_ENTRIES) {
-                            skippedEntries.add("- $safeName$entrySizeLabel (no readable text)")
-                        }
-                        if (stopAfterThisEntry) {
-                            break
-                        }
-                        zip.closeEntry()
-                        continue
-                    }
-
-                    readableFiles++
-                    extractedSections.append("\n\n--- ZIP ENTRY: ")
-                        .append(safeName)
-                        .append(entrySizeLabel)
-                        .append(" ---\n")
-                    extractedSections.append(entryText.take(maxEntryChars).trimEnd())
-                    if (entryText.length > maxEntryChars || entryBytes.exceededLimit) {
-                        extractedSections.append("\n[Entry truncated to fit this model's ZIP extraction budget.]")
-                    }
-
-                    if (stopAfterThisEntry || extractedSections.length >= maxExtractedChars * 2) {
-                        stoppedBecauseSizeLimit = true
+                    val xml = entryBytes.bytes.toString(Charsets.UTF_8)
+                    val text = extractXmlText(xml, textTags)
+                    builder.append(text).append("\n")
+                    extractionContext.recordEmittedChars(text.length + 1)
+                    if (builder.length >= extractionContext.budget.maxExtractedChars * 2) {
                         break
                     }
-                    zip.closeEntry()
+                } else if (!entry.isDirectory) {
+                    val drainOk = with(ArchiveTextExtractor) {
+                        zip.drainCurrentEntryBounded(maxEntryBytes, extractionContext)
+                    }
+                    if (!drainOk) {
+                        throw DecompressionBombException("Decompression limit exceeded on entry ${entry.name}.")
+                    }
                 }
-            }
-        }.exceptionOrNull()
-
-        if (extractionError != null) {
-            return "Could not extract ZIP archive $archiveName: ${extractionError.message ?: extractionError::class.java.simpleName}."
-        }
-
-        return buildString {
-            append("ZIP archive summary for ").append(archiveName).append("\n")
-            append("Entries scanned: ").append(entriesScanned)
-            append(" (").append(filesScanned).append(" files, ")
-            append(foldersScanned).append(" folders). ")
-            append("Readable files extracted: ").append(readableFiles).append(". ")
-            append("Skipped binary/unsupported files: ").append(skippedFiles).append(".")
-            if (truncatedEntries > 0) {
-                append("\nTruncated entries: ").append(truncatedEntries)
-                    .append(" because of context or archive safety limits.")
-            }
-            if (stoppedBecauseEntryLimit) {
-                append("\nStopped after ").append(MAX_ZIP_ENTRIES)
-                    .append(" files to keep the archive summary compact.")
-            }
-            if (stoppedBecauseSizeLimit) {
-                append("\nStopped after ")
-                    .append(formatBytes(totalUncompressedBytes))
-                    .append(" of uncompressed archive data to stay within safety limits.")
-            }
-
-            if (listedEntries.isNotEmpty()) {
-                append("\n\nFile list:")
-                append("\n")
-                append(listedEntries.joinToString("\n"))
-                if (filesScanned + foldersScanned > listedEntries.size) {
-                    append("\n- ...")
-                }
-            }
-
-            if (skippedEntries.isNotEmpty()) {
-                append("\n\nSkipped entries:")
-                append("\n")
-                append(skippedEntries.joinToString("\n"))
-                if (skippedFiles > skippedEntries.size) {
-                    append("\n- ...")
-                }
-            }
-
-            if (extractedSections.isNotBlank()) {
-                append("\n\nReadable contents extracted from archive:")
-                append(extractedSections)
-            } else {
-                append("\n\nNo readable text files were found inside this ZIP. Summarize the archive from the file list and skipped-entry notes.")
+                zip.closeEntry()
             }
         }
+        return builder.toString()
     }
 
-    private data class ZipEntryBytes(
-        val bytes: ByteArray,
-        val exceededLimit: Boolean
-    )
-
-    private fun ZipInputStream.readCurrentEntryWithinLimit(maxBytes: Long): ZipEntryBytes {
-        val output = ByteArrayOutputStream()
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-        var total = 0L
-        while (true) {
-            val read = read(buffer)
-            if (read == -1) break
-            val nextTotal = total + read
-            if (nextTotal > maxBytes) {
-                val allowed = (read - (nextTotal - maxBytes)).toInt().coerceAtLeast(0)
-                if (allowed > 0) {
-                    output.write(buffer, 0, allowed)
+    private fun extractZipXmlEntries(
+        bytes: ByteArray,
+        matchingNames: List<String>,
+        extractionContext: SharedExtractionContext
+    ): String {
+        val builder = StringBuilder()
+        val maxEntryBytes = extractionContext.budget.maxEntryBytes
+        ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
+            while (true) {
+                extractionContext.checkCancellationAndDeadline()
+                val entry = zip.nextEntry ?: break
+                extractionContext.onEntryScanned(entry.isDirectory)
+                if (!entry.isDirectory && matchingNames.any { entry.name == it || entry.name.startsWith(it) }) {
+                    val remaining = minOf(maxEntryBytes, extractionContext.remainingArchiveBytes())
+                    if (remaining <= 0L) {
+                        throw DecompressionBombException("Decompression limit exceeded on entry ${entry.name}.")
+                    }
+                    val entryBytes = with(ArchiveTextExtractor) {
+                        zip.readCurrentEntryWithinLimit(remaining, extractionContext)
+                    }
+                    if (entryBytes.exceededLimit) {
+                        throw DecompressionBombException("Decompression limit exceeded: XML entry ${entry.name} exceeded safety limit.")
+                    }
+                    val xml = entryBytes.bytes.toString(Charsets.UTF_8)
+                    val text = extractXmlText(xml, listOf("w:t", "a:t", "text:p", "text:span", "t"))
+                    builder.append(text).append("\n")
+                    extractionContext.recordEmittedChars(text.length + 1)
+                    if (builder.length >= extractionContext.budget.maxExtractedChars * 2) {
+                        break
+                    }
+                } else if (!entry.isDirectory) {
+                    val drainOk = with(ArchiveTextExtractor) {
+                        zip.drainCurrentEntryBounded(maxEntryBytes, extractionContext)
+                    }
+                    if (!drainOk) {
+                        throw DecompressionBombException("Decompression limit exceeded on entry ${entry.name}.")
+                    }
                 }
-                return ZipEntryBytes(output.toByteArray(), exceededLimit = true)
+                zip.closeEntry()
             }
-            output.write(buffer, 0, read)
-            total = nextTotal
         }
-        return ZipEntryBytes(output.toByteArray(), exceededLimit = false)
+        return builder.toString()
     }
 
-    private fun extractZipEntryText(context: Context, entryName: String, bytes: ByteArray): String {
+    internal fun extractZipEntryText(
+        context: Context?,
+        entryName: String,
+        bytes: ByteArray,
+        extractionContext: SharedExtractionContext? = null
+    ): String {
         val extension = entryName.substringAfterLast('.', "").lowercase(Locale.US)
+        val ctx = extractionContext ?: SharedExtractionContext()
         return when {
-            extension == "pdf" -> extractPdf(context, bytes)
-            extension == "docx" -> extractDocx(bytes)
-            extension == "pptx" -> extractOfficeOpenXml(bytes, "ppt/slides/", listOf("a:t"))
-            extension == "xlsx" -> extractOfficeOpenXml(bytes, "xl/", listOf("t", "v"))
+            extension == "pdf" -> if (context != null) extractPdf(context, bytes) else "PDF extraction requires Context"
+            extension == "docx" -> extractDocx(bytes, ctx)
+            extension == "pptx" -> extractOfficeOpenXml(bytes, "ppt/slides/", listOf("a:t"), ctx)
+            extension == "xlsx" -> extractOfficeOpenXml(bytes, "xl/", listOf("t", "v"), ctx)
             extension == "odt" || extension == "ods" || extension == "odp" ->
-                extractZipXmlEntries(bytes, listOf("content.xml"))
+                extractZipXmlEntries(bytes, listOf("content.xml"), ctx)
             extension == "html" || extension == "htm" -> extractHtml(bytes.decodeText())
             extension == "rtf" -> extractRtf(bytes.decodeText())
             isPlainTextExtension(extension) -> bytes.decodeText()
@@ -456,28 +387,6 @@ object DocumentTextExtractor {
         }
     }
 
-    private fun String.toSafeZipEntryName(): String? {
-        val normalized = replace('\\', '/').trim('/')
-        if (normalized.isBlank()) return null
-        val parts = normalized.split('/')
-        if (parts.any { it.isBlank() || it == "." || it == ".." }) return null
-        if (normalized.startsWith("/") || normalized.contains(":")) return null
-        return normalized
-    }
-
-    private fun isZipReadableExtension(extension: String): Boolean {
-        return extension in setOf(
-            "pdf", "docx", "pptx", "xlsx", "odt", "ods", "odp",
-            "html", "htm", "rtf"
-        ) || isPlainTextExtension(extension)
-    }
-
-    private fun String.isUnsupportedExtractionText(): Boolean {
-        val normalized = trim().lowercase(Locale.US)
-        return normalized == "this file type is not text-extractable by the app yet." ||
-            normalized.startsWith("could not extract pdf text")
-    }
-
     private fun ByteArray.decodeText(): String {
         val utf8 = toString(Charsets.UTF_8)
         return if (utf8.count { it == '\uFFFD' } > utf8.length / 20) {
@@ -527,7 +436,7 @@ object DocumentTextExtractor {
         }
     }
 
-    private fun isPlainTextExtension(extension: String): Boolean {
+    internal fun isPlainTextExtension(extension: String): Boolean {
         return extension in setOf(
             "txt", "md", "markdown", "csv", "tsv", "json", "xml", "yaml", "yml",
             "log", "ini", "properties", "gradle", "kt", "java", "py", "js", "ts",

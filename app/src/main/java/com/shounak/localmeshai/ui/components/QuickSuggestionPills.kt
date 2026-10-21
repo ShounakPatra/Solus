@@ -16,10 +16,10 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Lightbulb
-import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -47,6 +47,7 @@ data class SuggestionItem(
 @Composable
 fun QuickSuggestionPills(
     isVisible: Boolean,
+    hazeState: dev.chrisbanes.haze.HazeState,
     onSelectSuggestion: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -60,7 +61,7 @@ fun QuickSuggestionPills(
         val suggestions = remember {
             listOf(
                 SuggestionItem("Explain Simply", "Explain simply in easy terms: ", Icons.Default.Lightbulb, Color(0xFF38BDF8)),
-                SuggestionItem("Summarize Text", "Summarize key points of: ", Icons.Default.MenuBook, Color(0xFFA855F7)),
+                SuggestionItem("Summarize Text", "Summarize key points of: ", Icons.AutoMirrored.Filled.MenuBook, Color(0xFFA855F7)),
                 SuggestionItem("Fix & Format Code", "Review and format this code snippet: ", Icons.Default.Code, Color(0xFF34D399)),
                 SuggestionItem("Brainstorm Ideas", "Brainstorm 5 creative ideas for: ", Icons.Default.AutoAwesome, Color(0xFFF59E0B)),
                 SuggestionItem("Step-by-Step", "Analyze step-by-step: ", Icons.Default.Psychology, Color(0xFFEC4899))
@@ -70,13 +71,14 @@ fun QuickSuggestionPills(
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 6.dp),
+                .padding(vertical = 1.dp),
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(suggestions, key = { it.label }) { item ->
                 SuggestionPill(
                     item = item,
+                    hazeState = hazeState,
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         onSelectSuggestion(item.promptText)
@@ -90,6 +92,7 @@ fun QuickSuggestionPills(
 @Composable
 private fun SuggestionPill(
     item: SuggestionItem,
+    hazeState: dev.chrisbanes.haze.HazeState,
     onClick: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -100,37 +103,8 @@ private fun SuggestionPill(
         label = "pillScale"
     )
 
-    Row(
-        modifier = Modifier
-            .scale(scale)
-            .clip(RoundedCornerShape(20.dp))
-            .background(
-                Brush.horizontalGradient(
-                    colors = listOf(
-                        Color(0xFF1E293B).copy(alpha = 0.85f),
-                        Color(0xFF0F172A).copy(alpha = 0.85f)
-                    )
-                )
-            )
-            .border(
-                width = 1.dp,
-                brush = Brush.horizontalGradient(
-                    colors = listOf(
-                        item.accentColor.copy(alpha = 0.5f),
-                        item.accentColor.copy(alpha = 0.2f)
-                    )
-                ),
-                shape = RoundedCornerShape(20.dp)
-            )
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick
-            )
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
+    FloatingBlurChip(hazeState = hazeState, onClick = onClick, accent = item.accentColor,
+        modifier = Modifier.scale(scale)) {
         Icon(
             imageVector = item.icon,
             contentDescription = null,
@@ -141,7 +115,7 @@ private fun SuggestionPill(
             text = item.label,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
-            color = Color.White
+            color = androidx.compose.material3.MaterialTheme.colorScheme.onSurface
         )
     }
 }

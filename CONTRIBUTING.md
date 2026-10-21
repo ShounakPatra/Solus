@@ -2,7 +2,7 @@
 
 First off, thank you for considering contributing to **Solus**! 🎉
 
-Solus is an open-source, 100% offline, on-device AI assistant for Android built with Kotlin, Jetpack Compose, C++20, and native ML runtimes (Google LiteRT, MediaPipe GenAI, and `llama.cpp`). Contributions from developers, designers, writers, and AI enthusiasts help make local on-device AI accessible, private, and fast for everyone.
+Solus is an open-source, 100% offline, on-device AI assistant for Android built with Kotlin, Jetpack Compose, C++17, and native ML runtimes (Google LiteRT, MediaPipe GenAI, and `llama.cpp`). Contributions from developers, designers, writers, and AI enthusiasts help make local on-device AI accessible, private, and fast for everyone.
 
 Please take a moment to review this document before submitting your contribution.
 
@@ -32,11 +32,12 @@ There are many ways you can contribute to Solus:
 
 Ensure you have the following installed on your development machine:
 
-- **Android Studio:** Ladybug (2024.2.1+) or newer recommended.
-- **JDK:** Java Development Kit 17 (Java 17).
-- **Android SDK:** API Level 36 (`compileSdk = 36`, `targetSdk = 36`, `minSdk = 26`).
-- **Android NDK:** NDK version `26.x` or newer (for C++ JNI CMake builds).
-- **CMake:** Version 3.22.1+.
+- **Android Studio:** A version compatible with the configured Android Gradle Plugin (`9.4.1`).
+- **Gradle JVM:** Use Android Studio's bundled JBR. Kotlin and Java bytecode target Java 17; that target is separate from the JVM running Gradle.
+- **Android SDK:** API Level 37 (`compileSdk = 37`, `targetSdk = 37`, `minSdk = 28`).
+- **Android NDK:** `28.2.13676358`, as pinned in `app/build.gradle.kts`.
+- **CMake:** `3.22.1`.
+- **Gradle:** Use the checked-in `9.8.2` wrapper; do not substitute a global Gradle installation.
 - **Git:** Latest version.
 
 ### Setup Instructions
@@ -50,6 +51,8 @@ Ensure you have the following installed on your development machine:
 3. **Open in Android Studio:**
    - Launch Android Studio and select **Open**.
    - Navigate to the cloned `Solus` directory and let Gradle sync.
+
+Keep `local.properties`, `keystore.properties`, signing keys, header dumps, and diagnostic logs out of commits. Signing a release requires your own signing configuration.
 
 4. **Build Debug APK via CLI:**
    ```bash
@@ -93,7 +96,7 @@ To keep our commit history clean and manageable:
 - **Performance:** Avoid unnecessary recompositions by using `remember`, `key()`, and `derivedStateOf`. Use proper `Modifier` order.
 
 ### Native C++ & JNI
-- **C++ Standard:** Follow C++20 standards.
+- **C++ Standard:** Follow C++17 standards.
 - **Memory Safety:** Use RAII pattern and smart pointers (`std::unique_ptr`, `std::shared_ptr`). Avoid raw pointers and manual `malloc`/`free`.
 - **JNI Best Practices:** Always release local JNI references (`DeleteLocalRef`) and handle native exceptions safely to prevent crashes on the main UI looper.
 
@@ -118,7 +121,7 @@ When filing an issue on [Solus Issues](https://github.com/ShounakPatra/Solus/iss
 
 - **Use the Search Function:** Check if the issue has already been reported.
 - **Provide Environment Details:**
-  - App Version (`v1.5.0`, etc.)
+  - App version and version code (current source: `6.0.0`, code `9`)
   - Device Model & SoC (e.g., MediaTek Dimensity 7050, Snapdragon 8 Gen 2)
   - Installed RAM (e.g., 8 GB, 12 GB)
   - Android OS Version (Android 13, 14, 15, 16, 17)

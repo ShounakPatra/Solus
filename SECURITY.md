@@ -1,6 +1,6 @@
 # 🛡️ Security Policy — Solus
 
-Solus is an open-source, 100% offline, on-device AI assistant for Android. Security and user privacy are foundational pillars of Solus. Because Solus operates entirely locally on your device without sending prompts or personal data to external cloud servers, user data security is inherently protected by local hardware boundaries. 
+Solus is an open-source, 100% offline, on-device AI assistant for Android. Security and user privacy are foundational pillars of Solus. Inference runs locally. Downloads, update checks, and explicitly shared reports or backups have separate network and data-handling considerations.
 
 This document outlines our security model, supported versions, and procedures for responsibly reporting security vulnerabilities.
 
@@ -8,25 +8,21 @@ This document outlines our security model, supported versions, and procedures fo
 
 ## 📋 Supported Versions
 
-We actively maintain and provide security updates for the following versions of Solus:
-
-| Version | Supported | Security Maintenance Status |
-| :--- | :---: | :--- |
-| `v1.5.x` | ✅ | **Current Stable Release** — Active security patches & bug fixes |
-| `v1.0.x` – `v1.4.x` | ⚠️ | Critical security fixes backported when applicable |
-| `< 1.0.0` | ❌ | End of Life (EOL) — Please upgrade to `v1.5.0` or newer |
+The current release is **v6.0.0** (version code **9**); **v5.0.0** is the previous release. Report the exact version and whether you used a published APK or a source build. Reproduce issues on the latest published release when possible. Historical release notes are not a guarantee of continued backports to older versions.
 
 ---
 
-## 🔒 Security Architecture & Guarantees
+## 🔒 Security Architecture
 
 Solus is designed around a **Zero-Trust, Zero-Telemetry** local execution model:
 
-1. **100% Offline Execution:** Solus requires zero network connectivity for AI inference, text generation, image vision analysis, or chat persistence.
-2. **Zero Telemetry & Analytics:** Solus contains no analytics SDKs, user tracking, crash reporting telemetry, or third-party ad networks.
-3. **Isolated Token Storage:** Hugging Face API tokens (used optionally for downloading gated open-weights models) are stored securely in Android `SharedPreferences` with `MODE_PRIVATE` and are never logged, exported, or transmitted to any third-party server.
-4. **Native Memory Safety:** Native C++ JNI bindings (`llama.cpp`, LiteRT) implement strict RAII memory management, bounds checking, and automatic heap cleanup to prevent buffer overflows or memory leak vulnerabilities.
-5. **Scoped Storage:** Model files, chat histories, and temporary app data are stored strictly within Android App-Specific Internal Storage (`/data/user/0/com.shounak.localmeshai/`).
+1. **Local inference:** Text generation, vision/audio inference, chats, and document retrieval can run without a network connection once required models are available.
+2. **Network use:** Model downloads, Hugging Face authentication, update checks, and user-initiated sharing can use the network. There is no automatic analytics or crash-report upload; review a report before sharing it.
+3. **Access tokens:** Optional Hugging Face tokens use app-private preferences and authenticated model requests. They are excluded from workspace backups. App-private preferences are not a claim of hardware-backed encryption.
+4. **Storage boundaries:** Chats, memories, indexes, and durable attachments use app-private storage. Models can use app-specific external storage or user-granted document URIs. Keep selected model files accessible after import.
+5. **Portable backups:** Backups contain private chats, memories, settings, and optionally available attachments. Model weights, credentials, and document indexes are excluded. Choose a trusted export location and share backups deliberately.
+6. **Recovery:** Malformed persisted chat and knowledge data requires recovery before writes are accepted. Supported backups can be used for recovery; malformed records are not silently discarded.
+7. **Native runtimes:** Native inference uses third-party libraries and can fail or crash for unsupported models or devices. Successful builds and unit tests do not establish that all native execution is safe on every device.
 
 ---
 
@@ -61,7 +57,7 @@ When a security vulnerability is reported:
 1. **Initial Acknowledgment:** You will receive an email response acknowledging receipt of your report within **24 to 48 hours**.
 2. **Assessment & Triage:** The Solus maintainer will investigate the issue and determine severity within **3 to 5 business days**.
 3. **Patch Development:** A security fix will be engineered, tested, and validated against supported Android API levels.
-4. **Coordinated Release:** A patch release (e.g., `v1.5.1`) will be published to GitHub Releases alongside an advisory acknowledging the reporter (unless anonymity is requested).
+4. **Coordinated Release:** A patch release (e.g., `v6.0.1`) will be published to GitHub Releases alongside an advisory acknowledging the reporter (unless anonymity is requested).
 
 ---
 
