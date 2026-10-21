@@ -50,3 +50,7 @@ traces/
 *.tflite
 *.task
 *.litertlm
+
+# Firebase / Google services config (contains API keys)
+google-services.json
+app/google-services.json
