@@ -2,8 +2,13 @@ package com.shounak.localmeshai.utils
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Debug
+import android.os.PowerManager
+import com.shounak.localmeshai.BuildConfig
 import com.shounak.localmeshai.models.ModelInfo
+import com.shounak.localmeshai.models.ModelType
 import java.util.Locale
 
 enum class InferenceBackend {
@@ -14,23 +19,95 @@ enum class InferenceBackend {
 
 object DeviceUtils {
     private const val MIN_RAM_GIB_FOR_8_GB_DEVICE = 7.0
+    private const val MIN_RAM_GIB_FOR_SUB_1B_LITERT_LM = 3.5
+    private const val MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM = 5.0
     private const val MIN_RAM_GIB_FOR_SMALL_LITERT_LM = 6.5
     private const val MIN_RAM_GIB_FOR_COMPACT_LITERT_LM = 10.5
     private const val MIN_RAM_GIB_FOR_LARGE_LITERT_LM = 14.5
     private const val MIN_RAM_GIB_FOR_HUGE_LITERT_LM = 22.0
 
     fun getTotalRamGB(context: Context): Double {
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            ?: return 6.0
         val memoryInfo = ActivityManager.MemoryInfo()
         activityManager.getMemoryInfo(memoryInfo)
         return memoryInfo.totalMem / (1024.0 * 1024.0 * 1024.0)
     }
 
+    fun isLowRamDevice(context: Context): Boolean {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        if (activityManager?.isLowRamDevice == true) return true
+        return getTotalRamGB(context) < 6.0
+    }
+
+    fun recommendedContextWindow(context: Context, modelParamsB: Float? = null): Int {
+        return recommendedContextWindowForRam(getTotalRamGB(context), modelParamsB)
+    }
+
+    fun recommendedContextWindowForRam(totalRamGB: Double, modelParamsB: Float? = null): Int {
+        val isSmallModel = (modelParamsB != null && modelParamsB <= 2.0f)
+        return when {
+            totalRamGB < 4.5 -> if (isSmallModel) 1536 else 1024
+            totalRamGB < 7.0 -> 2048
+            totalRamGB < 11.0 -> 4096
+            else -> 8192
+        }
+    }
+
+    fun recommendedThreadCount(context: Context): Int {
+        return com.shounak.localmeshai.ai.RuntimeExecutionPolicy.resolve(context).cpuThreads
+    }
+
+    /**
+     * Checks if the current app process is running in 64-bit mode.
+     * Solus dropped armeabi-v7a (32-bit ARM) and requires 64-bit architectures (arm64-v8a, x86_64).
+     */
+    fun is64BitDevice(): Boolean {
+        return android.os.Process.is64Bit()
+    }
+
+    /**
+     * Validates that the device provides supported 64-bit native ABIs.
+     */
+    fun isSupportedAbi(): Boolean {
+        val primaryAbi = Build.SUPPORTED_ABIS.firstOrNull() ?: ""
+        return (primaryAbi == "arm64-v8a" || primaryAbi == "x86_64") && is64BitDevice()
+    }
+
+    fun recommendedThreadCountForCoresAndRam(cores: Int, totalRamGB: Double): Int {
+        return when {
+            totalRamGB < 4.5 -> minOf(2, maxOf(1, cores / 2))
+            cores <= 4 -> maxOf(1, cores - 1)
+            else -> 4
+        }
+    }
+
+    fun recommendedBatchSize(context: Context): Pair<Int, Int> {
+        return recommendedBatchSizeForRam(getTotalRamGB(context))
+    }
+
+    fun recommendedBatchSizeForRam(totalRamGB: Double): Pair<Int, Int> {
+        return when {
+            totalRamGB < 4.5 -> 128 to 64
+            totalRamGB < 7.0 -> 256 to 128
+            else -> 512 to 256
+        }
+    }
+
     fun getAvailableRamMb(context: Context): Long {
-        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            ?: return 2048L
         val memoryInfo = ActivityManager.MemoryInfo()
         activityManager.getMemoryInfo(memoryInfo)
         return memoryInfo.availMem / (1024L * 1024L)
+    }
+
+    fun getBatteryTemperatureCelsius(context: Context): Float? {
+        return runCatching {
+            val intent = context.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+            val temp10ths = intent?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+            if (temp10ths > 0) temp10ths / 10f else null
+        }.getOrNull()
     }
 
     fun selectBackend(modelInfo: ModelInfo, availableRamMb: Long): InferenceBackend {
@@ -52,17 +129,78 @@ object DeviceUtils {
         return selectBackend(fileName, getAvailableRamMb(context))
     }
 
+    fun checkModelSafetyProfile(
+        context: Context,
+        modelInfo: ModelInfo
+    ): Pair<Boolean, String> {
+        val fileName = modelInfo.fileName
+        val modelId = modelInfo.id
+        val modelName = modelInfo.name
+        val modelSize = modelInfo.size
+
+        // LiteRT-LM models have specialized GPU / CPU chipset checks
+        if (fileName.endsWith(".litertlm", ignoreCase = true)) {
+            return canInitializeLiteRtLm(
+                context = context,
+                modelId = modelId,
+                modelName = modelName,
+                modelSize = modelSize,
+                isVision = modelInfo.type == ModelType.Vision,
+                fileName = fileName,
+                backendLabel = modelInfo.backend,
+                supportsAudioInput = modelInfo.supportsAudioInput
+            )
+        }
+
+        return checkModelSafetyProfileForRam(getTotalRamGB(context), modelInfo)
+    }
+
+    fun checkModelSafetyProfileForRam(
+        totalRamGB: Double,
+        modelInfo: ModelInfo
+    ): Pair<Boolean, String> {
+        val fileName = modelInfo.fileName
+        val modelId = modelInfo.id
+        val modelName = modelInfo.name
+        val modelSize = modelInfo.size
+
+        // GGUF, Task, and TFLite models check device RAM vs model parameter size
+        val paramsB = estimateModelParametersB(modelName.ifBlank { modelId }, modelSize)
+
+        return when {
+            // Models >= 6.5B
+            paramsB != null && paramsB >= 6.5f -> {
+                val minRam = 10.5
+                if (totalRamGB < minRam) {
+                    false to "This ${modelName.ifBlank { "large" }} model needs a 12 GB device profile. This device has ${String.format(Locale.US, "%.1f", totalRamGB)} GiB usable RAM, so it is blocked by default to prevent out-of-memory crashes."
+                } else {
+                    true to ""
+                }
+            }
+            // Models >= 2.8B
+            paramsB != null && paramsB >= 2.8f -> {
+                if (totalRamGB < 6.5) {
+                    false to "This ${modelName.ifBlank { "3B" }} model needs an 8 GB device profile. This device has ${String.format(Locale.US, "%.1f", totalRamGB)} GiB usable RAM, so it is blocked by default to prevent out-of-memory crashes."
+                } else {
+                    true to ""
+                }
+            }
+            // Models >= 1.4B
+            paramsB != null && paramsB >= 1.4f -> {
+                if (totalRamGB < 4.5) {
+                    false to "This ${modelName.ifBlank { "1.5B" }} model needs a 6 GB device profile. This device has ${String.format(Locale.US, "%.1f", totalRamGB)} GiB usable RAM, so it is blocked by default to prevent out-of-memory crashes."
+                } else {
+                    true to ""
+                }
+            }
+            // Small / sub-1B models run on all supported devices
+            else -> true to ""
+        }
+    }
+
     fun isDeviceCompatible(context: Context): Pair<Boolean, String> {
         val ram = getTotalRamGB(context)
-        val ramCompatible = ram >= MIN_RAM_GIB_FOR_8_GB_DEVICE
-        val soc = deviceSoCText()
-        val socCompatible = isSupportedChipset(soc)
-
-        return if (ramCompatible && socCompatible) {
-            true to "Device ready: ${String.format(Locale.US, "%.1f", ram)} GiB usable RAM, ${deviceChipLabel()}"
-        } else {
-            false to buildRequirementMessage(ram, ramCompatible, socCompatible)
-        }
+        return true to "Device ready: ${String.format(Locale.US, "%.1f", ram)} GiB usable RAM, ${deviceChipLabel()}"
     }
 
     fun canInitializeLiteRtLm(
@@ -88,6 +226,8 @@ object DeviceUtils {
             backendLabel.contains("vision", ignoreCase = true) ||
             backendLabel.contains("multimodal", ignoreCase = true)
         val requiredRam = requiredRamGiBForLiteRtLm(paramsB)
+        val isGemma4E2b = isGemma4E2bLiteRt(modelId, modelName, effectiveFileName)
+        val isSafeCompactModel = isGemma4E2b || (paramsB != null && paramsB <= 2.2f)
         val gemma4CpuFallbackAllowed = canUseGemma4LiteRtCpuFallback(
             context = context,
             modelId = modelId,
@@ -101,9 +241,10 @@ object DeviceUtils {
             ram < requiredRam -> {
                 false to "This LiteRT-LM model needs a ${nominalDeviceRamLabel(requiredRam)} Android device profile. This device has ${String.format(Locale.US, "%.1f", ram)} GiB usable RAM, so the model is blocked before native initialization to avoid crashes."
             }
+            isSafeCompactModel -> true to ""
             isLiteRtModel && isMultimodalLiteRt && !highEndForLiteRtLm -> {
                 val chip = deviceChipLabel()
-                false to "Multimodal LiteRT-LM is enabled only on verified high-end Android GPU profiles. $chip does not meet that safe profile, so this model is blocked before native initialization to avoid crashes. Use a MediaPipe .task vision model on this device instead."
+                false to "Multimodal LiteRT-LM models above 2B are enabled only on verified high-end Android GPU profiles. $chip does not meet that safe profile, so this model is blocked before native initialization to avoid crashes. Use a MediaPipe .task vision model on this device instead."
             }
             gemma4CpuFallbackAllowed -> true to ""
             highEndForLiteRtLm && selectedBackend == InferenceBackend.LITERT_GPU -> true to ""
@@ -111,7 +252,7 @@ object DeviceUtils {
                 // Known mid-range chipset: allow small models freely, compact text models with enough RAM.
                 when {
                     paramsB == null -> true to ""
-                    paramsB <= 2.0f -> true to ""
+                    paramsB <= 2.2f -> true to ""
                     !isVision && paramsB <= 4.1f && ram >= MIN_RAM_GIB_FOR_COMPACT_LITERT_LM -> true to ""
                     else -> {
                         false to "This LiteRT-LM model is above this Android device's safe profile for ${deviceChipLabel()}. Try a <=2B LiteRT-LM model or a MediaPipe .task model on this device."
@@ -121,7 +262,7 @@ object DeviceUtils {
             else -> {
                 // Unknown chipset: allow small (<=2B) models on CPU, block larger ones.
                 when {
-                    paramsB != null && paramsB <= 2.0f -> true to ""
+                    paramsB != null && paramsB <= 2.2f -> true to ""
                     else -> {
                         false to "LiteRT-LM support is unverified on ${deviceChipLabel()}. " +
                             "Small (<=2B) LiteRT-LM models can still run, but this model is too large. " +
@@ -141,16 +282,312 @@ object DeviceUtils {
         isMultimodalLiteRt: Boolean = false
     ): Boolean {
         val effectiveFileName = fileName.ifBlank { "$modelId.litertlm" }
-        if (isMultimodalLiteRt) return false
         if (!effectiveFileName.endsWith(".litertlm", ignoreCase = true)) return false
-        if (!isGemma4E2bLiteRt(modelId, modelName, effectiveFileName)) return false
+        val paramsB = estimateModelParametersB(modelName.ifBlank { modelId }, modelSize)
+        val isSafeCompact = isGemma4E2bLiteRt(modelId, modelName, effectiveFileName) || (paramsB != null && paramsB <= 2.2f)
+        if (!isSafeCompact) return false
         if (selectBackendForModelFile(context, effectiveFileName) != InferenceBackend.LITERT_CPU) return false
-        return getTotalRamGB(context) >= MIN_RAM_GIB_FOR_SMALL_LITERT_LM
+        return getTotalRamGB(context) >= MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM
     }
 
     fun supportsLiteRtLmGpu(): Boolean {
         val soc = deviceSoCText()
         return !isBlockedLiteRtLmGpuChipset(soc) && isHighEndLiteRtLmChipset(soc)
+    }
+
+    data class RamMemoryInfo(
+        val availableBytes: Long,
+        val totalBytes: Long,
+        val availableGb: Double,
+        val totalGb: Double,
+        val usedPercentage: Float
+    )
+
+    fun getRamMemoryInfo(context: Context): RamMemoryInfo {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        val memoryInfo = ActivityManager.MemoryInfo()
+        if (activityManager != null) {
+            activityManager.getMemoryInfo(memoryInfo)
+        }
+        val avail = memoryInfo.availMem
+        val total = if (memoryInfo.totalMem > 0) memoryInfo.totalMem else 6L * 1024L * 1024L * 1024L
+        val availGb = avail / (1024.0 * 1024.0 * 1024.0)
+        val totalGb = total / (1024.0 * 1024.0 * 1024.0)
+        val usedRatio = ((total - avail).toFloat() / total.toFloat()).coerceIn(0f, 1f)
+        return RamMemoryInfo(
+            availableBytes = avail,
+            totalBytes = total,
+            availableGb = availGb,
+            totalGb = totalGb,
+            usedPercentage = usedRatio
+        )
+    }
+
+    /**
+     * Gathers comprehensive hardware, OS, memory, storage, and runtime diagnostics for crash reporting.
+     */
+    fun getFullDeviceDiagnostics(context: Context): Map<String, String> {
+        val map = linkedMapOf<String, String>()
+
+        // 1. Device Identification
+        map["Manufacturer"] = Build.MANUFACTURER
+        map["Model"] = Build.MODEL
+        map["Brand"] = Build.BRAND
+        map["Product"] = Build.PRODUCT
+        map["Device"] = Build.DEVICE
+        map["Board"] = Build.BOARD
+        map["Hardware"] = Build.HARDWARE
+        map["Bootloader"] = Build.BOOTLOADER
+        map["Display Build"] = Build.DISPLAY
+        map["Fingerprint"] = Build.FINGERPRINT
+
+        // 2. Android OS & Kernel
+        map["Android OS"] = "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})"
+        map["Security Patch"] = runCatching { Build.VERSION.SECURITY_PATCH }.getOrDefault("Unknown")
+        map["Supported ABIs"] = Build.SUPPORTED_ABIS.joinToString(", ")
+        map["Is 64-Bit Process"] = is64BitDevice().toString()
+        map["Supported 64-Bit ABI"] = isSupportedAbi().toString()
+
+        // 3. Processor & SoC
+        val soc = getDeviceSoCInfo(context)
+        map["Chipset / SoC"] = "${soc.title} (${soc.details})"
+        if (soc.modelNumber.isNotBlank()) {
+            map["SoC Model Number"] = soc.modelNumber
+        }
+        map["CPU Architecture"] = System.getProperty("os.arch") ?: "Unknown"
+        map["CPU Cores"] = Runtime.getRuntime().availableProcessors().toString()
+
+        // 4. Memory (RAM)
+        val ram = getRamMemoryInfo(context)
+        map["Total RAM"] = String.format(Locale.US, "%.2f GiB (%,d bytes)", ram.totalGb, ram.totalBytes)
+        map["Available RAM"] = String.format(Locale.US, "%.2f GiB (%,d bytes)", ram.availableGb, ram.availableBytes)
+        map["RAM Usage"] = String.format(Locale.US, "%.1f%%", ram.usedPercentage * 100f)
+        map["Low-RAM Device Flag"] = isLowRamDevice(context).toString()
+
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        if (am != null) {
+            val memInfo = ActivityManager.MemoryInfo()
+            am.getMemoryInfo(memInfo)
+            map["System Low Memory State"] = memInfo.lowMemory.toString()
+            map["Low Memory Threshold"] = "${memInfo.threshold / (1024L * 1024L)} MB"
+            map["Large Heap Limit"] = "${am.largeMemoryClass} MB"
+            map["Standard Heap Limit"] = "${am.memoryClass} MB"
+        }
+
+        // 5. Runtime & Native Heap
+        val rt = Runtime.getRuntime()
+        map["JVM Heap Max"] = "${rt.maxMemory() / (1024L * 1024L)} MB"
+        map["JVM Heap Total"] = "${rt.totalMemory() / (1024L * 1024L)} MB"
+        map["JVM Heap Free"] = "${rt.freeMemory() / (1024L * 1024L)} MB"
+        map["Native Heap Allocated"] = "${Debug.getNativeHeapAllocatedSize() / (1024L * 1024L)} MB"
+        map["Native Heap Free"] = "${Debug.getNativeHeapFreeSize() / (1024L * 1024L)} MB"
+        map["Native Heap Total"] = "${Debug.getNativeHeapSize() / (1024L * 1024L)} MB"
+
+        // 6. Storage
+        val freeStorageMb = runCatching { context.filesDir.freeSpace / (1024L * 1024L) }.getOrDefault(-1L)
+        val totalStorageMb = runCatching { context.filesDir.totalSpace / (1024L * 1024L) }.getOrDefault(-1L)
+        map["Internal Storage Free"] = if (freeStorageMb >= 0) "$freeStorageMb MB" else "Unknown"
+        map["Internal Storage Total"] = if (totalStorageMb >= 0) "${totalStorageMb / 1024} GB ($totalStorageMb MB)" else "Unknown"
+
+        // 7. Battery & Thermal
+        runCatching {
+            val batteryIntent = context.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+            if (batteryIntent != null) {
+                val level = batteryIntent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+                val scale = batteryIntent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
+                if (level >= 0 && scale > 0) {
+                    map["Battery Level"] = "${(level * 100) / scale}%"
+                }
+                val temp = batteryIntent.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, -1)
+                if (temp > 0) {
+                    map["Battery Temperature"] = "${temp / 10f} °C"
+                }
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            val thermal = pm?.currentThermalStatus ?: -1
+            val thermalLabel = when (thermal) {
+                PowerManager.THERMAL_STATUS_NONE -> "None (Normal)"
+                PowerManager.THERMAL_STATUS_LIGHT -> "Light Throttling"
+                PowerManager.THERMAL_STATUS_MODERATE -> "Moderate Throttling"
+                PowerManager.THERMAL_STATUS_SEVERE -> "Severe Throttling"
+                PowerManager.THERMAL_STATUS_CRITICAL -> "Critical Throttling"
+                PowerManager.THERMAL_STATUS_EMERGENCY -> "Emergency Shutdown Warning"
+                PowerManager.THERMAL_STATUS_SHUTDOWN -> "Thermal Shutdown"
+                else -> "Status $thermal"
+            }
+            map["Thermal Status"] = thermalLabel
+        }
+
+        // 8. Graphics & AI Capabilities
+        val glEsVersion = am?.deviceConfigurationInfo?.glEsVersion ?: "Unknown"
+        map["OpenGL ES Version"] = glEsVersion
+        val hasVulkan = context.packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL)
+        map["Vulkan Hardware Level Supported"] = hasVulkan.toString()
+
+        // 9. Solus App Info
+        map["Solus Version"] = "${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})"
+        map["Build Type"] = BuildConfig.BUILD_TYPE
+
+        return map
+    }
+
+    /**
+     * Formats full device diagnostics into a markdown list for reports and issues.
+     */
+    fun formatFullDeviceDiagnostics(context: Context): String {
+        val diag = getFullDeviceDiagnostics(context)
+        return buildString {
+            diag.forEach { (k, v) ->
+                appendLine("- **$k:** $v")
+            }
+        }
+    }
+
+    /** Structured SoC information for display in UI. */
+    data class SoCInfo(
+        /** Primary title to display, e.g. "MediaTek MT6878" or "Qualcomm SM8450" or "Google Tensor G3". */
+        val title: String,
+        /** Subtitle / details, e.g. "Platform: mt6878 • 8 Cores". */
+        val details: String,
+        /** Raw model / chip identifier, e.g. "MT6878". Empty if unknown. */
+        val modelNumber: String,
+        /** Legacy commercialName compatibility. */
+        val commercialName: String = title
+    )
+
+    private fun getSystemProperty(key: String): String {
+        return runCatching {
+            val clazz = Class.forName("android.os.SystemProperties")
+            val getMethod = clazz.getMethod("get", String::class.java, String::class.java)
+            (getMethod.invoke(null, key, "") as? String)?.trim() ?: ""
+        }.getOrDefault("")
+    }
+
+    private fun getCpuInfoHardware(): String {
+        return runCatching {
+            java.io.File("/proc/cpuinfo").useLines { lines ->
+                lines.firstOrNull { line ->
+                    line.startsWith("Hardware", ignoreCase = true) || line.startsWith("Model", ignoreCase = true)
+                }?.substringAfter(":")?.trim() ?: ""
+            }
+        }.getOrDefault("")
+    }
+
+    /**
+     * Returns a [SoCInfo] with the authentic device-specific SoC model number and platform details
+     * directly from system properties, OS Build APIs, and CPU hardware info.
+     */
+    fun getDeviceSoCInfo(context: Context? = null): SoCInfo {
+        var socModel = ""
+        var socManufacturer = ""
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (!Build.SOC_MODEL.equals(Build.UNKNOWN, ignoreCase = true) && Build.SOC_MODEL.isNotBlank()) {
+                socModel = Build.SOC_MODEL.trim()
+            }
+            if (!Build.SOC_MANUFACTURER.equals(Build.UNKNOWN, ignoreCase = true) && Build.SOC_MANUFACTURER.isNotBlank()) {
+                socManufacturer = Build.SOC_MANUFACTURER.trim()
+            }
+        }
+
+        if (socModel.isBlank()) {
+            socModel = getSystemProperty("ro.soc.model")
+        }
+        if (socManufacturer.isBlank()) {
+            socManufacturer = getSystemProperty("ro.soc.manufacturer")
+        }
+
+        val boardPlatform = getSystemProperty("ro.board.platform")
+        val mediatekPlatform = getSystemProperty("ro.mediatek.platform").ifBlank {
+            getSystemProperty("ro.vendor.mediatek.platform")
+        }
+        val chipname = getSystemProperty("ro.chipname")
+        val cpuInfoHw = getCpuInfoHardware()
+        val hardware = Build.HARDWARE.trim()
+        val board = Build.BOARD.trim()
+
+        val allProps = listOf(
+            socManufacturer,
+            socModel,
+            boardPlatform,
+            mediatekPlatform,
+            chipname,
+            cpuInfoHw,
+            hardware,
+            board,
+            Build.MANUFACTURER
+        ).filter { it.isNotBlank() && !it.equals("unknown", ignoreCase = true) }
+
+        val query = allProps.joinToString(" ").lowercase(Locale.US)
+
+        // 1. Detect Manufacturer
+        val detectedManufacturer = when {
+            socManufacturer.isNotBlank() -> socManufacturer.trim()
+            query.contains("mediatek") || query.contains("mtk") || Regex("""\bmt\d{4,5}""").containsMatchIn(query) -> "MediaTek"
+            query.contains("qualcomm") || query.contains("qcom") || query.contains("snapdragon") || Regex("""\bsm\d{4,5}""").containsMatchIn(query) -> "Qualcomm"
+            query.contains("samsung") || query.contains("exynos") || Regex("""\bs5e\d{4,5}""").containsMatchIn(query) -> "Samsung"
+            query.contains("google") || query.contains("tensor") -> "Google"
+            query.contains("unisoc") || query.contains("spreadtrum") || query.contains("sprd") -> "Unisoc"
+            else -> ""
+        }
+
+        // 2. Detect Specific Model Identifier
+        val rawModelNumber: String = when {
+            socModel.isNotBlank() -> socModel
+            Regex("""(?i)\b(MT\d{4,5}[A-Z]*|SM\d{4,5}(?:-[A-Z0-9]+)?|S5E\d{4,5}|SDM\d{3,4}|MSM\d{4,5}|T\d{3,4})\b""")
+                .find(query)?.value != null -> {
+                Regex("""(?i)\b(MT\d{4,5}[A-Z]*|SM\d{4,5}(?:-[A-Z0-9]+)?|S5E\d{4,5}|SDM\d{3,4}|MSM\d{4,5}|T\d{3,4})\b""")
+                    .find(query)!!.value.uppercase(Locale.US)
+            }
+            mediatekPlatform.isNotBlank() -> mediatekPlatform.uppercase(Locale.US)
+            boardPlatform.isNotBlank() && !boardPlatform.equals("unknown", ignoreCase = true) -> boardPlatform.uppercase(Locale.US)
+            cpuInfoHw.isNotBlank() -> cpuInfoHw
+            hardware.isNotBlank() && !hardware.equals("unknown", ignoreCase = true) -> hardware.uppercase(Locale.US)
+            else -> ""
+        }
+
+        // 3. Format primary title
+        val title = when {
+            socModel.isNotBlank() && detectedManufacturer.isNotBlank() && !socModel.contains(detectedManufacturer, ignoreCase = true) ->
+                "$detectedManufacturer $socModel"
+            socModel.isNotBlank() ->
+                socModel
+            rawModelNumber.isNotBlank() && detectedManufacturer.isNotBlank() && !rawModelNumber.contains(detectedManufacturer, ignoreCase = true) ->
+                "$detectedManufacturer $rawModelNumber"
+            rawModelNumber.isNotBlank() ->
+                rawModelNumber
+            detectedManufacturer.isNotBlank() ->
+                "$detectedManufacturer ${deviceChipLabel()}"
+            else ->
+                deviceChipLabel().ifBlank { hardware.ifBlank { "Unknown SoC" } }
+        }
+
+        // 4. Format details (platform, cores)
+        val cores = Runtime.getRuntime().availableProcessors()
+        val platformTag = boardPlatform.ifBlank { mediatekPlatform.ifBlank { hardware } }
+            .lowercase(Locale.US)
+            .takeIf { it.isNotBlank() && !it.equals("unknown", ignoreCase = true) }
+
+        val details = when {
+            platformTag != null && !title.lowercase(Locale.US).contains(platformTag) ->
+                "Platform: $platformTag • $cores Cores"
+            else ->
+                "$cores Cores"
+        }
+
+        return SoCInfo(
+            title = title,
+            details = details,
+            modelNumber = rawModelNumber,
+            commercialName = title
+        )
+    }
+
+    /** Legacy single-string accessor kept for backward compatibility. */
+    fun getDeviceSocModel(context: Context? = null): String {
+        val info = getDeviceSoCInfo(context)
+        return info.title
     }
 
     fun currentDeviceChipLabel(): String {
@@ -269,8 +706,9 @@ object DeviceUtils {
 
     private fun requiredRamGiBForLiteRtLm(paramsB: Float?): Double {
         return when {
-            paramsB == null -> MIN_RAM_GIB_FOR_SMALL_LITERT_LM
-            paramsB <= 2.0f -> MIN_RAM_GIB_FOR_SMALL_LITERT_LM
+            paramsB == null -> MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM
+            paramsB <= 0.8f -> MIN_RAM_GIB_FOR_SUB_1B_LITERT_LM
+            paramsB <= 2.2f -> MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM
             paramsB <= 4.1f -> MIN_RAM_GIB_FOR_COMPACT_LITERT_LM
             paramsB <= 14.5f -> MIN_RAM_GIB_FOR_LARGE_LITERT_LM
             else -> MIN_RAM_GIB_FOR_HUGE_LITERT_LM
@@ -279,6 +717,8 @@ object DeviceUtils {
 
     private fun nominalDeviceRamLabel(requiredRamGiB: Double): String {
         return when {
+            requiredRamGiB <= MIN_RAM_GIB_FOR_SUB_1B_LITERT_LM -> "4 GB"
+            requiredRamGiB <= MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM -> "6 GB"
             requiredRamGiB <= MIN_RAM_GIB_FOR_SMALL_LITERT_LM -> "8 GB"
             requiredRamGiB <= MIN_RAM_GIB_FOR_COMPACT_LITERT_LM -> "12 GB"
             requiredRamGiB <= MIN_RAM_GIB_FOR_LARGE_LITERT_LM -> "16 GB"
@@ -286,7 +726,7 @@ object DeviceUtils {
         }
     }
 
-    private fun estimateModelParametersB(modelName: String, modelSize: String): Float? {
+    fun estimateModelParametersB(modelName: String, modelSize: String): Float? {
         val source = "$modelName $modelSize"
         Regex("""(?i)(\d+(?:\.\d+)?)\s*B""")
             .find(source)

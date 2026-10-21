@@ -6,6 +6,14 @@ import org.junit.Test
 
 class ChatRuntimePolicyTest {
     @Test
+    fun disabledRagDoesNotSearchUnrelatedLibraryButAttachedDocumentsStillWork() {
+        assertFalse(ChatRuntimePolicy.shouldRetrieveDocuments(false, null, 100))
+        assertTrue(ChatRuntimePolicy.shouldRetrieveDocuments(false, "attached-pdf", 100))
+        assertTrue(ChatRuntimePolicy.shouldRetrieveDocuments(true, null, 100))
+        assertFalse(ChatRuntimePolicy.shouldRetrieveDocuments(true, "attached-pdf", 0))
+    }
+
+    @Test
     fun gemmaTaskUsesConversationNativeLiteRtRuntime() {
         assertTrue(
             ChatRuntimePolicy.shouldUseLiteRtLmConversation(
@@ -33,5 +41,15 @@ class ChatRuntimePolicyTest {
                 modelIdentity = "TinyLlama"
             )
         )
+    }
+
+    @Test
+    fun ggufFilesAreIdentifiedAsGguf() {
+        assertTrue(ChatRuntimePolicy.isGgufModel("qwen2.5-1.5b-instruct-q4_k_m.gguf"))
+        assertTrue(ChatRuntimePolicy.isGgufModel("Llama-3.2-1B-Instruct-Q4_K_M.GGUF"))
+        assertTrue(ChatRuntimePolicy.isGgufModel("Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"))
+        assertFalse(ChatRuntimePolicy.isGgufModel("model.litertlm"))
+        assertFalse(ChatRuntimePolicy.isGgufModel("model.task"))
+        assertFalse(ChatRuntimePolicy.isGgufModel("model.safetensors"))
     }
 }
