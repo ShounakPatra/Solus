@@ -3,6 +3,14 @@ package com.shounak.localmeshai.utils
 object NoThinkingPromptUtils {
     const val SWITCH = "/no_think"
 
+    fun wrapLatestUserTurn(messages: List<Pair<String, String>>, enabled: Boolean): List<Pair<String, String>> {
+        if (!enabled) return messages
+        val lastUser = messages.indexOfLast { it.first == "user" }
+        return messages.mapIndexed { index, message ->
+            if (index == lastUser) message.first to wrap(message.second) else message
+        }
+    }
+
     /**
      * MediaPipe does not expose chat-template context variables, so older Qwen 3
      * task bundles need the textual switch. Put it only once, at the end of the

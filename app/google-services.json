@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "762738249152",
+    "project_id": "classverse-xrjwj",
+    "storage_bucket": "classverse-xrjwj.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:762738249152:android:b969fb11e5cbbcd8270c25",
+        "android_client_info": {
+          "package_name": "com.shounak.localmeshai"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD1Hj5MvmgYpw1sopxxmlVyaR9BPgfVWEg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

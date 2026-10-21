@@ -34,6 +34,7 @@ val defaultPersonas = listOf(
 @Composable
 fun SystemPromptPresetsBar(
     selectedPersonaId: String,
+    hazeState: dev.chrisbanes.haze.HazeState,
     onSelectPersona: (PersonaPreset) -> Unit,
     accentColor: Color = MaterialTheme.colorScheme.primary,
     modifier: Modifier = Modifier
@@ -42,24 +43,24 @@ fun SystemPromptPresetsBar(
         modifier = modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = 1.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         defaultPersonas.forEach { persona ->
             val isSelected = persona.id == selectedPersonaId
-            FilterChip(
-                selected = isSelected,
-                onClick = { onSelectPersona(persona) },
-                label = { Text(persona.title, style = MaterialTheme.typography.labelSmall) },
-                shape = RoundedCornerShape(12.dp),
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = accentColor.copy(alpha = 0.22f),
-                    selectedLabelColor = accentColor,
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
-                    labelColor = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            )
+            val personaAccent = when (persona.id) {
+                "coder" -> Color(0xFF38BDF8)
+                "eli5" -> Color(0xFFA78BFA)
+                "proofreader" -> Color(0xFF34D399)
+                "translator" -> Color(0xFFF472B6)
+                else -> accentColor
+            }
+            FloatingBlurChip(hazeState = hazeState, selected = isSelected,
+                onClick = { onSelectPersona(persona) }, accent = personaAccent) {
+                Text(persona.title, style = MaterialTheme.typography.labelSmall,
+                    color = personaAccent)
+            }
         }
     }
 }

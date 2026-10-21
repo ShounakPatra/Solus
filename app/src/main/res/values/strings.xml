@@ -1,3 +1,13 @@
 <resources>
     <string name="app_name">Solus</string>
+    <string name="model_error_title_non_model">Choose a GGUF model</string>
+    <string name="model_error_title_unreadable">This model file can’t be read</string>
+    <string name="model_error_title_unsupported">This model isn’t supported yet</string>
+    <string name="model_error_title_missing_shards">Some model parts are missing</string>
+    <string name="model_error_title_unrelated_models">Select one model at a time</string>
+    <string name="model_error_title_projector_without_main">Main model file missing</string>
+    <string name="model_error_title_access_denied">Can’t access this file</string>
+    <string name="model_error_title_save_failed">Couldn’t save this model</string>
+    <string name="model_error_title_removal_failed">Couldn’t remove this model</string>
+    <string name="model_error_title_unknown">Couldn’t import this model</string>
 </resources>
