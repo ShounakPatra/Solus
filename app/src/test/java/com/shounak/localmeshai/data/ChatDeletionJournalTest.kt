@@ -14,6 +14,69 @@ class ChatDeletionJournalTest {
     val tempFolder = TemporaryFolder()
 
     @Test
+    fun invalidJournalEntriesAndVersionsRequireRecoveryWithoutReconciliation() {
+        val damagedDocuments = listOf(
+            """{"version":2.5,"pending":[],"tombstones":[]}""",
+            """{"version":null,"pending":[],"tombstones":[]}""",
+            """{"version":2,"pending":[{"id":"entry","chatKind":"Text","sessionId":"deleted","ownedResourcePaths":"wrong type"}],"tombstones":[]}""",
+            """{"version":2,"pending":[{"id":"entry","chatKind":"Text","sessionId":"deleted"}],"tombstones":[]}""",
+            """{"version":2,"pending":[{"id":"","chatKind":"Text","sessionId":"deleted","ownedResourcePaths":[]}],"tombstones":[]}""",
+            """{"version":2,"pending":[{"id":"entry","chatKind":"Text","sessionId":"","ownedResourcePaths":[]}],"tombstones":[]}""",
+            """{"version":2,"pending":[{"id":"entry","chatKind":"Text","sessionId":42,"ownedResourcePaths":[]}],"tombstones":[]}""",
+            """{"version":2,"pending":[{"id":"entry","chatKind":"Text","sessionId":"deleted","ownedResourcePaths":[42]}],"tombstones":[]}""",
+            """{"version":2,"pending":[],"tombstones":[{"chatKind":"Text","sessionId":""}]}"""
+        )
+        for (damaged in damagedDocuments) {
+            val root = tempFolder.newFolder()
+            val file = root.resolve("chat_deletion_journal.json").apply { writeText(damaged) }
+            val journal = ChatDeletionJournal(root)
+            assertFalse(journal.refreshForHistoryAccess())
+            assertTrue(journal.hasRecoveryError())
+            assertFalse(journal.recordPendingDeletion(DeletionJournalEntry(
+                chatKind = ChatKind.Text, sessionId = "keep", ownedResourcePaths = emptyList())))
+            assertFalse(journal.reconcilePendingDeletions { error("Unreadable journal must not delete files") })
+            assertEquals(damaged, file.readText())
+        }
+    }
+
+    @Test
+    fun emptyAndInvalidPrimaryJournalsRecoverFromValidBackup() {
+        for (damaged in listOf("", """{"version":2,"pending":"broken","tombstones":{}}""")) {
+            val root = tempFolder.newFolder()
+            val original = ChatDeletionJournal(root)
+            assertTrue(original.recordPendingDeletion(DeletionJournalEntry(
+                chatKind = ChatKind.Text, sessionId = "deleted", ownedResourcePaths = emptyList())))
+            val file = root.resolve("chat_deletion_journal.json")
+            val valid = file.readText()
+            root.resolve("${file.name}.bak").writeText(valid)
+            file.writeText(damaged)
+
+            val restored = ChatDeletionJournal(root)
+            assertTrue(restored.refreshForHistoryAccess())
+            assertFalse(restored.hasRecoveryError())
+            assertTrue(restored.isTombstoned(ChatKind.Text, "deleted"))
+            assertEquals(listOf("deleted"), restored.getPendingEntries().map { it.sessionId })
+            assertEquals(valid, file.readText())
+        }
+    }
+
+    @Test
+    fun validEmptyAndLegacyJournalsRemainReadable() {
+        for (document in listOf("[]", """{"version":1,"pending":[]}""",
+            """{"version":2,"pending":[],"tombstones":[]}""")) {
+            val root = tempFolder.newFolder()
+            root.resolve("chat_deletion_journal.json").writeText(document)
+            val journal = ChatDeletionJournal(root)
+            assertTrue(journal.refreshForHistoryAccess())
+            assertFalse(journal.hasRecoveryError())
+            assertTrue(journal.getPendingEntries().isEmpty())
+            assertTrue(journal.recordPendingDeletion(DeletionJournalEntry(
+                chatKind = ChatKind.Vision, sessionId = "new", ownedResourcePaths = emptyList())))
+            assertTrue(ChatDeletionJournal(root).isTombstoned(ChatKind.Vision, "new"))
+        }
+    }
+
+    @Test
     fun recordPendingDeletion_marksTombstoneAndPersistsToDisk() {
         val rootDir = tempFolder.newFolder("journal_root")
         val journal = ChatDeletionJournal(rootDir)

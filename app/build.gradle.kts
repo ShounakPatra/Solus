@@ -46,8 +46,8 @@ android {
         applicationId = "com.shounak.localmeshai"
         minSdk = 28
         targetSdk = 37
-        versionCode = 8
-        versionName = "5.0.0"
+        versionCode = 9
+        versionName = "6.0.0"
         buildConfigField("String", "NATIVE_BUILD_ID", "\"$nativeSourceDigest\"")
         buildConfigField("String", "LITERT_RUNTIME_VERSION", "\"${libs.versions.litertLm.get()}\"")
 
@@ -104,6 +104,14 @@ android {
             }
             isMinifyEnabled = true
             isShrinkResources = true
+            optimization {
+                keepRules {
+                    // Haze 1.5.1's only consumer rule uses { *; }, which also
+                    // matches Object methods. Replace it in proguard-rules.pro.
+                    // Version-scoped so future Haze rules are reviewed on upgrade.
+                    ignoreFrom("dev.chrisbanes.haze:haze-android:1.5.1")
+                }
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -276,7 +284,8 @@ kotlin {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)
         freeCompilerArgs.addAll(
-            "-Xbackend-threads=0"
+            // Bound memory usage and avoid the parallel JVM codegen race in this toolchain.
+            "-Xbackend-threads=1"
         )
     }
 }

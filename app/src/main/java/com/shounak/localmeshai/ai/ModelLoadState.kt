@@ -76,7 +76,8 @@ sealed class ModelLoadState {
         val stage: ModelLoadStage,
         val completedUnits: Long? = null,
         val totalUnits: Long? = null,
-        val elapsedMs: Long = 0L
+        val elapsedMs: Long = 0L,
+        val idleMs: Long = 0L
     ) : ModelLoadState() {
         val progressFraction: Float?
             get() = if (completedUnits != null && totalUnits != null && totalUnits > 0L) {
@@ -84,7 +85,7 @@ sealed class ModelLoadState {
             } else null
 
         val isStalledWarning: Boolean
-            get() = elapsedMs >= 30_000L
+            get() = idleMs >= 30_000L
     }
 
     data class Ready(

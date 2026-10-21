@@ -17,6 +17,7 @@ import com.shounak.localmeshai.utils.ModelArtifactStorage
 import com.shounak.localmeshai.utils.ModelDownloader
 import com.shounak.localmeshai.utils.ModelRuntimeCoordinator
 import com.shounak.localmeshai.utils.ModelRuntimeOwner
+import com.shounak.localmeshai.utils.TaskBundleFixtures
 import com.shounak.localmeshai.utils.NonGgufBundleInspector
 import com.shounak.localmeshai.utils.PhoneImportSession
 import com.shounak.localmeshai.ai.ShutdownResult
@@ -197,26 +198,20 @@ class MainViewModelStartupAndImportRegressionTest {
                 extra = byteArrayOf(0, 0, 0, 0) // 4-byte alignment padding
             }
             zos.putNextEntry(llmEntry)
-            val tfl3 = ByteArray(32).apply {
-                this[0] = 12.toByte()
-                this[4] = 'T'.code.toByte()
-                this[5] = 'F'.code.toByte()
-                this[6] = 'L'.code.toByte()
-                this[7] = '3'.code.toByte()
-            }
+            val tfl3 = TaskBundleFixtures.graph()
             zos.write(tfl3)
             zos.closeEntry()
 
             // Tokenizer entry
             val tokEntry = ZipEntry("TOKENIZER_MODEL")
             zos.putNextEntry(tokEntry)
-            zos.write("vocab".toByteArray())
+            zos.write(TaskBundleFixtures.tokenizer())
             zos.closeEntry()
 
             // Metadata entry
             val metaEntry = ZipEntry("METADATA")
             zos.putNextEntry(metaEntry)
-            zos.write("metadata".toByteArray())
+            zos.write(TaskBundleFixtures.metadata())
             zos.closeEntry()
         }
 
@@ -258,20 +253,14 @@ class MainViewModelStartupAndImportRegressionTest {
     fun testPhoneAndUrlImportsOfIdenticalContentProduceIdenticalCapabilities() {
         val testDir = tempFolder.newFolder("capabilities_test")
         val multimodalTaskFile = File(testDir, "vision_multimodal.task")
-        val tfl3Header = ByteArray(32).apply {
-            this[0] = 12.toByte()
-            this[4] = 'T'.code.toByte()
-            this[5] = 'F'.code.toByte()
-            this[6] = 'L'.code.toByte()
-            this[7] = '3'.code.toByte()
-        }
+        val tfl3Header = TaskBundleFixtures.graph()
         ZipOutputStream(FileOutputStream(multimodalTaskFile)).use { zos ->
             zos.putNextEntry(ZipEntry("TF_LITE_PREFILL_DECODE"))
             zos.write(tfl3Header)
             zos.closeEntry()
 
             zos.putNextEntry(ZipEntry("TOKENIZER_MODEL"))
-            zos.write("tok".toByteArray())
+            zos.write(TaskBundleFixtures.tokenizer())
             zos.closeEntry()
 
             zos.putNextEntry(ZipEntry("TF_LITE_VISION_ENCODER"))
@@ -671,24 +660,18 @@ class MainViewModelStartupAndImportRegressionTest {
     }
 
     @Test
-    fun testCombinedThinkingAndVisionCapabilitiesPreservedAndLazyUpgrade() {
+    fun testCombinedThinkingAndVisionCapabilitiesPreservedAndRestorationDefersInspection() {
         val testDir = tempFolder.newFolder("combined_caps_test")
         val multimodalFile = File(testDir, "thinking_vision.task")
 
-        val tfl3Header = ByteArray(32).apply {
-            this[0] = 12.toByte()
-            this[4] = 'T'.code.toByte()
-            this[5] = 'F'.code.toByte()
-            this[6] = 'L'.code.toByte()
-            this[7] = '3'.code.toByte()
-        }
+        val tfl3Header = TaskBundleFixtures.graph()
         ZipOutputStream(FileOutputStream(multimodalFile)).use { zos ->
             zos.putNextEntry(ZipEntry("TF_LITE_PREFILL_DECODE"))
             zos.write(tfl3Header)
             zos.closeEntry()
 
             zos.putNextEntry(ZipEntry("TOKENIZER_MODEL"))
-            zos.write("tok".toByteArray())
+            zos.write(TaskBundleFixtures.tokenizer())
             zos.closeEntry()
 
             zos.putNextEntry(ZipEntry("TF_LITE_VISION_ENCODER"))
@@ -743,14 +726,19 @@ class MainViewModelStartupAndImportRegressionTest {
         )
         manifestFile.writeText(legacyText)
 
-        // getPublishedBundle should lazily detect legacy version, re-inspect, and atomically refresh manifest
-        val upgradedBundle = storage.getPublishedBundle(modelId)
-        assertNotNull(upgradedBundle)
-        val upgradedCaps = upgradedBundle?.capabilities
-        assertNotNull(upgradedCaps)
-        assertEquals(NonGgufBundleInspector.DETECTOR_VERSION, upgradedCaps?.thinkingDetectorVersion)
-        assertTrue("Upgraded bundle must retain vision support", upgradedCaps?.supportsVision == true)
-        assertEquals("Upgraded bundle must retain thinking support", ThinkingCapability.ModelControlled, upgradedCaps?.thinking)
+        // Restoring a row must preserve its file identity without parsing or rewriting its model metadata.
+        val restoredBundle = storage.getPublishedBundle(modelId)
+        assertNotNull(restoredBundle)
+        assertEquals(0, restoredBundle!!.capabilities.thinkingDetectorVersion)
+        assertEquals(legacyText, manifestFile.readText())
+        val originalPath = restoredBundle.mainArtifacts.first().source.location
+        val refreshed = NonGgufBundleInspector.inspectMediaPipeTask(File(originalPath))
+        assertTrue(refreshed.isValid)
+        assertEquals(NonGgufBundleInspector.DETECTOR_VERSION, refreshed.capabilities.thinkingDetectorVersion)
+        assertTrue(refreshed.capabilities.supportsVision)
+        assertEquals(ThinkingCapability.ModelControlled, refreshed.capabilities.thinking)
+        assertEquals(originalPath, storage.getPublishedBundle(modelId)!!.mainArtifacts.first().source.location)
+
     }
 
     @Test
@@ -924,13 +912,7 @@ class MainViewModelStartupAndImportRegressionTest {
         val testDir = tempFolder.newFolder("invalid_vision_task_test")
         val taskFile = File(testDir, "bad_vision.task")
 
-        val validTfl3Header = ByteArray(32).apply {
-            this[0] = 12.toByte()
-            this[4] = 'T'.code.toByte()
-            this[5] = 'F'.code.toByte()
-            this[6] = 'L'.code.toByte()
-            this[7] = '3'.code.toByte()
-        }
+        val validTfl3Header = TaskBundleFixtures.graph()
         val badEncoder = ByteArray(32).apply {
             this[0] = 12.toByte()
             this[4] = 'B'.code.toByte()
@@ -946,7 +928,7 @@ class MainViewModelStartupAndImportRegressionTest {
 
             // Valid tokenizer
             zos.putNextEntry(ZipEntry("TOKENIZER_MODEL"))
-            zos.write("sentencepiece".toByteArray())
+            zos.write(TaskBundleFixtures.tokenizer())
             zos.closeEntry()
 
             // Vision encoder with corrupt non-TFL3 magic
@@ -961,9 +943,9 @@ class MainViewModelStartupAndImportRegressionTest {
         }
 
         val inspection = NonGgufBundleInspector.inspectMediaPipeTask(taskFile)
-        assertTrue("Bundle with valid LLM and tokenizer must be structurally valid", inspection.isValid)
+        assertFalse("Malformed recognized metadata must fail validation", inspection.isValid)
         assertTrue("Must support text", inspection.capabilities.supportsText)
         assertFalse("Must NOT support vision when vision encoder lacks valid TFL3 magic", inspection.capabilities.supportsVision)
-        assertEquals("Must report Unknown thinking when metadata is malformed non-JSON", ThinkingCapability.Unknown, inspection.capabilities.thinking)
+
     }
 }

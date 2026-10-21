@@ -1,6 +1,5 @@
 package com.shounak.localmeshai.ai
 
-import android.util.Log
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.Message
@@ -27,14 +26,17 @@ class LiteRtStreamAdapter(
     private val thinkingMode: Boolean = false,
     private val onFirstToken: (() -> Unit)? = null,
     private val onDelta: ((String) -> Unit)? = null,
-    private val onSnapshot: ((StructuredResponseSnapshot) -> Unit)? = null
+    private val onSnapshot: ((StructuredResponseSnapshot) -> Unit)? = null,
+    reasoningChannelKeys: Set<String> = emptySet(),
+    private val startsInReasoning: Boolean = false
 ) : MessageCallback {
 
     companion object {
-        private const val TAG = "LiteRtStreamAdapter"
-        private val REASONING_CHANNEL_KEYS = setOf("thought", "reasoning", "thinking")
+        private val REASONING_CHANNEL_KEYS = setOf("thought", "reasoning", "thinking", "analysis")
+        private val LEADING_REASONING_TAG = Regex("^\\s*(?:<\\s*(?:think|thought|reasoning)\\s*>|\\[\\s*(?:think|thought|reasoning)\\s*\\])", RegexOption.IGNORE_CASE)
     }
 
+    private val reasoningKeys = REASONING_CHANNEL_KEYS + reasoningChannelKeys.map { it.lowercase() }
     private val lock = Any()
     private val answerBuffer = StringBuilder()
     private val reasoningBuffer = StringBuilder()
@@ -56,7 +58,7 @@ class LiteRtStreamAdapter(
     var terminalError: Throwable? = null
         private set
 
-    override fun onMessage(message: Message) {
+    override fun onMessage(message: Message): Unit = synchronized(lock) {
         if (isCompleted.get() || isCancelled.get()) {
             return
         }
@@ -67,6 +69,8 @@ class LiteRtStreamAdapter(
 
         synchronized(lock) {
             if (isCompleted.get() || isCancelled.get()) return
+
+            val previous = snapshotLocked()
 
             // 1. Process regular contents
             val contentsList = message.contents.contents.orEmpty()
@@ -86,49 +90,33 @@ class LiteRtStreamAdapter(
                 if (value.isNotEmpty()) {
                     val buf = namedChannels.getOrPut(key) { StringBuilder() }
                     buf.append(value)
-                    if (REASONING_CHANNEL_KEYS.contains(key.lowercase())) {
+                    if (reasoningKeys.contains(key.lowercase())) {
                         reasoningBuffer.append(value)
                         newReasoningDelta += value
                     }
                 }
             }
 
-            // Update thinking phase state BEFORE constructing snapshot and message presentation
-            if (thinkingMode) {
-                if (newReasoningDelta.isNotEmpty()) {
-                    isThinkingOpen = true
-                }
-                if (newAnswerDelta.isNotEmpty()) {
-                    isThinkingOpen = false
-                }
+            val hasContent = newAnswerDelta.isNotEmpty() || newReasoningDelta.isNotEmpty()
+            if (newReasoningDelta.isNotEmpty()) isThinkingOpen = true
+            if (newAnswerDelta.isNotEmpty() && parseRawLocked().finalResponseText.isNotEmpty()) isThinkingOpen = false
+            revisionCounter.incrementAndGet()
+            val normalized = snapshotLocked()
+            newAnswerDelta = if (normalized.answerText.startsWith(previous.answerText)) normalized.answerText.substring(previous.answerText.length) else ""
+            newReasoningDelta = if (normalized.reasoningText.startsWith(previous.reasoningText)) normalized.reasoningText.substring(previous.reasoningText.length) else ""
+            if (hasContent) {
+                callbackCounter.incrementAndGet()
+                if (firstTokenReported.compareAndSet(false, true)) onFirstToken?.invoke()
             }
+            if (onSnapshot != null) snapshot = normalized
 
-            // If message was completely empty or channel-only without text,
-            // that is a valid non-answer event — NEVER a reset.
-            val currentRev = revisionCounter.incrementAndGet()
-            if (onSnapshot != null) {
-                val channelSnapshots = namedChannels.mapValues { it.value.toString() }
-                snapshot = StructuredResponseSnapshot(
-                    requestId = requestId,
-                    attemptId = attemptId,
-                    revision = currentRev,
-                    answerText = answerBuffer.toString(),
-                    reasoningText = reasoningBuffer.toString(),
-                    isThinkingActive = isThinkingOpen && !isCompleted.get(),
-                    channels = channelSnapshots
-                )
-            }
         }
 
-        // Notify first token immediately when any token arrives
-        if (newAnswerDelta.isNotEmpty() || newReasoningDelta.isNotEmpty()) {
-            callbackCounter.incrementAndGet()
-            if (firstTokenReported.compareAndSet(false, true)) {
-                onFirstToken?.invoke()
-            }
-        }
+        publishDeltas(newAnswerDelta, newReasoningDelta)
+        snapshot?.let { onSnapshot?.invoke(it) }
+    }
 
-        // Handle streaming deltas
+    private fun publishDeltas(newAnswerDelta: String, newReasoningDelta: String) {
         if (thinkingMode) {
             if (newReasoningDelta.isNotEmpty()) {
                 if (!hasEmittedThinkingStart) {
@@ -149,63 +137,77 @@ class LiteRtStreamAdapter(
                 onDelta?.invoke(newAnswerDelta)
             }
         }
-
-        snapshot?.let { onSnapshot?.invoke(it) }
     }
 
     override fun onDone() {
-        if (!isCompleted.compareAndSet(false, true)) {
-            return
-        }
-        synchronized(lock) {
-            isThinkingOpen = false
-        }
-        if (thinkingMode && hasEmittedThinkingStart && !hasEmittedThinkingEnd) {
-            hasEmittedThinkingEnd = true
-            onDelta?.invoke("\n</think>")
-        }
-        val finalSnapshot = currentSnapshot()
-        completionDeferred.complete(finalSnapshot)
+        terminate()
     }
 
     override fun onError(throwable: Throwable) {
-        synchronized(lock) {
-            terminalError = throwable
-        }
-        if (isCompleted.compareAndSet(false, true)) {
-            val finalSnapshot = currentSnapshot()
-            completionDeferred.completeExceptionally(throwable)
-        }
+        terminate(throwable)
     }
 
     fun cancel(conversation: Conversation? = null) {
-        if (!isCancelled.compareAndSet(false, true)) {
-            return
-        }
-        runCatching { conversation?.cancelProcess() }
         synchronized(lock) {
-            isThinkingOpen = false
+            if (isCompleted.get() || !isCancelled.compareAndSet(false, true)) return
         }
-        if (thinkingMode && hasEmittedThinkingStart && !hasEmittedThinkingEnd) {
-            hasEmittedThinkingEnd = true
-            onDelta?.invoke("\n</think>\n\n")
-        }
-        if (isCompleted.compareAndSet(false, true)) {
-            completionDeferred.completeExceptionally(CancellationException("LiteRT inference cancelled"))
-        }
+        // Native cancellation can synchronously call back. Reject those callbacks without
+        // holding the lock, and cancel native work before waking the awaiting owner.
+        runCatching { conversation?.cancelProcess() }
+        terminate(CancellationException("LiteRT inference cancelled"), cancelled = true)
     }
 
-    fun currentSnapshot(): StructuredResponseSnapshot = synchronized(lock) {
-        StructuredResponseSnapshot(
+    private fun terminate(error: Throwable? = null, cancelled: Boolean = false): Boolean = synchronized(lock) {
+        if (isCompleted.get() || (isCancelled.get() && !cancelled)) return false
+        val previous = snapshotLocked()
+        isCancelled.set(cancelled)
+        isCompleted.set(true)
+        if (!cancelled) terminalError = error
+        isThinkingOpen = false
+        revisionCounter.incrementAndGet()
+        val finalSnapshot = snapshotLocked()
+        try {
+            publishDeltas(
+                if (finalSnapshot.answerText.startsWith(previous.answerText)) finalSnapshot.answerText.substring(previous.answerText.length) else "",
+                if (finalSnapshot.reasoningText.startsWith(previous.reasoningText)) finalSnapshot.reasoningText.substring(previous.reasoningText.length) else ""
+            )
+            if (thinkingMode && hasEmittedThinkingStart && !hasEmittedThinkingEnd) {
+                hasEmittedThinkingEnd = true
+                onDelta?.invoke("\n</think>")
+            }
+            onSnapshot?.invoke(finalSnapshot)
+        } finally {
+            if (error == null) completionDeferred.complete(finalSnapshot)
+            else completionDeferred.completeExceptionally(error)
+        }
+        true
+    }
+
+    private fun parseRawLocked(): com.shounak.localmeshai.utils.ParsedThinkingContent {
+        val raw = answerBuffer.toString()
+        val text = if (isCompleted.get()) raw else ThinkingTextUtils.holdIncompleteTag(raw)
+        // A legacy template may already supply the opening tag. Native channels take
+        // precedence, and an explicitly generated opening tag must not add a second depth.
+        val prefill = startsInReasoning && reasoningBuffer.isEmpty() && !LEADING_REASONING_TAG.containsMatchIn(text)
+        return ThinkingTextUtils.parse(if (prefill) "<think>$text" else text, allowActiveThinking = true)
+    }
+
+    private fun snapshotLocked(): StructuredResponseSnapshot {
+        val parsed = parseRawLocked()
+        // Native reasoning channels take precedence over a duplicated tagged envelope.
+        val reasoning = reasoningBuffer.toString().ifEmpty { parsed.thinkingText.orEmpty() }
+        return StructuredResponseSnapshot(
             requestId = requestId,
             attemptId = attemptId,
             revision = revisionCounter.get(),
-            answerText = answerBuffer.toString(),
-            reasoningText = reasoningBuffer.toString(),
-            isThinkingActive = isThinkingOpen && !isCompleted.get(),
+            answerText = parsed.finalResponseText,
+            reasoningText = reasoning,
+            isThinkingActive = thinkingMode && (parsed.isThinkingActive || isThinkingOpen) && !isCompleted.get() && !isCancelled.get(),
             channels = namedChannels.mapValues { it.value.toString() }
         )
     }
+
+    fun currentSnapshot(): StructuredResponseSnapshot = synchronized(lock) { snapshotLocked() }
 
     suspend fun awaitDone(): StructuredResponseSnapshot {
         return completionDeferred.await()

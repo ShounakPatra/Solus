@@ -197,12 +197,13 @@ object AppUpdateManager {
             .build()
 
         val call = httpClient.newCall(request)
-        val cancellationHandle = coroutineContext[Job]?.invokeOnCompletion { cause ->
-            if (cause != null) call.cancel()
+        val cancellationHandle = coroutineContext[Job]?.abortTransportOnCancellation {
+            call.cancel()
         }
 
         try {
             call.execute().use { response ->
+                coroutineContext.ensureActive()
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(IOException("Server returned HTTP ${response.code}"))
                 }
@@ -230,6 +231,7 @@ object AppUpdateManager {
                     }
                 }
 
+                coroutineContext.ensureActive()
                 if (targetApk.exists()) targetApk.delete()
                 if (!tempApk.renameTo(targetApk)) {
                     tempApk.copyTo(targetApk, overwrite = true)

@@ -235,9 +235,7 @@ class AtomicJsonFile<T>(
 
         if (primaryContent != null) {
             if (primaryContent.isBlank()) {
-                if (!backupFile.exists()) {
-                    return AtomicReadResult.Missing
-                }
+                // An existing empty file may be truncated storage, not a fresh install.
                 primaryCause = IllegalStateException("Primary file is blank")
             } else {
                 try {

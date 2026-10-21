@@ -249,12 +249,26 @@ class ModelLoadController internal constructor(
             val deferred = CompletableDeferred<ModelActualConfiguration>()
             inFlightDeferred = deferred
 
+            val requestedAt = clock()
             val initialStage = ModelLoadStage.WaitingForRuntime
             _loadState.value = ModelLoadState.Loading(
                 operationId = operationId,
                 stage = initialStage,
                 elapsedMs = 0L
             )
+
+            // This ticker runs even while the loader waits for a previous native request.
+            val elapsedJob = scope.launch(Dispatchers.IO) {
+                while (isActive) {
+                    delay(500L)
+                    synchronized(progressLock) {
+                        val state = _loadState.value
+                        if (myEpoch == currentEpoch && currentOperationId == operationId && state is ModelLoadState.Loading) {
+                            _loadState.value = state.copy(elapsedMs = (clock() - requestedAt).coerceAtLeast(0L))
+                        }
+                    }
+                }
+            }
 
             val job = scope.launch(Dispatchers.IO, start = kotlinx.coroutines.CoroutineStart.LAZY) {
                 // If there was a previous job, wait for it to cleanly complete cancellation
@@ -278,7 +292,7 @@ class ModelLoadController internal constructor(
                 var currentTrackedStage: ModelLoadStage? = initialStage
                 AppTrace.beginAsyncSection("stage_${initialStage.javaClass.simpleName}", traceCookie)
 
-                val startTime = clock()
+                val startTime = requestedAt
                 var lastProgressTime = startTime
                 var lastUiPublishTime = 0L
                 var lastCompletedUnits: Long? = null
@@ -333,7 +347,8 @@ class ModelLoadController internal constructor(
                                     stage = stage,
                                     completedUnits = completed,
                                     totalUnits = total,
-                                    elapsedMs = now - startTime
+                                    elapsedMs = now - startTime,
+                                    idleMs = now - lastProgressTime
                                 )
                             }
                         }
@@ -420,7 +435,8 @@ class ModelLoadController internal constructor(
                                         stage = currentStage,
                                         completedUnits = lastCompletedUnits,
                                         totalUnits = lastTotalUnits,
-                                        elapsedMs = elapsedSinceProgress
+                                        elapsedMs = totalElapsed,
+                                        idleMs = elapsedSinceProgress
                                     )
                                 }
                             }
@@ -509,6 +525,7 @@ class ModelLoadController internal constructor(
                     }
                 }
             }
+            job.invokeOnCompletion { elapsedJob.cancel() }
             inFlightJob = job
             (deferred to job)
         }

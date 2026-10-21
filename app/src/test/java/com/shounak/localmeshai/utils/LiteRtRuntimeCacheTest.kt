@@ -9,6 +9,36 @@ import java.io.File
 class LiteRtRuntimeCacheTest {
     @get:Rule val files = TemporaryFolder()
 
+    @Test fun automaticPruningKeepsWarmCachesAndProtectsOldActiveCaches() {
+        val root = files.newFolder()
+        val now = System.currentTimeMillis()
+        val recent = root.resolve("recent").apply { mkdir(); resolve("kernel").writeText("compiled") }
+        val expired = root.resolve("expired").apply { mkdir(); setLastModified(now - 8L * 86_400_000L) }
+        val active = root.resolve("active").apply { mkdir(); setLastModified(now - 9L * 86_400_000L) }
+        val lease = LiteRtRuntimeCache.lease(active)
+        try {
+            assertEquals(1, LiteRtRuntimeCache.pruneRoot(root, now))
+            assertTrue(recent.exists())
+            assertFalse(expired.exists())
+            assertTrue(active.exists())
+            assertEquals(0, LiteRtRuntimeCache.pruneRoot(root, now))
+            assertEquals(1, LiteRtRuntimeCache.clearInactiveRoot(root))
+            assertFalse(recent.exists())
+            assertTrue(active.exists())
+        } finally { lease.close() }
+    }
+
+    @Test fun automaticPruningBoundsRecentCachesByCountAndBytes() {
+        val root = files.newFolder()
+        val now = System.currentTimeMillis()
+        val caches = (1..4).map { index -> root.resolve("cache-$index").apply {
+            mkdir(); resolve("kernel").writeBytes(ByteArray(4)); setLastModified(now - index * 10_000L)
+        } }
+        assertEquals(2, LiteRtRuntimeCache.pruneRoot(root, now, maxEntries = 3, maxBytes = 8))
+        assertTrue(caches[0].exists()); assertTrue(caches[1].exists())
+        assertFalse(caches[2].exists()); assertFalse(caches[3].exists())
+    }
+
     @Test fun cacheIdentityChangesWithModelBackendOrAppBuild() {
         val model = files.newFile("model.litertlm").apply { writeText("model-v1") }
         val key = LiteRtRuntimeCache.cacheKey("test", InferenceBackend.LITERT_GPU, model, 7)

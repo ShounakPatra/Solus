@@ -1,5 +1,11 @@
 package com.shounak.localmeshai.ui.models
 
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.runtime.rememberUpdatedState
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
@@ -17,7 +23,8 @@ import kotlinx.coroutines.launch
 
 class ChatScrollController(
     val listState: LazyListState,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val reduceMotion: () -> Boolean = { false }
 ) {
     var followLatest by mutableStateOf(true)
         private set
@@ -66,7 +73,7 @@ class ChatScrollController(
         val currentJobId = ++activeScrollJobId
         activeScrollJob = scope.launch {
             try {
-                listState.animateScrollToItem(0)
+                if (!reduceMotion()) listState.animateScrollToItem(0)
                 listState.scrollToItem(0)
             } finally {
                 if (activeScrollJobId == currentJobId) {
@@ -83,7 +90,7 @@ class ChatScrollController(
         activeScrollJob = scope.launch {
             if (anchorIndex >= 0) {
                 try {
-                    listState.animateScrollToItem(anchorIndex)
+                    if (reduceMotion()) listState.scrollToItem(anchorIndex) else listState.animateScrollToItem(anchorIndex)
                     listState.scrollToItem(anchorIndex)
                 } finally {
                     if (activeScrollJobId == currentJobId) {
@@ -104,7 +111,7 @@ class ChatScrollController(
             val currentJobId = ++activeScrollJobId
             activeScrollJob = scope.launch {
                 try {
-                    listState.animateScrollToItem(anchorIndex)
+                    if (reduceMotion()) listState.scrollToItem(anchorIndex) else listState.animateScrollToItem(anchorIndex)
                 } finally {
                     if (activeScrollJobId == currentJobId) {
                         activeScrollJob = null
@@ -118,11 +125,12 @@ class ChatScrollController(
         if (!isStreaming) return
         snapshotFlow {
             val anchor = getAnchorIndex()
-            val isAtBottom = !listState.canScrollForward
-            Pair(anchor, isAtBottom)
+            val layout = listState.layoutInfo
+            val last = layout.visibleItemsInfo.lastOrNull()
+            Triple(anchor, last?.offset ?: 0, last?.size ?: 0)
         }
         .conflate()
-        .collect { (anchorIndex, _) ->
+        .collect { (anchorIndex, _, _) ->
             if (activeScrollJob?.isActive == true) return@collect
             if (anchorIndex > 0 && followLatest) {
                 val now = android.os.SystemClock.uptimeMillis()
@@ -134,7 +142,15 @@ class ChatScrollController(
                 if (followLatest && anchorIndex > 0) {
                     val lastVisibleItem = listState.layoutInfo.visibleItemsInfo.lastOrNull()
                     if (lastVisibleItem != null && lastVisibleItem.index >= anchorIndex - 2) {
-                        listState.scrollToItem(anchorIndex)
+                        val layout = listState.layoutInfo
+                        val overflow = (lastVisibleItem.offset + lastVisibleItem.size - layout.viewportEndOffset + layout.afterContentPadding).coerceAtLeast(0)
+                        try {
+                            if (reduceMotion()) listState.scrollToItem(anchorIndex)
+                            else if (overflow > 0) listState.animateScrollBy(overflow.toFloat(), tween(80, easing = LinearEasing))
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            // A touch gesture can interrupt the scroll without cancelling this observer.
+                            currentCoroutineContext().ensureActive()
+                        }
                         lastScrollTime = android.os.SystemClock.uptimeMillis()
                     }
                 }
@@ -159,7 +175,8 @@ fun rememberChatScrollController(
     listState: LazyListState,
     scope: CoroutineScope = rememberCoroutineScope()
 ): ChatScrollController {
-    return remember(listState) {
-        ChatScrollController(listState, scope)
+    val reduced by rememberUpdatedState(com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion)
+    return remember(listState, scope) {
+        ChatScrollController(listState, scope) { reduced }
     }
 }

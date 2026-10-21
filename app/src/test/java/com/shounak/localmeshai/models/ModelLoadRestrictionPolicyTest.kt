@@ -165,7 +165,7 @@ class ModelLoadRestrictionPolicyTest {
     }
 
     @Test
-    fun testPreviousCrashRestrictionsNeitherMaskTransferProgressNorBecomeOverridable() {
+    fun testPreviousCrashRestrictionsPreserveTransfersAndOfferExplicitRetry() {
         val model = createTestModel("crashed_model", "Crashed Model", 1500L)
 
         // 1. During transfer, previous crash must NOT mask progress
@@ -195,8 +195,8 @@ class ModelLoadRestrictionPolicyTest {
         assertEquals(LoadRestrictionCategory.PreviousCrash, projected.loadRestriction?.category)
         assertTrue(projected.isCrashBlocked)
 
-        // Previous crash must NOT be overridable via Try Anyway
-        assertFalse("Previous crash restrictions must NOT allow Try Anyway", projected.canTryAnyway)
+        // Previous crashes offer an explicit retry; the persisted block is cleared only after initialization succeeds.
+        assertTrue("Previous crash restrictions must offer an explicit retry", projected.canTryAnyway)
     }
 
     @Test
@@ -292,4 +292,42 @@ class ModelLoadRestrictionPolicyTest {
         assertTrue(restoredCompleted.isCustom)
         assertEquals("/data/models/custom_done.bin", restoredCompleted.localPath)
     }
+    @Test
+    fun validationAndTransferFailuresAreNeverProjectedAsAvailableOrBlocked() {
+        for (status in listOf(ModelStatus.Failed, ModelStatus.Downloading, ModelStatus.Paused)) {
+            val model = createTestModel("bad_bundle", "Model", 1000, status = status,
+                localPath = "/models/model.gguf").copy(errorMessage = "Missing shard", downloadedBytes = 42)
+            assertEquals(model, ModelLoadRestrictionPolicy.projectCompletedModel(
+                isCrashBlocked = true, model = model, totalRamGB = 1.0))
+        }
+    }
+
+    @Test fun successfulCrashRetryRemovesStaleCrashAndDeviceWarnings() {
+        val model = createTestModel("retry_7b", "Model 7B", 4500L, status = ModelStatus.Blocked, localPath = "/models/retry.gguf")
+            .copy(loadRestriction = LoadRestriction("Previous crash", LoadRestrictionCategory.PreviousCrash))
+        val recovered = ModelLoadRestrictionPolicy.projectCompletedModel(false, model, 4.0, hasSuccessfulRetry = true)
+        assertEquals(ModelStatus.Available, recovered.status)
+        assertNull(recovered.loadRestriction)
+        assertNull(recovered.errorMessage)
+        assertEquals(model.localPath, recovered.localPath)
+        val restarted = ModelLoadRestrictionPolicy.projectCompletedModel(false, recovered, 4.0, hasSuccessfulRetry = true)
+        assertEquals(ModelStatus.Available, restarted.status)
+    }
+    @Test fun failedRetryKeepsCrashPriorityAndRuntimeRestrictionsRemainBinding() {
+        val model = createTestModel("retry", "Model", 1500L, status = ModelStatus.Blocked, localPath = "/models/retry.task")
+        val crashed = ModelLoadRestrictionPolicy.projectCompletedModel(true, model, 12.0, hasSuccessfulRetry = true)
+        assertTrue(crashed.isCrashBlocked)
+        assertEquals(ModelStatus.Blocked, crashed.status)
+        val runtime = model.copy(loadRestriction = LoadRestriction("Missing runtime support", LoadRestrictionCategory.RuntimeIncompatibility))
+        val restricted = ModelLoadRestrictionPolicy.projectCompletedModel(false, runtime, 12.0, hasSuccessfulRetry = true)
+        assertEquals(ModelStatus.Blocked, restricted.status)
+        assertFalse(restricted.canTryAnyway)
+    }
+    @Test fun clearingCrashWithoutSuccessfulRetryReassessesDeviceLimits() {
+        val model = createTestModel("retry_7b", "Model 7B", 4500L, status = ModelStatus.Blocked, localPath = "/models/retry.gguf")
+            .copy(loadRestriction = LoadRestriction("Previous crash", LoadRestrictionCategory.PreviousCrash))
+        val projected = ModelLoadRestrictionPolicy.projectCompletedModel(false, model, 4.0)
+        assertEquals(LoadRestrictionCategory.DeviceCompatibility, projected.loadRestriction?.category)
+    }
+
 }

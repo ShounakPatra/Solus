@@ -4,6 +4,11 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import com.shounak.localmeshai.ui.components.SlidingGlassTab
+import com.shounak.localmeshai.ui.components.SlidingGlassTabs
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -189,107 +194,41 @@ fun AddModelSheet(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Segmented glass tabs
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.35f))
-                        .border(
-                            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.30f)),
-                            shape = RoundedCornerShape(16.dp)
-                        )
-                        .padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(
-                                if (selectedTabIndex == 0) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-                                else Color.Transparent
-                            )
-                            .border(
-                                if (selectedTabIndex == 0) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.50f))
-                                else BorderStroke(0.dp, Color.Transparent),
-                                shape = RoundedCornerShape(12.dp)
-                            )
-                            .clickable { selectedTabIndex = 0 }
-                            .padding(vertical = 10.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.FolderOpen,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = if (selectedTabIndex == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = "Phone files",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = if (selectedTabIndex == 0) FontWeight.Bold else FontWeight.Medium,
-                                color = if (selectedTabIndex == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(
-                                if (selectedTabIndex == 1) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-                                else Color.Transparent
-                            )
-                            .border(
-                                if (selectedTabIndex == 1) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.50f))
-                                else BorderStroke(0.dp, Color.Transparent),
-                                shape = RoundedCornerShape(12.dp)
-                            )
-                            .clickable { selectedTabIndex = 1 }
-                            .padding(vertical = 10.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.CloudDownload,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = if (selectedTabIndex == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = "Hugging Face / URL",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = if (selectedTabIndex == 1) FontWeight.Bold else FontWeight.Medium,
-                                color = if (selectedTabIndex == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
+                SlidingGlassTabs(
+                    tabs = listOf(
+                        SlidingGlassTab("Phone files", Icons.Default.FolderOpen),
+                        SlidingGlassTab("Hugging Face / URL", Icons.Default.CloudDownload)
+                    ),
+                    selectedIndex = selectedTabIndex,
+                    onSelect = { selectedTabIndex = it },
+                    hazeState = hazeState
+                )
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                when (selectedTabIndex) {
-                    0 -> PhoneImportSection(
-                        mainViewModel = mainViewModel,
-                        sheetSessionId = sheetSessionId,
-                        hazeState = hazeState
-                    )
-                    1 -> HuggingFaceImportSection(
-                        mainViewModel = mainViewModel,
-                        sheetSessionId = sheetSessionId,
-                        hazeState = hazeState,
-                        onSuccess = {
-                            performDismiss()
-                        }
-                    )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .animateContentSize(animationSpec = if (com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion) androidx.compose.animation.core.snap() else spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        ))
+                ) {
+                    when (selectedTabIndex) {
+                        0 -> PhoneImportSection(
+                            mainViewModel = mainViewModel,
+                            sheetSessionId = sheetSessionId,
+                            hazeState = hazeState
+                        )
+                        1 -> HuggingFaceImportSection(
+                            mainViewModel = mainViewModel,
+                            sheetSessionId = sheetSessionId,
+                            hazeState = hazeState,
+                            onSuccess = {
+                                performDismiss()
+                            }
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))

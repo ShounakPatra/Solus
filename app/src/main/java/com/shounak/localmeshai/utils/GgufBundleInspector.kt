@@ -3,6 +3,7 @@ package com.shounak.localmeshai.utils
 import android.util.Log
 import com.shounak.localmeshai.ai.LlamaCppEngine
 import com.shounak.localmeshai.models.ArtifactRole
+import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.models.ModelCapabilities
 import java.io.File
 import java.util.Locale
@@ -415,6 +416,7 @@ object GgufBundleInspector {
             supportsVision = hasVision,
             supportsAudio = hasAudio,
             thinking = mainThinkingCapability,
+            thinkingControl = if (mainThinkingCapability == ThinkingCapability.Toggleable) com.shounak.localmeshai.models.ThinkingControlStrategy.NativeTemplate else com.shounak.localmeshai.models.ThinkingControlStrategy.None,
             thinkingDetectorVersion = ThinkingModeConfig.DETECTOR_VERSION,
             thinkingArtifactIdentity = orderedMain.firstOrNull()?.location.orEmpty(),
             contextLength = detectedContextLength,

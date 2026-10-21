@@ -2,6 +2,12 @@
 # Solus ProGuard / R8 Configuration for Release Builds
 # ====================================================================
 
+# Replacement for Haze 1.5.1's excluded wildcard consumer rule.
+# Strip only debug logging; never mark inherited Object methods side-effect-free.
+-assumenosideeffects class dev.chrisbanes.haze.HazeLogger {
+    public final void d(java.lang.String, kotlin.jvm.functions.Function0);
+}
+
 # Preserve line numbers and source files for Crashlytics stack traces
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
 -keepattributes SourceFile,LineNumberTable

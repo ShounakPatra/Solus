@@ -114,7 +114,33 @@ object LiteRtRuntimeCache {
     }
 
     fun prune(context: Context, now: Long = System.currentTimeMillis()): Int {
-        return clearInactive(context)
+        return pruneRoot(runtimeRoot(context), now)
+    }
+
+    /** Keep recent warm starts bounded by age, count and disk usage. Active engines are exempt. */
+    internal fun pruneRoot(root: File, now: Long, maxEntries: Int = 3,
+                           maxBytes: Long = 1024L * 1024 * 1024): Int {
+        if (!root.isDirectory) return 0
+        val toDelete = mutableListOf<File>()
+        synchronized(lock) {
+            var retained = 0
+            var retainedBytes = 0L
+            root.listFiles().orEmpty().sortedByDescending { it.lastModified() }.forEach { child ->
+                val path = child.canonicalPathOrNull() ?: return@forEach
+                if (!child.isSafeChildOf(root) || (leaseCounts[path] ?: 0) > 0 || path in deletingPaths) return@forEach
+                val bytes = child.walkTopDown().onEnter { it.isSafeChildOf(root) }
+                    .filter { it.isFile && it.isSafeChildOf(root) }.sumOf { it.length() }
+                val fresh = child.lastModified() > 0 && now - child.lastModified() < 7L * 24 * 60 * 60 * 1000
+                if (fresh && retained < maxEntries && bytes <= maxBytes - retainedBytes) {
+                    retained++
+                    retainedBytes += bytes
+                } else {
+                    deletingPaths.add(path)
+                    toDelete.add(child)
+                }
+            }
+        }
+        return deleteReserved(root, toDelete)
     }
 
     /**
@@ -139,6 +165,10 @@ object LiteRtRuntimeCache {
             }
         }
 
+        return deleteReserved(root, toDelete)
+    }
+
+    private fun deleteReserved(root: File, toDelete: List<File>): Int {
         var deletedCount = 0
         try {
             for (dir in toDelete) {
@@ -161,7 +191,7 @@ object LiteRtRuntimeCache {
     }
 
     fun pruneOnStartup(context: Context) {
-        clearInactive(context)
+        prune(context)
         AppCacheCleaner.clearAppCache(context)
     }
 

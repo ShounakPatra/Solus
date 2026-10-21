@@ -23,6 +23,7 @@ import java.io.File
  * Completely independent of RAG vector storage and LLM engines.
  */
 interface MemoryStore {
+    val memories: StateFlow<List<MemoryEntry>> get() = MutableStateFlow(getAll()).asStateFlow()
     val loadState: StateFlow<StoreLoadState> get() = MutableStateFlow(StoreLoadState.Ready).asStateFlow()
     fun getAll(): List<MemoryEntry>
     fun getActive(): List<MemoryEntry>
@@ -55,8 +56,11 @@ class PersistentMemoryStore(
     @Volatile
     private var isLoaded: Boolean = false
 
-    @Volatile
-    private var entriesState: List<MemoryEntry> = emptyList()
+    private val _memories = MutableStateFlow<List<MemoryEntry>>(emptyList())
+    override val memories: StateFlow<List<MemoryEntry>> = _memories.asStateFlow()
+    private var entriesState: List<MemoryEntry>
+        get() = _memories.value
+        set(value) { _memories.value = value }
     private val lock = Any()
 
     var lastError: String? = null
@@ -190,6 +194,10 @@ class PersistentMemoryStore(
     }
 
     private fun persistSnapshot(snapshot: List<MemoryEntry>): Boolean {
+        if (_loadState.value !is StoreLoadState.Ready) {
+            lastError = "Memory storage requires recovery before changes can be saved."
+            return false
+        }
         val af = atomicFile ?: return true
         val result = af.write(snapshot) { serializeEntries(it) }
         return if (result.isSuccess) {

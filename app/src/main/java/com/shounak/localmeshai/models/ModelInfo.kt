@@ -25,6 +25,8 @@ enum class ModelPackage {
     ZipDirectory
 }
 
+enum class ModelValidationState { Pending, Checking, Verified, Failed }
+
 enum class LoadRestrictionCategory {
     DeviceCompatibility,
     PreviousCrash,
@@ -37,7 +39,7 @@ data class LoadRestriction(
     val category: LoadRestrictionCategory
 ) {
     val canTryAnyway: Boolean
-        get() = category == LoadRestrictionCategory.DeviceCompatibility
+        get() = category in setOf(LoadRestrictionCategory.DeviceCompatibility, LoadRestrictionCategory.PreviousCrash)
 }
 
 @Immutable
@@ -122,7 +124,7 @@ data class ModelInfo(
                 return downloadSpec.capabilities.thinking
             }
             if (supportsThinkingMode) {
-                return ThinkingCapability.Toggleable
+                return ThinkingCapability.ModelControlled
             }
             return ThinkingCapability.Unknown
         }

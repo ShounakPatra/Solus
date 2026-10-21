@@ -80,6 +80,8 @@ enum class ThinkingCapability {
     ModelControlled
 }
 
+enum class ThinkingControlStrategy { None, NativeTemplate, QwenSoftSwitch }
+
 @Immutable
 data class ModelCapabilities(
     val supportsText: Boolean = true,
@@ -89,13 +91,19 @@ data class ModelCapabilities(
     val thinkingDetectorVersion: Int = 0,
     val thinkingArtifactIdentity: String = "",
     val contextLength: Int = 0,
-    val visionProjectorMissing: Boolean = false
+    val visionProjectorMissing: Boolean = false,
+    val thinkingControl: ThinkingControlStrategy = ThinkingControlStrategy.None,
+    val reasoningChannels: Set<String> = emptySet(),
+    val reasoningPrefill: Boolean = false
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("supportsText", supportsText)
         put("supportsVision", supportsVision)
         put("supportsAudio", supportsAudio)
         put("thinking", thinking.name)
+        put("thinkingControl", thinkingControl.name)
+        put("reasoningChannels", JSONArray(reasoningChannels.toList()))
+        put("reasoningPrefill", reasoningPrefill)
         put("thinkingDetectorVersion", thinkingDetectorVersion)
         put("thinkingArtifactIdentity", thinkingArtifactIdentity)
         put("contextLength", contextLength)
@@ -115,7 +123,10 @@ data class ModelCapabilities(
                 thinkingDetectorVersion = json.optInt("thinkingDetectorVersion", 0),
                 thinkingArtifactIdentity = json.optString("thinkingArtifactIdentity", ""),
                 contextLength = json.optInt("contextLength", 0),
-                visionProjectorMissing = json.optBoolean("visionProjectorMissing", false)
+                visionProjectorMissing = json.optBoolean("visionProjectorMissing", false),
+                thinkingControl = ThinkingControlStrategy.entries.firstOrNull { it.name == json.optString("thinkingControl") } ?: ThinkingControlStrategy.None,
+                reasoningChannels = json.optJSONArray("reasoningChannels")?.let { names -> (0 until names.length()).map { names.getString(it) }.toSet() } ?: emptySet(),
+                reasoningPrefill = json.optBoolean("reasoningPrefill", false)
             )
         }
     }

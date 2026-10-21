@@ -13,6 +13,12 @@ import kotlin.concurrent.withLock
 
 enum class ChatKind { Text, Vision }
 
+private fun JSONObject.requiredJournalString(name: String): String {
+    val value = get(name)
+    require(value is String && value.isNotBlank()) { "Journal field $name must be a nonblank string" }
+    return value
+}
+
 data class JournalTombstone(
     val chatKind: ChatKind,
     val sessionId: String
@@ -25,8 +31,8 @@ data class JournalTombstone(
     companion object {
         fun fromJson(obj: JSONObject): JournalTombstone {
             return JournalTombstone(
-                chatKind = ChatKind.valueOf(obj.getString("chatKind")),
-                sessionId = obj.getString("sessionId")
+                chatKind = ChatKind.valueOf(obj.requiredJournalString("chatKind")),
+                sessionId = obj.requiredJournalString("sessionId")
             )
         }
     }
@@ -50,16 +56,16 @@ data class DeletionJournalEntry(
     companion object {
         fun fromJson(obj: JSONObject): DeletionJournalEntry {
             val paths = mutableListOf<String>()
-            val arr = obj.optJSONArray("ownedResourcePaths")
-            if (arr != null) {
-                for (i in 0 until arr.length()) {
-                    paths.add(arr.getString(i))
-                }
+            val arr = obj.getJSONArray("ownedResourcePaths")
+            for (i in 0 until arr.length()) {
+                val path = arr.get(i)
+                require(path is String && path.isNotBlank()) { "Owned resource path must be a nonblank string" }
+                paths.add(path)
             }
             return DeletionJournalEntry(
-                id = obj.getString("id"),
-                chatKind = ChatKind.valueOf(obj.getString("chatKind")),
-                sessionId = obj.getString("sessionId"),
+                id = obj.requiredJournalString("id"),
+                chatKind = ChatKind.valueOf(obj.requiredJournalString("chatKind")),
+                sessionId = obj.requiredJournalString("sessionId"),
                 ownedResourcePaths = paths,
                 createdAt = obj.optLong("createdAt", System.currentTimeMillis())
             )
@@ -101,6 +107,13 @@ class ChatDeletionJournal(
 
     fun hasRecoveryError(): Boolean = hasCorruptData
 
+    /** Revalidate before accessing history; a failed read must not mean no deletions. */
+    fun refreshForHistoryAccess(): Boolean = lock.withLock {
+        loadJournalInternal()
+        isLoaded = true
+        !hasCorruptData
+    }
+
     fun isTombstoned(chatKind: ChatKind, sessionId: String): Boolean {
         if (!isLoaded) ensureLoaded()
         return tombstones.contains(tombstoneKey(chatKind, sessionId))
@@ -112,7 +125,6 @@ class ChatDeletionJournal(
     }
 
     private fun loadJournalInternal() {
-        if (!journalFile.exists()) return
         when (val res = atomicFile.read { decodeDocument(it) }) {
             is AtomicReadResult.Success -> {
                 hasCorruptData = false
@@ -128,7 +140,7 @@ class ChatDeletionJournal(
                 // Never overwrite corrupt data
             }
             is AtomicReadResult.Missing -> {
-                // Not found, empty
+                // Initially absent is valid; removing a broken journal is not recovery.
             }
         }
     }
@@ -140,14 +152,15 @@ class ChatDeletionJournal(
             return false
         }
         rootDir.mkdirs()
-        markTombstoned(entry.chatKind, entry.sessionId)
         val currentDoc = readCurrentDoc()
+        if (hasCorruptData) return false
         val nextPending = currentDoc.pending.filter { it.sessionId != entry.sessionId || it.chatKind != entry.chatKind } + entry
         val nextTombstones = (currentDoc.tombstones.filter { it.sessionId != entry.sessionId || it.chatKind != entry.chatKind } +
                 JournalTombstone(entry.chatKind, entry.sessionId)).distinct()
 
         val nextDoc = JournalDocument(version = 2, pending = nextPending, tombstones = nextTombstones)
         val writeResult = atomicFile.write(nextDoc) { encodeDocument(it) }
+        if (writeResult.isSuccess) markTombstoned(entry.chatKind, entry.sessionId)
         writeResult.isSuccess
     }
 
@@ -155,6 +168,7 @@ class ChatDeletionJournal(
         ensureLoaded()
         if (hasCorruptData) return false
         val currentDoc = readCurrentDoc()
+        if (hasCorruptData) return false
         val nextPending = currentDoc.pending.filter { it.id != id }
         // Keep tombstones durably in the file!
         val nextDoc = currentDoc.copy(pending = nextPending)
@@ -178,6 +192,7 @@ class ChatDeletionJournal(
         ensureLoaded()
         if (hasCorruptData) return false
         val pending = getPendingEntries()
+        if (hasCorruptData) return false
         var allClean = true
         for (entry in pending) {
             var entryClean = true
@@ -189,17 +204,20 @@ class ChatDeletionJournal(
                 }
             }
             if (entryClean) {
-                removeEntry(entry.id)
+                if (!removeEntry(entry.id)) allClean = false
             }
         }
         allClean
     }
 
     private fun readCurrentDoc(): JournalDocument {
-        if (!journalFile.exists()) return JournalDocument()
         return when (val res = atomicFile.read { decodeDocument(it) }) {
             is AtomicReadResult.Success -> res.data
-            else -> JournalDocument()
+            is AtomicReadResult.Missing -> JournalDocument()
+            else -> {
+                hasCorruptData = true
+                JournalDocument()
+            }
         }
     }
 
@@ -218,7 +236,7 @@ class ChatDeletionJournal(
 
     private fun decodeDocument(jsonStr: String): JournalDocument {
         val trimmed = jsonStr.trim()
-        if (trimmed.isBlank()) return JournalDocument()
+        require(trimmed.isNotEmpty()) { "Deletion journal is blank" }
 
         if (trimmed.startsWith("[")) {
             // Legacy format: Array of DeletionJournalEntry
@@ -233,20 +251,23 @@ class ChatDeletionJournal(
             return JournalDocument(version = 1, pending = pendingList, tombstones = tombstoneList)
         } else {
             val root = JSONObject(trimmed)
-            val ver = root.optInt("version", 2)
+            val rawVersion = root.get("version")
+            require(rawVersion is Int || rawVersion is Long) { "Deletion journal version must be an integer" }
+            val version = (rawVersion as Number).toLong()
+            require(version in 1L..Int.MAX_VALUE.toLong()) { "Invalid deletion journal version" }
+            val ver = version.toInt()
+            if (ver > 2) throw com.shounak.localmeshai.utils.UnsupportedVersionException(ver, 2)
             val pendingList = mutableListOf<DeletionJournalEntry>()
-            val pendingArr = root.optJSONArray("pending")
-            if (pendingArr != null) {
-                for (i in 0 until pendingArr.length()) {
-                    pendingList.add(DeletionJournalEntry.fromJson(pendingArr.getJSONObject(i)))
-                }
+            val pendingArr = root.getJSONArray("pending")
+            for (i in 0 until pendingArr.length()) {
+                pendingList.add(DeletionJournalEntry.fromJson(pendingArr.getJSONObject(i)))
             }
             val tombstoneList = mutableListOf<JournalTombstone>()
-            val tombstonesArr = root.optJSONArray("tombstones")
-            if (tombstonesArr != null) {
-                for (i in 0 until tombstonesArr.length()) {
-                    tombstoneList.add(JournalTombstone.fromJson(tombstonesArr.getJSONObject(i)))
-                }
+            // V1 stored pending entries only; V2 always writes both arrays.
+            val tombstonesArr = if (ver == 1 && !root.has("tombstones")) JSONArray()
+                else root.getJSONArray("tombstones")
+            for (i in 0 until tombstonesArr.length()) {
+                tombstoneList.add(JournalTombstone.fromJson(tombstonesArr.getJSONObject(i)))
             }
             return JournalDocument(version = ver, pending = pendingList, tombstones = tombstoneList)
         }

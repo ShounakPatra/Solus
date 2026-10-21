@@ -40,6 +40,41 @@ class ModelRuntimeCoordinatorTest {
     }
 
     @Test
+    fun modelSwitchWaitsForNativeReleaseInBothDirections() = runBlocking {
+        for ((previous, next) in listOf(ModelRuntimeOwner.Chat to ModelRuntimeOwner.Vision,
+                ModelRuntimeOwner.Vision to ModelRuntimeOwner.Chat)) {
+            doCleanup()
+            val closing = CompletableDeferred<Unit>()
+            val mayClose = CompletableDeferred<Unit>()
+            val previousAlive = AtomicBoolean(true)
+            val nextStarted = AtomicBoolean(false)
+            ModelRuntimeCoordinator.register(previous, release = {
+                closing.complete(Unit)
+                mayClose.await()
+                previousAlive.set(false)
+                ShutdownResult.Success
+            })
+            ModelRuntimeCoordinator.register(next, release = { ShutdownResult.Success })
+            ModelRuntimeCoordinator.activate(previous)
+            val switch = launch(Dispatchers.IO) {
+                ModelRuntimeCoordinator.withRuntime(next) {
+                    assertFalse(previousAlive.get())
+                    nextStarted.set(true)
+                }
+            }
+            try {
+                kotlinx.coroutines.withTimeout(3_000L) { closing.await() }
+                assertFalse(nextStarted.get())
+                assertTrue(ModelRuntimeCoordinator.isActive(previous))
+                mayClose.complete(Unit)
+                switch.join()
+                assertTrue(nextStarted.get())
+                assertTrue(ModelRuntimeCoordinator.isActive(next))
+            } finally { mayClose.complete(Unit); switch.cancel() }
+        }
+    }
+
+    @Test
     fun testMutuallyExclusiveOwnershipBetweenOwners() = runBlocking {
         val chatReleased = AtomicBoolean(false)
         val chatActive = AtomicBoolean(false)

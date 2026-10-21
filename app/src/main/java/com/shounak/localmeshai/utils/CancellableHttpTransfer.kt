@@ -2,10 +2,24 @@ package com.shounak.localmeshai.utils
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.DisposableHandle
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
 import java.io.InputStream
 import java.io.OutputStream
 import kotlin.coroutines.CoroutineContext
+
+/** A body-free child finishes as soon as its parent is cancelled, even during blocking I/O. */
+internal fun Job.abortTransportOnCancellation(abort: () -> Unit): DisposableHandle {
+    val signal = Job(this)
+    val handler = signal.invokeOnCompletion { cause ->
+        if (cause != null) runCatching(abort)
+    }
+    return DisposableHandle {
+        handler.dispose()
+        signal.complete()
+    }
+}
 
 /**
  * Robust, interruptible streaming byte transfer utility with explicit cooperative
@@ -34,11 +48,12 @@ object CancellableHttpTransfer {
         onAbort: (() -> Unit)? = null,
         onChunkTransferred: suspend (bytesRead: Int, totalTransferred: Long) -> Unit = { _, _ -> }
     ): Long {
+        val transferContext = coroutineContext ?: currentCoroutineContext()
         val buffer = ByteArray(BUFFER_SIZE)
         var totalTransferred = 0L
 
         // Cooperatively abort the call or input stream when coroutine is cancelled while blocked on socket read
-        val cancellationHandle = coroutineContext?.get(Job)?.invokeOnCompletion {
+        val cancellationHandle = transferContext[Job]?.abortTransportOnCancellation {
             try {
                 onAbort?.invoke() ?: input.close()
             } catch (_: Throwable) {}
@@ -46,19 +61,20 @@ object CancellableHttpTransfer {
 
         try {
             while (true) {
-                coroutineContext?.ensureActive()
+                transferContext.ensureActive()
                 if (isCancelled?.invoke() == true) {
                     onAbort?.invoke()
                     throw CancellationException("Byte transfer cancelled.")
                 }
 
                 val read = input.read(buffer)
+                transferContext.ensureActive()
                 if (read == -1) break
 
                 output.write(buffer, 0, read)
                 totalTransferred += read
 
-                coroutineContext?.ensureActive()
+                transferContext.ensureActive()
                 if (isCancelled?.invoke() == true) {
                     onAbort?.invoke()
                     throw CancellationException("Byte transfer cancelled.")
@@ -69,6 +85,9 @@ object CancellableHttpTransfer {
 
             output.flush()
             return totalTransferred
+        } catch (error: Exception) {
+            transferContext.ensureActive()
+            throw error
         } finally {
             cancellationHandle?.dispose()
         }

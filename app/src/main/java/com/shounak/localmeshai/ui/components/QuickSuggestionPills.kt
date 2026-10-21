@@ -47,6 +47,7 @@ data class SuggestionItem(
 @Composable
 fun QuickSuggestionPills(
     isVisible: Boolean,
+    hazeState: dev.chrisbanes.haze.HazeState,
     onSelectSuggestion: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -70,13 +71,14 @@ fun QuickSuggestionPills(
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 6.dp),
+                .padding(vertical = 1.dp),
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(suggestions, key = { it.label }) { item ->
                 SuggestionPill(
                     item = item,
+                    hazeState = hazeState,
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         onSelectSuggestion(item.promptText)
@@ -90,6 +92,7 @@ fun QuickSuggestionPills(
 @Composable
 private fun SuggestionPill(
     item: SuggestionItem,
+    hazeState: dev.chrisbanes.haze.HazeState,
     onClick: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -100,37 +103,8 @@ private fun SuggestionPill(
         label = "pillScale"
     )
 
-    Row(
-        modifier = Modifier
-            .scale(scale)
-            .clip(RoundedCornerShape(20.dp))
-            .background(
-                Brush.horizontalGradient(
-                    colors = listOf(
-                        Color(0xFF1E293B).copy(alpha = 0.85f),
-                        Color(0xFF0F172A).copy(alpha = 0.85f)
-                    )
-                )
-            )
-            .border(
-                width = 1.dp,
-                brush = Brush.horizontalGradient(
-                    colors = listOf(
-                        item.accentColor.copy(alpha = 0.5f),
-                        item.accentColor.copy(alpha = 0.2f)
-                    )
-                ),
-                shape = RoundedCornerShape(20.dp)
-            )
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick
-            )
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
+    FloatingBlurChip(hazeState = hazeState, onClick = onClick, accent = item.accentColor,
+        modifier = Modifier.scale(scale)) {
         Icon(
             imageVector = item.icon,
             contentDescription = null,
@@ -141,7 +115,7 @@ private fun SuggestionPill(
             text = item.label,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
-            color = Color.White
+            color = androidx.compose.material3.MaterialTheme.colorScheme.onSurface
         )
     }
 }

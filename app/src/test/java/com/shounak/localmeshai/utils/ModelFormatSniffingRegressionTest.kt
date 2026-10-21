@@ -48,10 +48,10 @@ class ModelFormatSniffingRegressionTest {
     }
 
     @Test
-    fun zipArchiveNamedLitertlmReturnsNonModel() {
+    fun zipArchiveNamedLitertlmRequiresDeepTaskValidation() {
         val fakeZip = byteArrayOf(0x50, 0x4B, 0x03, 0x04, 0, 0, 0, 0)
         val result = FileHeaderSniffer.sniffHeader(fakeZip, 4096L, "fake_model.litertlm")
-        assertTrue("ZIP archive named .litertlm must be rejected as NonModel", result is FileHeaderSniffer.SniffResult.NonModel)
+        assertTrue("ZIP candidate must undergo deep task validation regardless of its filename", result is FileHeaderSniffer.SniffResult.ValidMediaPipeTask)
     }
 
     @Test

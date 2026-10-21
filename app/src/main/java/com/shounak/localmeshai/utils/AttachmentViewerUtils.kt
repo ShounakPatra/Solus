@@ -134,7 +134,13 @@ object AttachmentViewerUtils {
             return
         }
 
+        val previewLease = ActiveInputFiles.protect(file)
         try {
+            // External viewers may open the URI after this app enters the background.
+            // Renew the cache retention window before handing the file to another app.
+            if (file.canonicalPath.startsWith(context.cacheDir.canonicalPath + File.separator)) {
+                file.setLastModified(System.currentTimeMillis())
+            }
             val uri: Uri = FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file)
             val mimeType = explicitMimeType ?: resolveMimeType(file.name)
 
@@ -153,6 +159,8 @@ object AttachmentViewerUtils {
         } catch (e: Exception) {
             Log.e(TAG, "Error opening attachment in external app", e)
             Toast.makeText(context, "Could not open file: ${e.localizedMessage ?: "Unknown error"}", Toast.LENGTH_SHORT).show()
+        } finally {
+            previewLease.close()
         }
     }
 

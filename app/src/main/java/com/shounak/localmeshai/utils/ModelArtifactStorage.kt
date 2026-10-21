@@ -324,39 +324,8 @@ class ModelArtifactStorage(val rootDir: File) {
             ModelFormat.GGUF -> "llama.cpp GGUF"
         }
 
-        val primaryFile = mainArtifacts.firstOrNull()?.source?.location?.let { File(it) }
-        val caps = if (manifest.capabilities != null &&
-            manifest.capabilities.thinkingDetectorVersion >= NonGgufBundleInspector.DETECTOR_VERSION
-        ) {
-            manifest.capabilities
-        } else if (primaryFile != null && primaryFile.exists()) {
-            val refreshedCaps = if (bundleFormat == ModelFormat.LiteRtLm || bundleFormat == ModelFormat.MediaPipeTask) {
-                runCatching {
-                    val insp = NonGgufBundleInspector.inspectFile(primaryFile, bundleFormat)
-                    if (insp.isValid) insp.capabilities else null
-                }.getOrNull()
-            } else null
-
-            val resolved = refreshedCaps ?: manifest.capabilities ?: ModelCapabilities(
-                supportsText = true,
-                supportsVision = projectorArtifact != null,
-                supportsAudio = false
-            )
-            if (refreshedCaps != null && refreshedCaps != manifest.capabilities) {
-                runCatching {
-                    val updated = manifest.copy(capabilities = refreshedCaps)
-                    val manifestFile = getManifestFile(sanitizedId)
-                    writeAtomic(manifestFile, updated.toJson())
-                }
-            }
-            resolved
-        } else {
-            manifest.capabilities ?: ModelCapabilities(
-                supportsText = true,
-                supportsVision = projectorArtifact != null,
-                supportsAudio = false
-            )
-        }
+        // Restoration reads manifests only. Deep inspection belongs to the background validation queue.
+        val caps = manifest.capabilities ?: ModelCapabilities()
 
         val primaryName = mainArtifacts.firstOrNull()?.displayName?.substringBeforeLast('.')?.replace('-', ' ')?.replace('_', ' ') ?: sanitizedId
 
@@ -462,6 +431,11 @@ class ModelArtifactStorage(val rootDir: File) {
                 publishedAt = System.currentTimeMillis()
             )
 
+            if (returnedArtifact.isFile && checksumToRecord != null) {
+                runCatching {
+                    ModelVerificationCache(modelDir).recordChecksum(returnedArtifact, checksumToRecord, sourceIdentity)
+                }
+            }
             val manifestFile = getManifestFile(sanitizedId)
             val atomicManifest = AtomicJsonFile<ModelManifest>(manifestFile)
             val writeResult = atomicManifest.write(manifest) { it.toJson() }

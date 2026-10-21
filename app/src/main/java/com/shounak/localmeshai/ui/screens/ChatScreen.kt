@@ -6,8 +6,13 @@ import com.shounak.localmeshai.ai.RequestProgress
 import com.shounak.localmeshai.ai.ModelLoadState
 import com.shounak.localmeshai.ai.ModelLoadStage
 import com.shounak.localmeshai.ui.models.rememberMessagePresentation
+import com.shounak.localmeshai.models.ModelValidationState
+import com.shounak.localmeshai.models.ModelCapabilitySnapshot
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.layout.onSizeChanged
 import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.models.ModelCapabilityPolicy
+import com.shounak.localmeshai.utils.InitCrashGuard
 import com.shounak.localmeshai.utils.ThinkingModeConfig
 
 import android.Manifest
@@ -36,6 +41,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -93,7 +99,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -184,6 +189,7 @@ import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.DisposableEffect
@@ -207,16 +213,14 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -330,8 +334,6 @@ private fun String.normalizeModelAnswerText(): String {
     return normalized.trimStart('\n', '\r')
 }
 
-private val MessageActionButtonReserveWidth = 76.dp
-
 @Composable
 private fun Modifier.dropdownTriggerBounce(expanded: Boolean): Modifier {
     val scaleX by animateFloatAsState(
@@ -375,91 +377,11 @@ private fun Modifier.dropdownTriggerBounce(expanded: Boolean): Modifier {
     }
 }
 
-private fun AnnotatedString.trimStartLayoutWhitespace(): AnnotatedString {
-    var start = 0
-    while (start < text.length && text[start].isWhitespace()) {
-        start++
-    }
-    return if (start == 0) this else subSequence(start, text.length)
-}
-
 @Composable
-private fun AdaptiveMessageText(
-    text: String,
-    color: Color,
-    modifier: Modifier = Modifier
-) {
+private fun AdaptiveMessageText(text: String, color: Color, modifier: Modifier = Modifier) {
     val annotatedText = remember(text) { text.toAsteriskEmphasisText() }
-    if (annotatedText.text.isEmpty()) return
-
-    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
-        val density = LocalDensity.current
-        val textStyle = LocalTextStyle.current
-        val textMeasurer = rememberTextMeasurer()
-        val fullWidthPx = with(density) { maxWidth.roundToPx() }
-        val firstLineWidthPx = with(density) {
-            (maxWidth - MessageActionButtonReserveWidth).coerceAtLeast(1.dp).roundToPx()
-        }
-        val firstLineLayout = remember(annotatedText, textStyle, firstLineWidthPx, fullWidthPx) {
-            if (firstLineWidthPx >= fullWidthPx) {
-                null
-            } else {
-                textMeasurer.measure(
-                    text = annotatedText,
-                    style = textStyle,
-                    maxLines = 1,
-                    constraints = Constraints(maxWidth = firstLineWidthPx)
-                )
-            }
-        }
-        val splitIndex = remember(firstLineLayout, annotatedText) {
-            firstLineLayout
-                ?.takeIf { it.lineCount > 0 }
-                ?.getLineEnd(lineIndex = 0, visibleEnd = true)
-                ?.coerceIn(0, annotatedText.text.length)
-                ?: annotatedText.text.length
-        }
-        if (splitIndex >= annotatedText.text.length) {
-            Text(
-                text = annotatedText,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(end = MessageActionButtonReserveWidth),
-                color = color,
-                textAlign = TextAlign.Start
-            )
-        } else {
-            val firstLine = remember(annotatedText, splitIndex) {
-                annotatedText.subSequence(0, splitIndex)
-            }
-            val remainingText = remember(annotatedText, splitIndex) {
-                annotatedText
-                    .subSequence(splitIndex, annotatedText.text.length)
-                    .trimStartLayoutWhitespace()
-            }
-
-            Column(modifier = Modifier.fillMaxWidth()) {
-                if (firstLine.text.isNotEmpty()) {
-                    Text(
-                        text = firstLine,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(end = MessageActionButtonReserveWidth),
-                        color = color,
-                        textAlign = TextAlign.Start
-                    )
-                }
-                if (remainingText.text.isNotEmpty()) {
-                    Text(
-                        text = remainingText,
-                        modifier = Modifier.fillMaxWidth(),
-                        color = color,
-                        textAlign = TextAlign.Start
-                    )
-                }
-            }
-        }
-    }
+    if (annotatedText.text.isNotEmpty()) Text(text = annotatedText, color = color,
+        modifier = modifier.fillMaxWidth(), textAlign = TextAlign.Start)
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -468,7 +390,8 @@ fun ChatScreen(
     chatViewModel: ChatViewModel = viewModel(),
     visionViewModel: VisionViewModel = viewModel(),
     mainViewModel: MainViewModel = viewModel(),
-    hazeState: HazeState
+    hazeState: HazeState,
+    bottomContentInset: androidx.compose.ui.unit.Dp = 0.dp
 ) {
     var selectedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var selectedFileUri by remember { mutableStateOf<Uri?>(null) }
@@ -494,9 +417,15 @@ fun ChatScreen(
     val modelLoadState by chatViewModel.modelLoadState.collectAsState()
     val isInitializing by chatViewModel.isInitializing.collectAsState()
     val isGenerating by chatViewModel.isGenerating.collectAsState()
+    val isDeletingTextHistory by chatViewModel.isDeletingHistory.collectAsState()
+    val isDeletingVisionHistory by visionViewModel.isDeletingHistory.collectAsState()
     val isChatStopping by chatViewModel.isStopping.collectAsState()
     val isModelReady by chatViewModel.isModelReady.collectAsState()
     val thinkingMode by chatViewModel.thinkingMode.collectAsState()
+    val temporaryText by chatViewModel.temporaryChat.collectAsState()
+    val temporaryVision by visionViewModel.temporaryChat.collectAsState()
+    val workspacePreferences = com.shounak.localmeshai.features.WorkspacePreferences.get(LocalContext.current)
+    val workspaceRevision by workspacePreferences.revision.collectAsState()
     val textState by chatViewModel.draftText.collectAsState()
     val error by chatViewModel.error.collectAsState()
     val currentSessionId by chatViewModel.currentSessionId.collectAsState()
@@ -540,6 +469,9 @@ fun ChatScreen(
     }
 
     val isKeyboardOpen = WindowInsets.isImeVisible
+    val validationStates by mainViewModel.modelValidationStates.collectAsState()
+    val chatRuntimeCapabilities by chatViewModel.runtimeCapabilities.collectAsState()
+    val visionRuntimeCapabilities by visionViewModel.runtimeCapabilities.collectAsState()
     val downloadedChatModels = mainViewModel.availableModels.filter {
         it.type in listOf(ModelType.Text, ModelType.Vision) &&
             (it.localPath != null || it.bundle != null) &&
@@ -549,43 +481,22 @@ fun ChatScreen(
         mainViewModel.availableModels.firstOrNull { it.id == path || it.localPath == path }
     }
     val selectedUnsafeOverride = selectedModel?.id?.let { modelId ->
-        mainViewModel.unsafeInitOverrideIds.contains(modelId)
+        mainViewModel.unsafeInitOverrideIds.contains(modelId) || InitCrashGuard.hasSuccessfulRetry(context, modelId)
     } == true
+    val selectedRetryRevision = selectedModel?.id?.let { mainViewModel.modelRetryRevisions[it] } ?: 0
     val selectedSupportsAttachments = selectedVisionModelPath != null || selectedModel?.isMultimodal == true
     val selectedVisionModelSupportsFiles = selectedVisionModelPath?.let { path ->
         path.endsWith(".task", ignoreCase = true) || path.endsWith(".litertlm", ignoreCase = true) || path.endsWith(".gguf", ignoreCase = true)
     } ?: false
-    val selectedSupportsAudio = remember(
-        selectedModel?.localPath,
-        selectedModel?.id,
-        selectedModel?.supportsAudioInput,
-        selectedModel?.bundle
-    ) {
-        selectedModel.supportsAudioInputByMetadata()
-    }
-    var selectedThinkingCapability by remember(selectedModel?.id, selectedModel?.localPath) {
-        mutableStateOf(
-            selectedModel?.thinkingCapability ?: ThinkingCapability.Unknown
-        )
-    }
-    var isCheckingThinking by remember(selectedModel?.id, selectedModel?.localPath) {
-        mutableStateOf(false)
-    }
-    LaunchedEffect(selectedModel?.id, selectedModel?.localPath, selectedModel?.bundle) {
-        if (selectedModel != null) {
-            isCheckingThinking = true
-            val capability = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                ThinkingModeConfig.resolveThinkingCapability(selectedModel, context = context.applicationContext)
-            }
-            selectedThinkingCapability = capability
-            isCheckingThinking = false
-        } else {
-            selectedThinkingCapability = ThinkingCapability.Unsupported
-            isCheckingThinking = false
-        }
-    }
-    val selectedSupportsThinking = selectedThinkingCapability == ThinkingCapability.Toggleable || selectedThinkingCapability == ThinkingCapability.ModelControlled
+    val runtimeSnapshot = (if (selectedSupportsAttachments) visionRuntimeCapabilities else chatRuntimeCapabilities)
+        ?.takeIf { it.modelId == selectedModel?.id && it.artifactRevision == ModelCapabilitySnapshot.revision(selectedModel.bundle, selectedModelPath.orEmpty()) }
+    val selectedDeclaredAudio = selectedModel?.supportsAudio == true
+    val selectedSupportsAudio = runtimeSnapshot?.capabilities?.supportsAudio == true
     val isCurrentModelReady = if (selectedSupportsAttachments) isVisionModelReady else isModelReady
+    val selectedThinkingCapability = if (isCurrentModelReady) runtimeSnapshot?.capabilities?.thinking ?: ThinkingCapability.Unknown
+        else selectedModel?.thinkingCapability ?: ThinkingCapability.Unknown
+    val isCheckingThinking = selectedModel != null && validationStates[selectedModel.id] in setOf(ModelValidationState.Pending, ModelValidationState.Checking)
+    val selectedSupportsThinking = selectedThinkingCapability in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled)
     val isCurrentModelResponding = if (selectedSupportsAttachments) {
         isVisionAnalyzing || isVisionStopping
     } else {
@@ -678,6 +589,11 @@ fun ChatScreen(
         }
     }
     var isIngestingDocument by remember { mutableStateOf(false) }
+    DisposableEffect(selectedAudioUri) {
+        val file = selectedAudioUri?.takeIf { it.scheme == "file" }?.path?.let(::File)
+        val lease = file?.let(com.shounak.localmeshai.utils.ActiveInputFiles::protect)
+        onDispose { lease?.close() }
+    }
     LaunchedEffect(selectedBitmap, selectedSupportsAttachments) {
         visionViewModel.stageImageAttachment(selectedBitmap.takeIf { selectedSupportsAttachments })
     }
@@ -847,7 +763,7 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(selectedTextModelPath, selectedModel?.id, selectedUnsafeOverride) {
+    LaunchedEffect(selectedTextModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision) {
         if (selectedTextModelPath == null) {
             chatViewModel.uninitializeModel()
         } else {
@@ -866,7 +782,7 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(selectedVisionModelPath, selectedModel?.id, selectedUnsafeOverride) {
+    LaunchedEffect(selectedVisionModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision) {
         if (selectedVisionModelPath == null) {
             visionViewModel.uninitializeModel()
         } else {
@@ -877,22 +793,13 @@ fun ChatScreen(
                     modelName = selectedModel?.name ?: "",
                     modelSize = selectedModel?.size ?: "",
                     contextWindowTokens = selectedModel?.effectiveContextWindowTokens,
-                    supportsAudioInput = selectedSupportsAudio,
+                    supportsAudioInput = selectedDeclaredAudio,
                     supportsThinkingMode = selectedSupportsThinking,
                     allowUnsafeOverride = selectedUnsafeOverride,
                     bundle = selectedModel?.bundle
                 )
             }
         }
-    }
-
-    LaunchedEffect(selectedSupportsThinking) {
-        chatViewModel.updateSupportsThinkingMode(selectedSupportsThinking)
-        visionViewModel.updateSupportsThinkingMode(selectedSupportsThinking)
-    }
-
-    LaunchedEffect(selectedSupportsAudio) {
-        visionViewModel.updateSupportsAudioInput(selectedSupportsAudio)
     }
 
     LaunchedEffect(selectedModel?.id, selectedThinkingCapability, thinkingMode) {
@@ -1020,52 +927,40 @@ fun ChatScreen(
             onDeleteVisionSession = visionViewModel::deleteChatSession,
             onClearAll = { showClearConfirm = true },
             onDismiss = { showHistory = false },
-            hazeState = hazeState
+            hazeState = hazeState,
+            onSettings = if (appSettingsData.enableAutoHideBottomBar) ({ mainViewModel.openSettings(false) }) else null
         )
     }
 
     if (showClearConfirm) {
-        AlertDialog(
-            onDismissRequest = { showClearConfirm = false },
-            title = { Text("Clear all history?") },
-            text = { Text("This will permanently delete all chat sessions and all uploaded media. This cannot be undone.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        chatViewModel.clearHistory()
-                        visionViewModel.clearHistory()
-                        scope.launch(Dispatchers.IO) {
-                            val attachmentsDir = context.filesDir.resolve("chat_attachments")
-                            if (attachmentsDir.exists()) {
-                                attachmentsDir.deleteRecursively()
-                                attachmentsDir.mkdirs()
-                            }
-                            val multimodalDir = context.cacheDir.resolve("multimodal_inputs")
-                            if (multimodalDir.exists()) {
-                                multimodalDir.deleteRecursively()
-                            }
-                            val cameraDir = context.cacheDir.resolve("camera_inputs")
-                            if (cameraDir.exists()) {
-                                cameraDir.deleteRecursively()
-                            }
-                        }
-                        showClearConfirm = false
-                        showHistory = false
-                    },
-                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error
-                    )
-                ) {
-                    Text("Clear all")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearConfirm = false }) {
-                    Text("Cancel")
-                }
+        com.shounak.localmeshai.features.GlassActionDialog(
+            hazeState = hazeState, onDismiss = { showClearConfirm = false },
+            title = "Clear all history?", confirmLabel = "Clear all", destructive = true,
+            onConfirm = {
+                chatViewModel.clearHistory()
+                visionViewModel.clearHistory()
+                showClearConfirm = false
+                showHistory = false
             }
-        )
+        ) { Text("This will permanently delete all chat sessions and their uploaded media. This cannot be undone.") }
     }
+
+    val activeProfile = remember(workspaceRevision, selectedModel?.id) { workspacePreferences.profile(selectedModel?.id.orEmpty()) }
+    val initializedSnapshot = if (effectiveSupportsAttachments) visionRuntimeCapabilities else chatRuntimeCapabilities
+    val contextLimit = initializedSnapshot?.contextTokensFor(
+        selectedModel?.id.orEmpty(),
+        ModelCapabilitySnapshot.revision(selectedModel?.bundle, selectedModelPath.orEmpty()),
+        ready = if (effectiveSupportsAttachments) isVisionModelReady && !isVisionInitializing && !isVisionStopping
+            else isModelReady && !isInitializing && !isChatStopping
+    )
+    val contextTail = if (effectiveSupportsAttachments) visionMessages.lastOrNull()?.text.orEmpty() else textMessages.lastOrNull()?.text.orEmpty()
+    val contextBudget = remember(effectiveSessionId, effectiveSupportsAttachments, activeProfile, contextLimit, activeMessageCount, contextTail.length / 128, textState) {
+        com.shounak.localmeshai.features.ContextBudgets.summarize(
+            if (effectiveSupportsAttachments) visionMessages.map { it.text } else textMessages.map { it.text },
+            textState, activeProfile.systemPrompt, contextLimit ?: 512)
+    }
+
+    val showContextIndicator = contextLimit != null && selectedModel != null
 
     val chatBackground = Brush.verticalGradient(
         colors = listOf(
@@ -1122,12 +1017,13 @@ fun ChatScreen(
         ) {
             ChatControlRow(
                 models = downloadedChatModels,
+                validationStates = validationStates,
                 selectedPath = selectedModelPath,
                 hasHistory = hasTextHistory || hasVisionHistory,
                 onSelectModel = { model ->
                     attachmentMenuExpanded = false
-                    val isVisionTarget = model.supportsVision
-                    activeHistoryChatType = if (isVisionTarget) HistorySessionType.Vision else HistorySessionType.Text
+                    val isVisionTarget = model.isMultimodal
+                    activeHistoryChatType = null
                     val target = model.localPath ?: model.id
                     if (isVisionTarget) {
                         mainViewModel.selectVisionModel(target)
@@ -1159,20 +1055,26 @@ fun ChatScreen(
                     selectedAudioBytes = null
                 },
                 onHistory = { showHistory = true },
-                onSettings = if (appSettingsData.enableAutoHideBottomBar) {
-                    { mainViewModel.openSettings(false) }
-                } else null,
+                onSettings = if (appSettingsData.enableAutoHideBottomBar) ({ mainViewModel.openSettings(false) }) else null,
                 hazeState = hazeState
             )
         }
 
         if (selectedModelPath != null && appSettingsData.enableTelemetryBar) {
-            val batteryTempC = remember(appSettingsData.showThermalGuard) {
-                if (appSettingsData.showThermalGuard) DeviceUtils.getBatteryTemperatureCelsius(context) else null
+            val guards by produceState<Pair<Float?, Long?>>(
+                initialValue = null to null,
+                key1 = listOf(selectedModel?.id, isModelReady, isVisionModelReady,
+                    appSettingsData.showThermalGuard, appSettingsData.showRamGuard)
+            ) {
+                while (true) {
+                    value = withContext(Dispatchers.IO) {
+                        (if (appSettingsData.showThermalGuard) DeviceUtils.getBatteryTemperatureCelsius(context) else null) to
+                            (if (appSettingsData.showRamGuard) DeviceUtils.getAvailableRamMb(context) else null)
+                    }
+                    delay(5_000L)
+                }
             }
-            val availableRamMb = remember(appSettingsData.showRamGuard) {
-                if (appSettingsData.showRamGuard) DeviceUtils.getAvailableRamMb(context) else null
-            }
+            val (batteryTempC, availableRamMb) = guards
             val modelAccentColor = remember(selectedModel?.id, appSettingsData.enableDynamicThemes) {
                 if (appSettingsData.enableDynamicThemes) ModelTheme.getAccentColor(selectedModel?.id) else Color(0xFF3B82F6)
             }
@@ -1230,6 +1132,9 @@ fun ChatScreen(
                 batteryTempC = batteryTempC,
                 availableRamMb = availableRamMb,
                 accentColor = modelAccentColor,
+                contextIndicator = if (showContextIndicator) {
+                    { com.shounak.localmeshai.features.ContextUsageIndicator(contextBudget) }
+                } else null,
                 modifier = Modifier
                     .padding(horizontal = 16.dp, vertical = 2.dp)
                     .align(Alignment.CenterHorizontally)
@@ -1238,6 +1143,21 @@ fun ChatScreen(
 
 
         Spacer(modifier = Modifier.height(4.dp))
+
+                var selectedPersonaId by rememberSaveable { mutableStateOf("default") }
+                val modelAccentColor = remember(selectedModel?.id, appSettingsData.enableDynamicThemes) {
+                    if (appSettingsData.enableDynamicThemes) ModelTheme.getAccentColor(selectedModel?.id) else Color(0xFF3B82F6)
+                }
+                val hasMessagesInChat = if (effectiveSupportsAttachments) visionMessages.isNotEmpty() else textMessages.isNotEmpty()
+
+        val isNewChat = activeMessageCount == 0 && effectiveSessionId == null &&
+            (effectiveSupportsAttachments || pendingSessionId == null)
+        val hideComposerShortcuts = isKeyboardOpen && attachmentMenuExpanded
+        val showFloatingControls = !hasMessagesInChat && (isNewChat || appSettingsData.enablePersonaPresets ||
+            (appSettingsData.enableSuggestionPills && textState.isBlank() && selectedModelPath != null && !isCurrentModelBusy))
+        var floatingDockHeight by remember { mutableStateOf(220.dp) }
+        val floatingDockDensity = LocalDensity.current
+        val floatingBottomInset = floatingDockHeight + 8.dp
 
         Box(
             modifier = Modifier
@@ -1263,6 +1183,13 @@ fun ChatScreen(
                         )
                 ) {
                     activeError?.let { ErrorCard(it) }
+                }
+
+                if (mainViewModel.retryingModelIds.isNotEmpty()) {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                        Text("Checking model for retry…", style = MaterialTheme.typography.bodySmall)
+                    }
                 }
 
                 // Initialising / Generating banner - placed inside Column above message Box so it never overlaps chat items
@@ -1371,6 +1298,7 @@ fun ChatScreen(
                     modifier = Modifier.weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
+                    Box(Modifier.fillMaxSize().hazeSource(state = hazeState)) {
                     when {
                         // 1. Prioritise showing messages if they exist (history with no model active).
                         (effectiveSupportsAttachments && visionMessages.isNotEmpty()) ||
@@ -1378,9 +1306,8 @@ fun ChatScreen(
                             LazyColumn(
                                 state = listState,
                                 modifier = Modifier
-                                    .fillMaxSize()
-                                    .hazeSource(state = hazeState),
-                                contentPadding = PaddingValues(vertical = 8.dp),
+                                    .fillMaxSize(),
+                                contentPadding = PaddingValues(top = 8.dp, bottom = floatingBottomInset + 8.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 if (effectiveSupportsAttachments) {
@@ -1414,6 +1341,14 @@ fun ChatScreen(
                                             responseFormatVersion = message.responseFormatVersion,
                                             terminalStatus = message.terminalStatus,
                                             entryDelayMs = if (index == visionMessages.lastIndex) 25 else 0,
+                                            ragPassages = message.ragPassages,
+                                            onEditPrompt = if (message.isUser && selectedModel != null && !isGenerating && !isVisionAnalyzing && !isInitializing && !isVisionInitializing && !isChatStopping && !isVisionStopping) {
+                                                { updated -> visionViewModel.editAndRegenerate(message.id, updated) }
+                                            } else null,
+                                            onRegenerate = if (!message.isUser && !isStreaming && message.errorMessage == null && selectedModel != null && !isGenerating && !isVisionAnalyzing && !isInitializing && !isVisionInitializing && !isChatStopping && !isVisionStopping) {
+                                                val promptId = message.userMessageId ?: visionMessages.take(index).lastOrNull { it.isUser }?.id
+                                                promptId?.let { id -> { visionViewModel.editAndRegenerate(id) } }
+                                            } else null,
                                             ragSources = message.ragSources,
                                             ragChunkCount = message.ragChunkCount,
                                             ragTopMatchPct = message.ragTopMatchPct,
@@ -1456,6 +1391,14 @@ fun ChatScreen(
                                             responseFormatVersion = message.responseFormatVersion,
                                             terminalStatus = message.terminalStatus,
                                             entryDelayMs = if (index == textMessages.lastIndex) 25 else 0,
+                                            ragPassages = message.ragPassages,
+                                            onEditPrompt = if (message.isUser && selectedModel != null && !isGenerating && !isVisionAnalyzing && !isInitializing && !isVisionInitializing && !isChatStopping && !isVisionStopping) {
+                                                { updated -> chatViewModel.editAndRegenerate(message.id, updated) }
+                                            } else null,
+                                            onRegenerate = if (!message.isUser && !isStreaming && message.errorMessage == null && selectedModel != null && !isGenerating && !isVisionAnalyzing && !isInitializing && !isVisionInitializing && !isChatStopping && !isVisionStopping) {
+                                                val promptId = message.userMessageId ?: textMessages.take(index).lastOrNull { it.isUser }?.id
+                                                promptId?.let { id -> { chatViewModel.editAndRegenerate(id) } }
+                                            } else null,
                                             ragSources = message.ragSources,
                                             ragChunkCount = message.ragChunkCount,
                                             ragTopMatchPct = message.ragTopMatchPct,
@@ -1487,7 +1430,8 @@ fun ChatScreen(
                             EmptyState(
                                 title = "Chat loaded",
                                 subtitle = "Initialise a model to continue",
-                                hazeState = hazeState
+                                hazeState = hazeState,
+                                bottomInset = floatingBottomInset
                             )
                         }
                         selectedModelPath == null -> {
@@ -1498,33 +1442,39 @@ fun ChatScreen(
                                 } else {
                                     "Choose a model above to begin."
                                 },
-                                hazeState = hazeState
+                                hazeState = hazeState,
+                                bottomInset = floatingBottomInset
                             )
                         }
                         !canShowChatMessages -> {
                             EmptyState(
                                 title = if (isCurrentModelBusy) "Initialising model" else "Model is not ready",
                                 subtitle = if (isCurrentModelBusy) "This usually takes a moment." else "Send a message to load the selected model.",
-                                hazeState = hazeState
+                                hazeState = hazeState,
+                                bottomInset = floatingBottomInset
                             )
                         }
                         effectiveSupportsAttachments && visionMessages.isEmpty() -> {
                             EmptyState(
                                 title = "Ask with images or files",
                                 subtitle = "Use the + inside the chat box to add camera, photos, or files.",
-                                hazeState = hazeState
+                                hazeState = hazeState,
+                                bottomInset = floatingBottomInset
                             )
                         }
                         else -> {
                             // Model ready / session open, but chat is empty — starter prompts
                             StarterPrompts(
                                 hazeState = hazeState,
+                                bottomInset = floatingBottomInset,
                                 onPromptSelected = { prompt ->
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     chatViewModel.sendMessage(prompt)
                                 }
                             )
                         }
+                    }
+
                     }
 
                     // ── Stacked scroll FABs (BottomEnd, BoxScope) ─────────────────
@@ -1550,16 +1500,71 @@ fun ChatScreen(
                             },
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)
-                                .padding(8.dp)
+                                .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = floatingBottomInset + 8.dp)
                         )
                     }
 
+                    // One transparent dock overlays the scrollable content. Only its individual
+                    // controls and the rounded composer paint a surface.
+                    Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                        .onSizeChanged { floatingDockHeight = with(floatingDockDensity) { it.height.toDp() } }
+                        .padding(bottom = bottomContentInset),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    if (showFloatingControls) {
+                        Column(Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            if (isNewChat) {
+                                Box(Modifier.padding(horizontal = 12.dp)) {
+                                    com.shounak.localmeshai.features.TemporaryChatToggle(
+                                        temporary = if (effectiveSupportsAttachments) temporaryVision else temporaryText,
+                                        busy = isGenerating || isVisionAnalyzing || isInitializing || isVisionInitializing || isChatStopping || isVisionStopping || isDeletingTextHistory || isDeletingVisionHistory,
+                                        hazeState = hazeState,
+                                        onTemporaryChange = { enabled ->
+                                            val changed = com.shounak.localmeshai.features.ConversationPrivacy.setNewDraftMode(
+                                                enabled,
+                                                active = if (effectiveSupportsAttachments) visionViewModel::setTemporaryChat else chatViewModel::setTemporaryChat,
+                                                other = if (effectiveSupportsAttachments) chatViewModel::setTemporaryChat else visionViewModel::setTemporaryChat)
+                                            if (changed) Toast.makeText(context,
+                                                if (enabled) "Temporary chat on — history and memories won't be saved"
+                                                else "Temporary chat off — this conversation will be saved", Toast.LENGTH_SHORT).show()
+                                        })
+                                }
+                            }
+                if (!hideComposerShortcuts && !hasMessagesInChat && appSettingsData.enablePersonaPresets) {
+                    SystemPromptPresetsBar(
+                        hazeState = hazeState,
+                        selectedPersonaId = selectedPersonaId,
+                        onSelectPersona = { persona ->
+                            selectedPersonaId = persona.id
+                            if (persona.systemPrompt.isNotBlank()) {
+                                chatViewModel.setDraftText("${persona.systemPrompt}\n\nTask: ")
+                            } else {
+                                chatViewModel.setDraftText("")
+                            }
+                        },
+                        accentColor = modelAccentColor,
+                        modifier = Modifier
+                    )
                 }
 
+                QuickSuggestionPills(
+                    hazeState = hazeState,
+                    isVisible = !hideComposerShortcuts && appSettingsData.enableSuggestionPills && !hasMessagesInChat && textState.isBlank() && selectedModelPath != null && !isCurrentModelBusy,
+                    onSelectSuggestion = { prompt ->
+                        chatViewModel.setDraftText(prompt)
+                    },
+                    modifier = Modifier
+                )
+
+                        }
+                    }
+
+
+
                 // ── Chat input box with integrated thinking toggle ──
-                // IME padding is applied to the composer surface only. When the
-                // keyboard is open the decorative bottom gap is removed so the
-                // text field sits directly above the keyboard.
+                // Root IME insets keep this floating dock above the keyboard.
+                // Blur the content behind the rounded floating composer.
                 val composerCorner by animateDpAsState(
                     targetValue = if (isKeyboardOpen) 28.dp else 30.dp,
                     animationSpec = spring(dampingRatio = 0.88f, stiffness = 520f),
@@ -1576,38 +1581,9 @@ fun ChatScreen(
                     animationSpec = spring(dampingRatio = 0.86f, stiffness = 420f),
                     label = "chat_composer_max_height"
                 )
-                var selectedPersonaId by rememberSaveable { mutableStateOf("default") }
-                val modelAccentColor = remember(selectedModel?.id, appSettingsData.enableDynamicThemes) {
-                    if (appSettingsData.enableDynamicThemes) ModelTheme.getAccentColor(selectedModel?.id) else Color(0xFF3B82F6)
-                }
-                val hasMessagesInChat = if (effectiveSupportsAttachments) visionMessages.isNotEmpty() else textMessages.isNotEmpty()
-
-                if (!hasMessagesInChat && appSettingsData.enablePersonaPresets) {
-                    SystemPromptPresetsBar(
-                        selectedPersonaId = selectedPersonaId,
-                        onSelectPersona = { persona ->
-                            selectedPersonaId = persona.id
-                            if (persona.systemPrompt.isNotBlank()) {
-                                chatViewModel.setDraftText("${persona.systemPrompt}\n\nTask: ")
-                            } else {
-                                chatViewModel.setDraftText("")
-                            }
-                        },
-                        accentColor = modelAccentColor,
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
-                }
-
-                QuickSuggestionPills(
-                    isVisible = appSettingsData.enableSuggestionPills && !hasMessagesInChat && textState.isBlank() && selectedModelPath != null && !isCurrentModelBusy,
-                    onSelectSuggestion = { prompt ->
-                        chatViewModel.setDraftText(prompt)
-                    },
-                    modifier = Modifier.padding(bottom = 4.dp)
-                )
-
                 val composerTint = MaterialTheme.colorScheme.surfaceContainerHigh
-                GlassDispersionCard(
+                val composerShape = RoundedCornerShape(composerCorner)
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = composerMaxHeight)
@@ -1618,23 +1594,31 @@ fun ChatScreen(
                             initialXOffset = 8.dp,
                             initialRotationZ = 0.55f
                         )
-                        .animatedGlassHalo(shape = RoundedCornerShape(composerCorner), alpha = 0.045f, durationMillis = 4_800)
-                        .padding(bottom = if (isKeyboardOpen) 2.dp else 6.dp)
+                        .padding(bottom = if (isKeyboardOpen) 2.dp else 4.dp)
+                        .clip(composerShape)
+                        // Register the whole panel for hit testing so blank glass areas
+                        // cannot activate prompt suggestions underneath. Children keep
+                        // handling their own taps, text selection and scrolling.
+                        .pointerInput(Unit) { detectTapGestures(onTap = {}) }
                         .onGloballyPositioned {
                             cardCoordinates = it
                             updateComposerBounds()
-                        },
-                    hazeState = hazeState,
-                    cornerRadius = composerCorner,
-                    blurRadius = 34.dp,
-                    refractionStrength = 0.16f,
-                    dispersionAmount = 0.030f,
-                    tintColor = composerTint,
-                    borderAlpha = 0.48f,
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
-                    animatedCaustics = true
+                        }
                 ) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                    // Keep the backdrop separate from the text field and animated controls.
+                    // Their graphics layers must not become part of the blur effect's bounds.
+                    Box(
+                        Modifier.matchParentSize()
+                            .clip(composerShape)
+                            .hazeEffect(state = hazeState, style = HazeStyle(
+                                backgroundColor = MaterialTheme.colorScheme.surface,
+                                blurRadius = 28.dp,
+                                tint = HazeTint(composerTint.copy(alpha = 0.28f)),
+                                noiseFactor = 0.04f
+                            ))
+                            .border(0.8.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.48f), composerShape)
+                    )
+                    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
                         if (selectedBitmap != null && selectedBitmap?.isRecycled == false) {
                             var previewTilted by remember(selectedBitmap) { mutableStateOf(false) }
                             LaunchedEffect(selectedBitmap) {
@@ -1906,20 +1890,27 @@ fun ChatScreen(
                             )
                         } else {
                             ChatComposerActions(
+                                modifier = if (hideComposerShortcuts) Modifier.weight(1f, fill = false) else Modifier,
+                                compactAttachmentMenu = hideComposerShortcuts,
                                 thinkingMode = thinkingMode,
                                 thinkingCapability = selectedThinkingCapability,
                                 isCheckingThinking = isCheckingThinking,
-                                canSend = selectedModelPath != null &&
+                                canSend = !isDeletingTextHistory && !isDeletingVisionHistory && selectedModelPath != null &&
                                     !isCurrentModelResponding &&
                                     !isDecodingAudioFile &&
                                     (hasVisionAttachment || textState.isNotBlank()),
                                 isGenerating = if (selectedSupportsAttachments) isVisionAnalyzing else (isGenerating || isInitializing),
-                                canThink = selectedSupportsThinking && !isCurrentModelResponding,
+                                canThink = isCurrentModelReady && runtimeSnapshot != null && selectedSupportsThinking && !isCurrentModelResponding,
                                 supportsAttachments = selectedModelPath != null,
                                 hasAttachment = hasVisionAttachment,
-                                supportsVision = selectedModel?.supportsVision == true,
+                                supportsVision = runtimeSnapshot?.capabilities?.supportsVision == true,
                                 supportsAudioInput = selectedSupportsAudio,
-                                visionDisabledReason = ModelCapabilityPolicy.visionDisabledReason(selectedModel, isCheckingThinking),
+                                visionDisabledReason = when {
+                                    selectedModel == null -> "Select a model"
+                                    !isCurrentModelReady -> "Initialize the model to use images"
+                                    runtimeSnapshot?.capabilities?.supportsVision != true -> "Image input unavailable in this runtime"
+                                    else -> null
+                                },
                                 hazeState = hazeState,
                                 attachmentMenuExpanded = attachmentMenuExpanded,
                                 onToggleAttachmentMenu = { attachmentMenuExpanded = it },
@@ -2038,6 +2029,8 @@ fun ChatScreen(
                             )
                         }
                     }
+                    }
+                }
                 }
             }
 
@@ -2226,7 +2219,7 @@ private fun pcm16RmsLevel(buffer: ByteArray, read: Int): Float {
 }
 
 @Composable
-private fun StarterPrompts(hazeState: HazeState, onPromptSelected: (String) -> Unit) {
+private fun StarterPrompts(hazeState: HazeState, bottomInset: Dp = 0.dp, onPromptSelected: (String) -> Unit) {
     val prompts = listOf(
         "💡 Explain quantum computing in simple terms",
         "🧐 What are 5 things I can do to improve my focus?",
@@ -2236,59 +2229,39 @@ private fun StarterPrompts(hazeState: HazeState, onPromptSelected: (String) -> U
         "🌍 What causes the Northern Lights?"
     )
     val chipTint = MaterialTheme.colorScheme.surfaceContainer
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 16.dp),
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 16.dp, bottom = 16.dp + bottomInset),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            "Start a private conversation",
-            style = MaterialTheme.typography.titleMedium,
-            textAlign = TextAlign.Center
-        )
-        Text(
-            "Everything runs on-device. Nothing leaves your phone.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            prompts.forEachIndexed { index, prompt ->
-                Box(
-                    modifier = Modifier
-                        .fluidReveal(
-                            delayMillis = index * 45,
-                            initialScale = 0.88f,
-                            initialYOffset = 10.dp,
-                            initialXOffset = if (index % 2 == 0) (-18).dp else 18.dp,
-                            initialRotationZ = if (index % 2 == 0) -1.1f else 1.1f
-                        )
-                        .jellyOnTouch(sensitivity = 1.8f)
-                        .clickable { onPromptSelected(prompt.substringAfter(" ")) }
-                        .glassEffect(
-                            hazeState = hazeState, 
-                            shape = RoundedCornerShape(18.dp), 
-                            blurRadius = 12.dp, 
-                            tintColor = chipTint,
-                            borderAlpha = 0.25f
-                        )
-                        .padding(horizontal = 20.dp, vertical = 12.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = prompt,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        textAlign = TextAlign.Center
-                    )
-                }
+        item(key = "starter_title") {
+            Text("Start a private conversation", style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center)
+        }
+        item(key = "starter_description") {
+            Text("Everything runs on-device. Nothing leaves your phone.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        }
+        items(prompts.size, key = { prompts[it] }) { index ->
+            val prompt = prompts[index]
+            Box(
+                modifier = Modifier.fillMaxWidth()
+                    .fluidReveal(delayMillis = index * 45, initialScale = 0.88f,
+                        initialYOffset = 10.dp,
+                        initialXOffset = if (index % 2 == 0) (-18).dp else 18.dp,
+                        initialRotationZ = if (index % 2 == 0) -1.1f else 1.1f)
+                    .jellyOnTouch(sensitivity = 1.8f)
+                    .glassEffect(hazeState = hazeState, shape = RoundedCornerShape(18.dp),
+                        blurRadius = 12.dp, tintColor = chipTint, borderAlpha = 0.25f)
+                    .clickable(role = androidx.compose.ui.semantics.Role.Button) { onPromptSelected(prompt.substringAfter(" ")) }
+                    .heightIn(min = 48.dp)
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(prompt, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface, textAlign = TextAlign.Center)
             }
         }
     }
@@ -2296,6 +2269,8 @@ private fun StarterPrompts(hazeState: HazeState, onPromptSelected: (String) -> U
 
 @Composable
 private fun ChatComposerActions(
+    modifier: Modifier = Modifier,
+    compactAttachmentMenu: Boolean = false,
     thinkingMode: Boolean,
     thinkingCapability: ThinkingCapability = ThinkingCapability.Unknown,
     isCheckingThinking: Boolean = false,
@@ -2351,24 +2326,22 @@ private fun ChatComposerActions(
     }
     val thinkButtonText = when {
         isModelControlled -> "Thinking (model controlled)"
-        isUnknown && isCheckingThinking -> "Checking thinking…"
-        isUnknown -> "Thinking capability unavailable"
-        isUnsupported -> "Thinking unavailable"
+        isUnknown || isUnsupported -> "Think"
         thinkActive -> "Think on"
         else -> "Think off"
     }
     val thinkContentColor = when {
-        isUnsupported -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
-        isUnknown -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.60f)
+        isUnknown || isUnsupported -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
         thinkActive -> MaterialTheme.colorScheme.onPrimaryContainer
         else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.86f)
     }
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         androidx.compose.animation.AnimatedVisibility(
             visible = attachmentMenuOpen,
+            modifier = if (compactAttachmentMenu) Modifier.weight(1f, fill = false) else Modifier,
             enter = androidx.compose.animation.fadeIn(animationSpec = tween(120)) +
                 androidx.compose.animation.scaleIn(
                     initialScale = 0.82f,
@@ -2393,6 +2366,7 @@ private fun ChatComposerActions(
                     )
                 )
         ) {
+            Box(Modifier.verticalScroll(rememberScrollState())) {
             AttachmentInlineMenu(
                 hazeState = hazeState,
                 supportsVision = supportsVision,
@@ -2415,6 +2389,7 @@ private fun ChatComposerActions(
                     onFilesSelect()
                 }
             )
+        }
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -2506,7 +2481,8 @@ private fun ChatComposerActions(
                     Icons.Default.Psychology,
                     contentDescription = when {
                         isModelControlled -> "Model-controlled thinking"
-                        isUnknown -> "Checking thinking capability"
+                        isUnknown && isCheckingThinking -> "Checking thinking capability"
+                        isUnknown -> "Thinking capability has not been verified"
                         isUnsupported -> "Selected model does not support thinking mode"
                         thinkActive -> "Disable thinking mode"
                         else -> "Enable thinking mode"
@@ -2600,59 +2576,69 @@ private fun AttachmentInlineMenu(
     onAudioSelect: () -> Unit,
     onFilesSelect: () -> Unit
 ) {
-    Column(
+    val menuShape = RoundedCornerShape(14.dp)
+    val menuTint = MaterialTheme.colorScheme.surfaceContainerHigh
+    Box(
         modifier = Modifier
             .widthIn(min = 196.dp, max = 250.dp)
             .fluidReveal(initialScale = 0.90f, initialYOffset = 8.dp)
-            .glassEffect(
-                hazeState = hazeState,
-                shape = RoundedCornerShape(14.dp),
-                blurRadius = 24.dp,
-                tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                borderAlpha = 0.42f
-            )
-            .padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+            .clip(menuShape)
     ) {
-        val isVisionEnabled = supportsVision && visionDisabledReason == null
-        listOf(
-            AttachmentMenuSpec(
-                icon = Icons.Default.CameraAlt,
-                title = "Camera",
-                subtitle = visionDisabledReason,
-                enabled = isVisionEnabled,
-                onClick = onCameraSelect
-            ),
-            AttachmentMenuSpec(
-                icon = Icons.Default.PhotoLibrary,
-                title = "Photos",
-                subtitle = visionDisabledReason,
-                enabled = isVisionEnabled,
-                onClick = onPhotosSelect
-            ),
-            AttachmentMenuSpec(
-                icon = Icons.Default.Audiotrack,
-                title = "Audio file",
-                subtitle = if (supportsAudio) "WAV, MP3, AAC, M4A" else "Audio-capable model required",
-                enabled = supportsAudio,
-                onClick = onAudioSelect
-            ),
-            AttachmentMenuSpec(
-                icon = Icons.AutoMirrored.Filled.InsertDriveFile,
-                title = "Files (RAG)",
-                subtitle = "PDF, DOCX, TXT, Code",
-                enabled = true,
-                onClick = onFilesSelect
-            )
-        ).forEachIndexed { index, item ->
-            AttachmentInlineMenuItem(
-                icon = item.icon,
-                title = item.title,
-                subtitle = item.subtitle,
-                enabled = item.enabled,
-                index = index,
-                onClick = item.onClick
-            )
+        Box(
+            Modifier.matchParentSize()
+                .clip(menuShape)
+                .hazeEffect(state = hazeState, style = HazeStyle(
+                    backgroundColor = MaterialTheme.colorScheme.surface,
+                    blurRadius = 24.dp,
+                    tint = HazeTint(menuTint.copy(alpha = 0.28f)),
+                    noiseFactor = 0.04f
+                ))
+                .border(0.8.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), menuShape)
+        )
+        Column(
+            modifier = Modifier.padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            val isVisionEnabled = supportsVision && visionDisabledReason == null
+            listOf(
+                AttachmentMenuSpec(
+                    icon = Icons.Default.CameraAlt,
+                    title = "Camera",
+                    subtitle = visionDisabledReason,
+                    enabled = isVisionEnabled,
+                    onClick = onCameraSelect
+                ),
+                AttachmentMenuSpec(
+                    icon = Icons.Default.PhotoLibrary,
+                    title = "Photos",
+                    subtitle = visionDisabledReason,
+                    enabled = isVisionEnabled,
+                    onClick = onPhotosSelect
+                ),
+                AttachmentMenuSpec(
+                    icon = Icons.Default.Audiotrack,
+                    title = "Audio file",
+                    subtitle = if (supportsAudio) "WAV, MP3, AAC, M4A" else "Audio-capable model required",
+                    enabled = supportsAudio,
+                    onClick = onAudioSelect
+                ),
+                AttachmentMenuSpec(
+                    icon = Icons.AutoMirrored.Filled.InsertDriveFile,
+                    title = "Files (RAG)",
+                    subtitle = "PDF, DOCX, TXT, Code",
+                    enabled = true,
+                    onClick = onFilesSelect
+                )
+            ).forEachIndexed { index, item ->
+                AttachmentInlineMenuItem(
+                    icon = item.icon,
+                    title = item.title,
+                    subtitle = item.subtitle,
+                    enabled = item.enabled,
+                    index = index,
+                    onClick = item.onClick
+                )
+            }
         }
     }
 }
@@ -2910,6 +2896,7 @@ private fun AudioLoudnessBarsCanvas(
 @Composable
 private fun ChatControlRow(
     models: List<ModelInfo>,
+    validationStates: Map<String, ModelValidationState>,
     selectedPath: String?,
     hasHistory: Boolean,
     onSelectModel: (ModelInfo) -> Unit,
@@ -2928,6 +2915,7 @@ private fun ChatControlRow(
             models = models,
             selectedPath = selectedPath,
             onSelect = onSelectModel,
+            validationStates = validationStates,
             onTryAnyway = onTryAnyway,
             modifier = Modifier.weight(1f),
             hazeState = hazeState
@@ -2951,15 +2939,16 @@ private fun ChatControlRow(
         ) {
             Icon(Icons.Default.History, contentDescription = "Chat history", modifier = Modifier.size(25.dp))
         }
-        if (onSettings != null) {
+
+        onSettings?.let { openSettings ->
             LiquidGlassButton(
-                onClick = onSettings,
+                onClick = openSettings,
                 hazeState = hazeState,
-                modifier = Modifier.size(52.dp),
-                shape = RoundedCornerShape(26.dp),
+                modifier = Modifier.size(48.dp),
+                shape = RoundedCornerShape(24.dp),
                 contentPadding = PaddingValues(0.dp)
             ) {
-                Icon(Icons.Default.Settings, contentDescription = "Settings", modifier = Modifier.size(24.dp))
+                Icon(Icons.Default.Settings, contentDescription = "Settings", modifier = Modifier.size(23.dp))
             }
         }
     }
@@ -2968,6 +2957,7 @@ private fun ChatControlRow(
 @Composable
 private fun ChatModelPicker(
     models: List<ModelInfo>,
+    validationStates: Map<String, ModelValidationState>,
     selectedPath: String?,
     onSelect: (ModelInfo) -> Unit,
     onTryAnyway: (ModelInfo) -> Unit,
@@ -2980,6 +2970,12 @@ private fun ChatModelPicker(
     val selected = models.firstOrNull { it.id == selectedPath || it.localPath == selectedPath }
     val selectedName = selected?.let { "${it.name} · ${it.type.label}" } ?: "Choose model"
     val pickerTint = MaterialTheme.colorScheme.surfaceContainerHigh
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    var triggerWidth by remember { mutableStateOf(0.dp) }
+    val popupWidth = minOf(triggerWidth.takeIf { it > 0.dp } ?: 280.dp, (configuration.screenWidthDp.dp - 32.dp).coerceAtLeast(1.dp))
+    val popupHeight = minOf(360.dp, configuration.screenHeightDp.dp / 2)
+
     val arrowRotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
         animationSpec = spring(
@@ -2989,7 +2985,7 @@ private fun ChatModelPicker(
         label = "chat_model_picker_arrow_rotation"
     )
 
-    Box(modifier = modifier) {
+    Box(modifier = modifier.onSizeChanged { triggerWidth = with(density) { it.width.toDp() } }) {
         LiquidGlassButton(
             onClick = { expanded = !expanded },
             hazeState = hazeState,
@@ -3005,6 +3001,7 @@ private fun ChatModelPicker(
             Text(
                 selectedName,
                 modifier = Modifier.weight(1f),
+                overflow = TextOverflow.Ellipsis,
                 maxLines = 1
             )
             Icon(
@@ -3013,25 +3010,28 @@ private fun ChatModelPicker(
                 modifier = Modifier.rotate(arrowRotation)
             )
         }
-        GlassDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, hazeState = hazeState) {
+        GlassDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, hazeState = hazeState,
+            modifier = Modifier.width(popupWidth).heightIn(max = popupHeight)) {
             models.forEach { model ->
                 androidx.compose.material3.DropdownMenuItem(
                     text = {
-                        Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    model.name,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    "· ${model.type.label}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                            Text(model.name, style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                when {
+                                    model.supportsVision && model.supportsAudio -> "Images and audio"
+                                    model.supportsVision -> "Images"
+                                    model.supportsAudio -> "Audio"
+                                    else -> "Text"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                            val validation = validationStates[model.id]
+                            if (validation == ModelValidationState.Pending || validation == ModelValidationState.Checking) {
+                                Text("Checking model…", style = MaterialTheme.typography.labelSmall)
                             }
                             val stateLabel = when (model.status) {
                                 ModelStatus.Blocked -> "Blocked · ${model.loadRestriction?.reason ?: "Device restriction"}"
@@ -3071,7 +3071,7 @@ private fun ChatModelPicker(
 
     blockedModelForDetails?.let { blockedModel ->
         val isCrash = blockedModel.isCrashBlocked
-        val canTry = blockedModel.canTryAnyway && !isCrash
+        val canTry = blockedModel.canTryAnyway
         Dialog(onDismissRequest = { blockedModelForDetails = null }) {
             Box(
                 modifier = Modifier
@@ -3112,7 +3112,7 @@ private fun ChatModelPicker(
                         )
                         if (isCrash) {
                             Text(
-                                text = "This model previously crashed the app during native initialization. Native-crash blocks cannot be bypassed for stability.",
+                                text = "This model previously crashed the app during native initialization. Try Anyway may crash the app again. A successful retry clears the device block.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error
                             )
@@ -3482,8 +3482,14 @@ private fun ScrollHazeFab(
 }
 
 @Composable
-private fun EmptyState(title: String, subtitle: String, hazeState: HazeState) {
+private fun EmptyState(title: String, subtitle: String, hazeState: HazeState, bottomInset: Dp = 0.dp) {
     val cardTint = MaterialTheme.colorScheme.surfaceContainer
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(top = 8.dp, bottom = bottomInset + 8.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        item {
     GlassDispersionCard(
         hazeState = hazeState,
         modifier = Modifier
@@ -3531,6 +3537,8 @@ private fun EmptyState(title: String, subtitle: String, hazeState: HazeState) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
+        }
+    }
         }
     }
 }
@@ -3738,6 +3746,9 @@ private fun ChatBubble(
     responseFormatVersion: Int = 0,
     terminalStatus: RequestTerminalStatus? = null,
     entryDelayMs: Int = 0,
+    ragPassages: List<com.shounak.localmeshai.features.RagPassage> = emptyList(),
+    onEditPrompt: ((String) -> Unit)? = null,
+    onRegenerate: (() -> Unit)? = null,
     ragSources: List<String> = emptyList(),
     ragChunkCount: Int = 0,
     ragTopMatchPct: Int = 0,
@@ -3748,9 +3759,10 @@ private fun ChatBubble(
     onFullscreenClick: () -> Unit
 ) {
     val context = LocalContext.current
+    val reduceMotion = com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion
     val entryProgress = remember { Animatable(if (entryDelayMs > 0) 0f else 1f) }
-    LaunchedEffect(entryDelayMs) {
-        if (entryDelayMs <= 0) {
+    LaunchedEffect(entryDelayMs, reduceMotion) {
+        if (reduceMotion || entryDelayMs <= 0) {
             entryProgress.snapTo(1f)
             return@LaunchedEffect
         }
@@ -3780,8 +3792,6 @@ private fun ChatBubble(
     val displayText = presentation.displayText
     val segments = presentation.segments
     val showStreamingDots = presentation.showStreamingDots
-    val hasRichBlock = presentation.hasRichBlock
-    val needsTopActionClearance = !isUser && (hasRichBlock || parsedContent.thinkingText != null)
     val entryValue = entryProgress.value
 
     Column(
@@ -3820,7 +3830,7 @@ private fun ChatBubble(
                     .fillMaxWidth()
                     .padding(
                         start = 14.dp,
-                        top = if (needsTopActionClearance) 40.dp else 14.dp,
+                        top = 14.dp,
                         end = 14.dp,
                         bottom = 14.dp
                     ),
@@ -3874,8 +3884,7 @@ private fun ChatBubble(
                             text = displayText.trim('\n'),
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(end = if (needsTopActionClearance) 0.dp else MessageActionButtonReserveWidth),
+                                .fillMaxWidth(),
                             textAlign = TextAlign.Start
                         )
                     } else if (!isUser && terminalStatus == RequestTerminalStatus.Stopped && displayText.isBlank()) {
@@ -3938,7 +3947,8 @@ private fun ChatBubble(
                         }
                     }
 
-                    if (!isUser && ragSources.isNotEmpty()) {
+                    if (!isUser) com.shounak.localmeshai.features.SourcePassagesButton(ragPassages)
+                    if (!isUser && ragSources.isNotEmpty() && ragPassages.isEmpty()) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Surface(
                             shape = RoundedCornerShape(8.dp),
@@ -4029,14 +4039,16 @@ private fun ChatBubble(
                 }
             }
 
-            // Row of actions (Fullscreen + Copy) in top-right corner - only for assistant messages
-            if (!isUser) {
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = 4.dp, end = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
+
+        }
+        if (!isUser || onEditPrompt != null || onRegenerate != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(0.85f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)
+            ) {
+                com.shounak.localmeshai.features.MessageRevisionActions(text, onEditPrompt, onRegenerate, hazeState)
+                if (!isUser) {
                     MessageToolButton(
                         icon = Icons.Default.Fullscreen,
                         contentDescription = "Fullscreen message",
@@ -4262,51 +4274,7 @@ private fun SessionTypeTag(
     }
 }
 
-@Composable
-private fun HistoryFilterTabChip(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    hazeState: HazeState,
-    modifier: Modifier = Modifier
-) {
-    val containerColor = if (selected) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-    } else {
-        MaterialTheme.colorScheme.surfaceContainer
-    }
-    val contentColor = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    val borderAlpha = if (selected) 0.50f else 0.20f
-
-    Box(
-        modifier = modifier
-            .clickable(onClick = onClick)
-            .glassEffect(
-                hazeState = hazeState,
-                shape = RoundedCornerShape(14.dp),
-                blurRadius = 14.dp,
-                tintColor = containerColor,
-                borderAlpha = borderAlpha
-            )
-            .padding(vertical = 8.dp, horizontal = 4.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium.copy(
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
-            ),
-            color = contentColor,
-            maxLines = 1,
-            textAlign = TextAlign.Center
-        )
-    }
-}
-
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChatHistoryDialog(
     textSessions: List<ChatSession>,
@@ -4321,22 +4289,18 @@ private fun ChatHistoryDialog(
     onDeleteVisionSession: (String) -> Unit,
     onClearAll: () -> Unit,
     onDismiss: () -> Unit,
-    hazeState: HazeState
+    hazeState: HazeState,
+    onSettings: (() -> Unit)? = null
 ) {
+    val historyPreferences = com.shounak.localmeshai.features.WorkspacePreferences.get(LocalContext.current)
+    val metadataRevision by historyPreferences.revision.collectAsState()
+    var historyQuery by rememberSaveable { mutableStateOf("") }
+    val dialogMaxHeight = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp * 0.82f
     var filterType by rememberSaveable { mutableStateOf(HistoryFilterType.All) }
-    val deletedSessionIds = remember { mutableStateListOf<String>() }
+    val activeTextSessions = textSessions
+    val activeVisionSessions = visionSessions
 
-    val textCount = textSessions.size
-    val visionCount = visionSessions.size
-
-    val activeTextSessions = remember(textSessions, textCount, deletedSessionIds.size) {
-        textSessions.filter { it.id !in deletedSessionIds }
-    }
-    val activeVisionSessions = remember(visionSessions, visionCount, deletedSessionIds.size) {
-        visionSessions.filter { it.id !in deletedSessionIds }
-    }
-
-    val mergedSessions = remember(activeTextSessions, activeVisionSessions, filterType) {
+    val mergedSessions = remember(activeTextSessions, activeVisionSessions, filterType, historyQuery, metadataRevision) {
         val textItems = activeTextSessions.map { UnifiedChatSessionItem.TextSession(it) }
         val visionItems = activeVisionSessions.map { UnifiedChatSessionItem.VisionSession(it) }
         val combined = when (filterType) {
@@ -4344,36 +4308,42 @@ private fun ChatHistoryDialog(
             HistoryFilterType.Text -> textItems
             HistoryFilterType.Vision -> visionItems
         }
-        combined.sortedWith(
-            compareByDescending<UnifiedChatSessionItem> { it.updatedAt }
-                .thenBy { it.title }
+        combined.filter { item ->
+            if (historyQuery.isBlank()) return@filter true
+            val title = historyPreferences.title(item.type.name.lowercase(), item.id, item.title)
+            title.contains(historyQuery, ignoreCase = true) || when (item) {
+                is UnifiedChatSessionItem.TextSession -> item.session.messages.any { it.text.contains(historyQuery, ignoreCase = true) }
+                is UnifiedChatSessionItem.VisionSession -> item.session.messages.any { it.text.contains(historyQuery, ignoreCase = true) } ||
+                    item.session.question.contains(historyQuery, ignoreCase = true) || item.session.answer.contains(historyQuery, ignoreCase = true)
+            }
+        }.sortedWith(
+            compareByDescending<UnifiedChatSessionItem> { historyPreferences.pinned(it.type.name.lowercase(), it.id) }
+                .thenByDescending { it.updatedAt }
+                .thenBy { historyPreferences.title(it.type.name.lowercase(), it.id, it.title) }
         )
     }
 
-    Dialog(onDismissRequest = onDismiss) {
-        GlassDispersionCard(
-            hazeState = hazeState,
-            modifier = Modifier
-                .fillMaxWidth()
-                .wrapContentHeight()
-                .fluidReveal(initialScale = 0.94f, initialYOffset = 18.dp)
-                .animatedGlassHalo(shape = RoundedCornerShape(20.dp), alpha = 0.06f, durationMillis = 4_200),
-            cornerRadius = 20.dp,
-            blurRadius = 34.dp,
-            refractionStrength = 0.16f,
-            dispersionAmount = 0.030f,
-            tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            borderAlpha = 0.52f,
-            contentPadding = PaddingValues(16.dp),
-            animatedCaustics = true
+    Dialog(onDismissRequest = onDismiss, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        Card(
+            modifier = Modifier.widthIn(max = 560.dp).fillMaxWidth(0.94f)
+                .glassEffect(hazeState = hazeState, shape = RoundedCornerShape(20.dp),
+                    tintColor = MaterialTheme.colorScheme.surfaceContainerHigh, borderAlpha = 0.40f),
+            shape = RoundedCornerShape(20.dp),
+            colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = Color.Transparent)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Column(modifier = Modifier.padding(16.dp).heightIn(max = dialogMaxHeight), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Chat history", style = MaterialTheme.typography.titleMedium)
+                    Text("Chat history", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                    onSettings?.let { open ->
+                        LiquidGlassButton(onClick = { onDismiss(); open() }, hazeState = hazeState, modifier = Modifier.size(38.dp),
+                            shape = RoundedCornerShape(19.dp), contentPadding = PaddingValues(0.dp)) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings", modifier = Modifier.size(18.dp))
+                        }
+                    }
                     LiquidGlassButton(
                         onClick = onDismiss,
                         hazeState = hazeState,
@@ -4385,36 +4355,20 @@ private fun ChatHistoryDialog(
                     }
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    HistoryFilterTabChip(
-                        label = "All (${activeTextSessions.size + activeVisionSessions.size})",
-                        selected = filterType == HistoryFilterType.All,
-                        onClick = { filterType = HistoryFilterType.All },
-                        hazeState = hazeState,
-                        modifier = Modifier.weight(1f)
-                    )
-                    HistoryFilterTabChip(
-                        label = "Text (${activeTextSessions.size})",
-                        selected = filterType == HistoryFilterType.Text,
-                        onClick = { filterType = HistoryFilterType.Text },
-                        hazeState = hazeState,
-                        modifier = Modifier.weight(1f)
-                    )
-                    HistoryFilterTabChip(
-                        label = "Vision (${activeVisionSessions.size})",
-                        selected = filterType == HistoryFilterType.Vision,
-                        onClick = { filterType = HistoryFilterType.Vision },
-                        hazeState = hazeState,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
+                OutlinedTextField(value = historyQuery, onValueChange = { historyQuery = it },
+                    label = { Text("Search conversations") }, placeholder = { Text("Titles or message contents") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+
+                com.shounak.localmeshai.ui.components.SlidingGlassTabs(
+                    tabs = listOf(
+                        com.shounak.localmeshai.ui.components.SlidingGlassTab("All (${activeTextSessions.size + activeVisionSessions.size})"),
+                        com.shounak.localmeshai.ui.components.SlidingGlassTab("Text (${activeTextSessions.size})"),
+                        com.shounak.localmeshai.ui.components.SlidingGlassTab("Vision (${activeVisionSessions.size})")),
+                    selectedIndex = filterType.ordinal, onSelect = { filterType = HistoryFilterType.entries[it] }, hazeState = hazeState
+                )
 
                 if (mergedSessions.isEmpty()) {
                     Text(
-                        when (filterType) {
+                        if (historyQuery.isNotBlank()) "No conversations match your search." else when (filterType) {
                             HistoryFilterType.All -> "No messages yet."
                             HistoryFilterType.Text -> "No text chats yet."
                             HistoryFilterType.Vision -> "No vision chats yet."
@@ -4423,7 +4377,7 @@ private fun ChatHistoryDialog(
                     )
                 } else {
                     LazyColumn(
-                        modifier = Modifier.heightIn(max = 420.dp),
+                        modifier = Modifier.weight(1f, fill = false).heightIn(max = 420.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         itemsIndexed(mergedSessions, key = { _, item -> "${item.type}_${item.id}" }) { index, item ->
@@ -4433,7 +4387,7 @@ private fun ChatHistoryDialog(
                             }
                             Box(
                                 modifier = Modifier
-                                    .animateItem()
+                                    .then(if (com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion) Modifier else Modifier.animateItem())
                                     .fillMaxWidth()
                                     .fluidReveal(
                                         delayMillis = (index * 35).coerceAtMost(280),
@@ -4461,87 +4415,28 @@ private fun ChatHistoryDialog(
                                     )
                                     .padding(12.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            Text(
-                                                text = item.title.ifBlank { "Untitled session" },
-                                                style = MaterialTheme.typography.titleSmall,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.weight(1f, fill = false)
-                                            )
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        val title = historyPreferences.title(item.type.name.lowercase(), item.id, item.title).ifBlank { "Untitled session" }
+                                        Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold,
+                                            maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                             SessionTypeTag(type = item.type)
-                                        }
-
-                                        val subtitle = when (item) {
-                                            is UnifiedChatSessionItem.TextSession -> {
-                                                val msgCount = item.session.messages.size
-                                                val countLabel = "$msgCount message${if (msgCount != 1) "s" else ""}"
-                                                if (selected) "Current • $countLabel" else countLabel
+                                            if (historyPreferences.pinned(item.type.name.lowercase(), item.id)) Text("Pinned", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                            val count = when (item) {
+                                                is UnifiedChatSessionItem.TextSession -> item.session.messages.size
+                                                is UnifiedChatSessionItem.VisionSession -> item.session.messages.size
                                             }
-                                            is UnifiedChatSessionItem.VisionSession -> {
-                                                if (selected) "Current • Image conversation" else "Image conversation"
-                                            }
+                                            Text("$count messages", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Schedule,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(11.dp),
-                                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)
-                                            )
-                                            Text(
-                                                text = ChatDateFormatter.formatChatDate(item.updatedAt),
-                                                style = MaterialTheme.typography.labelSmall.copy(
-                                                    fontWeight = FontWeight.Medium,
-                                                    fontSize = 11.sp
-                                                ),
-                                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.90f),
-                                                maxLines = 1
-                                            )
-                                            Text(
-                                                text = "•",
-                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                                            )
-                                            Text(
-                                                text = subtitle,
-                                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.weight(1f, fill = false)
-                                            )
-                                        }
+                                        Text(ChatDateFormatter.formatChatDate(item.updatedAt), style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
-                                    LiquidGlassButton(
-                                        onClick = {
-                                            deletedSessionIds.add(item.id)
-                                            when (item) {
-                                                is UnifiedChatSessionItem.TextSession -> onDeleteTextSession(item.id)
-                                                is UnifiedChatSessionItem.VisionSession -> onDeleteVisionSession(item.id)
-                                            }
-                                        },
-                                        hazeState = hazeState,
-                                        shape = RoundedCornerShape(18.dp),
-                                        tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
-                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                                    ) {
-                                        Text("Delete", color = MaterialTheme.colorScheme.error)
+                                    com.shounak.localmeshai.features.HistoryEntryActions(item.type.name.lowercase(), item.id, item.title, hazeState) {
+                                        when (item) {
+                                            is UnifiedChatSessionItem.TextSession -> onDeleteTextSession(item.id)
+                                            is UnifiedChatSessionItem.VisionSession -> onDeleteVisionSession(item.id)
+                                        }
                                     }
                                 }
                             }
@@ -4550,9 +4445,10 @@ private fun ChatHistoryDialog(
                 }
 
                 val hasAnySessions = activeTextSessions.isNotEmpty() || activeVisionSessions.isNotEmpty()
-                Row(
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     LiquidGlassButton(
                         onClick = onClearAll,

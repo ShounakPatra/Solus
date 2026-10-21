@@ -1,8 +1,6 @@
 {
   "name": "Solus",
-  "description": "Local on-device AI assistant and chat interface.",
+  "description": "Offline Android AI assistant with on-device inference and user-managed model imports.",
   "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "majorCapabilities": []
 }

@@ -104,7 +104,8 @@ class CacheCleanupCoordinator(
             // 1. If runtime is busy or model is initializing, defer compiled kernel cleanup
             val isRuntimeBusy = ModelRuntimeCoordinator.isRuntimeBusy.value
             if (!isRuntimeBusy) {
-                val compiledDeleted = LiteRtRuntimeCache.clearInactive(context)
+                val compiledDeleted = if (reason == CleanupReason.Explicit) LiteRtRuntimeCache.clearInactive(context)
+                    else LiteRtRuntimeCache.prune(context)
                 deletedFiles += compiledDeleted
             } else {
                 deferredCount++

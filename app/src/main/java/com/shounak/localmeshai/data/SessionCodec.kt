@@ -33,6 +33,7 @@ object SessionCodec {
                 mObj.put("id", msg.id)
                 mObj.put("text", if (msg.isUser) msg.text else ModelOutputSanitizer.clean(msg.text))
                 mObj.put("isUser", msg.isUser)
+                if (msg.ragPassages.isNotEmpty()) mObj.put("ragPassages", com.shounak.localmeshai.features.RagPassage.encode(msg.ragPassages))
                 if (!msg.userMessageId.isNullOrBlank()) mObj.put("userMessageId", msg.userMessageId)
                 if (!msg.requestId.isNullOrBlank()) mObj.put("requestId", msg.requestId)
                 mObj.put("attemptId", msg.attemptId)
@@ -60,27 +61,90 @@ object SessionCodec {
         return root.toString()
     }
 
-    fun decodeChatSessions(rawJson: String): List<ChatSession> {
-        val trimmed = rawJson.trim()
-        if (trimmed.isEmpty()) return emptyList()
-
-        return if (trimmed.startsWith("{")) {
-            val root = JSONObject(trimmed)
-            if (root.has("version")) {
-                val version = root.optInt("version", CURRENT_VERSION)
-                if (version > CURRENT_VERSION) {
-                    throw com.shounak.localmeshai.utils.UnsupportedVersionException(version, CURRENT_VERSION)
+    private fun validatedSessions(raw: String, vision: Boolean): Pair<JSONArray, Boolean> {
+        val trimmed = raw.trim()
+        require(trimmed.isNotEmpty()) { "History is blank" }
+        val tokenizer = org.json.JSONTokener(trimmed)
+        val document = tokenizer.nextValue()
+        require(tokenizer.nextClean() == 0.toChar()) { "Trailing data after history JSON" }
+        val legacy: Boolean
+        val sessions: JSONArray
+        if (document is JSONArray) {
+            sessions = document
+            legacy = true
+        } else {
+            require(document is JSONObject) { "History must be an object or legacy array" }
+            val root = document
+            val version = if (root.has("version")) {
+                val value = root.get("version")
+                require(value is Int || value is Long) { "History version must be an integer" }
+                val number = (value as Number).toLong()
+                require(number > 0) { "Invalid history version" }
+                if (number > CURRENT_VERSION) throw com.shounak.localmeshai.utils.UnsupportedVersionException(
+                    number.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), CURRENT_VERSION)
+                number.toInt()
+            } else 1
+            legacy = version == 1
+            sessions = root.getJSONArray("sessions")
+        }
+        for (i in 0 until sessions.length()) {
+            val session = sessions.getJSONObject(i)
+            validateStrings(session, listOf("id", "title", "documentId", "question", "answer", "imagePath", "audioPath", "audioName", "documentName"))
+            validateIntegers(session, listOf("updatedAt", "updated_at", "timestamp", "audioDurationMs"))
+            if (!legacy) {
+                require(session.get("id") is String && session.getString("id").isNotBlank()) { "Invalid chat ID" }
+                require(session.get("title") is String) { "Invalid chat title" }
+                require(session.has("updatedAt") && !session.isNull("updatedAt")) { "Chat timestamp is missing" }
+            }
+            val messages = if (legacy && vision && !session.has("messages")) {
+                require(listOf("question", "imagePath", "audioPath", "documentName").any {
+                    session.has(it) && !session.isNull(it)
+                }) { "Legacy vision conversation is missing" }
+                null
+            } else session.getJSONArray("messages")
+            if (messages != null) for (j in 0 until messages.length()) {
+                val message = messages.getJSONObject(j)
+                require(message.get("text") is String && message.get("isUser") is Boolean) { "Invalid message text or role" }
+                validateStrings(message, listOf("id", "userMessageId", "requestId", "reasoningText", "documentName", "documentPath",
+                    "imagePath", "audioPath", "audioName", "terminalStatus", "errorMessage", "emptyReason"))
+                validateIntegers(message, listOf("attemptId", "responseFormatVersion", "ragChunkCount", "ragTopMatchPct", "audioDurationMs"))
+                if (!legacy) require(message.get("id") is String && message.getString("id").isNotBlank()) { "Invalid message ID" }
+                if (message.has("ragSources")) {
+                    val sources = message.getJSONArray("ragSources")
+                    for (k in 0 until sources.length()) require(sources.get(k) is String) { "Invalid source name" }
+                }
+                if (message.has("ragPassages")) {
+                    val passages = message.getJSONArray("ragPassages")
+                    com.shounak.localmeshai.features.RagPassage.decode(passages)
+                    for (k in 0 until passages.length()) {
+                        val passage = passages.getJSONObject(k)
+                        require(listOf("documentId", "documentName", "text").all { passage.get(it) is String })
+                        validateIntegers(passage, listOf("chunkIndex"))
+                    }
                 }
             }
-            val isLegacy = !root.has("version")
-            val sessionsArray = root.optJSONArray("sessions") ?: JSONArray()
-            parseChatSessionsArray(sessionsArray, isLegacy = isLegacy)
-        } else if (trimmed.startsWith("[")) {
-            val array = JSONArray(trimmed)
-            parseChatSessionsArray(array, isLegacy = true)
-        } else {
-            emptyList()
         }
+        return sessions to legacy
+    }
+
+    private fun validateStrings(json: JSONObject, keys: List<String>) {
+        keys.forEach { key ->
+            if (json.has(key) && !json.isNull(key)) require(json.get(key) is String) { "History field $key must be text" }
+        }
+    }
+
+    private fun validateIntegers(json: JSONObject, keys: List<String>) {
+        keys.forEach { key ->
+            if (json.has(key)) {
+                val value = json.get(key)
+                require((value is Int || value is Long) && (value as Number).toLong() >= 0) { "History field $key must be a nonnegative integer" }
+            }
+        }
+    }
+
+    fun decodeChatSessions(rawJson: String): List<ChatSession> {
+        val (sessions, legacy) = validatedSessions(rawJson, vision = false)
+        return parseChatSessionsArray(sessions, isLegacy = legacy)
     }
 
     fun decodeLegacyChatSessions(rawJson: String): List<ChatSession> = decodeChatSessions(rawJson)
@@ -88,7 +152,7 @@ object SessionCodec {
     private fun parseChatSessionsArray(array: JSONArray, isLegacy: Boolean = false): List<ChatSession> {
         val sessions = mutableListOf<ChatSession>()
         for (i in 0 until array.length()) {
-            val item = array.optJSONObject(i) ?: continue
+            val item = array.getJSONObject(i)
             val sessionId = item.optString("id").ifBlank { UUID.randomUUID().toString() }
             val title = item.optString("title").ifBlank { "New chat" }
             val rawUpdatedAt = when {
@@ -105,7 +169,7 @@ object SessionCodec {
             var lastUserMsgId: String? = null
 
             for (j in 0 until messagesJson.length()) {
-                val mObj = messagesJson.optJSONObject(j) ?: continue
+                val mObj = messagesJson.getJSONObject(j)
                 val id = mObj.optString("id").ifBlank { UUID.randomUUID().toString() }
                 val isUser = mObj.optBoolean("isUser", false)
                 val text = mObj.optString("text").orEmpty()
@@ -171,6 +235,7 @@ object SessionCodec {
                         isUser = isUser,
                         id = id,
                         ragSources = ragSources,
+                        ragPassages = com.shounak.localmeshai.features.RagPassage.decode(mObj.optJSONArray("ragPassages")),
                         ragChunkCount = ragChunkCount,
                         ragTopMatchPct = ragTopMatchPct,
                         documentName = docName,
@@ -260,6 +325,7 @@ object SessionCodec {
                 mObj.put("id", msg.id)
                 mObj.put("text", if (msg.isUser) msg.text else ModelOutputSanitizer.clean(msg.text))
                 mObj.put("isUser", msg.isUser)
+                if (msg.ragPassages.isNotEmpty()) mObj.put("ragPassages", com.shounak.localmeshai.features.RagPassage.encode(msg.ragPassages))
                 if (!msg.userMessageId.isNullOrBlank()) mObj.put("userMessageId", msg.userMessageId)
                 if (!msg.requestId.isNullOrBlank()) mObj.put("requestId", msg.requestId)
                 mObj.put("attemptId", msg.attemptId)
@@ -292,26 +358,8 @@ object SessionCodec {
     }
 
     fun decodeVisionSessions(rawJson: String): List<VisionChatSession> {
-        val trimmed = rawJson.trim()
-        if (trimmed.isEmpty()) return emptyList()
-
-        return if (trimmed.startsWith("{")) {
-            val root = JSONObject(trimmed)
-            if (root.has("version")) {
-                val version = root.optInt("version", CURRENT_VERSION)
-                if (version > CURRENT_VERSION) {
-                    throw com.shounak.localmeshai.utils.UnsupportedVersionException(version, CURRENT_VERSION)
-                }
-            }
-            val isLegacy = !root.has("version")
-            val sessionsArray = root.optJSONArray("sessions") ?: JSONArray()
-            parseVisionSessionsArray(sessionsArray, isLegacy = isLegacy)
-        } else if (trimmed.startsWith("[")) {
-            val array = JSONArray(trimmed)
-            parseVisionSessionsArray(array, isLegacy = true)
-        } else {
-            emptyList()
-        }
+        val (sessions, legacy) = validatedSessions(rawJson, vision = true)
+        return parseVisionSessionsArray(sessions, isLegacy = legacy)
     }
 
     fun decodeLegacyVisionSessions(rawJson: String): List<VisionChatSession> = decodeVisionSessions(rawJson)
@@ -319,7 +367,7 @@ object SessionCodec {
     private fun parseVisionSessionsArray(array: JSONArray, isLegacy: Boolean = false): List<VisionChatSession> {
         val sessions = mutableListOf<VisionChatSession>()
         for (i in 0 until array.length()) {
-            val item = array.optJSONObject(i) ?: continue
+            val item = array.getJSONObject(i)
             val sessionId = item.optString("id").ifBlank { UUID.randomUUID().toString() }
             val question = item.optString("question").orEmpty()
             val answer = ModelOutputSanitizer.clean(item.optString("answer").orEmpty())
@@ -344,7 +392,7 @@ object SessionCodec {
 
             if (messagesJson != null && messagesJson.length() > 0) {
                 for (j in 0 until messagesJson.length()) {
-                    val mObj = messagesJson.optJSONObject(j) ?: continue
+                    val mObj = messagesJson.getJSONObject(j)
                     val id = mObj.optString("id").ifBlank { UUID.randomUUID().toString() }
                     val isUser = mObj.optBoolean("isUser", false)
                     val text = mObj.optString("text").orEmpty()
@@ -414,6 +462,7 @@ object SessionCodec {
                             isUser = isUser,
                             id = id,
                             ragSources = ragSources,
+                        ragPassages = com.shounak.localmeshai.features.RagPassage.decode(mObj.optJSONArray("ragPassages")),
                             ragChunkCount = ragChunkCount,
                             ragTopMatchPct = ragTopMatchPct,
                             imagePath = mImagePath,

@@ -23,6 +23,8 @@ class PersistentMemoryManager(
         return state
     }
 
+    val memories: kotlinx.coroutines.flow.StateFlow<List<MemoryEntry>> get() = memoryStore.memories
+
     val totalMemoryCount: Int
         get() = memoryStore.count()
 

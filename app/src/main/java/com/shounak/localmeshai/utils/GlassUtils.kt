@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -179,6 +180,7 @@ fun Modifier.fluidReveal(
     initialXOffset: Dp = 0.dp,
     initialRotationZ: Float = 0f
 ): Modifier {
+    if (com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion) return this
     val quality = rememberLiquidGlassQuality()
     val density = LocalDensity.current
     var hasRevealed by rememberSaveable { mutableStateOf(false) }
@@ -238,7 +240,7 @@ fun Modifier.animatedGlassHalo(
     accentColor: Color? = null
 ): Modifier {
     val isBusy by ModelRuntimeCoordinator.isRuntimeBusy.collectAsState()
-    if (!enabled || isBusy) return this
+    if (!enabled || isBusy || com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion) return this
     val accent = accentColor ?: MaterialTheme.colorScheme.primary
     return this.drawWithCache {
         val center = Offset(
@@ -439,11 +441,12 @@ fun LiquidGlassButton(
     blurRadius: Dp = 20.dp,
     content: @Composable RowScope.() -> Unit
 ) {
+    val visuals = com.shounak.localmeshai.features.LocalWorkspaceVisuals.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val haptic = LocalHapticFeedback.current
     val animatedScaleX by animateFloatAsState(
-        targetValue = if (isPressed) 0.965f else 1f,
+        targetValue = if (isPressed && !visuals.reduceMotion) 0.965f else 1f,
         animationSpec = spring(
             dampingRatio = if (isPressed) 0.88f else 0.76f,
             stiffness = if (isPressed) 600f else 380f,
@@ -452,7 +455,7 @@ fun LiquidGlassButton(
         label = "liquid_button_scale_x"
     )
     val animatedScaleY by animateFloatAsState(
-        targetValue = if (isPressed) 0.93f else 1f,
+        targetValue = if (isPressed && !visuals.reduceMotion) 0.93f else 1f,
         animationSpec = spring(
             dampingRatio = if (isPressed) 0.90f else 0.74f,
             stiffness = if (isPressed) 640f else 360f,
@@ -461,7 +464,7 @@ fun LiquidGlassButton(
         label = "liquid_button_scale_y"
     )
     val pressGlow by animateFloatAsState(
-        targetValue = if (isPressed) 1f else 0f,
+        targetValue = if (isPressed && !visuals.reduceMotion) 1f else 0f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMedium
@@ -470,7 +473,7 @@ fun LiquidGlassButton(
     )
 
     Row(
-        modifier = modifier
+        modifier = (if (visuals.largeControls) Modifier.minimumInteractiveComponentSize().then(modifier) else modifier)
             .animatedGlassHalo(
                 enabled = enabled && isPressed,
                 shape = shape,
@@ -507,6 +510,7 @@ fun LiquidGlassButton(
 
 @Composable
 fun Modifier.jellyOnTouch(sensitivity: Float = 6f): Modifier {
+    if (com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion) return this
     val rotationX = remember { Animatable(0f) }
     val rotationY = remember { Animatable(0f) }
     val pressScale = remember { Animatable(1f) }

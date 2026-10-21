@@ -35,6 +35,9 @@ import com.shounak.localmeshai.memory.PersistentMemoryManager
 import com.shounak.localmeshai.utils.glassEffect
 import com.shounak.localmeshai.utils.LiquidGlassButton
 import dev.chrisbanes.haze.HazeState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -44,14 +47,47 @@ fun PersistentMemoryDialog(
 ) {
     val colors = MaterialTheme.colorScheme
     val hazeState = remember { HazeState() }
-    var memories by remember { mutableStateOf(memoryManager.getAllMemories()) }
+    var memories by remember { mutableStateOf(emptyList<MemoryEntry>()) }
+    var storageError by remember { mutableStateOf<String?>(null) }
+    var isWorking by remember { mutableStateOf(true) }
+    val scope = rememberCoroutineScope()
     var selectedCategoryFilter by remember { mutableStateOf<MemoryCategory?>(null) }
     var newMemoryText by remember { mutableStateOf("") }
     var newMemoryCategory by remember { mutableStateOf(MemoryCategory.FACT) }
     var showClearConfirmation by remember { mutableStateOf(false) }
 
-    fun refresh() {
-        memories = memoryManager.getAllMemories()
+    suspend fun refresh() {
+        memories = withContext(Dispatchers.IO) { memoryManager.getAllMemories() }
+        storageError = memoryManager.lastError
+    }
+
+    fun mutate(change: () -> Boolean, onSuccess: () -> Unit = {}) {
+        if (isWorking) return
+        isWorking = true
+        scope.launch {
+            try {
+                val saved = withContext(Dispatchers.IO) { change() }
+                if (saved) onSuccess()
+                refresh()
+                if (!saved && storageError == null) storageError = "Couldn't save this memory change."
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                storageError = error.message ?: "Couldn't update memories."
+            } finally {
+                isWorking = false
+            }
+        }
+    }
+
+    LaunchedEffect(memoryManager) {
+        try {
+            refresh()
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            storageError = error.message ?: "Couldn't load memories."
+        } finally {
+            isWorking = false
+        }
     }
 
     Dialog(
@@ -114,7 +150,7 @@ fun PersistentMemoryDialog(
                 }
 
                 // Storage Error Banner
-                memoryManager.lastError?.let { err ->
+                storageError?.let { err ->
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(8.dp),
@@ -219,12 +255,14 @@ fun PersistentMemoryDialog(
                             LiquidGlassButton(
                                 onClick = {
                                     if (newMemoryText.isNotBlank()) {
-                                        memoryManager.addMemory(newMemoryText, newMemoryCategory)
-                                        newMemoryText = ""
-                                        refresh()
+                                        val content = newMemoryText
+                                        val category = newMemoryCategory
+                                        mutate({ memoryManager.addMemory(content, category) != null }) {
+                                            if (newMemoryText == content) newMemoryText = ""
+                                        }
                                     }
                                 },
-                                enabled = newMemoryText.isNotBlank(),
+                                enabled = !isWorking && newMemoryText.isNotBlank(),
                                 hazeState = hazeState,
                                 shape = RoundedCornerShape(10.dp),
                                 tintColor = if (newMemoryText.isNotBlank()) colors.primary.copy(alpha = 0.25f) else colors.surfaceContainerHighest.copy(alpha = 0.20f),
@@ -323,12 +361,10 @@ fun PersistentMemoryDialog(
                             MemoryItemCard(
                                 memory = memory,
                                 onToggle = { enabled ->
-                                    memoryManager.toggleMemory(memory.id, enabled)
-                                    refresh()
+                                    mutate({ memoryManager.toggleMemory(memory.id, enabled) })
                                 },
                                 onDelete = {
-                                    memoryManager.deleteMemory(memory.id)
-                                    refresh()
+                                    mutate({ memoryManager.deleteMemory(memory.id) })
                                 }
                             )
                         }
@@ -393,8 +429,10 @@ fun PersistentMemoryDialog(
             confirmButton = {
                 LiquidGlassButton(
                     onClick = {
-                        memoryManager.clearAllMemories()
-                        refresh()
+                        mutate({
+                            memoryManager.clearAllMemories()
+                            memoryManager.lastError == null
+                        })
                         showClearConfirmation = false
                     },
                     hazeState = hazeState,

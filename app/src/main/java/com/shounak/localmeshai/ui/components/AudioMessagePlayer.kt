@@ -57,6 +57,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.shounak.localmeshai.utils.ActiveInputFiles
 
 object AudioPlayerCoordinator {
     val activeAudioPath = mutableStateOf<String?>(null)
@@ -71,6 +72,10 @@ fun AudioMessagePlayer(
     modifier: Modifier = Modifier
 ) {
     val file = remember(audioPath) { File(audioPath) }
+    DisposableEffect(audioPath) {
+        val lease = ActiveInputFiles.protect(file)
+        onDispose { lease.close() }
+    }
     var fileExists by remember(audioPath) { mutableStateOf(file.exists()) }
     var mediaPlayer by remember(audioPath) { mutableStateOf<MediaPlayer?>(null) }
     var isPlaying by remember(audioPath) { mutableStateOf(false) }

@@ -19,6 +19,7 @@ object ModelLoadRestrictionPolicy {
                 category = LoadRestrictionCategory.PreviousCrash
             )
         }
+        if (InitCrashGuard.hasSuccessfulRetry(context, model.id)) return null
         val (allowed, reason) = DeviceUtils.checkModelSafetyProfile(
             context = context,
             modelInfo = model
@@ -38,7 +39,8 @@ object ModelLoadRestrictionPolicy {
     fun assessLoadRestriction(
         isCrashBlocked: Boolean,
         model: ModelInfo,
-        totalRamGB: Double
+        totalRamGB: Double,
+        hasSuccessfulRetry: Boolean = false
     ): LoadRestriction? {
         if (isCrashBlocked) {
             return LoadRestriction(
@@ -46,6 +48,7 @@ object ModelLoadRestrictionPolicy {
                 category = LoadRestrictionCategory.PreviousCrash
             )
         }
+        if (hasSuccessfulRetry) return null
         val (allowed, reason) = DeviceUtils.checkModelSafetyProfileForRam(
             totalRamGB = totalRamGB,
             modelInfo = model
@@ -67,7 +70,11 @@ object ModelLoadRestrictionPolicy {
         context: Context,
         model: ModelInfo
     ): ModelInfo {
-        val inspectionRestriction = model.loadRestriction ?: model.bundle?.loadRestriction
+        if (model.status !in setOf(ModelStatus.Available, ModelStatus.Blocked)) return model
+        val verifiedRetry = InitCrashGuard.hasSuccessfulRetry(context, model.id)
+        val inspectionRestriction = listOfNotNull(model.loadRestriction, model.bundle?.loadRestriction).firstOrNull {
+            it.category != LoadRestrictionCategory.PreviousCrash && !(verifiedRetry && it.category == LoadRestrictionCategory.DeviceCompatibility)
+        }
         val restriction = when {
             InitCrashGuard.isModelBlocked(context, model.id) -> LoadRestriction(
                 reason = InitCrashGuard.blockedModelMessage(),
@@ -86,16 +93,20 @@ object ModelLoadRestrictionPolicy {
     fun projectCompletedModel(
         isCrashBlocked: Boolean,
         model: ModelInfo,
-        totalRamGB: Double
+        totalRamGB: Double,
+        hasSuccessfulRetry: Boolean = false
     ): ModelInfo {
-        val inspectionRestriction = model.loadRestriction ?: model.bundle?.loadRestriction
+        if (model.status !in setOf(ModelStatus.Available, ModelStatus.Blocked)) return model
+        val inspectionRestriction = listOfNotNull(model.loadRestriction, model.bundle?.loadRestriction).firstOrNull {
+            it.category != LoadRestrictionCategory.PreviousCrash && !(hasSuccessfulRetry && it.category == LoadRestrictionCategory.DeviceCompatibility)
+        }
         val restriction = when {
             isCrashBlocked -> LoadRestriction(
                 reason = InitCrashGuard.blockedModelMessage(),
                 category = LoadRestrictionCategory.PreviousCrash
             )
             inspectionRestriction != null -> inspectionRestriction
-            else -> assessLoadRestriction(false, model, totalRamGB)
+            else -> assessLoadRestriction(false, model, totalRamGB, hasSuccessfulRetry)
         }
         return model.copy(
             status = if (restriction != null) ModelStatus.Blocked else ModelStatus.Available,

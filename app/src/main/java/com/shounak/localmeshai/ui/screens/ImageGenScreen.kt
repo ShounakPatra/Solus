@@ -53,7 +53,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -147,14 +146,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -199,6 +195,7 @@ fun ImageGenScreen(
     val currentSessionId by visionViewModel.currentSessionId.collectAsState()
     val isInitializing by visionViewModel.isInitializing.collectAsState()
     val isAnalyzing by visionViewModel.isAnalyzing.collectAsState()
+    val isDeletingHistory by visionViewModel.isDeletingHistory.collectAsState()
     val isStopping by visionViewModel.isStopping.collectAsState()
     val isModelReady by visionViewModel.isModelReady.collectAsState()
     val visionError by visionViewModel.error.collectAsState()
@@ -218,7 +215,7 @@ fun ImageGenScreen(
     }
     val messages = visionViewModel.messages
     val isBusy = isInitializing || isAnalyzing || isStopping
-    val isInputLocked = isAnalyzing || isStopping
+    val isInputLocked = isAnalyzing || isStopping || isDeletingHistory
 
     LaunchedEffect(Unit) {
         pruneCameraInputCache(context)
@@ -1802,8 +1799,6 @@ private fun String.normalizeModelAnswerText(): String {
     return normalized.trimStart('\n', '\r')
 }
 
-private val MessageActionButtonReserveWidth = 76.dp
-
 @Composable
 private fun Modifier.dropdownTriggerBounce(expanded: Boolean): Modifier {
     val scaleX by animateFloatAsState(
@@ -1847,91 +1842,11 @@ private fun Modifier.dropdownTriggerBounce(expanded: Boolean): Modifier {
     }
 }
 
-private fun AnnotatedString.trimStartLayoutWhitespace(): AnnotatedString {
-    var start = 0
-    while (start < text.length && text[start].isWhitespace()) {
-        start++
-    }
-    return if (start == 0) this else subSequence(start, text.length)
-}
-
 @Composable
-private fun AdaptiveMessageText(
-    text: String,
-    color: Color,
-    modifier: Modifier = Modifier
-) {
+private fun AdaptiveMessageText(text: String, color: Color, modifier: Modifier = Modifier) {
     val annotatedText = remember(text) { text.toAsteriskEmphasisText() }
-    if (annotatedText.text.isEmpty()) return
-
-    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
-        val density = LocalDensity.current
-        val textStyle = LocalTextStyle.current
-        val textMeasurer = rememberTextMeasurer()
-        val fullWidthPx = with(density) { maxWidth.roundToPx() }
-        val firstLineWidthPx = with(density) {
-            (maxWidth - MessageActionButtonReserveWidth).coerceAtLeast(1.dp).roundToPx()
-        }
-        val firstLineLayout = remember(annotatedText, textStyle, firstLineWidthPx, fullWidthPx) {
-            if (firstLineWidthPx >= fullWidthPx) {
-                null
-            } else {
-                textMeasurer.measure(
-                    text = annotatedText,
-                    style = textStyle,
-                    maxLines = 1,
-                    constraints = Constraints(maxWidth = firstLineWidthPx)
-                )
-            }
-        }
-        val splitIndex = remember(firstLineLayout, annotatedText) {
-            firstLineLayout
-                ?.takeIf { it.lineCount > 0 }
-                ?.getLineEnd(lineIndex = 0, visibleEnd = true)
-                ?.coerceIn(0, annotatedText.text.length)
-                ?: annotatedText.text.length
-        }
-        if (splitIndex >= annotatedText.text.length) {
-            Text(
-                text = annotatedText,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(end = MessageActionButtonReserveWidth),
-                color = color,
-                textAlign = TextAlign.Start
-            )
-        } else {
-            val firstLine = remember(annotatedText, splitIndex) {
-                annotatedText.subSequence(0, splitIndex)
-            }
-            val remainingText = remember(annotatedText, splitIndex) {
-                annotatedText
-                    .subSequence(splitIndex, annotatedText.text.length)
-                    .trimStartLayoutWhitespace()
-            }
-
-            Column(modifier = Modifier.fillMaxWidth()) {
-                if (firstLine.text.isNotEmpty()) {
-                    Text(
-                        text = firstLine,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(end = MessageActionButtonReserveWidth),
-                        color = color,
-                        textAlign = TextAlign.Start
-                    )
-                }
-                if (remainingText.text.isNotEmpty()) {
-                    Text(
-                        text = remainingText,
-                        modifier = Modifier.fillMaxWidth(),
-                        color = color,
-                        textAlign = TextAlign.Start
-                    )
-                }
-            }
-        }
-    }
+    if (annotatedText.text.isNotEmpty()) Text(text = annotatedText, color = color,
+        modifier = modifier.fillMaxWidth(), textAlign = TextAlign.Start)
 }
 
 @Composable
@@ -2391,6 +2306,9 @@ fun VisionChatBubble(
     responseFormatVersion: Int = 0,
     terminalStatus: RequestTerminalStatus? = null,
     entryDelayMs: Int = 0,
+    ragPassages: List<com.shounak.localmeshai.features.RagPassage> = emptyList(),
+    onEditPrompt: ((String) -> Unit)? = null,
+    onRegenerate: (() -> Unit)? = null,
     ragSources: List<String> = emptyList(),
     ragChunkCount: Int = 0,
     ragTopMatchPct: Int = 0,
@@ -2412,9 +2330,10 @@ fun VisionChatBubble(
         } else null
     }
 
+    val reduceMotion = com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion
     val entryProgress = remember { Animatable(if (entryDelayMs > 0) 0f else 1f) }
-    LaunchedEffect(entryDelayMs) {
-        if (entryDelayMs <= 0) {
+    LaunchedEffect(entryDelayMs, reduceMotion) {
+        if (reduceMotion || entryDelayMs <= 0) {
             entryProgress.snapTo(1f)
             return@LaunchedEffect
         }
@@ -2460,11 +2379,9 @@ fun VisionChatBubble(
         presentation.segments
     }
     val showStreamingDots = presentation.showStreamingDots
-    val hasRichBlock = presentation.hasRichBlock
     val hasTopImage = isUser && resolvedBitmap != null && !resolvedBitmap.isRecycled
     val hasTopAudio = isUser && !audioPath.isNullOrBlank()
     val hasTopDoc = isUser && !documentName.isNullOrBlank()
-    val needsTopActionClearance = !isUser && (hasRichBlock || parsedContent.thinkingText != null)
     val entryValue = entryProgress.value
 
     Column(
@@ -2503,7 +2420,7 @@ fun VisionChatBubble(
                     .fillMaxWidth()
                     .padding(
                         start = 14.dp,
-                        top = if (needsTopActionClearance) 40.dp else 14.dp,
+                        top = 14.dp,
                         end = 14.dp,
                         bottom = 14.dp
                     ),
@@ -2655,8 +2572,7 @@ fun VisionChatBubble(
                             text = displayText.trim('\n'),
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(end = if (needsTopActionClearance) 0.dp else MessageActionButtonReserveWidth),
+                                .fillMaxWidth(),
                             textAlign = TextAlign.Start
                         )
                     } else if (!isUser && terminalStatus == RequestTerminalStatus.Stopped && displayText.isBlank()) {
@@ -2719,7 +2635,8 @@ fun VisionChatBubble(
                         }
                     }
 
-                    if (!isUser && ragSources.isNotEmpty()) {
+                    if (!isUser) com.shounak.localmeshai.features.SourcePassagesButton(ragPassages)
+                    if (!isUser && ragSources.isNotEmpty() && ragPassages.isEmpty()) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Surface(
                             shape = RoundedCornerShape(8.dp),
@@ -2810,13 +2727,16 @@ fun VisionChatBubble(
                 }
             }
 
-            if (!isUser) {
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = 4.dp, end = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
+
+        }
+        if (!isUser || onEditPrompt != null || onRegenerate != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(0.85f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)
+            ) {
+                com.shounak.localmeshai.features.MessageRevisionActions(text, onEditPrompt, onRegenerate, hazeState)
+                if (!isUser) {
                     MessageToolButton(
                         icon = Icons.Default.Fullscreen,
                         contentDescription = "Fullscreen message",

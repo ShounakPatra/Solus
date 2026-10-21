@@ -283,6 +283,10 @@ class InMemoryRagVectorStore(
     }
 
     private fun persistSnapshot(snapshot: List<RagChunkRecord>): Boolean {
+        if (_loadState.value !is StoreLoadState.Ready) {
+            lastError = "Knowledge base storage requires recovery before changes can be saved."
+            return false
+        }
         val af = atomicFile ?: return true
         val resolvedDim = explicitDimension ?: snapshot.firstOrNull()?.embedding?.size ?: dimension
         val result = af.write(snapshot) {
@@ -406,61 +410,78 @@ class InMemoryRagVectorStore(
             expectedDistanceMetric: String? = null
         ): List<RagChunkRecord> {
             val trimmed = text.trim()
-            if (trimmed.isEmpty()) return emptyList()
-
-            val (jsonArray, targetDim) = if (trimmed.startsWith("{")) {
-                val root = JSONObject(trimmed)
-                val fileDimension = if (root.has("dimension")) root.getInt("dimension") else null
-                val fileAlgorithm = if (root.has("algorithmId")) root.optString("algorithmId").takeIf { it.isNotBlank() } else null
-                val fileMetric = if (root.has("distanceMetric")) root.optString("distanceMetric").takeIf { it.isNotBlank() } else null
-
-                if (expectedDimension != null && fileDimension != null && expectedDimension != fileDimension) {
-                    throw IncompatibleVectorStoreException(
-                        "Dimension mismatch: expected $expectedDimension, got $fileDimension"
-                    )
+            require(trimmed.isNotEmpty()) { "RAG store is blank" }
+            val tokenizer = org.json.JSONTokener(trimmed)
+            val document = tokenizer.nextValue()
+            require(tokenizer.nextClean() == 0.toChar()) { "Trailing data after RAG JSON" }
+            require(document is JSONObject || document is JSONArray) { "RAG store must be an object or legacy array" }
+            val root = document as? JSONObject
+            val version = root?.let {
+                if (!it.has("version")) 1 else {
+                    val raw = it.get("version")
+                    require(raw is Int || raw is Long) { "RAG version must be an integer" }
+                    val number = (raw as Number).toLong()
+                    require(number > 0) { "Invalid RAG version" }
+                    if (number > 2) throw com.shounak.localmeshai.utils.UnsupportedVersionException(
+                        number.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), 2)
+                    number.toInt()
                 }
-                if (expectedAlgorithmId != null && fileAlgorithm != null && expectedAlgorithmId != fileAlgorithm) {
-                    throw IncompatibleVectorStoreException(
-                        "Algorithm mismatch: expected $expectedAlgorithmId, got $fileAlgorithm"
-                    )
-                }
-                if (expectedDistanceMetric != null && fileMetric != null && expectedDistanceMetric != fileMetric) {
-                    throw IncompatibleVectorStoreException(
-                        "Distance metric mismatch: expected $expectedDistanceMetric, got $fileMetric"
-                    )
-                }
-
-                val dim = expectedDimension ?: fileDimension
-                Pair(root.optJSONArray("records") ?: JSONArray(), dim)
-            } else {
-                Pair(JSONArray(trimmed), expectedDimension)
+            } ?: 1
+            val jsonArray = root?.getJSONArray("records") ?: document as JSONArray
+            fun nonnegativeInteger(json: JSONObject, key: String): Long {
+                val value = json.get(key)
+                require((value is Int || value is Long) && (value as Number).toLong() >= 0) { "Invalid RAG field $key" }
+                return (value as Number).toLong()
             }
+            val fileDimension = root?.takeIf { it.has("dimension") }?.let {
+                nonnegativeInteger(it, "dimension").also { value -> require(value in 1..Int.MAX_VALUE.toLong()) }.toInt()
+            }
+            fun metadata(key: String): String? = root?.takeIf { it.has(key) }?.let {
+                require(it.get(key) is String && it.getString(key).isNotBlank()) { "Invalid RAG field $key" }
+                it.getString(key)
+            }
+            val fileAlgorithm = metadata("algorithmId")
+            val fileMetric = metadata("distanceMetric")
+            if (version == 2) require(fileDimension != null && fileAlgorithm != null && fileMetric != null) { "RAG metadata is incomplete" }
 
+            // Validate every record before reporting an index configuration mismatch.
+            // Otherwise a damaged document could become a writable, empty reindex store.
             val loaded = ArrayList<RagChunkRecord>(jsonArray.length())
             for (i in 0 until jsonArray.length()) {
-                val obj = jsonArray.optJSONObject(i) ?: continue
-                val embArr = obj.optJSONArray("emb") ?: continue
-                if (targetDim != null && targetDim > 0 && embArr.length() != targetDim) {
-                    throw IncompatibleVectorStoreException(
-                        "Chunk embedding dimension ${embArr.length()} does not match target dimension $targetDim"
-                    )
+                val obj = jsonArray.getJSONObject(i)
+                for (key in listOf("id", "docId", "name", "text")) {
+                    require(obj.get(key) is String) { "Invalid RAG field $key" }
+                    if (key != "text") require(obj.getString(key).isNotBlank()) { "Blank RAG field $key" }
                 }
-                val emb = FloatArray(embArr.length())
-                for (j in 0 until embArr.length()) {
-                    emb[j] = embArr.getDouble(j).toFloat()
+                val index = nonnegativeInteger(obj, "idx")
+                require(index <= Int.MAX_VALUE)
+                if (obj.has("ts")) nonnegativeInteger(obj, "ts")
+                if (obj.has("fp")) require(obj.get("fp") is String)
+                val embArr = obj.getJSONArray("emb")
+                require(embArr.length() > 0 && (fileDimension == null || embArr.length() == fileDimension)) { "Invalid stored embedding dimension" }
+                val emb = FloatArray(embArr.length()) { j ->
+                    val value = embArr.get(j)
+                    require(value is Number) { "Embedding values must be numbers" }
+                    value.toFloat().also { require(it.isFinite()) { "Embedding value is not finite" } }
                 }
-                loaded.add(
-                    RagChunkRecord(
-                        id = obj.getString("id"),
-                        documentId = obj.getString("docId"),
-                        documentName = obj.getString("name"),
-                        chunkIndex = obj.getInt("idx"),
-                        text = obj.getString("text"),
-                        embedding = emb,
-                        timestamp = obj.optLong("ts", System.currentTimeMillis()),
-                        contentFingerprint = if (obj.has("fp")) obj.getString("fp") else null
-                    )
-                )
+                loaded.add(RagChunkRecord(
+                    id = obj.getString("id"), documentId = obj.getString("docId"), documentName = obj.getString("name"),
+                    chunkIndex = index.toInt(), text = obj.getString("text"), embedding = emb,
+                    timestamp = obj.optLong("ts", System.currentTimeMillis()),
+                    contentFingerprint = if (obj.has("fp")) obj.getString("fp") else null
+                ))
+            }
+            if (expectedDimension != null && fileDimension != null && expectedDimension != fileDimension) {
+                throw IncompatibleVectorStoreException("Dimension mismatch: expected $expectedDimension, got $fileDimension")
+            }
+            if (expectedAlgorithmId != null && fileAlgorithm != null && expectedAlgorithmId != fileAlgorithm) {
+                throw IncompatibleVectorStoreException("Algorithm mismatch: expected $expectedAlgorithmId, got $fileAlgorithm")
+            }
+            if (expectedDistanceMetric != null && fileMetric != null && expectedDistanceMetric != fileMetric) {
+                throw IncompatibleVectorStoreException("Distance metric mismatch: expected $expectedDistanceMetric, got $fileMetric")
+            }
+            if (expectedDimension != null && loaded.any { it.embedding.size != expectedDimension }) {
+                throw IncompatibleVectorStoreException("Chunk embedding dimension does not match target dimension $expectedDimension")
             }
             return loaded
         }

@@ -98,7 +98,8 @@ data class ChatMessage(
     val userMessageId: String? = null,
     val emptyReason: EmptyResponseReason? = null,
     val revision: Int = 0,
-    val responseFormatVersion: Int = 0
+    val responseFormatVersion: Int = 0,
+    val ragPassages: List<com.shounak.localmeshai.features.RagPassage> = emptyList()
 )
 
 @Immutable
@@ -111,6 +112,47 @@ data class ChatSession(
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
+    private val conversationPrivacy = com.shounak.localmeshai.features.ConversationPrivacy()
+    private val _temporaryChat = conversationPrivacy.temporary
+    val temporaryChat = conversationPrivacy.temporary
+    private val temporaryAttachments by lazy {
+        com.shounak.localmeshai.data.ChatAttachmentStore(getApplication<Application>().cacheDir.resolve("temporary_chats/text"))
+    }
+    private val attachmentStoreForChat get() = if (_temporaryChat.value) temporaryAttachments else sessionRepository.attachmentStore
+    fun setTemporaryChat(enabled: Boolean): Boolean = conversationPrivacy.setForNewChat(
+        enabled, isNewChat = messages.isEmpty() && _currentSessionId.value == null && _pendingSessionId.value == null,
+        busy = generationJob?.isActive == true || _isGenerating.value || _isStopping.value || _isInitializing.value || _isDeletingHistory.value
+    )
+    fun refreshHistory() { viewModelScope.launch { loadSessionsAsync() } }
+    fun editAndRegenerate(userMessageId: String, replacement: String? = null) {
+        if (generationJob?.isActive == true || _isInitializing.value) return
+        if (_isGenerating.value || _isStopping.value || _isDeletingHistory.value) return
+        val sessionId = _currentSessionId.value ?: return
+        val index = messages.indexOfFirst { it.isUser && it.id == userMessageId }
+        if (index < 0 || replacement != null && replacement.isBlank()) return
+        if (currentModelPath == null) { _error.value = "Choose a model before editing this conversation."; return }
+        val original = messages[index]
+        if (listOf(original.documentPath).filterNotNull().any { it.isNotBlank() && !File(it).isFile }) {
+            _error.value = "A required attachment is missing. The conversation was preserved."
+            return
+        }
+        val attachmentName = original.documentName.orEmpty()
+        val needsMedia = listOf(".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".mp3", ".wav", ".m4a", ".aac", ".ogg").any { attachmentName.endsWith(it, true) }
+        if (needsMedia && !ChatRuntimePolicy.supportsAttachments(currentModelPath!!, inferenceManager.runtimeCapabilities?.capabilities ?: currentBundle?.capabilities)) {
+            _error.value = "Choose a model that supports this attachment before editing."; return
+        }
+        val revised = try { com.shounak.localmeshai.features.ConversationEdits.text(messages.toList(), userMessageId, replacement) }
+        catch (error: IllegalArgumentException) { _error.value = error.message; return }
+        messages.clear(); messages.addAll(revised)
+        currentSessionDocumentId = null
+        pendingRagDocumentId = null
+        val position = chatSessions.indexOfFirst { it.id == sessionId }
+        if (position >= 0) chatSessions[position] = chatSessions[position].copy(messages = revised, documentId = null, updatedAt = System.currentTimeMillis())
+        resetRuntimeConversationBeforeNextSend = true
+        persistSessions()
+        retryMessage(sessionId, userMessageId)
+    }
+
     private val inferenceManager = ChatInferenceManager(application)
     val sessionRepository = ChatSessionRepository.getInstance(application)
     val messages = mutableStateListOf<ChatMessage>()
@@ -200,10 +242,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var currentLoadedIdentity: ModelLoadIdentity? = null
     @Volatile var currentResolvedThinkingCapability: ThinkingCapability = ThinkingCapability.Unknown
         private set
+    private val _runtimeCapabilities = MutableStateFlow<com.shounak.localmeshai.models.ModelCapabilitySnapshot?>(null)
+    val runtimeCapabilities = _runtimeCapabilities.asStateFlow()
     @Volatile private var currentModelEpoch: Long = 0L
     private var initGeneration: Int = 0
     private var initJob: Job? = null
     private var generationJob: Job? = null
+    private val _isDeletingHistory = MutableStateFlow(false)
+    val isDeletingHistory = _isDeletingHistory.asStateFlow()
     private var autoUnloadJob: Job? = null
     @Volatile private var resetRuntimeConversationBeforeNextSend = false
     @Volatile private var lastRuntimeThinkingMode: Boolean? = null
@@ -211,8 +257,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var lastShutdownResult: com.shounak.localmeshai.ai.ShutdownResult? = null
 
     fun retryMessage(sessionId: String, userMessageId: String) {
+        if (_isDeletingHistory.value) return
         if (_isGenerating.value || generationJob?.isActive == true) return
-        val session = chatSessions.firstOrNull { it.id == sessionId } ?: return
+        val session = chatSessions.firstOrNull { it.id == sessionId }
+            ?: if (_temporaryChat.value && _currentSessionId.value == sessionId) ChatSession(sessionId, "Temporary chat", messages.toList(), 0L) else return
         val userMsg = session.messages.firstOrNull { it.isUser && it.id == userMessageId } ?: return
 
         if (_currentSessionId.value != sessionId) {
@@ -237,7 +285,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val fileName = userMsg.documentName ?: "document"
             val isImageOrAudio = listOf(".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".mp3", ".wav", ".m4a", ".aac", ".ogg")
                 .any { fileName.endsWith(it, ignoreCase = true) }
-            val isMultimodal = ChatRuntimePolicy.supportsAttachments(path)
+            val isMultimodal = ChatRuntimePolicy.supportsAttachments(path, inferenceManager.runtimeCapabilities?.capabilities ?: currentBundle?.capabilities)
             if (isImageOrAudio && !isMultimodal) {
                 _error.value = "The selected model is a text-only model. Image or audio input requires a multimodal model from the Models tab."
                 return
@@ -360,6 +408,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        viewModelScope.launch {
+            sessionRepository.externalChanges.collect { loadSessionsAsync() }
+        }
+        viewModelScope.launch {
+            com.shounak.localmeshai.features.WorkspacePreferences.get(getApplication()).profileChanges.collect { ids ->
+                if (currentModelId in ids) {
+                    val path = currentModelPath
+                    releaseModel(clearCoordinator = true, clearSelection = false)
+                    if (path != null) initModel(path, modelId = currentModelId, modelName = currentModelName,
+                        modelSize = currentModelSize, contextWindowTokens = defaultProfileContext,
+                        supportsThinkingMode = currentSupportsThinkingMode, allowUnsafeOverride = currentAllowUnsafeOverride, forceReload = true, bundle = currentBundle)
+                }
+            }
+        }
+
         sessionPersistenceScope.launch {
             for (snapshot in sessionPersistenceChannel) {
                 writeSessionsToStorage(snapshot)
@@ -369,29 +432,35 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             modelLoadController.loadState.collect { state ->
                 when (state) {
                     is ModelLoadState.Ready -> {
+                        publishRuntimeCapabilities()
                         _isInitializing.value = false
                         _isModelReady.value = inferenceManager.isReady
                     }
                     is ModelLoadState.Loading -> {
                         _isInitializing.value = true
+                        _runtimeCapabilities.value = null
                         _isModelReady.value = false
                     }
                     is ModelLoadState.Stopping -> {
                         _isInitializing.value = true
+                        _runtimeCapabilities.value = null
                         _isModelReady.value = false
                     }
                     is ModelLoadState.Failed -> {
                         _isInitializing.value = false
+                        _runtimeCapabilities.value = null
                         _isModelReady.value = false
                         _error.value = state.typedError
                     }
                     is ModelLoadState.ShutdownStalled -> {
                         _isInitializing.value = false
+                        _runtimeCapabilities.value = null
                         _isModelReady.value = false
                         _error.value = "Native runtime shutdown stalled. Please restart the app."
                     }
                     is ModelLoadState.Unloaded -> {
                         _isInitializing.value = false
+                        _runtimeCapabilities.value = null
                         _isModelReady.value = false
                     }
                 }
@@ -485,7 +554,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             modelId = currentModelId,
                             modelName = currentModelName,
                             modelSize = currentModelSize,
-                            contextWindowTokens = currentContextWindowTokens,
+                            contextWindowTokens = defaultProfileContext,
                             supportsThinkingMode = currentSupportsThinkingMode,
                             allowUnsafeOverride = currentAllowUnsafeOverride,
                             forceReload = true
@@ -525,6 +594,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     suspend fun ingestDocumentForRag(uri: Uri, fileName: String, mimeType: String = ""): RagIngestionResult {
+        if (_temporaryChat.value) return RagIngestionResult(false, "", fileName, 0, 0, "Temporary chats do not add documents to the knowledge base.")
         val result = ragManager.ingestDocument(uri, fileName, mimeType)
         if (result.success) {
             appSettings.updateSettings { it.copy(enableRag = true) }
@@ -563,6 +633,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     suspend fun ingestTextForRag(name: String, content: String): RagIngestionResult {
+        if (_temporaryChat.value) return RagIngestionResult(false, "", name, 0, 0, "Temporary chats do not add documents to the knowledge base.")
         val result = ragManager.ingestText(name, content)
         if (result.success) {
             pendingRagDocumentId = result.documentId
@@ -639,9 +710,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _draftText.value = ""
     }
 
-    fun updateSupportsThinkingMode(supports: Boolean) {
-        currentSupportsThinkingMode = supports
-    }
+    private var defaultProfileContext: Int? = null
 
     fun initModel(
         path: String,
@@ -654,23 +723,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         forceReload: Boolean = false,
         bundle: ModelBundle? = null
     ) {
+        defaultProfileContext = contextWindowTokens
+        val configuredProfileContext = com.shounak.localmeshai.features.WorkspacePreferences.get(getApplication()).profile(modelId.ifBlank { bundle?.id ?: File(path).nameWithoutExtension }).contextTokens ?: contextWindowTokens
+
         val currentBackendPref = appSettings.settings.value.llamaBackendPreference
         val file = File(path)
         val isGguf = bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(file.name)
         val identity = if (bundle != null) {
             ModelLoadIdentity.fromBundle(
                 bundle = bundle,
-                runtimeKind = "LlamaCpp",
+                runtimeKind = if (bundle.isGguf) "LlamaCpp" else "MediaPipe/LiteRT",
                 backendPreference = currentBackendPref,
                 threads = DeviceUtils.recommendedThreadCount(getApplication()),
-                contextWindow = contextWindowTokens ?: 2048
+                contextWindow = configuredProfileContext ?: 2048
             )
         } else if (isGguf) {
             val profile = GgufExecutionProfile.resolve(
                 context = getApplication(),
                 modelNameOrId = modelName.ifBlank { modelId.ifBlank { file.nameWithoutExtension } },
                 modelSize = modelSize,
-                customContextTokens = contextWindowTokens,
+                customContextTokens = configuredProfileContext,
                 backendPreference = currentBackendPref
             )
             profile.toIdentity(file, "LlamaCpp", currentBackendPref)
@@ -680,22 +752,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 runtimeKind = "MediaPipe/LiteRT",
                 backendPreference = currentBackendPref,
                 threads = DeviceUtils.recommendedThreadCount(getApplication()),
-                contextWindow = contextWindowTokens ?: 2048
+                contextWindow = configuredProfileContext ?: 2048
             )
         }
 
         if (!forceReload) {
             if (_isModelReady.value && inferenceManager.isReady && currentLoadedIdentity == identity && ModelRuntimeCoordinator.isActive(ModelRuntimeOwner.Chat)) {
-                currentSupportsThinkingMode = supportsThinkingMode
+                publishRuntimeCapabilities()
                 currentAllowUnsafeOverride = allowUnsafeOverride
-                currentContextWindowTokens = contextWindowTokens
+                currentContextWindowTokens = configuredProfileContext
                 return
             }
             val activeLoadState = modelLoadController.loadState.value
             if (activeLoadState is ModelLoadState.Loading && (modelLoadController.currentIdentity == identity || currentRequestedIdentity == identity) && initJob?.isActive == true && !_isStopping.value) {
                 currentSupportsThinkingMode = supportsThinkingMode
                 currentAllowUnsafeOverride = allowUnsafeOverride
-                currentContextWindowTokens = contextWindowTokens
+                currentContextWindowTokens = configuredProfileContext
                 return
             }
         }
@@ -705,7 +777,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentModelId = modelId
         currentModelName = modelName
         currentModelSize = modelSize
-        currentContextWindowTokens = contextWindowTokens
+        currentContextWindowTokens = configuredProfileContext
         currentSupportsThinkingMode = supportsThinkingMode
         currentAllowUnsafeOverride = allowUnsafeOverride
         currentRequestedIdentity = identity
@@ -719,6 +791,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         inferenceManager.cancelGeneration()
         _isInitializing.value = true
         _isGenerating.value = false
+        _runtimeCapabilities.value = null
         _isModelReady.value = false
         _error.value = null
 
@@ -753,7 +826,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 modelSize = modelSize,
                                 supportsThinkingMode = supportsThinkingMode,
                                 allowUnsafeOverride = allowUnsafeOverride,
-                                contextWindowTokens = contextWindowTokens,
+                                contextWindowTokens = configuredProfileContext,
                                 operationControlId = operationControlId,
                                 onModelProgress = updateProgress,
                                 bundle = bundle
@@ -765,14 +838,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             currentModelPath = path
                             lastLoadedBackendPreference = currentBackendPref
                             currentLoadedIdentity = identity
-                            currentResolvedThinkingCapability = ThinkingModeConfig.resolveThinkingCapability(
-                                bundle = bundle,
-                                localPath = path,
-                                supportsThinkingFlag = supportsThinkingMode,
-                                id = modelId,
-                                name = modelName,
-                                context = getApplication()
-                            )
+                            publishRuntimeCapabilities()
+
                             resetRuntimeConversationBeforeNextSend = false
                             lastRuntimeThinkingMode = null
                             withContext(Dispatchers.Main.immediate) {
@@ -781,7 +848,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             }
                             ModelActualConfiguration(
                                 backend = inferenceManager.activeBackendDisplayName,
-                                contextLength = currentContextWindowTokens ?: 2048
+                                contextLength = inferenceManager.runtimeCapabilities?.initializedContextTokens ?: 2048
                             )
                         }
                     }
@@ -798,6 +865,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     currentRequestedIdentity = null
                     currentResolvedThinkingCapability = ThinkingCapability.Unknown
                     _activeBackend.value = null
+                    _runtimeCapabilities.value = null
                     _isModelReady.value = false
                 }
             } finally {
@@ -809,10 +877,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun publishRuntimeCapabilities() {
+        val initialized = inferenceManager.runtimeCapabilities
+        _runtimeCapabilities.value = initialized
+        currentResolvedThinkingCapability = initialized?.capabilities?.thinking ?: ThinkingCapability.Unknown
+        currentSupportsThinkingMode = currentResolvedThinkingCapability in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled)
+    }
+
     suspend fun ensureModelReady(
         onProgress: ((RequestProgress) -> Unit)? = null
     ): Boolean {
-        if (_isModelReady.value && inferenceManager.isReady) return true
+        if (_isModelReady.value && inferenceManager.isReady) { publishRuntimeCapabilities(); return true }
         val path = currentModelPath ?: return false
         val bundle = currentBundle
         val file = File(path)
@@ -821,7 +896,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val identity = if (bundle != null) {
             ModelLoadIdentity.fromBundle(
                 bundle = bundle,
-                runtimeKind = "LlamaCpp",
+                runtimeKind = if (bundle.isGguf) "LlamaCpp" else "MediaPipe/LiteRT",
                 backendPreference = currentBackendPref,
                 threads = DeviceUtils.recommendedThreadCount(getApplication()),
                 contextWindow = currentContextWindowTokens ?: 2048
@@ -844,6 +919,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 contextWindow = currentContextWindowTokens ?: 2048
             )
         }
+        val expectedGeneration = initGeneration
         onProgress?.invoke(RequestProgress.LoadingModel)
         return try {
             modelLoadController.loadOrAttach(
@@ -855,6 +931,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 updateProgress(ModelLoadStage.WaitingForRuntime, null, null)
                 ModelRuntimeCoordinator.withRuntime(ModelRuntimeOwner.Chat) {
                     ioMutex.withLock {
+                        if (expectedGeneration != initGeneration || currentModelPath != path) throw CancellationException("Superseded on-demand load")
                         inferenceManager.initialize(
                             modelPath = path,
                             modelId = currentModelId,
@@ -868,10 +945,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             onProgress = onProgress,
                             bundle = bundle
                         )
+                        if (expectedGeneration != initGeneration || currentModelPath != path) {
+                            inferenceManager.close()
+                            throw CancellationException("Superseded on-demand load")
+                        }
                         if (!inferenceManager.isReady) {
                             inferenceManager.close()
                             throw IllegalStateException("Manager unavailable after on-demand load")
                         }
+                        publishRuntimeCapabilities()
                         lastLoadedBackendPreference = currentBackendPref
                         resetRuntimeConversationBeforeNextSend = false
                         lastRuntimeThinkingMode = null
@@ -881,11 +963,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         ModelActualConfiguration(
                             backend = inferenceManager.activeBackendDisplayName,
-                            contextLength = currentContextWindowTokens ?: 2048
+                            contextLength = inferenceManager.runtimeCapabilities?.initializedContextTokens ?: 2048
                         )
                     }
                 }
             }
+            if (expectedGeneration != initGeneration || currentModelPath != path) throw CancellationException("Superseded on-demand load")
+            publishRuntimeCapabilities()
             _isModelReady.value = inferenceManager.isReady
             Log.i("ChatViewModel", "Model ready on-demand on ${inferenceManager.activeBackendDisplayName}: $path")
             _isModelReady.value
@@ -904,7 +988,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         documentName: String? = null,
         documentPath: String? = null
     ): Boolean {
-        if (_isGenerating.value || generationJob?.isActive == true) return false
+        if (_isDeletingHistory.value || _isGenerating.value || generationJob?.isActive == true) return false
         if (text.isBlank() && documentName.isNullOrBlank() && documentUri == null) return false
         val path = currentModelPath
         if (path == null) {
@@ -915,7 +999,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val fileName = documentName ?: "document"
             val isImageOrAudio = listOf(".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".mp3", ".wav", ".m4a", ".aac", ".ogg")
                 .any { fileName.endsWith(it, ignoreCase = true) }
-            val isMultimodal = ChatRuntimePolicy.supportsAttachments(path)
+            val isMultimodal = ChatRuntimePolicy.supportsAttachments(path, inferenceManager.runtimeCapabilities?.capabilities ?: currentBundle?.capabilities)
             if (isImageOrAudio && !isMultimodal) {
                 _error.value = "The selected model is a text-only model. Image or audio input requires a multimodal model from the Models tab."
                 return false
@@ -982,16 +1066,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val preparation = inputUri?.let { documentPreparation.take(it, inputName) }
 
         timing.recordAcknowledged()
-        val capability = currentResolvedThinkingCapability.takeIf { it != ThinkingCapability.Unknown }
-            ?: ThinkingModeConfig.resolveThinkingCapability(
-                bundle = currentBundle,
-                localPath = currentModelPath,
-                supportsThinkingFlag = currentSupportsThinkingMode,
-                id = currentModelId,
-                name = currentModelName,
-                context = getApplication<Application>()
-            )
-        val thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(capability, _thinkingMode.value)
+        val requestThinkingPreference = _thinkingMode.value
+        val capability = currentResolvedThinkingCapability.takeIf { it != ThinkingCapability.Unknown } ?: currentBundle?.capabilities?.thinking ?: ThinkingCapability.Unknown
+        var thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(capability, requestThinkingPreference)
         activeRequestId = requestId
         val reqModelEpoch = currentModelEpoch
         val assistantMessageId = messages[assistantIndex].id
@@ -1038,7 +1115,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     preparedInput = prepared
                     val durable = withContext(Dispatchers.IO) {
                         prepared.persistInto(
-                            attachmentStore = sessionRepository.attachmentStore,
+                            attachmentStore = attachmentStoreForChat,
                             chatKind = com.shounak.localmeshai.data.ChatKind.Text,
                             sessionId = targetSessionId ?: requestId
                         )
@@ -1100,9 +1177,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
+                thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(currentResolvedThinkingCapability, requestThinkingPreference)
+
                 var effectivePromptText = if (attachedContext.isNotBlank()) {
                     "$userText\n\n--- ATTACHED DOCUMENT: $resolvedDocName ---\n$attachedContext\n--- END ATTACHED DOCUMENT ---"
                 } else userText
+                var ragPassages: List<com.shounak.localmeshai.features.RagPassage> = emptyList()
                 var ragSources: List<String> = emptyList()
                 var ragChunkCount = 0
                 var ragTopMatchPct = 0
@@ -1137,6 +1217,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     if (retrieval.hasContext) {
                         effectivePromptText = ragManager.buildAugmentedPrompt(userText, retrieval)
+                        ragPassages = retrieval.matches.map { com.shounak.localmeshai.features.RagPassage(it.chunk.documentId, it.chunk.documentName, it.chunk.chunkIndex, it.chunk.text) }
                         ragSources = retrieval.sourceNames
                         ragChunkCount = retrieval.matches.size
                         ragTopMatchPct = (retrieval.topMatchScore * 100f).toInt()
@@ -1148,10 +1229,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                val memoryContext = if (_isPersistentMemoryActive.value) {
+                val memoryContext = (if (!_temporaryChat.value && _isPersistentMemoryActive.value) {
                     withContext(Dispatchers.Default) { memoryManager.formatMemoryContext(query = effectivePromptText) }
                 } else {
                     ""
+                }).let { memory ->
+                    listOf(com.shounak.localmeshai.features.WorkspacePreferences.get(getApplication()).profile(currentModelId).systemPrompt, memory)
+                        .filter { it.isNotBlank() }.joinToString("\n\n")
                 }
                 val modeChangedInStatefulThinkingRuntime =
                     lastRuntimeThinkingMode?.let { it != thinkingModeForRequest } == true &&
@@ -1245,7 +1329,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 capturedMetrics = execResult.metrics
                 liveUpdates.close()
                 liveUpdateJob.join()
-                if (execResult.status == RequestTerminalStatus.Completed && appSettings.settings.value.enableRag) {
+                if (execResult.status == RequestTerminalStatus.Completed && !_temporaryChat.value && appSettings.settings.value.enableRag) {
                     documentForIndex?.let { document ->
                         viewModelScope.launch(Dispatchers.Default) {
                             val indexed = ragManager.ingestText(document.name, document.extractedText.orEmpty())
@@ -1302,6 +1386,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 text = finalResponse,
                                 errorMessage = errorMessageToDisplay,
                                 ragSources = if (isErrorResponse) emptyList() else ragSources,
+                                ragPassages = if (isErrorResponse) emptyList() else ragPassages,
                                 ragChunkCount = if (isErrorResponse) 0 else ragChunkCount,
                                 ragTopMatchPct = if (isErrorResponse) 0 else ragTopMatchPct,
                                 progress = null,
@@ -1318,7 +1403,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             saveCurrentSession()
 
                             if (execResult.status == RequestTerminalStatus.Completed && !isErrorResponse && finalResponse.isNotBlank()) {
-                                if (_isPersistentMemoryActive.value && appSettings.settings.value.autoExtractMemories) {
+                                if (!_temporaryChat.value && _isPersistentMemoryActive.value && appSettings.settings.value.autoExtractMemories) {
                                     val candidate = withContext(Dispatchers.Default) { memoryManager.extractMemoryCandidate(userText) }
                                     if (candidate != null) {
                                         val added = withContext(Dispatchers.IO) { memoryManager.addMemory(candidate.first, candidate.second) }
@@ -1480,6 +1565,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startNewChat() {
+        if (_temporaryChat.value) {
+            val oldId = _currentSessionId.value
+            val running = generationJob
+            viewModelScope.launch(Dispatchers.IO) {
+                running?.join()
+                oldId?.let { com.shounak.localmeshai.features.TemporaryChatFiles.discard(temporaryAttachments.getSessionAttachmentsDir(com.shounak.localmeshai.data.ChatKind.Text, it)) }
+            }
+        }
+
         if (_isGenerating.value) {
             stopGenerating()
         }
@@ -1497,12 +1591,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectChatSession(sessionId: String) {
+        val session = chatSessions.firstOrNull { it.id == sessionId } ?: return
+        if (!conversationPrivacy.openSavedChat(
+                busy = generationJob?.isActive == true || _isGenerating.value || _isStopping.value,
+                discardTemporary = ::startNewChat)) {
+            _error.value = "Stop the current temporary request before switching chats."
+            return
+        }
         if (sessionId == _currentSessionId.value) return
         if (_isGenerating.value) {
             stopGenerating()
         }
         saveCurrentSession()
-        val session = chatSessions.firstOrNull { it.id == sessionId } ?: return
         messages.clear()
         messages.addAll(session.messages.map { msg ->
             val resolvedDocPath = if (!msg.documentPath.isNullOrBlank() && File(msg.documentPath).exists()) {
@@ -1575,67 +1675,62 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteChatSession(sessionId: String) {
-        if (sessionId == _currentSessionId.value && _isGenerating.value) {
-            stopGenerating()
-        }
-        val session = chatSessions.firstOrNull { it.id == sessionId }
-        session?.documentId?.let { docId ->
-            ragManager.removeDocument(docId)
-        }
-        val removingCurrent = sessionId == _currentSessionId.value
-        val removingPending = sessionId == _pendingSessionId.value
-        chatSessions.removeAll { it.id == sessionId }
-        if (removingPending) {
-            _pendingSessionId.value = null
-        }
-        if (removingCurrent || (removingPending && _currentSessionId.value == null)) {
-            messages.clear()
-            _currentSessionId.value = null
-            currentSessionDocumentId = null
-            resetRuntimeConversationBeforeNextSend = true
-            lastRuntimeThinkingMode = null
-            _lastInferenceTime.value = 0L
-            _tokensPerSecond.value = 0f
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            sessionRepository.deleteSessionAsync(com.shounak.localmeshai.data.ChatKind.Text, sessionId)
-            AttachmentViewerUtils.cleanupOrphanAttachments(
-                getApplication(),
-                setOfNotNull(_currentSessionId.value, _pendingSessionId.value)
-            )
-        }
-        persistSessions()
+        deleteSessions(listOf(sessionId))
     }
 
     fun clearHistory() {
-        if (_isGenerating.value) {
-            stopGenerating()
-        }
-        val sessionIds = chatSessions.map { it.id }.toList()
-        chatSessions.forEach { session ->
-            session.documentId?.let { docId ->
-                ragManager.removeDocument(docId)
+        deleteSessions(chatSessions.map { it.id })
+    }
+
+    private fun deleteSessions(sessionIds: List<String>) {
+        if (_isDeletingHistory.value) return
+        _isDeletingHistory.value = true
+        val running = generationJob.takeIf { _currentSessionId.value in sessionIds }
+        if (running != null) stopGenerating()
+        viewModelScope.launch {
+            try {
+                running?.join()
+                com.shounak.localmeshai.data.HistoryDeletionCoordinator(sessionRepository).deleteSessions(
+                    kind = com.shounak.localmeshai.data.ChatKind.Text,
+                    sessionIds = sessionIds,
+                    onFailure = { _error.value = "Couldn't delete chat: $it" },
+                    onCommitted = { sessionId, cleanupPending ->
+                        // RAG documents belong to the shared knowledge base, not to this chat.
+                        chatSessions.removeAll { it.id == sessionId }
+                        val removingPending = _pendingSessionId.value == sessionId
+                        if (removingPending) _pendingSessionId.value = null
+                        if (_currentSessionId.value == sessionId || (removingPending && _currentSessionId.value == null)) {
+                            messages.clear()
+                            _currentSessionId.value = null
+                            currentSessionDocumentId = null
+                            resetRuntimeConversationBeforeNextSend = true
+                            lastRuntimeThinkingMode = null
+                            _lastInferenceTime.value = 0L
+                            _tokensPerSecond.value = 0f
+                        }
+                        if (cleanupPending) {
+                            _error.value = "Chat deleted. File cleanup is pending and will be retried."
+                        }
+                    }
+                )
+                persistSessions()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _error.value = "Couldn't finish deleting history: ${error.message}"
+            } finally {
+                _isDeletingHistory.value = false
             }
         }
-        chatSessions.clear()
-        messages.clear()
-        _currentSessionId.value = null
-        _pendingSessionId.value = null
-        currentSessionDocumentId = null
-        resetRuntimeConversationBeforeNextSend = true
-        lastRuntimeThinkingMode = null
-        _lastInferenceTime.value = 0L
-        _tokensPerSecond.value = 0f
-        viewModelScope.launch(Dispatchers.IO) {
-            sessionIds.forEach { id ->
-                sessionRepository.deleteSessionAsync(com.shounak.localmeshai.data.ChatKind.Text, id)
-            }
-            AttachmentViewerUtils.cleanupOrphanAttachments(getApplication())
-        }
-        persistSessions()
     }
 
     private fun ensureCurrentSession(firstUserText: String, documentName: String? = null) {
+        if (_temporaryChat.value) {
+            if (_currentSessionId.value == null) _currentSessionId.value = UUID.randomUUID().toString()
+            com.shounak.localmeshai.features.TemporaryChatFiles.retain(temporaryAttachments.getSessionAttachmentsDir(com.shounak.localmeshai.data.ChatKind.Text, _currentSessionId.value!!))
+            return
+        }
+
         val currentId = _currentSessionId.value
         val now = System.currentTimeMillis()
         if (currentId != null) {
@@ -1676,6 +1771,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun saveCurrentSession() {
+        if (_temporaryChat.value) return
+
         val sessionId = _currentSessionId.value ?: return
         val index = chatSessions.indexOfFirst { it.id == sessionId }
         if (index == -1) return
@@ -1765,7 +1862,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun writeSessionsToStorage(sessions: List<ChatSession>) {
-        sessionRepository.saveChatSessions(sessions)
+        if (!runCatching { sessionRepository.saveChatSessions(sessions) }.getOrDefault(false)) {
+            _error.value = "Couldn't save chat history. Your conversation is still open; check available storage before closing the app."
+        }
     }
 
     private fun buildStructuredHistory(
@@ -1893,11 +1992,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         documentPreparation.cancel()
         saveCurrentSession()
         releaseModel(clearCoordinator = false, clearSelection = true)
+        val temporaryId = _currentSessionId.value.takeIf { _temporaryChat.value }
         val token = coordinatorToken
         ModelRuntimeCoordinator.shutdownScope.launch {
             try {
                 kotlinx.coroutines.withTimeout(10_000L) {
                     releaseJob?.join()
+                }
+                if (lastShutdownResult?.isSuccess == true && temporaryId != null) {
+                    com.shounak.localmeshai.features.TemporaryChatFiles.discard(temporaryAttachments.getSessionAttachmentsDir(com.shounak.localmeshai.data.ChatKind.Text, temporaryId))
                 }
             } finally {
                 if (token != null) {
@@ -1963,6 +2066,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _isInitializing.value = false
                     _isGenerating.value = false
                     _isStopping.value = false
+                    _runtimeCapabilities.value = null
                     _isModelReady.value = false
                     modelLoadController.resetToUnloaded()
                 } else {

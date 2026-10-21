@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
 /** Request-scoped chat-template controls for models with native thinking modes. */
 object ThinkingModeConfig {
     const val ENABLE_THINKING_KEY = "enable_thinking"
-    const val DETECTOR_VERSION = 6
+    const val DETECTOR_VERSION = 9
     const val LITERTLM_RUNTIME_VERSION = "0.18.0"
 
     private data class ArtifactCacheKey(
@@ -226,7 +226,7 @@ object ThinkingModeConfig {
 
         // 4. Fallback for uninspected or pending download models
         if (supportsThinkingFlag) {
-            return ThinkingCapability.Toggleable
+            return ThinkingCapability.ModelControlled
         }
 
         if (!effectiveIsCustom) {
@@ -244,7 +244,7 @@ object ThinkingModeConfig {
             "toggleable" -> ThinkingCapability.Toggleable
             "modelcontrolled", "model_controlled" -> ThinkingCapability.ModelControlled
             "unsupported" -> ThinkingCapability.Unsupported
-            else -> if (supportsThinkingFlag) ThinkingCapability.Toggleable else ThinkingCapability.Unknown
+            else -> if (supportsThinkingFlag) ThinkingCapability.ModelControlled else ThinkingCapability.Unknown
         }
     }
 

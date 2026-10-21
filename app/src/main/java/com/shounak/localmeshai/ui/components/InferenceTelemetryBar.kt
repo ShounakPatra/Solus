@@ -35,7 +35,8 @@ fun InferenceTelemetryBar(
     batteryTempC: Float? = null,
     availableRamMb: Long? = null,
     accentColor: Color = Color(0xFF38BDF8),
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    contextIndicator: (@Composable () -> Unit)? = null
 ) {
     AnimatedVisibility(
         visible = true,
@@ -71,6 +72,11 @@ fun InferenceTelemetryBar(
                     color = accentColor,
                     maxLines = 1
                 )
+            }
+
+            if (contextIndicator != null) {
+                Text(text = "•", fontSize = 10.sp, color = Color(0xFF475569), maxLines = 1)
+                contextIndicator()
             }
 
             Text(text = "•", fontSize = 10.sp, color = Color(0xFF475569), maxLines = 1)

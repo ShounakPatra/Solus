@@ -8,6 +8,21 @@ import org.junit.rules.TemporaryFolder
 class InputOwnershipTest {
     @get:Rule val directory = TemporaryFolder()
 
+    @Test fun freshAndFutureDatedInputsSurviveAndExpireAtTheRetentionBoundary() {
+        val root = directory.newFolder("fresh_cache")
+        val staging = root.resolve("multimodal_inputs").apply { mkdirs() }
+        val now = 200_000_000L
+        val fresh = staging.resolve("fresh.wav").apply { writeText("draft"); setLastModified(now - 1) }
+        val future = staging.resolve("future.wav").apply { writeText("draft"); setLastModified(now + 1) }
+        val expired = staging.resolve("expired.wav").apply {
+            writeText("expired"); setLastModified(now - AppCacheCleaner.INPUT_RETENTION_MS)
+        }
+        assertEquals(1, AppCacheCleaner.pruneExpiredInputs(root, now))
+        assertTrue(fresh.exists())
+        assertTrue(future.exists())
+        assertFalse(expired.exists())
+    }
+
     @Test fun activeExpiredInputsSurviveUntilLastLeaseCloses() {
         val root = directory.newFolder("cache")
         val staging = root.resolve("multimodal_inputs").apply { mkdirs() }

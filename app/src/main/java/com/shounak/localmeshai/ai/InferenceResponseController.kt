@@ -83,12 +83,21 @@ class InferenceResponseController(
         reasoning: String,
         isThinkingActive: Boolean,
         reqId: String? = null,
-        attemptId: Int? = null
+        attemptId: Int? = null,
+        replaceSnapshot: Boolean = false
     ) {
         synchronized(lock) {
             if (isFinished) return
             if (reqId != null && requestId.isNotEmpty() && reqId != requestId) return
             if (attemptId != null && attemptId != currentAttemptId) return
+            if (replaceSnapshot) {
+                // A cumulative adapter may reclassify earlier text when a closing tag arrives.
+                // Its empty answer is authoritative, unlike an empty terminal callback.
+                answerBuffer.clear()
+                thinkingBuffer.clear()
+                acceptedAnswer = ""
+                acceptedReasoning = ""
+            }
             isStructuredMode = true
             structuredThinkingActive = if (thinkingMode) isThinkingActive else false
             if (reasoning.isNotEmpty()) {

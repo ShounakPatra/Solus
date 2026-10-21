@@ -2,6 +2,7 @@ package com.shounak.localmeshai.ui.viewmodels
 
 import android.app.Application
 import android.content.Context
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -11,6 +12,10 @@ import com.shounak.localmeshai.models.CustomModelStore
 import com.shounak.localmeshai.models.ModelCatalog
 import com.shounak.localmeshai.models.ModelInfo
 import com.shounak.localmeshai.models.ModelPackage
+import com.shounak.localmeshai.models.ModelValidationState
+import com.shounak.localmeshai.models.ModelCapabilitySnapshot
+import com.shounak.localmeshai.utils.ModelValidationQueue
+import com.shounak.localmeshai.utils.ModelVerificationCache
 import com.shounak.localmeshai.models.ModelStatus
 import com.shounak.localmeshai.models.ModelType
 import com.shounak.localmeshai.models.ThinkingCapability
@@ -245,15 +250,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     private fun getArtifactRevision(model: ModelInfo, target: File?): String {
-        val b = model.bundle
-        return if (b != null && b.allArtifacts.isNotEmpty()) {
-            b.allArtifacts.joinToString(";") { "${it.displayName}:${it.sizeBytes}:${it.lastModified}" }
-        } else if (target != null && target.exists()) {
-            "${target.absolutePath}:${target.length()}:${target.lastModified()}"
-        } else {
-            model.localPath.orEmpty()
-        }
+        val artifacts = model.bundle?.allArtifacts
+        val revision = if (!artifacts.isNullOrEmpty()) artifacts.joinToString(";") { artifact ->
+            when (val source = artifact.source) {
+                is ArtifactSource.AppManaged -> File(source.path).let {
+                    ModelVerificationCache.fileIdentity(it, artifact.role)
+                }
+                is ArtifactSource.PersistedUri -> {
+                    var size = -1L
+                    var modified = -1L
+                    runCatching {
+                        getApplication<Application>().contentResolver.query(
+                            android.net.Uri.parse(source.uriString),
+                            arrayOf(android.provider.OpenableColumns.SIZE, android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+                            null, null, null
+                        )?.use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                val si = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                                val ti = cursor.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                                if (si >= 0 && !cursor.isNull(si)) size = cursor.getLong(si)
+                                if (ti >= 0 && !cursor.isNull(ti)) modified = cursor.getLong(ti)
+                            }
+                        }
+                    }
+                    val unknown = if (size < 0L || modified <= 0L) ":opaque:${System.nanoTime()}" else ""
+                    "${artifact.role}:${source.uriString}:$size:$modified$unknown"
+                }
+            }
+        } else target?.let { ModelVerificationCache.fileIdentity(it) } ?: model.localPath.orEmpty()
+        return "${ThinkingModeConfig.DETECTOR_VERSION}:${model.sha256.orEmpty()}:$revision"
     }
+
+    private fun sourceSignature(model: ModelInfo): String =
+        ModelCapabilitySnapshot.revision(model.bundle, model.localPath.orEmpty())
 
     private suspend fun inspectBundleAuthoritatively(
         model: ModelInfo,
@@ -302,48 +331,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         try {
             ModelSourceResolver.resolve(getApplication(), bundleToInspect).use { lease ->
-                when (bundleToInspect.format) {
+                val detected = NonGgufBundleInspector.detectFormat(File(lease.paths.first()))
+                    ?: throw IllegalArgumentException("Unrecognized model container. Select a valid GGUF, LiteRT-LM or MediaPipe task bundle.")
+                require(detected == ModelFormat.GGUF || (bundleToInspect.mainArtifacts.size == 1 && bundleToInspect.projectorArtifact == null)) {
+                    "Only GGUF supports split shards and companion projectors. Relink one LiteRT-LM or MediaPipe task bundle."
+                }
+                val resolvedBundle = bundleToInspect.copy(format = detected, backend = when (detected) {
+                    ModelFormat.GGUF -> "llama.cpp GGUF"
+                    ModelFormat.LiteRtLm -> "LiteRT-LM GPU"
+                    ModelFormat.MediaPipeTask -> "MediaPipe LLM CPU-safe"
+                })
+                when (resolvedBundle.format) {
                     ModelFormat.GGUF -> {
                         val mainInspections = mutableListOf<GgufArtifactInspection>()
-                        for ((index, artifact) in bundleToInspect.mainArtifacts.withIndex()) {
+                        for ((index, artifact) in resolvedBundle.mainArtifacts.withIndex()) {
                             val path = lease.paths.getOrNull(index) ?: continue
                             val len = artifact.sizeBytes.takeIf { it > 0L } ?: File(path).length()
                             val insp = GgufBundleInspector.inspectArtifact(path, artifact.displayName, len)
                             mainInspections.add(insp)
                         }
                         var projectorInspection: GgufArtifactInspection? = null
-                        if (bundleToInspect.projectorArtifact != null && lease.projectorPath != null) {
+                        if (resolvedBundle.projectorArtifact != null && lease.projectorPath != null) {
                             val projPath = lease.projectorPath!!
-                            val projArt = bundleToInspect.projectorArtifact
+                            val projArt = resolvedBundle.projectorArtifact
                             val len = projArt.sizeBytes.takeIf { it > 0L } ?: File(projPath).length()
                             projectorInspection = GgufBundleInspector.inspectArtifact(projPath, projArt.displayName, len)
                         }
 
                         val allInspections = if (projectorInspection != null) mainInspections + projectorInspection else mainInspections
-                        val expectedRoles = bundleToInspect.allArtifacts.associate { it.displayName to it.role }
+                        val expectedRoles = resolvedBundle.allArtifacts.associate { it.displayName to it.role }
                         val bundleRes = GgufBundleInspector.validateBundle(allInspections, expectedRoles)
                         if (bundleRes.isValid) {
                             val c = bundleRes.capabilities
                             val ctx = if (bundleRes.contextLength > 0) bundleRes.contextLength else (model.contextWindowTokens ?: 2048)
-                            val updatedBundle = bundleToInspect.copy(
-                                capabilities = c,
+                            val updatedBundle = resolvedBundle.copy(
+                                capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
                                 contextLength = ctx
                             )
                             InspectedBundleOutcome(
                                 bundle = updatedBundle,
-                                capabilities = c,
+                                capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
                                 contextLength = ctx,
-                                loadRestriction = bundleToInspect.loadRestriction,
+                                loadRestriction = resolvedBundle.loadRestriction,
                                 isMultimodal = c.supportsVision || c.supportsAudio,
                                 isValid = true
                             )
                         } else {
                             InspectedBundleOutcome(
-                                bundle = bundleToInspect,
-                                capabilities = bundleToInspect.capabilities,
+                                bundle = resolvedBundle,
+                                capabilities = resolvedBundle.capabilities,
                                 contextLength = model.contextWindowTokens ?: 2048,
-                                loadRestriction = bundleToInspect.loadRestriction,
-                                isMultimodal = bundleToInspect.capabilities.supportsVision || bundleToInspect.capabilities.supportsAudio,
+                                loadRestriction = resolvedBundle.loadRestriction,
+                                isMultimodal = resolvedBundle.capabilities.supportsVision || resolvedBundle.capabilities.supportsAudio,
                                 isValid = false,
                                 error = bundleRes.errorMessage ?: "GGUF bundle validation failed"
                             )
@@ -351,11 +390,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     ModelFormat.MediaPipeTask -> {
                         val path = lease.paths.firstOrNull() ?: return@withContext InspectedBundleOutcome(
-                            bundle = bundleToInspect,
-                            capabilities = bundleToInspect.capabilities,
+                            bundle = resolvedBundle,
+                            capabilities = resolvedBundle.capabilities,
                             contextLength = model.contextWindowTokens ?: 2048,
-                            loadRestriction = bundleToInspect.loadRestriction,
-                            isMultimodal = bundleToInspect.capabilities.supportsVision || bundleToInspect.capabilities.supportsAudio,
+                            loadRestriction = resolvedBundle.loadRestriction,
+                            isMultimodal = resolvedBundle.capabilities.supportsVision || resolvedBundle.capabilities.supportsAudio,
                             isValid = false,
                             error = "MediaPipe task path missing"
                         )
@@ -363,25 +402,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         if (insp.isValid) {
                             val c = insp.capabilities
                             val ctx = if (c.contextLength > 0) c.contextLength else (model.contextWindowTokens ?: 2048)
-                            val updatedBundle = bundleToInspect.copy(
-                                capabilities = c,
+                            val updatedBundle = resolvedBundle.copy(
+                                capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
                                 contextLength = ctx
                             )
                             InspectedBundleOutcome(
                                 bundle = updatedBundle,
-                                capabilities = c,
+                                capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
                                 contextLength = ctx,
-                                loadRestriction = insp.loadRestriction ?: bundleToInspect.loadRestriction,
+                                loadRestriction = insp.loadRestriction ?: resolvedBundle.loadRestriction,
                                 isMultimodal = c.supportsVision || c.supportsAudio,
                                 isValid = true
                             )
                         } else {
                             InspectedBundleOutcome(
-                                bundle = bundleToInspect,
-                                capabilities = bundleToInspect.capabilities,
+                                bundle = resolvedBundle,
+                                capabilities = resolvedBundle.capabilities,
                                 contextLength = model.contextWindowTokens ?: 2048,
-                                loadRestriction = bundleToInspect.loadRestriction,
-                                isMultimodal = bundleToInspect.capabilities.supportsVision || bundleToInspect.capabilities.supportsAudio,
+                                loadRestriction = resolvedBundle.loadRestriction,
+                                isMultimodal = resolvedBundle.capabilities.supportsVision || resolvedBundle.capabilities.supportsAudio,
                                 isValid = false,
                                 error = insp.errorMessage ?: "MediaPipe task inspection failed"
                             )
@@ -389,38 +428,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     ModelFormat.LiteRtLm -> {
                         val path = lease.paths.firstOrNull() ?: return@withContext InspectedBundleOutcome(
-                            bundle = bundleToInspect,
-                            capabilities = bundleToInspect.capabilities,
+                            bundle = resolvedBundle,
+                            capabilities = resolvedBundle.capabilities,
                             contextLength = model.contextWindowTokens ?: 2048,
-                            loadRestriction = bundleToInspect.loadRestriction,
-                            isMultimodal = bundleToInspect.capabilities.supportsVision || bundleToInspect.capabilities.supportsAudio,
+                            loadRestriction = resolvedBundle.loadRestriction,
+                            isMultimodal = resolvedBundle.capabilities.supportsVision || resolvedBundle.capabilities.supportsAudio,
                             isValid = false,
                             error = "LiteRT-LM path missing"
                         )
-                        val insp = NonGgufBundleInspector.inspectLiteRtLm(File(path))
+                        val insp = NonGgufBundleInspector.inspectLiteRtLm(File(path), model.sha256)
                         if (insp.isValid) {
                             val c = insp.capabilities
                             val ctx = if (c.contextLength > 0) c.contextLength else (model.contextWindowTokens ?: 2048)
-                            val updatedBundle = bundleToInspect.copy(
-                                capabilities = c,
+                            val updatedBundle = resolvedBundle.copy(
+                                capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
                                 contextLength = ctx,
-                                loadRestriction = insp.loadRestriction ?: bundleToInspect.loadRestriction
+                                loadRestriction = insp.loadRestriction ?: resolvedBundle.loadRestriction
                             )
                             InspectedBundleOutcome(
                                 bundle = updatedBundle,
-                                capabilities = c,
+                                capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
                                 contextLength = ctx,
-                                loadRestriction = insp.loadRestriction ?: bundleToInspect.loadRestriction,
+                                loadRestriction = insp.loadRestriction ?: resolvedBundle.loadRestriction,
                                 isMultimodal = c.supportsVision || c.supportsAudio,
                                 isValid = true
                             )
                         } else {
                             InspectedBundleOutcome(
-                                bundle = bundleToInspect,
-                                capabilities = bundleToInspect.capabilities,
+                                bundle = resolvedBundle,
+                                capabilities = resolvedBundle.capabilities,
                                 contextLength = model.contextWindowTokens ?: 2048,
-                                loadRestriction = bundleToInspect.loadRestriction,
-                                isMultimodal = bundleToInspect.capabilities.supportsVision || bundleToInspect.capabilities.supportsAudio,
+                                loadRestriction = resolvedBundle.loadRestriction,
+                                isMultimodal = resolvedBundle.capabilities.supportsVision || resolvedBundle.capabilities.supportsAudio,
                                 isValid = false,
                                 error = insp.errorMessage ?: "LiteRT-LM inspection failed"
                             )
@@ -812,6 +851,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val availableModels = mutableStateListOf(*ModelCatalog.defaultModels.toTypedArray())
     val unsafeInitOverrideIds = mutableStateListOf<String>()
+    val modelRetryRevisions = mutableStateMapOf<String, Int>()
+    val retryingModelIds = mutableStateListOf<String>()
     val removingModelIds = mutableStateListOf<String>()
     val cancellingModelIds = mutableStateListOf<String>()
     private val _unloadingModelIds = MutableStateFlow<Set<String>>(emptySet())
@@ -822,6 +863,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val latestSnapshotGenerations = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val inFlightValidationJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
     private val startupRecoveryDeferred = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private val _modelValidationStates = MutableStateFlow<Map<String, ModelValidationState>>(emptyMap())
+    val modelValidationStates = _modelValidationStates.asStateFlow()
+    private val validationQueue = ModelValidationQueue<String, ModelInfo>(CoroutineScope(viewModelScope.coroutineContext + Dispatchers.IO))
+    private val verifiedModels = java.util.concurrent.ConcurrentHashMap<String, ModelInfo>()
+    private var selectionRequestRevision = 0L
+    private var validatedSelectionPermit: String? = null
+    private val completedStatuses = setOf(ModelStatus.Available, ModelStatus.Blocked, ModelStatus.Failed)
+
 
     sealed class UpdateDownloadStatus {
         object Idle : UpdateDownloadStatus()
@@ -853,6 +902,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val scrollToAboutRequested = _scrollToAboutRequested.asStateFlow()
 
     init {
+        viewModelScope.launch {
+            InitCrashGuard.recoveredModels.collect { id ->
+                updateModel(id) { com.shounak.localmeshai.models.ModelLoadRestrictionPolicy.projectCompletedModel(getApplication(), it) }
+            }
+        }
         DownloadStateStore.initialize(application)
         ModelRuntimeCoordinator.setReleasedCallback(ModelRuntimeOwner.Chat) {
             clearSelectedTextModel()
@@ -885,7 +939,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     customModelStore,
                     modelDownloader
                 )
-                restoreCustomModels()
+                val restoredCustom = restoreCustomModels()
+                hydrateCatalogModels(restoredCustom)
+                startupRecoveryDeferred.complete(Unit)
                 checkLocalModels()
                 reconcilePersistedDownloads()
             } finally {
@@ -974,8 +1030,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun downloadAndInstallUpdate(version: String, downloadUrl: String) {
-        updateDownloadJob?.cancel()
+        val previousDownload = updateDownloadJob
+        previousDownload?.cancel()
         updateDownloadJob = viewModelScope.launch {
+            previousDownload?.join()
             _updateDownloadStatus.value = UpdateDownloadStatus.Downloading(0f)
             val result = com.shounak.localmeshai.utils.AppUpdateManager.downloadApk(
                 context = getApplication(),
@@ -1004,7 +1062,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelUpdateDownload() {
         updateDownloadJob?.cancel()
-        updateDownloadJob = null
         _updateDownloadStatus.value = UpdateDownloadStatus.Idle
     }
 
@@ -1037,20 +1094,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val model = availableModels.firstOrNull { it.id == snapshot.modelId } ?: return@forEach
             val target = modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
             if (target != null && target.exists() && (target.isDirectory || target.length() > 0L)) {
-                val validationError = localModelValidationError(model, target)
-                val fileTime = target.lastModified()
-                val dlTime = if (snapshot.downloadedAt > 0L) snapshot.downloadedAt else fileTime
-                DownloadStateStore.update(
-                    snapshot.copy(
-                        status = if (validationError == null) ModelStatus.Available else ModelStatus.Failed,
-                        progress = if (validationError == null) 1f else snapshot.progress,
-                        downloadedBytes = if (target.isFile) target.length() else snapshot.downloadedBytes,
-                        bytesPerSecond = 0L,
-                        localPath = target.absolutePath,
-                        errorMessage = validationError,
-                        downloadedAt = dlTime
-                    )
-                )
                 return@forEach
             }
             if (snapshot.status != ModelStatus.Downloading) return@forEach
@@ -1068,69 +1111,130 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun checkLocalModels() {
-        withContext(Dispatchers.IO) {
-            val modelsToCheck = availableModels.toList()
-            for (model in modelsToCheck) {
-                if (model.isFuturePlaceholder) continue
-                if (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeleted(model.id)) continue
-                val target = modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
-                if (target != null && target.exists() && (target.isDirectory || target.length() > 0L)) {
-                    val inspectedRevision = getArtifactRevision(model, target)
-                    val validationError = localModelValidationError(model, target)
-                    val updatedModel = if (validationError != null) {
-                        model.copy(
-                            status = ModelStatus.Failed,
-                            progress = 0f,
-                            localPath = target.absolutePath,
-                            errorMessage = validationError
-                        )
-                    } else {
-                        val fileTime = target.lastModified()
-                        val existingSnapshot = DownloadStateStore.get(model.id)
-                        val dlTime = if ((existingSnapshot?.downloadedAt ?: 0L) > 0L) existingSnapshot!!.downloadedAt else fileTime
-
-                        val outcome = inspectBundleAuthoritatively(model, target)
-                        val effectiveBundle = if (outcome.isValid) outcome.bundle else model.bundle
-                        val effectiveCaps = if (outcome.isValid) outcome.capabilities else (effectiveBundle?.capabilities ?: ModelCapabilities())
-                        val effectiveThinking = (effectiveCaps.thinking == ThinkingCapability.ModelControlled || effectiveCaps.thinking == ThinkingCapability.Toggleable)
-                        val effectiveVision = effectiveCaps.supportsVision
-                        val effectiveAudio = effectiveCaps.supportsAudio
-                        val effectiveContext = if (outcome.isValid && outcome.contextLength > 0) outcome.contextLength else (model.contextWindowTokens ?: 2048)
-                        val effectiveType = if (effectiveVision || effectiveAudio) ModelType.Vision else ModelType.Text
-
-                        val rawCompleted = model.copy(
-                            status = if (outcome.isValid) ModelStatus.Available else (if (outcome.error != null) ModelStatus.Failed else ModelStatus.Available),
-                            progress = 1f,
-                            localPath = target.absolutePath,
-                            errorMessage = if (outcome.isValid) null else outcome.error,
-                            downloadedAt = dlTime,
-                            bundle = effectiveBundle,
-                            type = effectiveType,
-                            supportsThinkingMode = effectiveThinking,
-                            supportsVisionInput = effectiveVision,
-                            supportsAudioInput = effectiveAudio,
-                            contextWindowTokens = effectiveContext
-                        )
-                        com.shounak.localmeshai.models.ModelLoadRestrictionPolicy.projectCompletedModel(getApplication(), rawCompleted)
-                    }
-
-                    withContext(Dispatchers.Main.immediate) {
-                        val idx = availableModels.indexOfFirst { it.id == updatedModel.id }
-                        if (idx >= 0) {
-                            val current = availableModels[idx]
-                            val currentRev = getArtifactRevision(current, target)
-                            if (currentRev == inspectedRevision) {
-                                availableModels[idx] = updatedModel
-                            }
-                        }
-                    }
-                }
+    private suspend fun hydrateCatalogModels(custom: List<ModelInfo>) {
+        val catalog = withContext(Dispatchers.Main.immediate) { availableModels.filter { !it.isCustom && !it.isFuturePlaceholder }.toList() }
+        val restored = catalog.mapNotNull { model ->
+            if (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(model.id)) return@mapNotNull null
+            val target = modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
+            if (target == null || !target.exists()) return@mapNotNull null
+            val bundle = modelDownloader.artifactStorage.getPublishedBundle(model.id) ?: model.bundle
+            val snapshot = DownloadStateStore.get(model.id)
+            model.copy(status = ModelStatus.Available, localPath = target.absolutePath, bundle = bundle,
+                progress = 1f, downloadedBytes = snapshot?.downloadedBytes ?: target.length(),
+                downloadedAt = snapshot?.downloadedAt?.takeIf { it > 0 } ?: target.lastModified())
+        }
+        withContext(Dispatchers.Main.immediate) {
+            for (model in custom + restored) {
+                if (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(model.id) ||
+                    com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(model.id)) continue
+                if (availableModels.none { it.id == model.id }) availableModels.add(model)
+                else updateModel(model.id) { model }
+                _modelValidationStates.update { it + (model.id to ModelValidationState.Pending) }
             }
         }
     }
 
+    private suspend fun validateModel(model: ModelInfo, prioritize: Boolean = false): ModelInfo {
+        val target = model.bundle?.mainArtifacts?.firstOrNull()?.source?.let {
+            (it as? ArtifactSource.AppManaged)?.path?.let(::File)
+        } ?: modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
+        val revision = getArtifactRevision(model, target)
+        if (!revision.contains(":opaque:") && !ModelArtifactStorage.isRecoveryRequired(model.id)) {
+            verifiedModels["${model.id}:$revision"]?.let { verified ->
+                return com.shounak.localmeshai.models.ModelLoadRestrictionPolicy.projectCompletedModel(getApplication(), verified)
+            }
+        }
+        val requestKey = if (revision.contains(":opaque:")) "${model.id}:opaque:${sourceSignature(model)}" else "${model.id}:$revision"
+        return validationQueue.submit(requestKey, prioritize) {
+            _modelValidationStates.update { it + (model.id to ModelValidationState.Checking) }
+            try {
+                val cache = ModelVerificationCache(modelDownloader.artifactStorage.getModelDir(model.id, create = false))
+                val storedBundle = cache.readBundle(revision)
+                val verified = verifiedModels["${model.id}:$revision"] ?: run {
+                    val error = when {
+                        ModelArtifactStorage.isRecoveryRequired(model.id) -> "Model files require recovery reconciliation before loading."
+                        model.isStorageImport -> null
+                        target == null -> "Model file does not exist."
+                        else -> ModelArtifactStorage.leaseArtifact(target).use { localModelValidationError(model, target, inspectFormat = false) }
+                    }
+                    val outcome = if (error == null && storedBundle == null) inspectBundleAuthoritatively(model, target) else null
+                    val changed = !revision.contains(":opaque:") && getArtifactRevision(model, target) != revision
+                    if (error != null || changed || (outcome != null && !outcome.isValid)) {
+                        model.copy(status = ModelStatus.Failed, errorMessage = error ?: if (changed) "Model files changed while being checked. Please retry." else outcome?.error ?: "Model validation failed.")
+                    } else {
+                        val bundle = storedBundle ?: outcome!!.bundle
+                        val caps = bundle.capabilities
+                        model.copy(status = ModelStatus.Available, progress = 1f, errorMessage = null,
+                            localPath = model.localPath ?: target?.absolutePath, bundle = bundle, backend = bundle.backend,
+                            type = if (caps.supportsVision || caps.supportsAudio) ModelType.Vision else ModelType.Text,
+                            supportsThinkingMode = caps.thinking in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled),
+                            supportsVisionInput = caps.supportsVision, supportsAudioInput = caps.supportsAudio,
+                            contextWindowTokens = bundle.contextLength.takeIf { it > 0 }, loadRestriction = bundle.loadRestriction
+                        ).also { if (!revision.contains(":opaque:")) runCatching { cache.recordBundle(revision, bundle) } }
+                    }
+                }
+                if (verified.status != ModelStatus.Failed) {
+                    if (verifiedModels.size > 128) verifiedModels.clear()
+                    verifiedModels["${model.id}:$revision"] = verified
+                }
+                com.shounak.localmeshai.models.ModelLoadRestrictionPolicy.projectCompletedModel(getApplication(), verified)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                model.copy(status = ModelStatus.Failed, errorMessage = "Couldn't check this model. Relink its files or retry. ${error.message.orEmpty()}")
+            }
+        }.await()
+    }
+
+    private suspend fun applyValidation(model: ModelInfo, prioritize: Boolean = false): ModelInfo? {
+        val result = try { validateModel(model, prioritize) } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) { model.copy(status = ModelStatus.Failed, errorMessage = error.message ?: "Model validation failed.") }
+        return withContext(Dispatchers.Main.immediate) {
+            val current = availableModels.firstOrNull { it.id == model.id } ?: return@withContext null
+            if ((sourceSignature(current) != sourceSignature(model) && sourceSignature(current) != sourceSignature(result)) || current.status !in completedStatuses ||
+                com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(model.id) ||
+                com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(model.id)) return@withContext null
+            updateModel(model.id) { result }
+            _modelValidationStates.update { it + (model.id to if (result.status == ModelStatus.Failed) ModelValidationState.Failed else ModelValidationState.Verified) }
+            result
+        }
+    }
+
+    private suspend fun checkLocalModels() = kotlinx.coroutines.coroutineScope {
+        val acquired = withContext(Dispatchers.Main.immediate) { availableModels.filter {
+            !it.isFuturePlaceholder && it.status in completedStatuses && (it.bundle != null || it.localPath != null)
+        }.toList() }
+        acquired.forEach { model -> launch(Dispatchers.IO) { applyValidation(model) } }
+    }
+
+    private fun validateSelection(path: String, select: (String) -> Unit): Boolean {
+        val model = availableModels.firstOrNull { it.id == path || it.localPath == path } ?: return false
+        if (validatedSelectionPermit == model.id) {
+            validatedSelectionPermit = null
+            return false
+        }
+        val request = ++selectionRequestRevision
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = applyValidation(model, prioritize = true)
+            withContext(Dispatchers.Main.immediate) {
+                if (request == selectionRequestRevision && result != null && result.status != ModelStatus.Failed &&
+                    (result.status != ModelStatus.Blocked || (result.canTryAnyway && unsafeInitOverrideIds.contains(result.id)))) {
+                    validatedSelectionPermit = result.id
+                    select(result.id)
+                } else if (request == selectionRequestRevision && result != null) {
+                    android.widget.Toast.makeText(getApplication(),
+                        (result.errorMessage ?: result.loadRestriction?.reason ?: "This model needs attention.") + " Open the chooser for details.",
+                        android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        return true
+    }
+
     fun selectTextModel(path: String) {
+        if (validateSelection(path, ::selectTextModel)) return
+        ++selectionRequestRevision
         val model = availableModels.firstOrNull { it.id == path || it.localPath == path }
         if (model != null && ModelArtifactStorage.isRecoveryRequired(model.id)) {
             val reason = ModelArtifactStorage.getRecoveryRequiredReason(model.id)
@@ -1144,8 +1248,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             textSelectionRevision.incrementAndGet()
             return
         }
-        val isCrashBlocked = model?.isCrashBlocked == true || (model != null && InitCrashGuard.isModelBlocked(getApplication(), model.id))
-        val isUnsafeAllowed = model != null && !isCrashBlocked && unsafeInitOverrideIds.contains(model.id)
+        val isCrashBlocked = model != null && InitCrashGuard.isModelBlocked(getApplication(), model.id)
+        val isRuntimeBlocked = model?.loadRestriction?.category == com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility ||
+            model?.bundle?.loadRestriction?.category == com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility
+        val isUnsafeAllowed = model != null && !isRuntimeBlocked && (InitCrashGuard.hasSuccessfulRetry(getApplication(), model.id) ||
+            unsafeInitOverrideIds.contains(model.id) && (!isCrashBlocked || InitCrashGuard.isRetryAuthorized(getApplication(), model.id)))
         if (model != null && (model.status == ModelStatus.Failed || (model.status == ModelStatus.Blocked && !isUnsafeAllowed))) {
             _selectedTextModelPath.value = null
             textSelectionRevision.incrementAndGet()
@@ -1166,6 +1273,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectVisionModel(path: String) {
+        if (validateSelection(path, ::selectVisionModel)) return
+        ++selectionRequestRevision
         val model = availableModels.firstOrNull { it.id == path || it.localPath == path }
         if (model != null && ModelArtifactStorage.isRecoveryRequired(model.id)) {
             val reason = ModelArtifactStorage.getRecoveryRequiredReason(model.id)
@@ -1179,8 +1288,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             visionSelectionRevision.incrementAndGet()
             return
         }
-        val isCrashBlocked = model?.isCrashBlocked == true || (model != null && InitCrashGuard.isModelBlocked(getApplication(), model.id))
-        val isUnsafeAllowed = model != null && !isCrashBlocked && unsafeInitOverrideIds.contains(model.id)
+        val isCrashBlocked = model != null && InitCrashGuard.isModelBlocked(getApplication(), model.id)
+        val isRuntimeBlocked = model?.loadRestriction?.category == com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility ||
+            model?.bundle?.loadRestriction?.category == com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility
+        val isUnsafeAllowed = model != null && !isRuntimeBlocked && (InitCrashGuard.hasSuccessfulRetry(getApplication(), model.id) ||
+            unsafeInitOverrideIds.contains(model.id) && (!isCrashBlocked || InitCrashGuard.isRetryAuthorized(getApplication(), model.id)))
         if (model != null && (model.status == ModelStatus.Failed || (model.status == ModelStatus.Blocked && !isUnsafeAllowed))) {
             _selectedVisionModelPath.value = null
             visionSelectionRevision.incrementAndGet()
@@ -1213,6 +1325,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun unloadModel(modelId: String) {
+        ++selectionRequestRevision
         val model = availableModels.firstOrNull { it.id == modelId } ?: return
         if (_unloadingModelIds.value.contains(modelId)) return
         _unloadingModelIds.update { it + modelId }
@@ -1433,82 +1546,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun tryModelAnyway(modelId: String) {
         val model = availableModels.firstOrNull { it.id == modelId } ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            val isCrash = InitCrashGuard.isModelBlocked(getApplication(), model.id) ||
-                model.loadRestriction?.category == com.shounak.localmeshai.models.LoadRestrictionCategory.PreviousCrash
-            if (isCrash) {
-                withContext(Dispatchers.Main.immediate) {
-                    updateModel(modelId) {
-                        it.copy(
-                            status = ModelStatus.Blocked,
-                            loadRestriction = com.shounak.localmeshai.models.LoadRestriction(
-                                reason = InitCrashGuard.blockedModelMessage(),
-                                category = com.shounak.localmeshai.models.LoadRestrictionCategory.PreviousCrash
-                            ),
-                            errorMessage = InitCrashGuard.blockedModelMessage()
-                        )
-                    }
-                }
-                return@launch
-            }
-
-            if (model.isStorageImport) {
-                val bundle = model.bundle
-                if (bundle == null || !ModelSourceResolver.checkBundleAccessible(getApplication(), bundle)) {
-                    withContext(Dispatchers.Main.immediate) {
-                        updateModel(modelId) {
-                            it.copy(
-                                status = ModelStatus.Failed,
-                                errorMessage = "Files moved or storage permission revoked. Please relink files."
-                            )
-                        }
-                    }
-                    return@launch
-                }
-            } else {
-                val target = modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)
-                if (target == null || !target.exists() || (target.isFile && target.length() < MIN_VALID_MODEL_BYTES)) {
-                    withContext(Dispatchers.Main.immediate) {
-                        updateModel(modelId) {
-                            it.copy(
-                                status = if (it.downloadedBytes > 0L) ModelStatus.Paused else ModelStatus.NotDownloaded,
-                                errorMessage = "Model file is missing or incomplete. Download or resume the file first."
-                            )
-                        }
-                    }
-                    return@launch
-                }
-                val validationError = localModelValidationError(model, target)
-                if (validationError != null) {
-                    withContext(Dispatchers.Main.immediate) {
-                        updateModel(modelId) {
-                            it.copy(
-                                status = ModelStatus.Failed,
-                                errorMessage = validationError
-                            )
-                        }
-                    }
-                    return@launch
-                }
-            }
-
-            val targetPath = model.localPath
-                ?: modelDownloader.getTargetFile(model.id, model.fileName, model.packageType)?.takeIf { it.exists() }?.absolutePath
-            if (targetPath.isNullOrBlank()) {
-                return@launch
-            }
-
-            withContext(Dispatchers.Main.immediate) {
-                if (model.localPath.isNullOrBlank()) {
-                    updateModel(modelId) { it.copy(localPath = targetPath) }
-                }
-                if (!unsafeInitOverrideIds.contains(model.id)) {
-                    unsafeInitOverrideIds.add(model.id)
-                }
-                when (model.type) {
+        if (modelId in retryingModelIds || !model.canTryAnyway ||
+            model.bundle?.loadRestriction?.category == com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility) return
+        val request = ++selectionRequestRevision
+        retryingModelIds.add(modelId)
+        viewModelScope.launch {
+            try {
+                // Validate once. Selection consumes this permit instead of queuing another check.
+                val validated = withContext(Dispatchers.IO) { applyValidation(model, prioritize = true) } ?: return@launch
+                if (request != selectionRequestRevision || validated.status == ModelStatus.Failed) return@launch
+                if (!validated.canTryAnyway && validated.status == ModelStatus.Blocked) return@launch
+                if (validated.loadRestriction?.category == com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility ||
+                    validated.bundle?.loadRestriction?.category == com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility) return@launch
+                val targetPath = validated.localPath ?: validated.id.takeIf { validated.isStorageImport } ?: return@launch
+                if (InitCrashGuard.isModelBlocked(getApplication(), validated.id)) InitCrashGuard.authorizeRetry(getApplication(), validated.id)
+                if (!unsafeInitOverrideIds.contains(validated.id)) unsafeInitOverrideIds.add(validated.id)
+                validatedSelectionPermit = validated.id
+                when (validated.type) {
                     ModelType.Text -> selectTextModel(targetPath)
                     ModelType.Vision -> selectVisionModel(targetPath)
                 }
+                modelRetryRevisions[validated.id] = (modelRetryRevisions[validated.id] ?: 0) + 1
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                updateModel(modelId) { it.copy(status = ModelStatus.Failed, errorMessage = error.message ?: "Could not retry this model.") }
+            } finally {
+                retryingModelIds.remove(modelId)
             }
         }
     }
@@ -1648,7 +1712,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun restoreCustomModels() {
+    private suspend fun restoreCustomModels(): List<ModelInfo> {
         val loadState = customModelStore.loadAsync()
         com.shounak.localmeshai.data.StartupCoordinator.getInstance(getApplication())
             .updateCustomModelStoreState(loadState)
@@ -1656,7 +1720,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val storeForRecovery = if (isStoreAvailable) customModelStore else null
         modelDownloader.artifactStorage.recoverPendingTransactions(storeForRecovery, isStoreAvailable = isStoreAvailable)
         if (loadState !is com.shounak.localmeshai.data.StoreLoadState.Ready) {
-            return
+            return emptyList()
         }
         val customDefinitions = customModelStore.getAll()
         val toAdd = mutableListOf<ModelInfo>()
@@ -1669,88 +1733,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 var effectiveBundle = if (isStorage) def.bundle else publishedBundle
 
                 if (!isStorage && publishedBundle == null && def.bundle != null) {
-                    if (ModelSourceResolver.checkBundleAccessible(getApplication(), def.bundle)) {
-                        val migratedBundle = runCatching {
-                            val stagingDir = modelDownloader.artifactStorage.getStagingDir(def.id)
-                            stagingDir.mkdirs()
-                            val stagedItems = def.bundle.allArtifacts.mapIndexed { idx, artifact ->
-                                val src = (artifact.source as? ArtifactSource.AppManaged)?.path ?: return@mapIndexed null
-                                val srcFile = File(src)
-                                if (!srcFile.exists()) return@mapIndexed null
-                                val stagedFile = File(stagingDir, "${ModelArtifactStorage.sanitizeFileName(srcFile.name)}.tmp")
-                                srcFile.copyTo(stagedFile, overwrite = true)
-                                StagedArtifactItem(
-                                    stagedFile = stagedFile,
-                                    relativeTargetName = ModelArtifactStorage.sanitizeFileName(srcFile.name),
-                                    isPrimary = artifact.role == ArtifactRole.Main,
-                                    role = artifact.role,
-                                    order = idx
-                                )
-                            }.filterNotNull()
-
-                            if (stagedItems.isNotEmpty()) {
-                                val primary = stagedItems.firstOrNull { it.isPrimary } ?: stagedItems.first()
-                                val transaction = modelDownloader.artifactStorage.beginTransaction(
-                                    modelId = def.id,
-                                    stagedItems = stagedItems,
-                                    primaryItemName = primary.relativeTargetName,
-                                    sourceIdentity = "restored_import_${def.id}",
-                                    packageType = "ArtifactBundle",
-                                    capabilities = def.bundle.capabilities,
-                                    format = def.bundle.format
-                                )
-                                try {
-                                    val newBundle = modelDownloader.artifactStorage.getPublishedBundle(def.id)
-                                    if (newBundle != null) {
-                                        val updated = customModelStore.updateBundle(def.id, newBundle)
-                                        if (updated) {
-                                            try {
-                                                transaction.commit()
-                                                for (artifact in def.bundle.allArtifacts) {
-                                                    val oldPath = (artifact.source as? ArtifactSource.AppManaged)?.path
-                                                    if (oldPath != null) {
-                                                        val otherReferencing = customDefinitions.filter { it.id != def.id }.any { other ->
-                                                            other.bundle?.allArtifacts?.any { (it.source as? ArtifactSource.AppManaged)?.path == oldPath } == true
-                                                        }
-                                                        if (!otherReferencing) {
-                                                            runCatching { File(oldPath).delete() }
-                                                        }
-                                                    }
-                                                }
-                                            } catch (commitError: Throwable) {
-                                                android.util.Log.e("MainViewModel", "Commit failed after store update for ${def.id}", commitError)
-                                                ModelArtifactStorage.recordRecoveryRequired(
-                                                    def.id,
-                                                    "Commit failed after store update: ${commitError.message}"
-                                                )
-                                            }
-                                            newBundle
-                                        } else {
-                                            transaction.rollback()
-                                            null
-                                        }
-                                    } else {
-                                        transaction.rollback()
-                                        null
-                                    }
-                                } catch (e: Throwable) {
-                                    transaction.rollback()
-                                    null
-                                }
-                            } else null
-                        }.getOrNull()
-
-                        publishedBundle = migratedBundle ?: def.bundle
-                        isAppManagedBundle = true
-                        effectiveBundle = publishedBundle
-                    }
+                    publishedBundle = def.bundle
+                    isAppManagedBundle = true
+                    effectiveBundle = def.bundle
                 }
 
                 val isRecoveryRequired = ModelArtifactStorage.isRecoveryRequired(def.id)
                 val recoveryReason = if (isRecoveryRequired) ModelArtifactStorage.getRecoveryRequiredReason(def.id) else null
 
                 val isAccessible = when {
-                    isStorage && effectiveBundle != null -> ModelSourceResolver.checkBundleAccessible(getApplication(), effectiveBundle)
+                    isStorage && effectiveBundle != null -> true
                     isAppManagedBundle -> true
                     else -> false
                 }
@@ -1828,58 +1820,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 toAdd.add(finalModel)
             }
         }
-        if (toAdd.isNotEmpty()) {
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
-                for (model in toAdd) {
-                    if (availableModels.none { it.id == model.id }) {
-                        availableModels.add(model)
-                    }
-                }
-            }
-
-            val modelsNeedingRefresh = toAdd.filter { model ->
-                val caps = model.bundle?.capabilities
-                caps == null ||
-                    caps.thinkingDetectorVersion < ThinkingModeConfig.DETECTOR_VERSION ||
-                    caps.thinkingArtifactIdentity.isBlank()
-            }
-            if (modelsNeedingRefresh.isNotEmpty()) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    for (model in modelsNeedingRefresh) {
-                        val outcome = inspectBundleAuthoritatively(model)
-                        if (outcome.isValid) {
-                            val refreshedBundle = outcome.bundle
-                            val refreshedCaps = outcome.capabilities
-                            val updated = customModelStore.updateBundle(model.id, refreshedBundle)
-                            if (updated) {
-                                val effectiveType = if (refreshedCaps.supportsVision || refreshedCaps.supportsAudio) ModelType.Vision else model.type
-                                val supportsThinking = (refreshedCaps.thinking == ThinkingCapability.ModelControlled || refreshedCaps.thinking == ThinkingCapability.Toggleable)
-                                val updatedModel = model.copy(
-                                    bundle = refreshedBundle,
-                                    type = effectiveType,
-                                    supportsThinkingMode = supportsThinking,
-                                    supportsVisionInput = refreshedCaps.supportsVision,
-                                    supportsAudioInput = refreshedCaps.supportsAudio,
-                                    contextWindowTokens = refreshedBundle.contextLength.takeIf { it > 0 }
-                                )
-                                val projected = com.shounak.localmeshai.models.ModelLoadRestrictionPolicy.projectCompletedModel(getApplication<Application>(), updatedModel)
-                                withContext(Dispatchers.Main.immediate) {
-                                    val idx = availableModels.indexOfFirst { it.id == model.id }
-                                    if (idx >= 0) {
-                                        val current = availableModels[idx]
-                                        val currentRev = getArtifactRevision(current, null)
-                                        val inspectedRev = getArtifactRevision(model, null)
-                                        if (currentRev == inspectedRev) {
-                                            availableModels[idx] = projected
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        return toAdd
     }
 
     fun getActiveBundleUriStrings(excludeModelId: String? = null): Set<String> {
@@ -2561,137 +2502,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             startupRecoveryDeferred.await()
             DownloadStateStore.snapshots.collect { snapshots ->
                 snapshots.values.forEach { snapshot ->
-                    val currentModel = availableModels.firstOrNull { it.id == snapshot.modelId } ?: return@forEach
-
+                    val current = availableModels.firstOrNull { it.id == snapshot.modelId } ?: return@forEach
+                    if (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(current.id)) return@forEach
                     if (snapshot.status == ModelStatus.Available) {
-                        if (currentModel.status == ModelStatus.Available &&
-                            currentModel.localPath != null &&
-                            (snapshot.localPath == null || currentModel.localPath == snapshot.localPath)
-                        ) {
-                            return@forEach
-                        }
-
-                        val genKey = "${snapshot.localPath ?: currentModel.fileName}_${snapshot.downloadedBytes}_${snapshot.downloadedAt}"
-                        latestSnapshotGenerations[snapshot.modelId] = genKey
-
-                        val existingGenKey = inFlightValidations[snapshot.modelId]
-                        if (existingGenKey == genKey) {
-                            return@forEach
-                        }
-
-                        // Invalidate and cancel superseded validation for an older generation
-                        inFlightValidationJobs[snapshot.modelId]?.cancel()
-                        inFlightValidations[snapshot.modelId] = genKey
-
-                        val valJob = viewModelScope.launch(Dispatchers.IO) {
-                            try {
-                                val modelToValidate = availableModels.firstOrNull { it.id == snapshot.modelId } ?: return@launch
-                                val targetFile = modelDownloader.getTargetFile(modelToValidate.id, modelToValidate.fileName, modelToValidate.packageType)
-                                val fileGen = "${targetFile?.absolutePath}_${targetFile?.length()}_${targetFile?.lastModified()}"
-
-                                val validationError = if (targetFile != null && targetFile.exists()) {
-                                    if (validatedArtifactGenerations[modelToValidate.id] == fileGen) {
-                                        null
-                                    } else {
-                                        localModelValidationError(modelToValidate, targetFile).also { err ->
-                                            if (err == null) {
-                                                validatedArtifactGenerations[modelToValidate.id] = fileGen
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    "Model file does not exist."
+                        val gen = "${snapshot.localPath}_${snapshot.downloadedBytes}_${snapshot.downloadedAt}"
+                        if (latestSnapshotGenerations[current.id] == gen ||
+                            (_modelValidationStates.value[current.id] == ModelValidationState.Verified &&
+                                current.status in setOf(ModelStatus.Available, ModelStatus.Blocked) &&
+                                (snapshot.localPath == null || current.localPath == snapshot.localPath))) return@forEach
+                        latestSnapshotGenerations[current.id] = gen
+                        inFlightValidationJobs[current.id]?.cancel()
+                        inFlightValidationJobs[current.id] = viewModelScope.launch(Dispatchers.IO) {
+                            val bundle = modelDownloader.artifactStorage.getPublishedBundle(current.id) ?: current.bundle
+                            val acquired = current.copy(status = ModelStatus.Available, progress = 1f,
+                                localPath = snapshot.localPath ?: current.localPath, bundle = bundle,
+                                downloadedBytes = snapshot.downloadedBytes, totalBytes = snapshot.totalBytes,
+                                downloadedAt = snapshot.downloadedAt, bytesPerSecond = 0L, errorMessage = null)
+                            val accepted = withContext(Dispatchers.Main.immediate) {
+                                if (latestSnapshotGenerations[current.id] != gen || availableModels.none { it.id == current.id }) false
+                                else {
+                                    updateModel(current.id) { acquired }
+                                    _modelValidationStates.update { it + (current.id to ModelValidationState.Pending) }
+                                    true
                                 }
-
-                                val bundleFromStorage = modelDownloader.artifactStorage.getPublishedBundle(modelToValidate.id) ?: modelToValidate.bundle
-
-                                withContext(Dispatchers.Main.immediate) {
-                                    if (latestSnapshotGenerations[snapshot.modelId] != genKey) return@withContext
-                                    if (inFlightValidations[snapshot.modelId] != genKey) return@withContext
-                                    val fresh = availableModels.firstOrNull { it.id == snapshot.modelId } ?: return@withContext
-                                    if (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(fresh.id) ||
-                                        com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(fresh.id)) {
-                                        return@withContext
-                                    }
-
-                                    updateModel(fresh.id) {
-                                        if (validationError != null) {
-                                            it.copy(
-                                                status = ModelStatus.Failed,
-                                                progress = snapshot.progress,
-                                                downloadedBytes = snapshot.downloadedBytes,
-                                                totalBytes = snapshot.totalBytes,
-                                                bytesPerSecond = 0L,
-                                                localPath = targetFile?.absolutePath,
-                                                errorMessage = validationError,
-                                                loadRestriction = null,
-                                                bundle = bundleFromStorage ?: it.bundle
-                                            )
-                                        } else {
-                                            val effectiveBundleForUpdate = bundleFromStorage ?: it.bundle
-                                            val effectiveThinking = effectiveBundleForUpdate?.capabilities?.thinking?.let { c ->
-                                                c == ThinkingCapability.ModelControlled || c == ThinkingCapability.Toggleable
-                                            } ?: it.supportsThinkingMode
-                                            val effectiveType = if (effectiveBundleForUpdate?.capabilities?.supportsVision == true || effectiveBundleForUpdate?.capabilities?.supportsAudio == true) ModelType.Vision else it.type
-                                            val rawCompleted = it.copy(
-                                                status = ModelStatus.Available,
-                                                progress = 1f,
-                                                downloadedBytes = snapshot.downloadedBytes,
-                                                totalBytes = if (snapshot.totalBytes > 0L) snapshot.totalBytes else it.totalBytes,
-                                                bytesPerSecond = 0L,
-                                                localPath = snapshot.localPath ?: it.localPath ?: targetFile?.absolutePath,
-                                                errorMessage = null,
-                                                downloadedAt = if (snapshot.downloadedAt > 0L) snapshot.downloadedAt else (it.downloadedAt.takeIf { t -> t > 0L } ?: System.currentTimeMillis()),
-                                                bundle = effectiveBundleForUpdate,
-                                                type = effectiveType,
-                                                supportsThinkingMode = effectiveThinking,
-                                                supportsVisionInput = effectiveBundleForUpdate?.capabilities?.supportsVision ?: it.supportsVisionInput,
-                                                supportsAudioInput = effectiveBundleForUpdate?.capabilities?.supportsAudio ?: it.supportsAudioInput
-                                            )
-                                            com.shounak.localmeshai.models.ModelLoadRestrictionPolicy.projectCompletedModel(getApplication(), rawCompleted)
-                                        }
-                                    }
-                                }
-                            } finally {
-                                inFlightValidations.remove(snapshot.modelId, genKey)
-                                inFlightValidationJobs.remove(snapshot.modelId)
                             }
+                            if (accepted) applyValidation(acquired)
                         }
-                        inFlightValidationJobs[snapshot.modelId] = valJob
                     } else {
-                        inFlightValidationJobs[snapshot.modelId]?.cancel()
-                        inFlightValidations.remove(snapshot.modelId)
-                        updateModel(snapshot.modelId) { it ->
-                            if (it.status == snapshot.status &&
-                                it.progress == snapshot.progress &&
-                                it.downloadedBytes == snapshot.downloadedBytes &&
-                                it.totalBytes == snapshot.totalBytes &&
-                                it.bytesPerSecond == snapshot.bytesPerSecond &&
-                                it.errorMessage == snapshot.errorMessage &&
-                                it.localPath == snapshot.localPath
-                            ) {
-                                return@updateModel it
-                            }
-                            it.copy(
-                                status = snapshot.status,
-                                progress = snapshot.progress,
-                                downloadedBytes = snapshot.downloadedBytes,
-                                totalBytes = snapshot.totalBytes,
-                                bytesPerSecond = snapshot.bytesPerSecond,
-                                localPath = when (snapshot.status) {
-                                    ModelStatus.NotDownloaded -> null
-                                    else -> snapshot.localPath ?: it.localPath
-                                },
-                                errorMessage = snapshot.errorMessage,
-                                loadRestriction = null,
-                                downloadedAt = when {
-                                    snapshot.status == ModelStatus.NotDownloaded -> 0L
-                                    snapshot.downloadedAt > 0L -> snapshot.downloadedAt
-                                    else -> it.downloadedAt
-                                },
-                                bundle = it.bundle
-                            )
-                        }
+                        latestSnapshotGenerations.remove(current.id)
+                        inFlightValidationJobs.remove(current.id)?.cancel()
+                        _modelValidationStates.update { it - current.id }
+                        updateModel(current.id) { model -> model.copy(
+                            status = snapshot.status, progress = snapshot.progress,
+                            downloadedBytes = snapshot.downloadedBytes, totalBytes = snapshot.totalBytes,
+                            bytesPerSecond = snapshot.bytesPerSecond,
+                            localPath = if (snapshot.status == ModelStatus.NotDownloaded) null else snapshot.localPath ?: model.localPath,
+                            errorMessage = snapshot.errorMessage, loadRestriction = null,
+                            downloadedAt = if (snapshot.status == ModelStatus.NotDownloaded) 0L else snapshot.downloadedAt.takeIf { it > 0 } ?: model.downloadedAt
+                        ) }
                     }
                 }
             }
@@ -2709,7 +2557,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun localModelValidationError(model: ModelInfo, target: File): String? {
+    private fun localModelValidationError(model: ModelInfo, target: File, inspectFormat: Boolean = true): String? {
         if (!target.exists()) return "Model file does not exist."
         val runnableFile: File = if (target.isDirectory) {
             val isText = model.type == ModelType.Text
@@ -2736,25 +2584,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val currentSize = runnableFile.length()
             val currentMtime = runnableFile.lastModified()
             val sourceIdentity = model.downloadSpec?.let { "spec:${it.repository}@${it.revision}" }
-                ?: model.url
+                ?: model.url?.takeIf { it.isNotBlank() }
                 ?: "model:${model.id}"
 
             val cached = verifiedChecksumCache[model.id]
             val isCachedValid = cached != null &&
                 cached.expectedSha256.equals(expectedSha, ignoreCase = true) &&
                 cached.verifiedSha256.equals(expectedSha, ignoreCase = true) &&
-                cached.sourceIdentity == sourceIdentity &&
+                cached.sourceIdentity == "$sourceIdentity:${runnableFile.canonicalPath}" &&
                 cached.sizeBytes == currentSize &&
                 cached.lastModified == currentMtime
 
-            val manifest = modelDownloader.artifactStorage.getManifest(model.id)
-            val isManifestValid = manifest != null &&
-                manifest.checksumSha256 != null &&
-                manifest.checksumSha256.equals(expectedSha, ignoreCase = true) &&
-                manifest.sourceIdentity == sourceIdentity &&
-                manifest.sizeBytes == currentSize
-
-            val alreadyVerified = isCachedValid || isManifestValid
+            val verificationCache = ModelVerificationCache(modelDownloader.artifactStorage.getModelDir(model.id, create = false))
+            val alreadyVerified = isCachedValid || verificationCache.checksumMatches(runnableFile, expectedSha, sourceIdentity)
             if (!alreadyVerified) {
                 if (!ModelDownloader.verifyFileSha256(runnableFile, expectedSha)) {
                     verifiedChecksumCache.remove(model.id)
@@ -2762,33 +2604,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 verifiedChecksumCache[model.id] = VerifiedChecksumRecord(
                     modelId = model.id,
-                    sourceIdentity = sourceIdentity,
+                    sourceIdentity = "$sourceIdentity:${runnableFile.canonicalPath}",
                     sizeBytes = currentSize,
                     lastModified = currentMtime,
                     verifiedSha256 = expectedSha,
                     expectedSha256 = expectedSha
                 )
+                runCatching { verificationCache.recordChecksum(runnableFile, expectedSha, sourceIdentity) }
             }
         }
-        if (
-            (model.fileName.endsWith(".task", ignoreCase = true) || runnableFile.name.endsWith(".task", ignoreCase = true))
-        ) {
-            val inspection = NonGgufBundleInspector.inspectMediaPipeTask(runnableFile)
-            if (!inspection.isValid) {
-                return inspection.errorMessage ?: "This .task file does not look like a valid MediaPipe task bundle."
+        if (!inspectFormat) return null
+        when (NonGgufBundleInspector.detectFormat(runnableFile)) {
+            ModelFormat.MediaPipeTask, ModelFormat.LiteRtLm -> {
+                val inspection = NonGgufBundleInspector.inspectFile(runnableFile)
+                if (!inspection.isValid) return inspection.errorMessage ?: "Invalid model bundle."
             }
-        }
-        if (model.fileName.endsWith(".litertlm", ignoreCase = true) || runnableFile.name.endsWith(".litertlm", ignoreCase = true)) {
-            val inspection = NonGgufBundleInspector.inspectLiteRtLm(runnableFile)
-            if (!inspection.isValid) {
-                return inspection.errorMessage ?: "This .litertlm file does not have a valid LiteRT-LM container header."
-            }
-        }
-        if (model.fileName.endsWith(".gguf", ignoreCase = true) || runnableFile.name.endsWith(".gguf", ignoreCase = true)) {
-            val ggufError = LlamaCppEngine.canLoadModel(runnableFile.absolutePath)
-            if (ggufError != null) {
-                return ggufError
-            }
+            ModelFormat.GGUF -> LlamaCppEngine.canLoadModel(runnableFile.absolutePath)?.let { return it }
+            null -> return "Unrecognized model container. Choose a valid GGUF, LiteRT-LM or MediaPipe task bundle."
         }
         return null
     }

@@ -6,6 +6,7 @@ import java.io.File
 
 object AppCacheCleaner {
     private const val TAG = "AppCacheCleaner"
+    internal const val INPUT_RETENTION_MS = 24L * 60L * 60L * 1000L
 
     private val cleanLock = Any()
 
@@ -24,11 +25,12 @@ object AppCacheCleaner {
                 protectedPaths.addAll(savedAttachmentPaths(context))
 
                 var deletedCount = 0
-                // Prune LiteRT runtime compiled kernels (clearing all inactive, unleased kernels)
-                deletedCount += LiteRtRuntimeCache.clearInactive(context)
+                // Keep a bounded set of compiled kernels for warm model starts.
+                deletedCount += LiteRtRuntimeCache.prune(context, now)
 
                 // Prune unleased temporary inputs
                 deletedCount += pruneExpiredInputs(context.cacheDir, now, protectedPaths)
+                deletedCount += com.shounak.localmeshai.features.TemporaryChatFiles.prune(context.cacheDir.resolve("temporary_chats"), now)
 
                 // Prune external cache directory if available
                 val externalCache = runCatching { context.externalCacheDir }.getOrNull()
@@ -96,6 +98,8 @@ object AppCacheCleaner {
                 if (!directory.canonicalPath.startsWith(root.canonicalPath + File.separator)) return@sumOf 0
                 directory.listFiles().orEmpty().count { file ->
                     file.isFile && file.canonicalPath !in protectedPaths && file.canonicalFile.parentFile == directory.canonicalFile &&
+                        file.lastModified() > 0L && now >= file.lastModified() &&
+                        now - file.lastModified() >= INPUT_RETENTION_MS &&
                         ActiveInputFiles.deleteIfUnreferenced(file)
                 }
             }

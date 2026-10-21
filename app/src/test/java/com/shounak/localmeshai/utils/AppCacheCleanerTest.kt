@@ -143,7 +143,7 @@ class AppCacheCleanerTest {
     }
 
     @Test
-    fun pruneExpiredInputsPreservesProtectedInputsAndDeletesUnreferenced() {
+    fun pruneExpiredInputsPreservesProtectedAndFreshUnreferencedInputs() {
         val cacheRoot = tempFolder.newFolder("test_fresh_inputs")
         val cameraDir = File(cacheRoot, "camera_inputs").apply { mkdir() }
         val protectedPic = File(cameraDir, "pic_fresh.jpg").apply {
@@ -161,10 +161,10 @@ class AppCacheCleanerTest {
         val lease = ActiveInputFiles.protect(protectedPic)
         try {
             val deleted = AppCacheCleaner.pruneExpiredInputs(cacheRoot, System.currentTimeMillis())
-            assertEquals("Unreferenced inputs must be pruned immediately", 2, deleted)
+            assertEquals("Fresh inputs must survive the retention window", 0, deleted)
             assertTrue("Protected input must be preserved", protectedPic.exists())
-            assertFalse("Unreferenced audio must be pruned", unrefAudio.exists())
-            assertFalse("Unreferenced preview must be pruned", unrefPreview.exists())
+            assertTrue("Fresh audio must be preserved", unrefAudio.exists())
+            assertTrue("Fresh preview must be preserved", unrefPreview.exists())
         } finally {
             lease.close()
         }

@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -19,6 +20,40 @@ import java.util.concurrent.atomic.AtomicInteger
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ModelLoadControllerTest {
+
+    @Test fun elapsedTimeAdvancesWhileWaitingWithoutProgressAndStopsAtReady() = runBlocking {
+        val time = java.util.concurrent.atomic.AtomicLong(100L)
+        val controller = ModelLoadController(clock = { time.get() })
+        val entered = CompletableDeferred<Unit>()
+        val finish = CompletableDeferred<Unit>()
+        val loading = async(Dispatchers.IO) {
+            controller.loadOrAttach(ModelLoadIdentity("waiting"), this) { _, _ ->
+                entered.complete(Unit)
+                finish.await()
+                ModelActualConfiguration(runtimeKind = "LiteRT", backend = "CPU", threads = 1)
+            }
+        }
+        try {
+            entered.await()
+            time.set(2_600L)
+            val state = kotlinx.coroutines.withTimeout(3_000L) {
+                controller.loadState.first { it is ModelLoadState.Loading && it.elapsedMs >= 2_500L }
+            } as ModelLoadState.Loading
+            assertEquals(ModelLoadStage.WaitingForRuntime, state.stage)
+            assertFalse(state.isStalledWarning)
+            finish.complete(Unit)
+            loading.await()
+            time.set(60_000L)
+            delay(600L)
+            assertTrue(controller.loadState.value is ModelLoadState.Ready)
+        } finally { finish.complete(Unit); loading.cancel() }
+    }
+
+    @Test fun elapsedTimeAloneDoesNotMeanProgressHasStalled() {
+        assertFalse(ModelLoadState.Loading("load", ModelLoadStage.CpuLoading, elapsedMs = 60_000L).isStalledWarning)
+        assertTrue(ModelLoadState.Loading("load", ModelLoadStage.WaitingForRuntime,
+            elapsedMs = 60_000L, idleMs = 30_000L).isStalledWarning)
+    }
 
     @Test
     fun testInitialStateIsUnloaded() {

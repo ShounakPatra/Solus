@@ -189,6 +189,8 @@ fun SettingsDialog(
                         .verticalScroll(scrollState),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
+                    com.shounak.localmeshai.features.WorkspaceSettingsPanel(mainViewModel.availableModels.toList(), hazeState)
+
                     // Category 1: Visual Themes
                     SettingsCategory(title = "🎨 Visual Themes", hazeState = hazeState) {
                         SettingsSwitchRow(
@@ -539,8 +541,10 @@ fun SettingsDialog(
 
                     // Category: Persistent Memory (Decoupled from RAG)
                     val memoryManager = remember { com.shounak.localmeshai.memory.PersistentMemoryManager.getInstance(context) }
-                    var memoryCount by remember { mutableStateOf(memoryManager.totalMemoryCount) }
-                    var activeMemoryCount by remember { mutableStateOf(memoryManager.activeMemoryCount) }
+                    LaunchedEffect(memoryManager) { memoryManager.loadAsync() }
+                    val savedMemories by memoryManager.memories.collectAsState()
+                    val memoryCount = savedMemories.size
+                    val activeMemoryCount = savedMemories.count { it.isEnabled }
                     var showMemoryDialog by remember { mutableStateOf(false) }
 
                     if (showMemoryDialog) {
@@ -548,8 +552,6 @@ fun SettingsDialog(
                             memoryManager = memoryManager,
                             onDismissRequest = {
                                 showMemoryDialog = false
-                                memoryCount = memoryManager.totalMemoryCount
-                                activeMemoryCount = memoryManager.activeMemoryCount
                             }
                         )
                     }
@@ -1688,7 +1690,7 @@ fun SettingsDialog(
 }
 
 @Composable
-private fun SettingsCategory(
+internal fun SettingsCategory(
     title: String,
     hazeState: HazeState,
     modifier: Modifier = Modifier,
@@ -1729,11 +1731,12 @@ private fun SettingsCategory(
 }
 
 @Composable
-private fun SettingsSwitchRow(
+internal fun SettingsSwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true
 ) {
     val colors = MaterialTheme.colorScheme
     Row(
@@ -1747,6 +1750,7 @@ private fun SettingsSwitchRow(
         }
         Switch(
             checked = checked,
+            enabled = enabled,
             onCheckedChange = onCheckedChange,
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Color.White,

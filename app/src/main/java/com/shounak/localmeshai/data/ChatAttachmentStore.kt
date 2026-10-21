@@ -10,10 +10,14 @@ import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.UUID
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 class ChatAttachmentStore(
-    val filesDir: File
+    val filesDir: File,
+    private val isSessionDeleted: (ChatKind, String) -> Boolean = { _, _ -> false }
 ) {
+    private val writeLock = ReentrantLock()
     val attachmentsRoot: File by lazy {
         filesDir.resolve("chat_attachments").apply { mkdirs() }
     }
@@ -64,7 +68,8 @@ class ChatAttachmentStore(
         sourceUri: Uri?,
         fallbackStream: InputStream? = null,
         targetFileName: String
-    ): File {
+    ): File = writeLock.withLock {
+        check(!isSessionDeleted(chatKind, sessionId)) { "Cannot attach files to a deleted chat" }
         val stream: InputStream = when {
             sourceUri != null -> {
                 context.contentResolver.openInputStream(sourceUri)
@@ -92,7 +97,7 @@ class ChatAttachmentStore(
                 throw IOException("Stored attachment is empty: $targetFileName")
             }
             publishFileAtomically(tempFile, targetFile)
-            return targetFile
+            return@withLock targetFile
         } finally {
             if (tempFile.exists()) tempFile.delete()
         }
@@ -107,7 +112,8 @@ class ChatAttachmentStore(
         attachmentId: String = UUID.randomUUID().toString(),
         sourceFile: File,
         targetFileName: String = sourceFile.name
-    ): File {
+    ): File = writeLock.withLock {
+        check(!isSessionDeleted(chatKind, sessionId)) { "Cannot attach files to a deleted chat" }
         if (!sourceFile.exists() || sourceFile.length() <= 0L) {
             throw IOException("Source file is missing or empty: ${sourceFile.absolutePath}")
         }
@@ -128,7 +134,7 @@ class ChatAttachmentStore(
                 throw IOException("Stored attachment is empty: $targetFileName")
             }
             publishFileAtomically(tempFile, targetFile)
-            return targetFile
+            return@withLock targetFile
         } finally {
             if (tempFile.exists()) tempFile.delete()
         }
@@ -163,11 +169,11 @@ class ChatAttachmentStore(
     /**
      * Deletes all attachments owned by a session and returns true if completely removed.
      */
-    fun deleteSessionAttachments(chatKind: ChatKind, sessionId: String): Boolean {
+    fun deleteSessionAttachments(chatKind: ChatKind, sessionId: String): Boolean = writeLock.withLock {
         val dir = getSessionAttachmentsDir(chatKind, sessionId, create = false)
-        if (!dir.exists()) return true
+        if (!dir.exists()) return@withLock true
         val success = dir.deleteRecursively()
-        return success && !dir.exists()
+        success && !dir.exists()
     }
 
     private fun sanitizeSegment(id: String): String {

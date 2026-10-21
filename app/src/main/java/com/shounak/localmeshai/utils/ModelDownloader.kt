@@ -342,7 +342,10 @@ open class ModelDownloader(
             }
         }
 
-        val format = spec.effectiveFormat
+        var format = NonGgufBundleInspector.detectFormat(stagedItems.first().stagedFile) ?: spec.effectiveFormat
+        require(format == ModelFormat.GGUF || (stagedItems.size == 1 && stagedItems.none { it.role == ArtifactRole.Projector || it.role == ArtifactRole.Shard })) {
+            "Only GGUF supports split shards and companion projectors. Select one LiteRT-LM or MediaPipe task bundle."
+        }
         val validatedStagedItems = mutableListOf<StagedArtifactItem>()
         val capabilities: ModelCapabilities
         val primaryName: String
@@ -394,11 +397,12 @@ open class ModelDownloader(
                 if (!item.stagedFile.exists() || item.stagedFile.length() <= 0L) {
                     throw IOException("Downloaded non-GGUF file is missing or empty: ${item.stagedFile.name}")
                 }
-                val inspection = NonGgufBundleInspector.inspectFile(item.stagedFile, format)
+                val inspection = NonGgufBundleInspector.inspectFile(item.stagedFile, format, item.expectedSha256)
                 if (!inspection.isValid) {
                     throw IOException("Downloaded file '${item.relativeTargetName}' failed bundle validation for $format: ${inspection.errorMessage}")
                 }
                 if (order == 0) {
+                    format = inspection.format
                     derivedCapabilities = inspection.capabilities
                     derivedLoadRestriction = inspection.loadRestriction
                 }
@@ -520,7 +524,7 @@ open class ModelDownloader(
             activeCalls[modelId] = call
 
             val job = coroutineContext[Job]
-            val cancelReg = job?.invokeOnCompletion {
+            val cancelReg = job?.abortTransportOnCancellation {
                 activeCalls.remove(modelId, call)
                 call.cancel()
             }
@@ -1080,8 +1084,8 @@ open class ModelDownloader(
         fun isLikelyTaskBundle(file: File): Boolean {
             if (!file.isFile || file.length() < 32L) return false
             return runCatching {
-                NonGgufBundleInspector.inspectMediaPipeTask(file).isValid
-            }.getOrDefault(false) || containsKnownTaskMarker(file)
+                NonGgufBundleInspector.inspectFile(file).isValid
+            }.getOrDefault(false)
         }
 
         private fun isZipArchive(file: File): Boolean {

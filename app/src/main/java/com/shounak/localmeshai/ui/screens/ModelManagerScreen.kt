@@ -12,6 +12,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.animation.AnimatedVisibility
+import com.shounak.localmeshai.ui.components.SlidingGlassTab
+import com.shounak.localmeshai.ui.components.SlidingGlassTabs
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.animateColorAsState
@@ -355,7 +357,8 @@ internal fun ModelInfo.searchRelevance(query: String): Int {
 fun ModelManagerScreen(
     mainViewModel: MainViewModel = viewModel(),
     hazeState: HazeState,
-    onGoToChat: (() -> Unit)? = null
+    onGoToChat: (() -> Unit)? = null,
+    bottomContentInset: androidx.compose.ui.unit.Dp = 0.dp
 ) {
     val context = LocalContext.current
     val selectedTextModel by mainViewModel.selectedTextModelPath.collectAsState()
@@ -554,7 +557,7 @@ fun ModelManagerScreen(
                 start = 16.dp,
                 top = 16.dp,
                 end = 16.dp,
-                bottom = if (isKeyboardOpen) 24.dp else 112.dp
+                bottom = if (isKeyboardOpen) 24.dp else bottomContentInset + 24.dp
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -1096,7 +1099,7 @@ fun ModelManagerScreen(
     Box(
         modifier = Modifier
             .align(Alignment.BottomEnd)
-            .padding(end = 20.dp, bottom = 20.dp)
+            .padding(end = 20.dp, bottom = bottomContentInset + 20.dp)
             .height(56.dp)
             .defaultMinSize(minWidth = 56.dp, minHeight = 56.dp)
             .graphicsLayer {
@@ -1248,47 +1251,14 @@ private fun SearchAndFilterRow(
             )
         )
 
-        // Glass segmented selector for "All models" / "Imported"
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .glassEffect(
-                    hazeState = hazeState,
-                    shape = RoundedCornerShape(12.dp),
-                    tintColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.50f),
-                    borderAlpha = 0.28f
-                )
-                .padding(3.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            ModelSourceFilter.entries.forEach { filter ->
-                val isSelected = selectedSourceFilter == filter
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(
-                            if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
-                            else Color.Transparent
-                        )
-                        .border(
-                            if (isSelected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f))
-                            else BorderStroke(0.dp, Color.Transparent),
-                            shape = RoundedCornerShape(10.dp)
-                        )
-                        .clickable { onSourceFilterChange(filter) }
-                        .padding(vertical = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = filter.display,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
+        SlidingGlassTabs(
+            tabs = ModelSourceFilter.entries.map { SlidingGlassTab(it.display) },
+            selectedIndex = selectedSourceFilter.ordinal,
+            onSelect = { onSourceFilterChange(ModelSourceFilter.entries[it]) },
+            hazeState = hazeState,
+            cornerRadius = 12.dp,
+            verticalPadding = 8.dp
+        )
 
         Row(
             modifier = Modifier
@@ -1882,7 +1852,7 @@ fun ModelItem(
 ) {
     val isFuturePlaceholder = model.isFuturePlaceholder
     val canTryAnyway = model.status == ModelStatus.Blocked &&
-        model.localPath != null &&
+        (model.localPath != null || model.isStorageImport) &&
         model.canTryAnyway &&
         onUnsafeTry != null
     val modelFamilyAccent = remember(model.id, model.name, enableDynamicThemes) {
@@ -2776,7 +2746,7 @@ fun ModelItem(
                     RiskyModelActionDialog(
                         modelName = model.name,
                         title = "Try anyway?",
-                        message = "This can crash or close the app during native model initialization. If that happens, the app will block this model on the next launch.",
+                        message = "This can crash or close the app during native model initialization. A successful retry clears a previous crash block on this device; another crash keeps it blocked.",
                         confirmLabel = "Try Anyway",
                         hazeState = hazeState,
                         onDismissRequest = { showRiskyTryConfirm = false },

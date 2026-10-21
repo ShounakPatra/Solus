@@ -352,7 +352,7 @@ object FileHeaderSniffer {
         }
 
         // Check MediaPipe .task files
-        if (lowerName.endsWith(".task")) {
+        if (lowerName.endsWith(".task") || isZip(bytes)) {
             val isZipArchive = isZip(bytes)
             if (!isZipArchive) {
                 return SniffResult.EmptyOrDamaged("File does not start with valid MediaPipe task container header (expected ZIP header)")

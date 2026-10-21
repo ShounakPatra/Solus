@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class ModelOperationErrorTest {
@@ -56,11 +57,21 @@ class ModelOperationErrorTest {
     }
 
     @Test
-    fun testSniffZipFile() {
+    fun testSniffZipFileRequiresFullTaskValidation() {
         val zipBytes = byteArrayOf(0x50.toByte(), 0x4B.toByte(), 0x03.toByte(), 0x04.toByte(), 0x14, 0x00)
         val result = FileHeaderSniffer.sniffHeader(zipBytes, zipBytes.size.toLong(), "archive.zip")
-        assertTrue("Expected NonModel for ZIP", result is FileHeaderSniffer.SniffResult.NonModel)
-        assertEquals("a ZIP/APK archive", (result as FileHeaderSniffer.SniffResult.NonModel).fileTypeDescription)
+        assertTrue("ZIP headers are only candidates until full container validation", result is FileHeaderSniffer.SniffResult.ValidMediaPipeTask)
+        val archive = java.io.File.createTempFile("not-a-task", ".zip")
+        try {
+            java.util.zip.ZipOutputStream(archive.outputStream()).use { zip ->
+                zip.putNextEntry(java.util.zip.ZipEntry("notes.txt"))
+                zip.write("not a model".toByteArray())
+                zip.closeEntry()
+            }
+            assertFalse(NonGgufBundleInspector.inspectMediaPipeTask(archive).isValid)
+        } finally {
+            archive.delete()
+        }
     }
 
     @Test

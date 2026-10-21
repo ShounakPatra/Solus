@@ -96,7 +96,7 @@ class DefaultNativeModelInfoReader : NativeModelInfoReader {
  */
 object NonGgufBundleInspector {
     private const val TAG = "NonGgufBundleInspector"
-    const val DETECTOR_VERSION = 6
+    const val DETECTOR_VERSION = 9
 
     @Volatile
     var nativeModelInfoReader: NativeModelInfoReader = DefaultNativeModelInfoReader()
@@ -107,7 +107,7 @@ object NonGgufBundleInspector {
     /**
      * Inspects a non-GGUF file, validating its internal container structure and components.
      */
-    fun inspectFile(file: File, expectedFormat: ModelFormat? = null): NonGgufBundleInspection {
+    fun inspectFile(file: File, expectedFormat: ModelFormat? = null, verifiedSha256: String? = null): NonGgufBundleInspection {
         if (!file.exists() || !file.isFile || file.length() < 32L) {
             val fmt = expectedFormat ?: ModelFormat.MediaPipeTask
             return NonGgufBundleInspection(
@@ -121,12 +121,10 @@ object NonGgufBundleInspector {
         }
 
         // Determine format if not specified
-        val format = expectedFormat ?: run {
-            if (isLiteRtLmMagic(file)) ModelFormat.LiteRtLm else ModelFormat.MediaPipeTask
-        }
+        val format = detectFormat(file) ?: expectedFormat ?: ModelFormat.MediaPipeTask
 
         return when (format) {
-            ModelFormat.LiteRtLm -> runCatching { inspectLiteRtLm(file) }.getOrElse { t ->
+            ModelFormat.LiteRtLm -> runCatching { inspectLiteRtLm(file, verifiedSha256) }.getOrElse { t ->
                 Log.w(TAG, "LiteRT-LM inspection threw for ${file.name}: ${t.message}")
                 NonGgufBundleInspection(
                     isValid = false,
@@ -157,6 +155,19 @@ object NonGgufBundleInspector {
             )
         }
     }
+
+    /** Container bytes decide routing; extensions are only picker/download hints. */
+    fun detectFormat(file: File): ModelFormat? = runCatching {
+        val buffer = ByteArray(2048)
+        val count = file.inputStream().use { it.read(buffer) }
+        val bytes = buffer.copyOf(count.coerceAtLeast(0))
+        when {
+            bytes.size >= 4 && String(bytes, 0, 4, StandardCharsets.US_ASCII) == "GGUF" -> ModelFormat.GGUF
+            bytes.size >= 8 && String(bytes, 0, 8, StandardCharsets.US_ASCII) == "LITERTLM" -> ModelFormat.LiteRtLm
+            FileHeaderSniffer.isZip(bytes) -> ModelFormat.MediaPipeTask
+            else -> null
+        }
+    }.getOrNull()
 
     private fun isLiteRtLmMagic(file: File): Boolean {
         return runCatching {
@@ -196,44 +207,11 @@ object NonGgufBundleInspector {
                     val lower = name.lowercase(Locale.ROOT)
                     val validSize = entry.size > 0L || entry.compressedSize > 0L
 
-                    // 1. LLM weights/graph check (must have positive size AND TFL3 magic at bytes 4..7)
-                    if (validSize && (
-                        name.contains("TF_LITE_PREFILL_DECODE") ||
-                        lower.endsWith(".tflite") ||
-                        lower.contains("prefill_decode") ||
-                        lower.contains("model.bin")
-                    )) {
-                        val hasTfl3 = runCatching {
-                            zip.getInputStream(entry).use { stream ->
-                                val header = ByteArray(8)
-                                val read = stream.read(header)
-                                read == 8 && (4..7).all { header[it] == TFL3_MAGIC[it - 4] } && entry.size >= 32L
-                            }
-                        }.getOrDefault(false)
-                        if (hasTfl3) {
-                            hasLlmModel = true
-                        }
-                    }
-
-                    // 2. Tokenizer check (must have positive size and readable data)
-                    if (validSize && (
-                        name.contains("TOKENIZER_MODEL") ||
-                        lower.contains("tokenizer.model") ||
-                        lower.contains("tokenizer.json") ||
-                        lower.contains("sentencepiece") ||
-                        lower.endsWith(".spm") ||
-                        lower.endsWith(".vocab")
-                    )) {
-                        val canRead = runCatching {
-                            zip.getInputStream(entry).use { stream ->
-                                val sample = ByteArray(4)
-                                stream.read(sample) > 0
-                            }
-                        }.getOrDefault(false)
-                        if (canRead) {
-                            hasTokenizer = true
-                        }
-                    }
+                    val baseName = name.substringAfterLast('/').lowercase(Locale.ROOT)
+                    val llmRoles = setOf("tf_lite_prefill_decode", "model.tflite", "llm.tflite", "prefill_decode.tflite", "model.bin")
+                    if (validSize && baseName in llmRoles && TaskBundleValidation.graph(zip, entry)) hasLlmModel = true
+                    val isTokenizer = baseName in setOf("tokenizer_model", "tokenizer.model", "tokenizer.json", "sentencepiece.model", "tokenizer.spm")
+                    if (validSize && isTokenizer && TaskBundleValidation.tokenizer(zip, entry)) hasTokenizer = true
 
                     // 3. Vision component check - MUST be a dedicated encoder file with valid size AND TFL3 magic
                     if (validSize && (
@@ -243,13 +221,7 @@ object NonGgufBundleInspector {
                         lower.endsWith("/vision_encoder.tflite") ||
                         lower.endsWith("/image_encoder.tflite")
                     )) {
-                        val hasTfl3 = runCatching {
-                            zip.getInputStream(entry).use { stream ->
-                                val header = ByteArray(8)
-                                val read = stream.read(header)
-                                read == 8 && (4..7).all { header[it] == TFL3_MAGIC[it - 4] } && entry.size >= 32L
-                            }
-                        }.getOrDefault(false)
+                        val hasTfl3 = TaskBundleValidation.graph(zip, entry)
                         if (hasTfl3) {
                             hasVisionEncoder = true
                         }
@@ -261,34 +233,19 @@ object NonGgufBundleInspector {
                         lower == "audio_encoder.tflite" ||
                         lower.endsWith("/audio_encoder.tflite")
                     )) {
-                        val hasTfl3 = runCatching {
-                            zip.getInputStream(entry).use { stream ->
-                                val header = ByteArray(8)
-                                val read = stream.read(header)
-                                read == 8 && (4..7).all { header[it] == TFL3_MAGIC[it - 4] } && entry.size >= 32L
-                            }
-                        }.getOrDefault(false)
-                        if (hasTfl3 || entry.size > 1024L) {
+                        val hasTfl3 = TaskBundleValidation.graph(zip, entry)
+                        if (hasTfl3) {
                             hasAudioEncoder = true
                         }
                     }
 
                     // 5. Metadata inspection (parse as JSON or protobuf rather than arbitrary binary text search)
                     if (name.contains("METADATA") || lower.contains("metadata.json")) {
-                        runCatching {
-                            zip.getInputStream(entry).use { stream ->
-                                val sample = ByteArray(minOf(entry.size.coerceAtLeast(0L), 131072L).toInt())
-                                val read = stream.read(sample)
-                                if (read > 0) {
-                                    val text = String(sample, 0, read, StandardCharsets.UTF_8).trim()
-                                    if (text.startsWith("{")) {
-                                        metadataJson = org.json.JSONObject(text)
-                                    } else {
-                                        mediaPipeMeta = parseMediaPipeMetadataProto(sample.copyOf(read))
-                                    }
-                                }
-                            }
-                        }
+                        val sample = TaskBundleValidation.metadata(zip, entry)
+                        val text = String(sample, StandardCharsets.UTF_8).trim()
+                        if (text.startsWith("{")) metadataJson = org.json.JSONObject(text)
+                        else mediaPipeMeta = parseMediaPipeMetadataProto(sample)
+
                     }
                 }
             }
@@ -310,7 +267,7 @@ object NonGgufBundleInspector {
                 format = ModelFormat.MediaPipeTask,
                 capabilities = defaultCapabilities(),
                 primaryArtifactName = file.name,
-                errorMessage = "Incomplete or invalid MediaPipe task bundle: missing LLM model component with valid TFL3 header (expected TF_LITE_PREFILL_DECODE or .tflite).",
+                errorMessage = "Incomplete or invalid MediaPipe task bundle: missing or invalid language-model graph (expected TF_LITE_PREFILL_DECODE or model.tflite).",
                 diagnosticDetails = "Archive entries found: ${entryNames.take(10).joinToString(", ")}"
             )
         }
@@ -321,20 +278,20 @@ object NonGgufBundleInspector {
                 format = ModelFormat.MediaPipeTask,
                 capabilities = defaultCapabilities(),
                 primaryArtifactName = file.name,
-                errorMessage = "Incomplete MediaPipe task bundle: missing tokenizer component (expected TOKENIZER_MODEL or tokenizer.model).",
+                errorMessage = "Incomplete MediaPipe task bundle: missing or invalid tokenizer component (expected a SentencePiece model or tokenizer JSON).",
                 diagnosticDetails = "Archive entries found: ${entryNames.take(10).joinToString(", ")}"
             )
         }
 
         val thinking = when {
-            metadataJson?.optBoolean("enable_thinking", false) == true -> ThinkingCapability.Toggleable
+            metadataJson?.optBoolean("enable_thinking", false) == true -> ThinkingCapability.ModelControlled
             metadataJson?.optString("thinking_mode", "").equals("model_controlled", ignoreCase = true) -> ThinkingCapability.ModelControlled
             metadataJson?.optString("thinking", "")?.isNotBlank() == true -> ThinkingCapability.ModelControlled
             mediaPipeMeta?.thinkingCapability != null && mediaPipeMeta.thinkingCapability != ThinkingCapability.Unknown -> mediaPipeMeta.thinkingCapability
             else -> ThinkingCapability.Unknown
         }
 
-        val contextLength = if ((mediaPipeMeta?.maxSeqLen ?: 0) > 0) mediaPipeMeta!!.maxSeqLen else 2048
+        val contextLength = mediaPipeMeta?.maxSeqLen ?: 0
 
         val caps = ModelCapabilities(
             supportsText = true,
@@ -365,7 +322,14 @@ object NonGgufBundleInspector {
      * - Parses FlatBuffer SectionMetadata table and validates section bounds
      * - Reads and decodes LlmMetadataProto section for structured capabilities (modalities, channels, templates)
      */
-    fun inspectLiteRtLm(file: File): NonGgufBundleInspection {
+    fun inspectLiteRtLm(file: File, verifiedSha256: String? = null): NonGgufBundleInspection = try {
+        inspectLiteRtLmContainer(file, verifiedSha256)
+    } catch (error: Exception) {
+        NonGgufBundleInspection(false, ModelFormat.LiteRtLm, defaultCapabilities(), file.name,
+            errorMessage = "Invalid LiteRT model container: ${error.message}")
+    }
+
+    private fun inspectLiteRtLmContainer(file: File, verifiedSha256: String?): NonGgufBundleInspection {
         val fileLength = file.length()
         if (fileLength < 32L) {
             return NonGgufBundleInspection(
@@ -530,11 +494,16 @@ object NonGgufBundleInspector {
         var supportsVision = false
         var supportsAudio = false
         var thinking = ThinkingCapability.Unknown
+        var declaredThinking: Boolean? = null
+        var reasoningChannels = emptySet<String>()
+        var reasoningPrefill = false
         var contextLength = 2048
 
         // If LlmMetadataProto section exists, parse it directly from file
         if (metadataSection != null) {
-            val protoSize = (metadataSection.endOffset - metadataSection.beginOffset).toInt()
+            val protoLength = metadataSection.endOffset - metadataSection.beginOffset
+            require(protoLength in 1..4_194_304L) { "LiteRT metadata is empty or exceeds 4 MiB" }
+            val protoSize = protoLength.toInt()
             if (protoSize in 1..4_194_304) { // Up to 4 MB metadata
                 try {
                     val protoBytes = ByteArray(protoSize)
@@ -546,11 +515,14 @@ object NonGgufBundleInspector {
                     supportsVision = meta.supportsVision
                     supportsAudio = meta.supportsAudio
                     thinking = meta.thinkingCapability
+                    declaredThinking = meta.declaredThinking
+                    reasoningChannels = meta.reasoningChannels
+                    reasoningPrefill = meta.reasoningPrefill
                     if (meta.maxNumTokens > 0) {
                         contextLength = meta.maxNumTokens
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Error decoding LlmMetadataProto section: ${e.message}")
+                    throw IllegalArgumentException("Invalid LiteRT model metadata: ${e.message}", e)
                 }
             }
         }
@@ -575,7 +547,7 @@ object NonGgufBundleInspector {
                     if (thinking != ThinkingCapability.Toggleable) {
                         thinking = ThinkingCapability.ModelControlled
                     }
-                } else if (nativeResult.supportsThinking == false && thinking == ThinkingCapability.Unknown) {
+                } else if (declaredThinking == false && thinking == ThinkingCapability.Unknown) {
                     thinking = ThinkingCapability.Unsupported
                 }
                 if (nativeResult.maxContextTokens > 0) {
@@ -603,11 +575,23 @@ object NonGgufBundleInspector {
             }
         }
 
+        val legacyProfile = if (thinking == ThinkingCapability.Unknown && declaredThinking == null) {
+            LegacyThinkingProfiles.controlFor(file, verifiedSha256)
+        } else com.shounak.localmeshai.models.ThinkingControlStrategy.None
+        if (legacyProfile != com.shounak.localmeshai.models.ThinkingControlStrategy.None) thinking = ThinkingCapability.Toggleable
+
         val caps = ModelCapabilities(
             supportsText = true,
             supportsVision = supportsVision,
             supportsAudio = supportsAudio,
             thinking = thinking,
+            reasoningChannels = reasoningChannels,
+            reasoningPrefill = reasoningPrefill,
+            thinkingControl = when {
+                legacyProfile != com.shounak.localmeshai.models.ThinkingControlStrategy.None -> legacyProfile
+                thinking == ThinkingCapability.Toggleable -> com.shounak.localmeshai.models.ThinkingControlStrategy.NativeTemplate
+                else -> com.shounak.localmeshai.models.ThinkingControlStrategy.None
+            },
             thinkingDetectorVersion = DETECTOR_VERSION,
             thinkingArtifactIdentity = file.absolutePath,
             contextLength = contextLength
@@ -739,93 +723,55 @@ object NonGgufBundleInspector {
      * without external generated code dependencies.
      */
     private fun parseMediaPipeMetadataProto(bytes: ByteArray): DecodedMediaPipeMetadata {
-        var pos = 0
         var maxSeqLen = 0
         var startToken: String? = null
         val stopTokens = mutableListOf<String>()
-        val promptTemplates = mutableListOf<String>()
-
-        while (pos < bytes.size) {
-            val tagAndWire = readVarint(bytes, pos) ?: break
-            pos = tagAndWire.second
-            val tag = tagAndWire.first
-            val fieldNumber = (tag ushr 3).toInt()
-            val wireType = (tag and 0x7L).toInt()
-
-            when (wireType) {
-                0 -> { // Varint
-                    val value = readVarint(bytes, pos) ?: break
-                    pos = value.second
-                }
-                1 -> { // 64-bit
-                    if (pos + 8 > bytes.size) break
-                    pos += 8
-                }
-                2 -> { // Length-delimited
-                    val lenRes = readVarint(bytes, pos) ?: break
-                    pos = lenRes.second
-                    val len = lenRes.first.toInt()
-                    if (pos + len > bytes.size) break
-
-                    when (fieldNumber) {
-                        1 -> { // transformer_parameters (TransformerParameters)
-                            var tPos = pos
-                            val endT = pos + len
-                            while (tPos < endT) {
-                                val tTag = readVarint(bytes, tPos) ?: break
-                                tPos = tTag.second
-                                val tField = (tTag.first ushr 3).toInt()
-                                val tWire = (tTag.first and 0x7L).toInt()
-                                if (tWire == 0) {
-                                    val tVal = readVarint(bytes, tPos) ?: break
-                                    tPos = tVal.second
-                                    if (tField == 1) { // max_seq_len
-                                        maxSeqLen = tVal.first.toInt()
-                                    }
-                                } else {
-                                    tPos = skipWire(bytes, tPos, tWire, endT)
-                                }
-                            }
-                        }
-                        5 -> { // stop_tokens (repeated string)
-                            val token = String(bytes, pos, len, StandardCharsets.UTF_8)
-                            stopTokens.add(token)
-                        }
-                        6 -> { // start_token (string)
-                            startToken = String(bytes, pos, len, StandardCharsets.UTF_8)
-                        }
-                        17 -> { // prompt_templates (repeated PromptTemplate)
-                            val templateContent = String(bytes, pos, len, StandardCharsets.UTF_8)
-                            promptTemplates.add(templateContent)
-                        }
-                    }
-                    pos += len
-                }
-                5 -> { // 32-bit
-                    if (pos + 4 > bytes.size) break
-                    pos += 4
-                }
-                else -> break
+        val promptStrings = mutableListOf<String>()
+        fun promptTemplate(data: ByteArray) {
+            val reader = ProtoReader(data.inputStream(), data.size.toLong())
+            while (true) {
+                val field = reader.next() ?: break
+                if (field.wire == 2 && field.number in 1..3) promptStrings += String(reader.bytes(131072), StandardCharsets.UTF_8)
+                else reader.skip(field)
             }
         }
-
-        val hasThinkingToggle = promptTemplates.any { it.contains("enable_thinking") }
-        val hasThinkingTags = promptTemplates.any { it.contains("<think>") } ||
-            stopTokens.any { it.contains("<think>") || it.contains("</think>") } ||
-            (startToken?.contains("<think>") == true)
-
-        val thinkingCapability = when {
-            hasThinkingToggle -> ThinkingCapability.Toggleable
-            hasThinkingTags -> ThinkingCapability.ModelControlled
-            else -> ThinkingCapability.Unknown
+        val reader = ProtoReader(bytes.inputStream(), bytes.size.toLong())
+        while (true) {
+            val field = reader.next() ?: break
+            when {
+                field.number == 1 && field.wire == 2 -> {
+                    val data = reader.bytes(131072)
+                    val params = ProtoReader(data.inputStream(), data.size.toLong())
+                    while (true) {
+                        val parameter = params.next() ?: break
+                        if (parameter.number == 2 && parameter.wire == 0) {
+                            val value = params.varint()
+                            require(value in 1..Int.MAX_VALUE.toLong()) { "Invalid model context length" }
+                            maxSeqLen = value.toInt()
+                        } else params.skip(parameter)
+                    }
+                }
+                field.number == 5 && field.wire == 2 -> stopTokens += String(reader.bytes(131072), StandardCharsets.UTF_8)
+                field.number == 6 && field.wire == 2 -> startToken = String(reader.bytes(131072), StandardCharsets.UTF_8)
+                field.number == 8 && field.wire == 2 -> promptTemplate(reader.bytes(131072))
+                field.number == 17 && field.wire == 2 -> {
+                    val data = reader.bytes(131072)
+                    val templates = ProtoReader(data.inputStream(), data.size.toLong())
+                    while (true) {
+                        val template = templates.next() ?: break
+                        if (template.number in 1..3 && template.wire == 2) promptTemplate(templates.bytes(131072))
+                        else templates.skip(template)
+                    }
+                }
+                else -> reader.skip(field)
+            }
         }
-
-        return DecodedMediaPipeMetadata(
-            maxSeqLen = maxSeqLen,
-            startToken = startToken,
-            stopTokens = stopTokens,
-            thinkingCapability = thinkingCapability
-        )
+        val hasThinkingTags = (promptStrings + stopTokens + listOfNotNull(startToken)).any {
+            it.contains("<think>") || it.contains("</think>")
+        }
+        // MediaPipe prompt prefix/suffix strings are not Jinja expressions or an SDK toggle.
+        return DecodedMediaPipeMetadata(maxSeqLen, startToken, stopTokens,
+            if (hasThinkingTags) ThinkingCapability.ModelControlled else ThinkingCapability.Unknown)
     }
 
     private data class DecodedLlmMetadata(
@@ -833,167 +779,95 @@ object NonGgufBundleInspector {
         val supportsVision: Boolean = false,
         val supportsAudio: Boolean = false,
         val thinkingCapability: ThinkingCapability = ThinkingCapability.Unknown,
-        val jinjaTemplate: String? = null
+        val jinjaTemplate: String? = null,
+        val declaredThinking: Boolean? = null,
+        val reasoningChannels: Set<String> = emptySet(),
+        val reasoningPrefill: Boolean = false
     )
 
     /**
      * Parses the protobuf binary data of litert.lm.proto.LlmMetadata
      * without external generated code dependencies.
      */
+    internal fun parseLiteRtThinkingForTesting(bytes: ByteArray): ThinkingCapability = parseLlmMetadataProto(bytes).thinkingCapability
+
     private fun parseLlmMetadataProto(bytes: ByteArray): DecodedLlmMetadata {
-        var pos = 0
-        var maxNumTokens = 0
-        var supportsVision = false
-        var supportsAudio = false
-        var jinjaTemplate: String? = null
-        val channelNames = mutableListOf<String>()
-        val channelStarts = mutableListOf<String>()
-
-        while (pos < bytes.size) {
-            val tagAndWire = readVarint(bytes, pos) ?: break
-            pos = tagAndWire.second
-            val tag = tagAndWire.first
-            val fieldNumber = (tag ushr 3).toInt()
-            val wireType = (tag and 0x7L).toInt()
-
-            when (wireType) {
-                0 -> { // Varint
-                    val value = readVarint(bytes, pos) ?: break
-                    pos = value.second
-                    if (fieldNumber == 5) {
-                        maxNumTokens = value.first.toInt()
+        val limit = 4 * 1024 * 1024
+        var maxTokens = 0
+        var vision = false
+        var audio = false
+        var jinja: String? = null
+        var declared: Boolean? = null
+        var reasoning = false
+        val reasoningNames = mutableSetOf<String>()
+        val promptStrings = mutableListOf<String>()
+        var modelPrefix = ""
+        fun nested(data: ByteArray, block: (ProtoReader, ProtoReader.Field) -> Unit) {
+            val reader = ProtoReader(data.inputStream(), data.size.toLong())
+            while (true) { val field = reader.next() ?: break; block(reader, field) }
+        }
+        nested(bytes) { reader, field ->
+            when {
+                field.number == 5 && field.wire == 0 -> {
+                    val value = reader.varint()
+                    require(value in 0..Int.MAX_VALUE.toLong()) { "Invalid LiteRT context length" }
+                    maxTokens = value.toInt()
+                }
+                field.number == 11 && field.wire == 0 -> {
+                    val value = reader.varint()
+                    require(value == 0L || value == 1L) { "Invalid thinking flag" }
+                    declared = value == 1L
+                }
+                field.number == 7 && field.wire == 2 -> jinja = String(reader.bytes(limit), StandardCharsets.UTF_8)
+                field.number == 3 && field.wire == 2 -> nested(reader.bytes(limit)) { roles, role ->
+                    if (role.number in 1..3 && role.wire == 2) nested(roles.bytes(limit)) { affixes, affix ->
+                        if (affix.number in 1..2 && affix.wire == 2) {
+                            val text = String(affixes.bytes(limit), StandardCharsets.UTF_8)
+                            promptStrings += text
+                            if (role.number == 2 && affix.number == 1) modelPrefix = text
+                        }
+                        else affixes.skip(affix)
+                    } else roles.skip(role)
+                }
+                field.number == 6 && field.wire == 2 -> nested(reader.bytes(limit)) { types, type ->
+                    if (type.wire == 2) {
+                        vision = vision || type.number in setOf(2, 4, 8, 9)
+                        audio = audio || type.number in setOf(2, 8)
                     }
+                    types.skip(type)
                 }
-                1 -> { // 64-bit fixed
-                    if (pos < 0 || pos > bytes.size) break
-                    // 64-bit fixed field: must fit entirely before advancing.
-                    if (pos + 8 > bytes.size) break
-                    pos += 8
-                }
-                2 -> { // Length-delimited
-                    val lenRes = readVarint(bytes, pos) ?: break
-                    pos = lenRes.second
-                    val len = lenRes.first.toInt()
-                    if (pos + len > bytes.size) break
-
-                    when (fieldNumber) {
-                        6 -> { // llm_model_type (LlmModelType)
-                            var subPos = pos
-                            val endSub = pos + len
-                            while (subPos < endSub) {
-                                val sTag = readVarint(bytes, subPos) ?: break
-                                subPos = sTag.second
-                                val sField = (sTag.first ushr 3).toInt()
-                                val sWire = (sTag.first and 0x7L).toInt()
-
-                                // Model types with vision: 2 (Gemma3N), 4 (Gemma3), 8 (Gemma4), 9 (FastVlm)
-                                if (sField in listOf(2, 4, 8, 9)) {
-                                    supportsVision = true
-                                }
-                                // Model types with audio: 2 (Gemma3N), 8 (Gemma4)
-                                if (sField in listOf(2, 8)) {
-                                    supportsAudio = true
-                                }
-
-                                subPos = skipWire(bytes, subPos, sWire, endSub)
-                            }
-                        }
-                        7 -> { // jinja_prompt_template
-                            jinjaTemplate = String(bytes, pos, len, StandardCharsets.UTF_8)
-                        }
-                        8 -> { // channels (Channel)
-                            var cPos = pos
-                            val endC = pos + len
-                            var cName = ""
-                            var cStart = ""
-                            while (cPos < endC) {
-                                val cTag = readVarint(bytes, cPos) ?: break
-                                cPos = cTag.second
-                                val cField = (cTag.first ushr 3).toInt()
-                                val cWire = (cTag.first and 0x7L).toInt()
-
-                                if (cWire == 2) {
-                                    val cLenRes = readVarint(bytes, cPos) ?: break
-                                    cPos = cLenRes.second
-                                    val cLen = cLenRes.first.toInt()
-                                    if (cPos + cLen <= endC) {
-                                        val str = String(bytes, cPos, cLen, StandardCharsets.UTF_8)
-                                        if (cField == 1) cName = str
-                                        if (cField == 2) cStart = str
-                                    }
-                                    cPos += cLen
-                                } else {
-                                    cPos = skipWire(bytes, cPos, cWire, endC)
-                                }
-                            }
-                            if (cName.isNotBlank()) channelNames.add(cName)
-                            if (cStart.isNotBlank()) channelStarts.add(cStart)
-                        }
+                field.number == 8 && field.wire == 2 -> {
+                    var name = ""
+                    var isReasoning = false
+                    nested(reader.bytes(limit)) { channels, channel ->
+                        if (channel.wire == 2 && channel.number in 1..3) {
+                            val text = String(channels.bytes(limit), StandardCharsets.UTF_8)
+                            if (channel.number == 1) name = text
+                            isReasoning = isReasoning || text.contains("<think>") || text.contains("</think>")
+                        } else if (channel.number == 4 && channel.wire == 0) {
+                            val value = channels.varint()
+                            require(value in 0..1L) { "Invalid reasoning channel flag" }
+                            isReasoning = isReasoning || value == 1L
+                        } else channels.skip(channel)
                     }
-                    pos += len
+                    isReasoning = isReasoning || name.lowercase(Locale.ROOT) in setOf("thought", "thinking", "reasoning", "analysis")
+                    reasoning = reasoning || isReasoning
+                    if (isReasoning && name.isNotBlank()) reasoningNames += name
                 }
-                5 -> { // 32-bit
-                    if (pos < 0 || pos + 4 > bytes.size) break
-                    pos += 4
-                }
-                else -> break
+                else -> reader.skip(field)
             }
         }
-
-        val hasThinkingChannel = channelNames.any {
-            it.equals("thought", ignoreCase = true) || it.equals("thinking", ignoreCase = true)
-        } || channelStarts.any { it.contains("<think>") }
-
-        val templateHasThinkingToggle = jinjaTemplate?.contains("enable_thinking") == true
-        val templateHasThinkingTags = jinjaTemplate?.contains("<think>") == true
-
-        val thinkingCapability = when {
-            templateHasThinkingToggle -> ThinkingCapability.Toggleable
-            hasThinkingChannel || templateHasThinkingTags -> ThinkingCapability.ModelControlled
-            jinjaTemplate != null && !templateHasThinkingToggle && !templateHasThinkingTags -> ThinkingCapability.Unsupported
+        val templateReasoning = (promptStrings + listOfNotNull(jinja)).any { it.contains("<think>") || it.contains("</think>") }
+        val capability = when {
+            jinja?.contains("enable_thinking") == true -> ThinkingCapability.Toggleable
+            reasoning || templateReasoning || declared == true -> ThinkingCapability.ModelControlled
+            declared == false -> ThinkingCapability.Unsupported
             else -> ThinkingCapability.Unknown
         }
-
-        return DecodedLlmMetadata(
-            maxNumTokens = maxNumTokens,
-            supportsVision = supportsVision,
-            supportsAudio = supportsAudio,
-            thinkingCapability = thinkingCapability,
-            jinjaTemplate = jinjaTemplate
-        )
-    }
-
-    private fun readVarint(bytes: ByteArray, start: Int): Pair<Long, Int>? {
-        var result = 0L
-        var shift = 0
-        var pos = start
-        while (pos < bytes.size) {
-            val b = bytes[pos++].toInt()
-            result = result or ((b.toLong() and 0x7FL) shl shift)
-            if ((b and 0x80) == 0) {
-                return Pair(result, pos)
-            }
-            shift += 7
-            if (shift >= 64) return null
-        }
-        return null
-    }
-
-    private fun skipWire(bytes: ByteArray, pos: Int, wireType: Int, limit: Int): Int {
-        var p = pos
-        when (wireType) {
-            0 -> {
-                while (p < limit && (bytes[p++].toInt() and 0x80) != 0) {}
-            }
-            1 -> p = minOf(p + 8, limit)
-            2 -> {
-                val lenRes = readVarint(bytes, p) ?: return limit
-                p = minOf(lenRes.second + lenRes.first.toInt(), limit)
-            }
-            5 -> p = minOf(p + 4, limit)
-            else -> p = limit
-        }
-        return p
+        // Jinja overrides legacy affixes. Never infer an active branch from tag substrings
+        // inside a Jinja program; structured native channels remain authoritative there.
+        val reasoningPrefill = jinja == null && ThinkingTextUtils.parse(modelPrefix, true).isThinkingActive
+        return DecodedLlmMetadata(maxTokens, vision, audio, capability, jinja, declared, reasoningNames, reasoningPrefill)
     }
 
     private fun readInt32LE(bytes: ByteArray, offset: Int): Int {

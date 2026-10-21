@@ -63,6 +63,40 @@ class AtomicJsonFileTest {
     }
 
     @Test
+    fun testRead_BlankFileWithoutBackup_ReportsCorruptionAndPreservesFile() {
+        for (content in listOf("", " \r\n\t")) {
+            val blankFile = tempFolder.newFile().apply { writeText(content) }
+            val result = AtomicJsonFile<String>(blankFile).read { error("Blank content must not be parsed") }
+            assertTrue(result is AtomicReadResult.Corrupt)
+            val corrupt = result as AtomicReadResult.Corrupt
+            assertTrue(blankFile.exists())
+            assertEquals(content, blankFile.readText())
+            assertTrue(corrupt.backupFile?.exists() == true)
+            assertEquals(content, corrupt.backupFile?.readText())
+        }
+    }
+
+    @Test
+    fun testRead_BlankPrimaryWithValidBackup_RecoversAndHealsPrimary() {
+        testFile.writeText("")
+        File(testFile.parentFile, "${testFile.name}.bak").writeText("recovered data")
+        val result = AtomicJsonFile<String>(testFile).read { it }
+        assertTrue(result is AtomicReadResult.Success)
+        assertEquals("recovered data", (result as AtomicReadResult.Success).data)
+        assertEquals("recovered data", testFile.readText())
+    }
+
+    @Test
+    fun testRead_BlankPrimaryAndBackup_ReportCompositeCorruption() {
+        testFile.writeText("")
+        File(testFile.parentFile, "${testFile.name}.bak").writeText(" \n")
+        val result = AtomicJsonFile<String>(testFile).read { error("Blank content must not be parsed") }
+        assertTrue(result is AtomicReadResult.Corrupt)
+        assertTrue((result as AtomicReadResult.Corrupt).cause is CompositeCorruptException)
+        assertEquals("", testFile.readText())
+    }
+
+    @Test
     fun testWriteAndRead_Success() {
         val atomicFile = AtomicJsonFile<List<String>>(testFile)
         val data = listOf("item1", "item2")

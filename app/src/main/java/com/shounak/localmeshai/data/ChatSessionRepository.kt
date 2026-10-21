@@ -12,6 +12,7 @@ import kotlin.concurrent.withLock
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.asSharedFlow
 
 data class PersistedChatUserRequest(
     val sessionId: String,
@@ -43,14 +44,44 @@ class ChatSessionRepository(
     val rootDir: File,
     private val legacyChatPrefs: SharedPreferences? = null,
     private val legacyVisionPrefs: SharedPreferences? = null,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val legacyCacheDir: (() -> File?)? = null
 ) {
     private val lock = ReentrantLock()
+    // Old ViewModel snapshots must not erase chats added by a concurrent restore.
+    private val restoredTextIds = mutableSetOf<String>()
+    private val restoredVisionIds = mutableSetOf<String>()
+    private val _externalChanges = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val externalChanges = _externalChanges.asSharedFlow()
+
+    suspend fun mergeRestoredSessions(text: List<ChatSession>, vision: List<VisionChatSession>) = withContext(ioDispatcher) {
+        lock.withLock {
+            val currentText = loadChatSessions()
+            val currentVision = loadVisionSessions()
+            check(isChatStoreHealthy() && isVisionStoreHealthy()) { "History requires recovery before restoring a backup" }
+            val addedText = text.filter { incoming -> currentText.none { it.id == incoming.id } && !deletionJournal.isTombstoned(ChatKind.Text, incoming.id) }
+            val addedVision = vision.filter { incoming -> currentVision.none { it.id == incoming.id } && !deletionJournal.isTombstoned(ChatKind.Vision, incoming.id) }
+            check(saveChatSessionsInternal(currentText + addedText)) { "Could not restore text chats; existing data was preserved" }
+            restoredTextIds.addAll(addedText.map { it.id })
+            if (addedText.isNotEmpty()) _externalChanges.tryEmit(Unit)
+            check(saveVisionSessionsInternal(currentVision + addedVision)) {
+                "Text chats were restored, but vision history could not be saved. Retry this same backup to finish."
+            }
+            restoredVisionIds.addAll(addedVision.map { it.id })
+            _externalChanges.tryEmit(Unit)
+            addedText.size + addedVision.size
+        }
+    }
     val chatFile: File = rootDir.resolve("chat_sessions_v2.json")
     val visionFile: File = rootDir.resolve("vision_sessions_v2.json")
 
-    val attachmentStore: ChatAttachmentStore = ChatAttachmentStore(rootDir)
     val deletionJournal: ChatDeletionJournal = ChatDeletionJournal(rootDir)
+    val attachmentStore: ChatAttachmentStore = ChatAttachmentStore(rootDir) { kind, sessionId ->
+        check(deletionJournal.refreshForHistoryAccess()) {
+            "Deletion journal requires recovery before attachments can be saved"
+        }
+        deletionJournal.isTombstoned(kind, sessionId)
+    }
 
     private val chatAtomicFile = AtomicJsonFile<List<ChatSession>>(chatFile)
     private val visionAtomicFile = AtomicJsonFile<List<VisionChatSession>>(visionFile)
@@ -60,8 +91,14 @@ class ChatSessionRepository(
     @Volatile private var isChatCorrupt = false
     @Volatile private var isVisionCorrupt = false
 
-    fun isChatStoreHealthy(): Boolean = !isChatUnsupportedVersion && !isChatCorrupt
-    fun isVisionStoreHealthy(): Boolean = !isVisionUnsupportedVersion && !isVisionCorrupt
+    fun isChatStoreHealthy(): Boolean = !isChatUnsupportedVersion && !isChatCorrupt && !deletionJournal.hasRecoveryError()
+    fun isVisionStoreHealthy(): Boolean = !isVisionUnsupportedVersion && !isVisionCorrupt && !deletionJournal.hasRecoveryError()
+
+    private fun deletionRecoveryError(): AtomicReadResult.Corrupt? =
+        if (deletionJournal.refreshForHistoryAccess()) null else AtomicReadResult.Corrupt(
+            file = rootDir.resolve("chat_deletion_journal.json"),
+            cause = IllegalStateException("Deletion journal requires recovery before history can be accessed")
+        )
 
     companion object {
         @Volatile
@@ -76,7 +113,8 @@ class ChatSessionRepository(
                     rootDir = context.applicationContext.filesDir,
                     legacyChatPrefs = context.applicationContext.getSharedPreferences("chat_history", android.content.Context.MODE_PRIVATE),
                     legacyVisionPrefs = context.applicationContext.getSharedPreferences("vision_chat_history", android.content.Context.MODE_PRIVATE),
-                    ioDispatcher = ioDispatcher
+                    ioDispatcher = ioDispatcher,
+                    legacyCacheDir = { context.applicationContext.cacheDir }
                 ).also { instance = it }
             }
         }
@@ -88,6 +126,7 @@ class ChatSessionRepository(
 
     suspend fun loadChatSessionsAsync(): AtomicReadResult<List<ChatSession>> = withContext(ioDispatcher) {
         lock.withLock {
+            deletionRecoveryError()?.let { return@withLock it }
             val res = chatAtomicFile.read { json -> SessionCodec.decodeChatSessions(json) }
             when (res) {
                 is AtomicReadResult.Success -> {
@@ -119,6 +158,8 @@ class ChatSessionRepository(
                         } else {
                             val migrated = decodeTry.getOrDefault(emptyList())
                                 .filterNot { deletionJournal.isTombstoned(ChatKind.Text, it.id) }
+                            isChatUnsupportedVersion = false
+                            isChatCorrupt = false
                             if (migrated.isNotEmpty()) {
                                 val saved = saveChatSessionsInternal(migrated)
                                 if (saved) {
@@ -140,6 +181,7 @@ class ChatSessionRepository(
     }
 
     fun loadChatSessions(): List<ChatSession> = lock.withLock {
+        if (deletionRecoveryError() != null) return@withLock emptyList()
         when (val res = chatAtomicFile.read { json -> SessionCodec.decodeChatSessions(json) }) {
             is AtomicReadResult.Success -> {
                 isChatUnsupportedVersion = false
@@ -160,6 +202,8 @@ class ChatSessionRepository(
                     runCatching {
                         val migrated = SessionCodec.decodeLegacyChatSessions(legacyRaw)
                             .filterNot { deletionJournal.isTombstoned(ChatKind.Text, it.id) }
+                        isChatUnsupportedVersion = false
+                        isChatCorrupt = false
                         if (migrated.isNotEmpty()) {
                             val saved = saveChatSessionsInternal(migrated)
                             if (saved) {
@@ -167,8 +211,10 @@ class ChatSessionRepository(
                             }
                         }
                         migrated
-                    }.getOrDefault(emptyList())
+                    }.onFailure { isChatCorrupt = true }.getOrDefault(emptyList())
                 } else {
+                    isChatUnsupportedVersion = false
+                    isChatCorrupt = false
                     emptyList()
                 }
             }
@@ -186,15 +232,22 @@ class ChatSessionRepository(
     }
 
     private fun saveChatSessionsInternal(sessions: List<ChatSession>): Boolean {
-        if (isChatUnsupportedVersion) {
-            return false
+        if (deletionRecoveryError() != null) return false
+        if (!isChatStoreHealthy()) return false
+        var restored = emptyList<ChatSession>()
+        when (val current = chatAtomicFile.read { SessionCodec.decodeChatSessions(it) }) {
+            is AtomicReadResult.Corrupt -> { isChatCorrupt = true; return false }
+            is AtomicReadResult.UnsupportedVersion -> { isChatUnsupportedVersion = true; return false }
+            is AtomicReadResult.Success -> restored = current.data.filter { it.id in restoredTextIds && sessions.none { incoming -> incoming.id == it.id } }
+            else -> Unit
         }
-        val sanitized = sessions.filterNot { deletionJournal.isTombstoned(ChatKind.Text, it.id) }
+        val sanitized = (sessions + restored).filterNot { deletionJournal.isTombstoned(ChatKind.Text, it.id) }
         return chatAtomicFile.write(sanitized) { SessionCodec.encodeChatSessions(it) }.isSuccess
     }
 
     suspend fun loadVisionSessionsAsync(): AtomicReadResult<List<VisionChatSession>> = withContext(ioDispatcher) {
         lock.withLock {
+            deletionRecoveryError()?.let { return@withLock it }
             val res = visionAtomicFile.read { json -> SessionCodec.decodeVisionSessions(json) }
             when (res) {
                 is AtomicReadResult.Success -> {
@@ -226,6 +279,8 @@ class ChatSessionRepository(
                         } else {
                             val migrated = decodeTry.getOrDefault(emptyList())
                                 .filterNot { deletionJournal.isTombstoned(ChatKind.Vision, it.id) }
+                            isVisionUnsupportedVersion = false
+                            isVisionCorrupt = false
                             if (migrated.isNotEmpty()) {
                                 val saved = saveVisionSessionsInternal(migrated)
                                 if (saved) {
@@ -247,6 +302,7 @@ class ChatSessionRepository(
     }
 
     fun loadVisionSessions(): List<VisionChatSession> = lock.withLock {
+        if (deletionRecoveryError() != null) return@withLock emptyList()
         when (val res = visionAtomicFile.read { json -> SessionCodec.decodeVisionSessions(json) }) {
             is AtomicReadResult.Success -> {
                 isVisionUnsupportedVersion = false
@@ -267,6 +323,8 @@ class ChatSessionRepository(
                     runCatching {
                         val migrated = SessionCodec.decodeLegacyVisionSessions(legacyRaw)
                             .filterNot { deletionJournal.isTombstoned(ChatKind.Vision, it.id) }
+                        isVisionUnsupportedVersion = false
+                        isVisionCorrupt = false
                         if (migrated.isNotEmpty()) {
                             val saved = saveVisionSessionsInternal(migrated)
                             if (saved) {
@@ -274,8 +332,10 @@ class ChatSessionRepository(
                             }
                         }
                         migrated
-                    }.getOrDefault(emptyList())
+                    }.onFailure { isVisionCorrupt = true }.getOrDefault(emptyList())
                 } else {
+                    isVisionUnsupportedVersion = false
+                    isVisionCorrupt = false
                     emptyList()
                 }
             }
@@ -293,10 +353,16 @@ class ChatSessionRepository(
     }
 
     private fun saveVisionSessionsInternal(sessions: List<VisionChatSession>): Boolean {
-        if (isVisionUnsupportedVersion) {
-            return false
+        if (deletionRecoveryError() != null) return false
+        if (!isVisionStoreHealthy()) return false
+        var restored = emptyList<VisionChatSession>()
+        when (val current = visionAtomicFile.read { SessionCodec.decodeVisionSessions(it) }) {
+            is AtomicReadResult.Corrupt -> { isVisionCorrupt = true; return false }
+            is AtomicReadResult.UnsupportedVersion -> { isVisionUnsupportedVersion = true; return false }
+            is AtomicReadResult.Success -> restored = current.data.filter { it.id in restoredVisionIds && sessions.none { incoming -> incoming.id == it.id } }
+            else -> Unit
         }
-        val sanitized = sessions.filterNot { deletionJournal.isTombstoned(ChatKind.Vision, it.id) }
+        val sanitized = (sessions + restored).filterNot { deletionJournal.isTombstoned(ChatKind.Vision, it.id) }
         return visionAtomicFile.write(sanitized) { SessionCodec.encodeVisionSessions(it) }.isSuccess
     }
 
@@ -309,9 +375,23 @@ class ChatSessionRepository(
         lock.withLock {
             deletionJournal.ensureLoaded()
 
+            // Read before recording intent: an unreadable store is never an empty history.
+            val textSessions = if (chatKind == ChatKind.Text) loadChatSessions() else null
+            val visionSessions = if (chatKind == ChatKind.Vision) loadVisionSessions() else null
+            if ((chatKind == ChatKind.Text && !isChatStoreHealthy()) ||
+                (chatKind == ChatKind.Vision && !isVisionStoreHealthy())) {
+                return@withLock DeletionOutcome.FailedBeforeCommit("History storage requires recovery before deletion")
+            }
+
             // 1. Gather owned directory path (entire directory is recorded to guard any concurrent writes)
             val sessionDir = attachmentStore.getSessionAttachmentsDir(chatKind, sessionId, create = false)
-            val ownedPaths = listOf(sessionDir.absolutePath)
+            val ownedPaths = buildList {
+                add(sessionDir.absolutePath)
+                if (chatKind == ChatKind.Vision) {
+                    add(rootDir.resolve("vision_sessions/session_$sessionId.png").absolutePath)
+                    legacyCacheDir?.invoke()?.let { add(it.resolve("vision_sessions/session_$sessionId.png").absolutePath) }
+                }
+            }
 
             // 2. Journal and tombstone
             val entry = DeletionJournalEntry(
@@ -327,25 +407,30 @@ class ChatSessionRepository(
             // 3. Commit removal from authoritative JSON store
             val saveOk = when (chatKind) {
                 ChatKind.Text -> {
-                    val remaining = loadChatSessions().filter { it.id != sessionId }
+                    val remaining = checkNotNull(textSessions).filter { it.id != sessionId }
                     saveChatSessionsInternal(remaining)
                 }
                 ChatKind.Vision -> {
-                    val remaining = loadVisionSessions().filter { it.id != sessionId }
+                    val remaining = checkNotNull(visionSessions).filter { it.id != sessionId }
                     saveVisionSessionsInternal(remaining)
                 }
             }
             if (!saveOk) {
-                return@withLock DeletionOutcome.FailedBeforeCommit("Failed to commit session removal from JSON store")
+                // The durable tombstone has committed deletion; keep the journal for retry.
+                return@withLock DeletionOutcome.PendingCleanup
             }
 
             // 4. Physical deletion of owned attachments
-            val filesDeleted = attachmentStore.deleteSessionAttachments(chatKind, sessionId)
+            val attachmentsDeleted = attachmentStore.deleteSessionAttachments(chatKind, sessionId)
+            val legacyDeleted = ownedPaths.drop(1).map { path ->
+                val file = File(path)
+                !file.exists() || file.delete()
+            }.all { it }
+            val filesDeleted = attachmentsDeleted && legacyDeleted
 
             // 5. Check deletion results; remove journal entry only if files completely removed
             if (filesDeleted) {
-                deletionJournal.removeEntry(entry.id)
-                DeletionOutcome.Completed
+                if (deletionJournal.removeEntry(entry.id)) DeletionOutcome.Completed else DeletionOutcome.PendingCleanup
             } else {
                 DeletionOutcome.PendingCleanup
             }

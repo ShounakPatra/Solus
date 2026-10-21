@@ -146,7 +146,7 @@ class ThinkingModeConfigTest {
     }
 
     @Test
-    fun resolveThinkingCapability_customModelWithSupportsThinkingFlag_resolvesToggleable() {
+    fun resolveThinkingCapability_supportFlagDoesNotProveRuntimeControl() {
         val cap = ThinkingModeConfig.resolveThinkingCapability(
             bundle = null,
             id = "custom_model_1",
@@ -155,7 +155,7 @@ class ThinkingModeConfigTest {
             isCustom = true,
             supportsThinkingFlag = true
         )
-        assertEquals(com.shounak.localmeshai.models.ThinkingCapability.Toggleable, cap)
+        assertEquals(com.shounak.localmeshai.models.ThinkingCapability.ModelControlled, cap)
     }
 
     @Test
@@ -172,7 +172,7 @@ class ThinkingModeConfigTest {
     }
 
     @Test
-    fun resolveThinkingCapability_modelInfoWithSupportsThinkingMode_resolvesToggleable() {
+    fun resolveThinkingCapability_modelInfoSupportFlagDoesNotProveRuntimeControl() {
         val model = com.shounak.localmeshai.models.ModelInfo(
             id = "custom_model_3",
             name = "My Fine-tuned Model",
@@ -186,7 +186,7 @@ class ThinkingModeConfigTest {
             supportsThinkingMode = true
         )
         val cap = ThinkingModeConfig.resolveThinkingCapability(model)
-        assertEquals(com.shounak.localmeshai.models.ThinkingCapability.Toggleable, cap)
-        assertEquals(com.shounak.localmeshai.models.ThinkingCapability.Toggleable, model.thinkingCapability)
+        assertEquals(com.shounak.localmeshai.models.ThinkingCapability.ModelControlled, cap)
+        assertEquals(com.shounak.localmeshai.models.ThinkingCapability.ModelControlled, model.thinkingCapability)
     }
 }
