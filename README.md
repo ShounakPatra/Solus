@@ -136,6 +136,10 @@ Backups exclude model weights, access tokens and document indexes. Model compati
 
 Patch source uses version code **10**. It improves backup-setting compatibility, unifies and encrypts Hugging Face token storage, makes larger touch targets opt-in on new installations, repairs the Settings background, removes the unused Firebase configuration, and adds SDK-install retries in CI. See the [v6.0.1 patch notes](docs/releases/v6.0.1.md). Download buttons above continue to identify the published **v6.0.0** APK until the patch is released.
 
+![Local v6.0.1 signed build size: 39.86 MB (38.01 MiB)](https://img.shields.io/badge/v6.0.1_build_size-39.86_MB_(38.01_MiB)-0EA5E9?style=flat-square)
+
+The signed v6.0.1 build is **39,857,525 bytes**. Focused host checks passed **70 Kotlin tests and 10 tooling tests**; physical-phone verification of the Settings layout and Keystore migration remains required before publishing the patch.
+
 ---
 
 <details>
