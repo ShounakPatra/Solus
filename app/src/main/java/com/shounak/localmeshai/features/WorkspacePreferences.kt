@@ -57,7 +57,7 @@ class WorkspacePreferences internal constructor(private val prefs: SharedPrefere
     private val _profileChanges = kotlinx.coroutines.flow.MutableSharedFlow<Set<String>>(extraBufferCapacity = 1)
     val profileChanges = _profileChanges.asSharedFlow()
     val reduceMotion get() = prefs.getBoolean("reduce_motion", false)
-    val largeControls get() = prefs.getBoolean("large_controls", true)
+    val largeControls get() = prefs.getBoolean("large_controls", false)
     fun title(kind: String, id: String, fallback: String): String = prefs.getString("title:$kind:$id", null) ?: fallback
     fun pinned(kind: String, id: String) = prefs.getBoolean("pin:$kind:$id", false)
     fun rename(kind: String, id: String, title: String) {

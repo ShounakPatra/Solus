@@ -55,6 +55,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -133,9 +134,18 @@ fun SettingsDialog(
     Dialog(
         onDismissRequest = onDismissRequest,
         properties = DialogProperties(
-            usePlatformDefaultWidth = false
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
         )
     ) {
+        val window = (androidx.compose.ui.platform.LocalView.current.parent as?
+            androidx.compose.ui.window.DialogWindowProvider)?.window
+        SideEffect {
+            window?.apply {
+                setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+                setBackgroundDrawable(android.graphics.drawable.ColorDrawable(colors.background.toArgb()))
+            }
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -504,8 +514,12 @@ fun SettingsDialog(
                             val saveEnabled = hfTokenDraft.trim() != settingsData.huggingFaceToken
                             LiquidGlassButton(
                                 onClick = {
-                                    appSettings.updateSettings { it.copy(huggingFaceToken = hfTokenDraft.trim()) }
-                                    mainViewModel.setHuggingFaceToken(hfTokenDraft.trim())
+                                    runCatching { mainViewModel.setHuggingFaceToken(hfTokenDraft.trim()) }
+                                        .onFailure {
+                                            android.widget.Toast.makeText(context,
+                                                "Could not securely save token. Please try again.",
+                                                android.widget.Toast.LENGTH_LONG).show()
+                                        }
                                 },
                                 enabled = saveEnabled,
                                 hazeState = hazeState,

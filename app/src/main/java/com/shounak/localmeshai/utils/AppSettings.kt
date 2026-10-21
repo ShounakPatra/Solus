@@ -27,7 +27,10 @@ data class AppSettingsData(
     val autoExtractMemories: Boolean = true
 )
 
-class AppSettings internal constructor(private val prefs: SharedPreferences) {
+class AppSettings internal constructor(
+    private val prefs: SharedPreferences,
+    private val tokenStore: HuggingFaceTokenStore = HuggingFaceTokenStore(prefs)
+) {
     constructor(context: Context) : this(context.applicationContext.getSharedPreferences("app_settings", Context.MODE_PRIVATE))
 
     private val _settings = MutableStateFlow(loadSettings())
@@ -45,7 +48,7 @@ class AppSettings internal constructor(private val prefs: SharedPreferences) {
             enableSolusBench = prefs.getBoolean(KEY_SOLUS_BENCH, true),
             enableAutoHideBottomBar = prefs.getBoolean(KEY_AUTO_HIDE_BOTTOM_BAR, false),
             autoUnloadMinutes = prefs.getInt(KEY_AUTO_UNLOAD_MINS, 5),
-            huggingFaceToken = prefs.getString(KEY_HF_TOKEN, "").orEmpty(),
+            huggingFaceToken = tokenStore.read(),
             autoCheckUpdates = prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true),
             llamaBackendPreference = prefs.getString(KEY_LLAMA_BACKEND_PREF, "AUTO")?.let {
                 if (it.uppercase() in listOf("AUTO", "CPU", "VULKAN")) it.uppercase() else "AUTO"
@@ -60,8 +63,9 @@ class AppSettings internal constructor(private val prefs: SharedPreferences) {
         )
     }
 
-    fun updateSettings(transform: (AppSettingsData) -> AppSettingsData) {
-        val updated = transform(_settings.value)
+    @Synchronized fun updateSettings(transform: (AppSettingsData) -> AppSettingsData) {
+        val updated = transform(_settings.value).let { it.copy(huggingFaceToken = it.huggingFaceToken.trim()) }
+        if (updated.huggingFaceToken != _settings.value.huggingFaceToken) tokenStore.write(updated.huggingFaceToken)
         prefs.edit()
             .putBoolean(KEY_DARK_MODE, updated.enableDarkMode)
             .putBoolean(KEY_DYNAMIC_THEMES, updated.enableDynamicThemes)
@@ -73,7 +77,6 @@ class AppSettings internal constructor(private val prefs: SharedPreferences) {
             .putBoolean(KEY_SOLUS_BENCH, updated.enableSolusBench)
             .putBoolean(KEY_AUTO_HIDE_BOTTOM_BAR, updated.enableAutoHideBottomBar)
             .putInt(KEY_AUTO_UNLOAD_MINS, updated.autoUnloadMinutes)
-            .putString(KEY_HF_TOKEN, updated.huggingFaceToken)
             .putBoolean(KEY_AUTO_CHECK_UPDATES, updated.autoCheckUpdates)
             .putString(KEY_LLAMA_BACKEND_PREF, updated.llamaBackendPreference)
             .putBoolean(KEY_ENABLE_RAG, updated.enableRag)
@@ -96,7 +99,6 @@ class AppSettings internal constructor(private val prefs: SharedPreferences) {
         private const val KEY_SOLUS_BENCH = "enable_solus_bench"
         private const val KEY_AUTO_HIDE_BOTTOM_BAR = "auto_hide_bottom_bar"
         internal const val KEY_AUTO_UNLOAD_MINS = "auto_unload_minutes"
-        private const val KEY_HF_TOKEN = "hf_read_token"
         private const val KEY_AUTO_CHECK_UPDATES = "auto_check_updates"
         private const val KEY_LLAMA_BACKEND_PREF = "llama_backend_pref"
         private const val KEY_ENABLE_RAG = "enable_rag"

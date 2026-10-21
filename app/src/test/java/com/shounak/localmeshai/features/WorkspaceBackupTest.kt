@@ -31,7 +31,9 @@ class WorkspaceBackupTest {
         val repository = ChatSessionRepository(files)
         val memory = PersistentMemoryManager(memoryStore = PersistentMemoryStore(storageDir = files))
         val prefs = WorkspacePreferences(FeatureTestPreferences())
-        val settings = AppSettings(FeatureTestPreferences())
+        private val settingsPrefs = FeatureTestPreferences()
+        val settings = AppSettings(settingsPrefs, com.shounak.localmeshai.utils.HuggingFaceTokenStore(
+            settingsPrefs, com.shounak.localmeshai.utils.TestTokenCipher()))
         val backup = WorkspaceBackup(context, repository, memory, prefs, settings)
     }
     private fun chat(id: String) = ChatSession(id, "Title $id", listOf(ChatMessage(id = "user-$id", text = "Original prompt", isUser = true)), 123)
@@ -41,6 +43,26 @@ class WorkspaceBackupTest {
         ZipOutputStream(bytes).use { zip -> entries.forEach { (name, body) -> zip.putNextEntry(ZipEntry(name)); zip.write(body.toByteArray()); zip.closeEntry() } }
     }.toByteArray()
     private fun rejects(block: () -> Unit) { try { block(); fail("Expected rejection") } catch (_: IllegalArgumentException) { } }
+
+    @Test fun v600BackupRestoresIntoV601WithLegacySettingsSchema() = runBlocking {
+        val source = Workspace(folder.newFolder())
+        source.repository.saveChatSessions(listOf(chat("legacy")))
+        source.memory.addMemory("A legacy memory", MemoryCategory.FACT)
+        val bytes = ByteArrayOutputStream(); source.backup.exportTo(bytes, false)
+        val stage = folder.newFolder(); WorkspaceBackup.readArchive(bytes.toByteArray().inputStream(), stage)
+        val manifest = JSONObject(stage.resolve("manifest.json").readText()).put("settings", JSONObject("""
+            {"dark":false,"dynamic":true,"telemetry":true,"thermalGuard":true,"ramGuard":true,
+             "suggestions":true,"personas":true,"bench":true,"hideBottomBar":false,
+             "autoUnloadMinutes":5,"autoUpdates":true,"backend":"AUTO","memory":true,
+             "autoMemories":true,"rag":false,"ragTopK":3,"ragMinSimilarity":0.35}
+        """.trimIndent()))
+        val target = Workspace(folder.newFolder())
+        target.backup.restoreFrom(archive("manifest.json" to manifest.toString()).inputStream())
+        assertEquals(1, target.repository.loadChatSessions().size)
+        assertEquals(1, target.memory.getAllMemories().size)
+        assertFalse(target.settings.settings.value.enableDarkMode)
+        assertTrue(target.settings.settings.value.enableSuggestionPills)
+    }
 
     @Test fun fullRoundTripPreservesExistingDataAttachmentsProfilesAndCitationsWithoutCredentials() = runBlocking {
         val source = Workspace(folder.newFolder())
@@ -233,7 +255,8 @@ class WorkspaceBackupTest {
         val json = PortableSettings.encode(source)
         assertFalse(json.toString().contains("SOURCE"))
         assertEquals(source.copy(huggingFaceToken = "DEST"), PortableSettings.decode(json, AppSettingsData(huggingFaceToken = "DEST")))
-        rejects { PortableSettings.decode(JSONObject(json.toString()).put("huggingFaceToken", "bad"), AppSettingsData()) }
+        assertEquals("DEST", PortableSettings.decode(JSONObject(json.toString()).put("huggingFaceToken", "bad"),
+            AppSettingsData(huggingFaceToken = "DEST")).huggingFaceToken)
         rejects { PortableSettings.decode(JSONObject(json.toString()).put("ragTopK", 1.2), AppSettingsData()) }
     }
 }

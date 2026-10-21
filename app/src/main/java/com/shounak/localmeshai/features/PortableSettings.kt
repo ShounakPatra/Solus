@@ -15,20 +15,23 @@ internal object PortableSettings {
         put("memory", value.enablePersistentMemory); put("autoMemories", value.autoExtractMemories)
         put("rag", value.enableRag); put("ragTopK", value.ragTopK); put("ragMinSimilarity", value.ragMinSimilarity)
     }
-    fun decode(json: JSONObject, current: AppSettingsData): AppSettingsData {
+    fun decode(input: JSONObject, current: AppSettingsData): AppSettingsData {
         val supported = encode(AppSettingsData()).keys().asSequence().toSet()
-        require(json.keys().asSequence().toSet() == supported) { "Unsupported or incomplete backup settings" }
+        val present = input.keys().asSequence().toSet().intersect(supported)
         val numeric = setOf("autoUnloadMinutes", "ragTopK", "ragMinSimilarity")
-        (supported - numeric - "backend").forEach { require(json.get(it) is Boolean) { "Invalid setting: $it" } }
-        numeric.forEach { require(json.get(it) is Number) }
+        (present - numeric - "backend").forEach { require(input.get(it) is Boolean) { "Invalid setting: $it" } }
+        (present intersect numeric).forEach { require(input.get(it) is Number) { "Invalid setting: $it" } }
+        if ("backend" in present) require(input.get("backend") is String) { "Invalid setting: backend" }
+        // New settings retain current values; unknown keys are not imported (including secrets).
+        val json = encode(current).apply { present.forEach { put(it, input.get(it)) } }
         val backend = json.getString("backend")
-        require(backend in setOf("AUTO", "CPU", "VULKAN"))
+        if ("backend" in present) require(backend in setOf("AUTO", "CPU", "VULKAN"))
         val unload = json.getInt("autoUnloadMinutes")
         val topK = json.getInt("ragTopK")
         val similarity = json.getDouble("ragMinSimilarity").toFloat()
-        require(unload in 0..1440 && json.getDouble("autoUnloadMinutes") == unload.toDouble())
-        require(topK in 1..20 && json.getDouble("ragTopK") == topK.toDouble())
-        require(similarity.isFinite() && similarity in 0.3f..1f)
+        if ("autoUnloadMinutes" in present) require(unload in 0..1440 && json.getDouble("autoUnloadMinutes") == unload.toDouble())
+        if ("ragTopK" in present) require(topK in 1..20 && json.getDouble("ragTopK") == topK.toDouble())
+        if ("ragMinSimilarity" in present) require(similarity.isFinite() && similarity in 0.3f..1f)
         return current.copy(
             enableDarkMode = json.getBoolean("dark"), enableDynamicThemes = json.getBoolean("dynamic"),
             enableTelemetryBar = json.getBoolean("telemetry"), showThermalGuard = json.getBoolean("thermalGuard"),

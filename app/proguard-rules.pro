@@ -8,7 +8,7 @@
     public final void d(java.lang.String, kotlin.jvm.functions.Function0);
 }
 
-# Preserve line numbers and source files for Crashlytics stack traces
+# Preserve line numbers and source files for local crash-report stack traces
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile

@@ -8,7 +8,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.platform.LocalContext
 
-data class WorkspaceVisuals(val reduceMotion: Boolean = false, val largeControls: Boolean = true)
+data class WorkspaceVisuals(val reduceMotion: Boolean = false, val largeControls: Boolean = false)
 val LocalWorkspaceVisuals = staticCompositionLocalOf { WorkspaceVisuals() }
 
 @Composable

@@ -1064,7 +1064,7 @@ class VisionInferenceManager(context: Context) {
         }
     }
 
-    private fun streamMediaPipeVision(
+    private suspend fun streamMediaPipeVision(
         bitmap: Bitmap?,
         prompt: String,
         audioFile: File?,
@@ -1114,13 +1114,15 @@ class VisionInferenceManager(context: Context) {
                     } catch (t: Throwable) {
                         if (t.message?.contains("still processing", ignoreCase = true) == true && attempts < 4) {
                             attempts++
-                            Thread.sleep(60)
+                            kotlinx.coroutines.delay(60)
                         } else {
                             throw t
                         }
                     }
                 }
                 created ?: throw IllegalStateException("Failed to create vision session")
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to create vision session", t)
                 throw IllegalStateException("Failed to create vision session", t)

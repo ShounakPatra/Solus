@@ -53,6 +53,7 @@ import java.util.Locale
 import java.util.zip.ZipFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -843,9 +844,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val appSettings = com.shounak.localmeshai.utils.AppSettings.getInstance(application)
     val appSettingsData = appSettings.settings
 
-    private val settingsPrefs = application.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
-    private val _huggingFaceToken = MutableStateFlow(settingsPrefs.getString(KEY_HF_TOKEN, "").orEmpty())
-    val huggingFaceToken = _huggingFaceToken.asStateFlow()
+    val huggingFaceToken = appSettingsData.map { it.huggingFaceToken }.stateIn(
+        viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, appSettingsData.value.huggingFaceToken
+    )
 
     private val customModelStore = CustomModelStore(application.filesDir)
 
@@ -1105,7 +1106,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 url = downloadUrl,
                 fileName = model.fileName,
                 packageType = model.packageType,
-                token = _huggingFaceToken.value.ifBlank { null },
+                token = appSettingsData.value.huggingFaceToken.ifBlank { null },
                 sha256 = model.sha256
             )
         }
@@ -1446,9 +1447,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setHuggingFaceToken(token: String) {
-        val cleanToken = token.trim()
-        _huggingFaceToken.value = cleanToken
-        settingsPrefs.edit().putString(KEY_HF_TOKEN, cleanToken).apply()
+        appSettings.updateSettings { it.copy(huggingFaceToken = token.trim()) }
     }
 
     fun startDownload(modelId: String): Result<Unit> {
@@ -1485,7 +1484,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             return Result.failure(IllegalStateException(msg))
         }
-        if (model.requiresHuggingFaceToken && _huggingFaceToken.value.isBlank()) {
+        if (model.requiresHuggingFaceToken && appSettingsData.value.huggingFaceToken.isBlank()) {
             val msg = "This model requires a Hugging Face token. Open Settings (⚙️) → Hugging Face Access Token to paste your token."
             updateModel(modelId) {
                 it.copy(
@@ -1527,7 +1526,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 url = downloadUrl,
                 fileName = model.fileName,
                 packageType = model.packageType,
-                token = _huggingFaceToken.value.ifBlank { null },
+                token = appSettingsData.value.huggingFaceToken.ifBlank { null },
                 sha256 = model.sha256,
                 downloadSpec = model.downloadSpec,
                 retainStagingOnCancel = model.isCustom
@@ -1632,7 +1631,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             url = downloadUrl,
             fileName = model.fileName,
             packageType = model.packageType,
-            token = _huggingFaceToken.value.ifBlank { null },
+            token = appSettingsData.value.huggingFaceToken.ifBlank { null },
             sha256 = model.sha256,
             downloadSpec = model.downloadSpec
         )
@@ -2069,7 +2068,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             return@launch
                         }
 
-                        val token = _huggingFaceToken.value.ifBlank { null }
+                        val token = appSettingsData.value.huggingFaceToken.ifBlank { null }
                         val repoInfo = HuggingFaceModelResolver.resolveRepository(clean, token).getOrThrow()
                         val allVariants = HuggingFaceModelResolver.groupVariants(repoInfo)
                         val selection = try {
@@ -2669,7 +2668,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         private const val MIN_VALID_MODEL_BYTES = 1_000_000L
-        private const val KEY_HF_TOKEN = "hugging_face_read_token"
 
         fun resolveModelPageUrl(downloadSpec: com.shounak.localmeshai.models.ModelDownloadSpec?, sourceUrl: String?): String? {
             val repo = downloadSpec?.repository?.trim().orEmpty()

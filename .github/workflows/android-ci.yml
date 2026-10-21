@@ -29,8 +29,8 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Test APK verification tool
-        run: python3 -m unittest discover -s tools -p "test_apk_size_report.py" -v
+      - name: Test packaging and SDK installation tools
+        run: python3 -m unittest discover -s tools -p "test_*.py" -v
 
       - name: Provision pinned NDK, CMake, and host shader tooling
         run: |
@@ -43,7 +43,7 @@ jobs:
           if [ ! -x "$SDKMANAGER" ]; then
             SDKMANAGER="$(which sdkmanager 2>/dev/null || echo sdkmanager)"
           fi
-          yes | "$SDKMANAGER" --install "ndk;28.2.13676358" "cmake;3.22.1"
+          bash tools/install-android-sdk.sh "$SDKMANAGER" "ndk;28.2.13676358" "cmake;3.22.1"
 
       - name: Run host C++ native tests
         run: |
@@ -70,7 +70,7 @@ jobs:
         run: ./gradlew assembleDebug
 
       - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: solus-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
@@ -95,7 +95,7 @@ jobs:
             --verify-optimized
 
       - name: Upload release APK (unsigned CI build)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: solus-release-apk
           path: ${{ env.RELEASE_APK }}
@@ -104,7 +104,7 @@ jobs:
 
       - name: Upload APK size report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: solus-apk-size-report
           path: build/reports/apk-size/release-size-report.json
@@ -113,7 +113,7 @@ jobs:
 
       - name: Upload R8 mapping
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: solus-release-r8-mapping
           path: app/build/outputs/mapping/release/
@@ -122,7 +122,7 @@ jobs:
 
       - name: Upload native debug symbols
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: solus-release-native-symbols
           path: app/build/outputs/native-debug-symbols/release/

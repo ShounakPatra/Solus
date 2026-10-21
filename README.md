@@ -132,6 +132,10 @@ Backups exclude model weights, access tokens and document indexes. Model compati
 
 **Build validation:** [Android CI passed for commit `e9a01c0`](https://github.com/ShounakPatra/Solus/actions/runs/39578235174), including native tests, unit tests, lint, instrumentation-test compilation, debug/release builds and APK packaging checks. CI does not execute inference on a physical phone.
 
+### Next patch: v6.0.1
+
+Patch source uses version code **10**. It improves backup-setting compatibility, unifies and encrypts Hugging Face token storage, makes larger touch targets opt-in on new installations, repairs the Settings background, removes the unused Firebase configuration, and adds SDK-install retries in CI. See the [v6.0.1 patch notes](docs/releases/v6.0.1.md). Download buttons above continue to identify the published **v6.0.0** APK until the patch is released.
+
 ---
 
 <details>
@@ -343,6 +347,7 @@ Go to **Settings** → **Hugging Face Access Token** and enter your read token. 
 | **v3.0.0** | ✅ Shipped | Native packaging improvements, offline privacy, persistent memory and thinking controls |
 | **v5.0.0** | ✅ Shipped | Response finalization, transactional model management, resumable downloads, document extraction safety and signed-update verification |
 | **v6.0.0** | ✅ Shipped | Phone storage imports, split GGUF models and projectors, workspace backups, conversation tools, per-model profiles, and floating controls |
+| **v6.0.1** | 🛠️ In preparation | Backup compatibility, encrypted token migration, Settings backdrop, opt-in larger controls, Firebase cleanup and CI retries |
 | **v6.0.5** | 🔜 Planned | Runtime upgrades, faster GGUF responses, backend qualification and more responsive loading |
 
 </div>
@@ -356,7 +361,7 @@ The next planned release focuses on **faster GGUF responses, upgraded llama.cpp 
 
 ### Current baseline
 
-- App source: **6.0.0**, Android version code **9**.
+- App source: **6.0.1**, Android version code **10**; published download: **6.0.0**, version code **9**.
 - LiteRT-LM Android dependency: **0.18.0**, configured in `gradle/libs.versions.toml`.
 - llama.cpp integration declares upstream pin **5cdadfc326163ed1fa66cf609fb1761f7928900c** in `app/src/main/cpp/CMakeLists.txt`. This records the configured pin; it does not establish that the vendor tree is unmodified or that it is the newest upstream revision.
 - MediaPipe GenAI dependency: **0.10.35**.

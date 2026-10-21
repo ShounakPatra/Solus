@@ -286,7 +286,8 @@ fun MainNavigation(mainViewModel: MainViewModel) {
     if (settingsDialogVisible) {
         com.shounak.localmeshai.ui.screens.SettingsDialog(
             mainViewModel = mainViewModel,
-            hazeState = hazeState,
+            // Settings must not sample the underlying Chat/Models capture.
+            hazeState = remember { HazeState() },
             scrollToAbout = scrollToAboutRequested,
             onDismissRequest = {
                 val shouldGoToChat = (autoHideTurnedOnInSettings || !autoHideWasEnabledWhenSettingsOpened) &&

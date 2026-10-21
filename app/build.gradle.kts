@@ -46,8 +46,8 @@ android {
         applicationId = "com.shounak.localmeshai"
         minSdk = 28
         targetSdk = 37
-        versionCode = 9
-        versionName = "6.0.0"
+        versionCode = 10
+        versionName = "6.0.1"
         buildConfigField("String", "NATIVE_BUILD_ID", "\"$nativeSourceDigest\"")
         buildConfigField("String", "LITERT_RUNTIME_VERSION", "\"${libs.versions.litertLm.get()}\"")
 
@@ -291,6 +291,8 @@ kotlin {
 }
 
 configurations.all {
+    // No Firebase service integration. Keep the encoder-only serialization
+    // helpers required by MediaPipe's transport classes; removing them breaks R8.
     exclude(group = "com.google.firebase", module = "firebase-measurement-connector")
     exclude(group = "com.google.firebase", module = "firebase-analytics")
     exclude(group = "com.google.firebase", module = "firebase-sessions")
