@@ -1,0 +1,6 @@
+{
+    global:
+        Java_com_shounak_localmeshai_ai_LlamaCppEngine_*;
+    local:
+        *;
+};

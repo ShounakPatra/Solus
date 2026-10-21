@@ -30,11 +30,13 @@ import java.util.Locale
 fun InferenceTelemetryBar(
     tokensPerSecond: Float,
     lastInferenceMs: Long,
+    runtimeStatus: String = "Ready",
     activeBackend: String = "Local GPU/CPU",
     batteryTempC: Float? = null,
     availableRamMb: Long? = null,
     accentColor: Color = Color(0xFF38BDF8),
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    contextIndicator: (@Composable () -> Unit)? = null
 ) {
     AnimatedVisibility(
         visible = true,
@@ -64,12 +66,17 @@ fun InferenceTelemetryBar(
                     modifier = Modifier.size(13.dp)
                 )
                 Text(
-                    text = if (tokensPerSecond > 0f) String.format(Locale.US, "%.1f t/s", tokensPerSecond) else "Ready",
+                    text = if (runtimeStatus != "Ready") runtimeStatus else if (tokensPerSecond > 0f) String.format(Locale.US, "%.1f t/s", tokensPerSecond) else "Ready",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = accentColor,
                     maxLines = 1
                 )
+            }
+
+            if (contextIndicator != null) {
+                Text(text = "•", fontSize = 10.sp, color = Color(0xFF475569), maxLines = 1)
+                contextIndicator()
             }
 
             Text(text = "•", fontSize = 10.sp, color = Color(0xFF475569), maxLines = 1)

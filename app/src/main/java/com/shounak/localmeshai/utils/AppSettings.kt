@@ -16,12 +16,19 @@ data class AppSettingsData(
     val enablePersonaPresets: Boolean = true,
     val enableSolusBench: Boolean = true,
     val enableAutoHideBottomBar: Boolean = false,
-    val autoUnloadMinutes: Int = 15,
-    val huggingFaceToken: String = ""
+    val autoUnloadMinutes: Int = 5,
+    val huggingFaceToken: String = "",
+    val autoCheckUpdates: Boolean = true,
+    val llamaBackendPreference: String = "AUTO",
+    val enableRag: Boolean = false,
+    val ragTopK: Int = 3,
+    val ragMinSimilarity: Float = 0.35f,
+    val enablePersistentMemory: Boolean = true,
+    val autoExtractMemories: Boolean = true
 )
 
-class AppSettings private constructor(context: Context) {
-    private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+class AppSettings internal constructor(private val prefs: SharedPreferences) {
+    constructor(context: Context) : this(context.applicationContext.getSharedPreferences("app_settings", Context.MODE_PRIVATE))
 
     private val _settings = MutableStateFlow(loadSettings())
     val settings: StateFlow<AppSettingsData> = _settings.asStateFlow()
@@ -37,8 +44,19 @@ class AppSettings private constructor(context: Context) {
             enablePersonaPresets = prefs.getBoolean(KEY_PERSONA_PRESETS, true),
             enableSolusBench = prefs.getBoolean(KEY_SOLUS_BENCH, true),
             enableAutoHideBottomBar = prefs.getBoolean(KEY_AUTO_HIDE_BOTTOM_BAR, false),
-            autoUnloadMinutes = prefs.getInt(KEY_AUTO_UNLOAD_MINS, 15),
-            huggingFaceToken = prefs.getString(KEY_HF_TOKEN, "").orEmpty()
+            autoUnloadMinutes = prefs.getInt(KEY_AUTO_UNLOAD_MINS, 5),
+            huggingFaceToken = prefs.getString(KEY_HF_TOKEN, "").orEmpty(),
+            autoCheckUpdates = prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true),
+            llamaBackendPreference = prefs.getString(KEY_LLAMA_BACKEND_PREF, "AUTO")?.let {
+                if (it.uppercase() in listOf("AUTO", "CPU", "VULKAN")) it.uppercase() else "AUTO"
+            } ?: "AUTO",
+            enableRag = prefs.getBoolean(KEY_ENABLE_RAG, false),
+            ragTopK = prefs.getInt(KEY_RAG_TOP_K, 3),
+            ragMinSimilarity = prefs.getFloat(KEY_RAG_MIN_SIMILARITY, 0.35f).let {
+                if (it < 0.30f) 0.35f else it
+            },
+            enablePersistentMemory = prefs.getBoolean(KEY_ENABLE_PERSISTENT_MEMORY, true),
+            autoExtractMemories = prefs.getBoolean(KEY_AUTO_EXTRACT_MEMORIES, true)
         )
     }
 
@@ -56,6 +74,13 @@ class AppSettings private constructor(context: Context) {
             .putBoolean(KEY_AUTO_HIDE_BOTTOM_BAR, updated.enableAutoHideBottomBar)
             .putInt(KEY_AUTO_UNLOAD_MINS, updated.autoUnloadMinutes)
             .putString(KEY_HF_TOKEN, updated.huggingFaceToken)
+            .putBoolean(KEY_AUTO_CHECK_UPDATES, updated.autoCheckUpdates)
+            .putString(KEY_LLAMA_BACKEND_PREF, updated.llamaBackendPreference)
+            .putBoolean(KEY_ENABLE_RAG, updated.enableRag)
+            .putInt(KEY_RAG_TOP_K, updated.ragTopK)
+            .putFloat(KEY_RAG_MIN_SIMILARITY, updated.ragMinSimilarity)
+            .putBoolean(KEY_ENABLE_PERSISTENT_MEMORY, updated.enablePersistentMemory)
+            .putBoolean(KEY_AUTO_EXTRACT_MEMORIES, updated.autoExtractMemories)
             .apply()
         _settings.value = updated
     }
@@ -70,8 +95,15 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_PERSONA_PRESETS = "enable_persona_presets"
         private const val KEY_SOLUS_BENCH = "enable_solus_bench"
         private const val KEY_AUTO_HIDE_BOTTOM_BAR = "auto_hide_bottom_bar"
-        private const val KEY_AUTO_UNLOAD_MINS = "auto_unload_minutes"
+        internal const val KEY_AUTO_UNLOAD_MINS = "auto_unload_minutes"
         private const val KEY_HF_TOKEN = "hf_read_token"
+        private const val KEY_AUTO_CHECK_UPDATES = "auto_check_updates"
+        private const val KEY_LLAMA_BACKEND_PREF = "llama_backend_pref"
+        private const val KEY_ENABLE_RAG = "enable_rag"
+        private const val KEY_RAG_TOP_K = "rag_top_k"
+        private const val KEY_RAG_MIN_SIMILARITY = "rag_min_similarity"
+        private const val KEY_ENABLE_PERSISTENT_MEMORY = "enable_persistent_memory"
+        private const val KEY_AUTO_EXTRACT_MEMORIES = "auto_extract_memories"
 
         @Volatile
         private var INSTANCE: AppSettings? = null
