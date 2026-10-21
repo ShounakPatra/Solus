@@ -35,4 +35,29 @@ class ChatPromptPolicyTest {
             ChatPromptPolicy.mediaPipeBasePrompt(history, "follow-up", false)
         )
     }
+
+    @Test
+    fun nativeGemmaTaskIncludesMemoryContextWhenProvided() {
+        val memoryBlock = "[User Memory & Preferences]\n- [Fact] My dog's name is Cooper\n[End of User Memory]"
+        val result = ChatPromptPolicy.mediaPipeBasePrompt(
+            fullHistoryPrompt = "$memoryBlock\n\nUser: hi\nAssistant:",
+            rawUserText = "What is my dog's name?",
+            useNativeGemmaTaskTemplate = true,
+            memoryContext = memoryBlock
+        )
+
+        assertEquals("$memoryBlock\n\nWhat is my dog's name?", result)
+    }
+
+    @Test
+    fun nativeGemmaRetryIncludesMemoryContextWhenProvided() {
+        val memoryBlock = "[User Memory & Preferences]\n- [Fact] My dog's name is Cooper\n[End of User Memory]"
+        val result = ChatPromptPolicy.nativeGemmaRetryPrompt(
+            rawUserText = "What is my dog's name?",
+            memoryContext = memoryBlock
+        )
+
+        assertTrue(result.contains(memoryBlock))
+        assertTrue(result.endsWith("What is my dog's name?"))
+    }
 }

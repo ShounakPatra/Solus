@@ -15,7 +15,8 @@ data class DownloadSnapshot(
     val totalBytes: Long = -1L,
     val bytesPerSecond: Long = 0L,
     val localPath: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val downloadedAt: Long = 0L
 )
 
 object DownloadStateStore {
@@ -40,13 +41,19 @@ object DownloadStateStore {
                 if (!key.startsWith(KEY_PREFIX)) return@forEach
                 val json = value as? String ?: return@forEach
                 runCatching { decode(json) }.getOrNull()?.let { snapshot ->
-                    put(snapshot.modelId, snapshot)
-                    lastPersisted[snapshot.modelId] = snapshot
+                    val sanitized = snapshot.copy(errorMessage = null)
+                    put(sanitized.modelId, sanitized)
+                    lastPersisted[sanitized.modelId] = sanitized
                 }
             }
         }
         if (restored.isNotEmpty()) {
             _snapshots.value = _snapshots.value + restored
+            val editor = prefs.edit()
+            restored.values.forEach { cleaned ->
+                editor.putString(KEY_PREFIX + cleaned.modelId, encode(cleaned))
+            }
+            editor.apply()
         }
     }
 
@@ -54,6 +61,15 @@ object DownloadStateStore {
     fun update(snapshot: DownloadSnapshot) {
         _snapshots.value = _snapshots.value + (snapshot.modelId to snapshot)
         persist(snapshot)
+    }
+
+    @Synchronized
+    fun remove(modelId: String): Boolean {
+        _snapshots.value = _snapshots.value - modelId
+        lastPersisted.remove(modelId)
+        lastPersistedAt.remove(modelId)
+        val prefs = preferences ?: return true
+        return prefs.edit().remove(KEY_PREFIX + modelId).commit()
     }
 
     fun get(modelId: String): DownloadSnapshot? = _snapshots.value[modelId]
@@ -75,6 +91,7 @@ object DownloadStateStore {
             snapshot.totalBytes != previous.totalBytes ||
             snapshot.localPath != previous.localPath ||
             snapshot.errorMessage != previous.errorMessage ||
+            snapshot.downloadedAt != previous.downloadedAt ||
             kotlin.math.abs(snapshot.downloadedBytes - previous.downloadedBytes) >= PERSIST_BYTE_STEP ||
             now - (lastPersistedAt[snapshot.modelId] ?: 0L) >= PERSIST_INTERVAL_MS
         if (!shouldPersist) return
@@ -93,6 +110,7 @@ object DownloadStateStore {
         put("bytesPerSecond", snapshot.bytesPerSecond)
         put("localPath", snapshot.localPath ?: JSONObject.NULL)
         put("errorMessage", snapshot.errorMessage ?: JSONObject.NULL)
+        put("downloadedAt", snapshot.downloadedAt)
     }.toString()
 
     private fun decode(value: String): DownloadSnapshot {
@@ -108,11 +126,8 @@ object DownloadStateStore {
             totalBytes = json.optLong("totalBytes", -1L),
             bytesPerSecond = json.optLong("bytesPerSecond", 0L),
             localPath = if (json.isNull("localPath")) null else json.optString("localPath"),
-            errorMessage = when {
-                restoredStatus == ModelStatus.Downloading -> "Download interrupted. Tap Resume to continue."
-                json.isNull("errorMessage") -> null
-                else -> json.optString("errorMessage")
-            }
+            errorMessage = null,
+            downloadedAt = json.optLong("downloadedAt", 0L)
         )
     }
 }

@@ -1,5 +1,6 @@
 package com.shounak.localmeshai
 import android.Manifest
+import android.content.Intent
 import android.os.Bundle
 import android.os.Build
 import android.content.pm.PackageManager
@@ -7,6 +8,7 @@ import android.view.Display
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,7 +28,14 @@ import androidx.compose.runtime.*
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -40,6 +49,7 @@ import com.shounak.localmeshai.ui.screens.ChatScreen
 import com.shounak.localmeshai.ui.screens.ModelManagerScreen
 import com.shounak.localmeshai.ui.theme.LocalMeshAITheme
 import com.shounak.localmeshai.ui.viewmodels.MainViewModel
+import com.shounak.localmeshai.utils.AppCacheCleaner
 import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.GlassDispersionCard
 import com.shounak.localmeshai.utils.InitCrashGuard
@@ -78,41 +88,62 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
+import com.shounak.localmeshai.utils.AppSettings
 import com.shounak.localmeshai.utils.ModelRuntimeCoordinator
 import com.shounak.localmeshai.utils.ModelRuntimeOwner
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
-import androidx.emoji2.bundled.BundledEmojiCompatConfig
-import androidx.emoji2.text.EmojiCompat
 
 class MainActivity : ComponentActivity() {
+    private val mainViewModel: MainViewModel by viewModels()
+    private var isFirstStart = true
+
+    override fun onStart() {
+        super.onStart()
+        isFirstStart = false
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (isFinishing) {
+            ModelRuntimeCoordinator.shutdownScope.launch {
+                ModelRuntimeCoordinator.releaseAll()
+                AppCacheCleaner.clearAppCache(applicationContext)
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
-        // Bundle the Emoji 16 font so user prompts and model responses render
-        // consistently even on phones without a downloadable emoji provider.
-        EmojiCompat.init(
-            BundledEmojiCompatConfig(this)
-                .setReplaceAll(true)
-        )
-        InitCrashGuard.checkAndRecoverCrash(this)
-        lifecycleScope.launch(Dispatchers.IO) {
-            LiteRtRuntimeCache.pruneOnStartup(this@MainActivity)
-        }
+        handleIntent(intent)
+        com.shounak.localmeshai.utils.CrashReportManager.install(this)
         enableEdgeToEdge()
         preferHighestRefreshRate()
         requestNotificationPermissionIfNeeded()
+        val decor = window.decorView
+        decor.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                decor.viewTreeObserver.removeOnPreDrawListener(this)
+                decor.post {
+                    com.shounak.localmeshai.data.StartupCoordinator.getInstance(applicationContext).onFirstFrameRendered()
+                }
+                return true
+            }
+        })
         setContent {
-            LocalMeshAITheme {
-                val mainViewModel: MainViewModel = viewModel()
+            val appSettingsData by mainViewModel.appSettingsData.collectAsState()
 
+            LocalMeshAITheme(darkTheme = appSettingsData.enableDarkMode) {
+                com.shounak.localmeshai.features.WorkspaceAppearance {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
                     MainNavigation(mainViewModel)
+                }
                 }
             }
         }
@@ -156,6 +187,23 @@ class MainActivity : ComponentActivity() {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 42)
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent == null) return
+        if (intent.getBooleanExtra(com.shounak.localmeshai.utils.AppUpdateManager.EXTRA_OPEN_SETTINGS_ABOUT, false)) {
+            // Do not trust unverified incoming intent extras for download URLs or version data.
+            // Trigger independent verification against the official repository release API.
+            mainViewModel.checkForUpdates(silent = false)
+            mainViewModel.openSettings(scrollToAbout = true)
+            intent.removeExtra(com.shounak.localmeshai.utils.AppUpdateManager.EXTRA_OPEN_SETTINGS_ABOUT)
+        }
+    }
 }
 
 sealed class Screen(
@@ -171,43 +219,85 @@ sealed class Screen(
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun MainNavigation(mainViewModel: MainViewModel) {
-    val hazeState = remember { HazeState() }
+    val reduceMotion = com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion
     val items = remember { listOf(Screen.Chat, Screen.Models) }
     var selectedIndex by androidx.compose.runtime.saveable.rememberSaveable {
         mutableIntStateOf(0)
     }
+    // Keep indicator animation outside Scaffold's subcomposed bar and page lifetime.
+    val navigationPosition by animateFloatAsState(
+        targetValue = selectedIndex.toFloat(),
+        animationSpec = if (reduceMotion) androidx.compose.animation.core.snap()
+            else tween(durationMillis = 160, easing = FastOutSlowInEasing),
+        label = "main_navigation_position"
+    )
+    // A destination never samples a cached capture from the outgoing tab.
+    val hazeState = remember(selectedIndex) { HazeState() }
     val context = androidx.compose.ui.platform.LocalContext.current
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
     val tabSwipeThresholdPx = with(density) { 64.dp.toPx() }
     val isKeyboardOpen = WindowInsets.isImeVisible
-    val (isCompatible, compatibilityMessage) = remember { DeviceUtils.isDeviceCompatible(context) }
-    var showRequirementDialog by remember { mutableStateOf(!isCompatible) }
+    val prefs = remember { context.getSharedPreferences("solus_prefs", android.content.Context.MODE_PRIVATE) }
+    var showOnboarding by remember {
+        mutableStateOf(!prefs.getBoolean("onboarding_completed", false))
+    }
 
-    if (showRequirementDialog) {
-        AlertDialog(
-            onDismissRequest = { showRequirementDialog = false },
-            title = { Text("Phone may not meet requirements") },
-            text = {
-                Text(
-                    "$compatibilityMessage\n\n" +
-                    "Local AI models run on the phone GPU and require:\n" +
-                    "\u2022 MediaTek Dimensity 7000 series or higher\n" +
-                    "\u2022 Qualcomm Snapdragon 6 Gen series or higher\n" +
-                    "\u2022 Samsung Exynos 1380 or higher\n" +
-                    "\u2022 8 GB nominal RAM\n\n" +
-                    "You can still browse and download models, but local inference may not work on this device."
-                )
+    if (showOnboarding) {
+        com.shounak.localmeshai.ui.components.OnboardingOverlay(
+            isVisible = showOnboarding,
+            hazeState = hazeState,
+            onGoToModels = {
+                prefs.edit().putBoolean("onboarding_completed", true).apply()
+                showOnboarding = false
+                selectedIndex = 1
+            }
+        )
+    }
+
+    val pendingCrashReport by mainViewModel.pendingCrashPrompt.collectAsState()
+    pendingCrashReport?.let { report ->
+        com.shounak.localmeshai.ui.components.CrashPromptDialog(
+            report = report,
+            hazeState = hazeState,
+            onSend = {
+                mainViewModel.sendPendingCrashReport(context)
             },
-            confirmButton = {
-                Button(onClick = { (context as? android.app.Activity)?.finish() }) {
-                    Text("Close app")
+            onCancel = {
+                mainViewModel.dismissPendingCrashPrompt()
+            }
+        )
+    }
+
+    val settingsDialogVisible by mainViewModel.settingsDialogVisible.collectAsState()
+    val scrollToAboutRequested by mainViewModel.scrollToAboutRequested.collectAsState()
+    val appSettingsData by mainViewModel.appSettingsData.collectAsState()
+
+    var autoHideWasEnabledWhenSettingsOpened by remember { mutableStateOf(false) }
+    var autoHideTurnedOnInSettings by remember { mutableStateOf(false) }
+
+    LaunchedEffect(settingsDialogVisible) {
+        if (settingsDialogVisible) {
+            autoHideWasEnabledWhenSettingsOpened = appSettingsData.enableAutoHideBottomBar
+            autoHideTurnedOnInSettings = false
+        }
+    }
+
+    if (settingsDialogVisible) {
+        com.shounak.localmeshai.ui.screens.SettingsDialog(
+            mainViewModel = mainViewModel,
+            hazeState = hazeState,
+            scrollToAbout = scrollToAboutRequested,
+            onDismissRequest = {
+                val shouldGoToChat = (autoHideTurnedOnInSettings || !autoHideWasEnabledWhenSettingsOpened) &&
+                    appSettingsData.enableAutoHideBottomBar
+                if (shouldGoToChat) {
+                    selectedIndex = 0
                 }
+                mainViewModel.dismissSettings()
             },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showRequirementDialog = false }) {
-                    Text("Continue anyway")
-                }
+            onAutoHideToggleChanged = { enabled ->
+                autoHideTurnedOnInSettings = enabled
             }
         )
     }
@@ -217,7 +307,7 @@ fun MainNavigation(mainViewModel: MainViewModel) {
             containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
                 androidx.compose.animation.AnimatedVisibility(
-                    visible = !isKeyboardOpen,
+                    visible = !isKeyboardOpen && !appSettingsData.enableAutoHideBottomBar,
                     enter = androidx.compose.animation.fadeIn(
                         animationSpec = androidx.compose.animation.core.tween(180)
                     ) + androidx.compose.animation.slideInVertically(
@@ -241,6 +331,7 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                         LiquidBottomNav(
                             items = items,
                             selectedIndex = selectedIndex,
+                            selectionPosition = navigationPosition,
                             hazeState = hazeState,
                             onSelect = { index -> selectedIndex = index }
                         )
@@ -248,62 +339,74 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                 }
             }
         ) { innerPadding ->
-            // A pager keeps the adjacent page beside the current one. On some
-            // display densities it can settle on a fractional pixel and expose a
-            // differently coloured strip at the right edge of Chat. A contained
-            // crossfade has one authoritative tab state and no adjacent page edge.
-            androidx.compose.animation.Crossfade(
-                targetState = selectedIndex,
-                animationSpec = androidx.compose.animation.core.tween(170),
-                label = "main_tab_crossfade",
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-                    .consumeWindowInsets(innerPadding)
-                    .pointerInput(selectedIndex, isKeyboardOpen, tabSwipeThresholdPx) {
-                        if (isKeyboardOpen) return@pointerInput
-                        var accumulatedDragX = 0f
-                        detectHorizontalDragGestures(
-                            onDragStart = { accumulatedDragX = 0f },
-                            onHorizontalDrag = { change, dragAmount ->
-                                accumulatedDragX += dragAmount
-                                change.consume()
-                            },
-                            onDragCancel = { accumulatedDragX = 0f },
-                            onDragEnd = {
-                                val targetIndex = when {
-                                    accumulatedDragX <= -tabSwipeThresholdPx ->
-                                        (selectedIndex + 1).coerceAtMost(items.lastIndex)
-                                    accumulatedDragX >= tabSwipeThresholdPx ->
-                                        (selectedIndex - 1).coerceAtLeast(0)
-                                    else -> selectedIndex
-                                }
-                                if (targetIndex != selectedIndex) {
-                                    selectedIndex = targetIndex
-                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                }
-                                accumulatedDragX = 0f
-                            }
-                        )
-                    }
-            ) { page ->
+            // Animate only the destination over an opaque background. The outgoing
+            // page and its blur capture are disposed immediately, avoiding colour bleed.
+            key(selectedIndex) {
+                val pageSlide = remember(reduceMotion) {
+                    Animatable(if (reduceMotion) 0f else if (selectedIndex == 1) 0.08f else -0.08f)
+                }
+                LaunchedEffect(reduceMotion) {
+                    if (reduceMotion) pageSlide.snapTo(0f)
+                    else pageSlide.animateTo(0f, tween(160, easing = FastOutSlowInEasing))
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
+                        .padding(top = innerPadding.calculateTopPadding())
                         .background(MaterialTheme.colorScheme.background)
-                ) {
-                    when (page) {
-                        0 -> ChatScreen(mainViewModel = mainViewModel, hazeState = hazeState)
-                        1 -> Column(modifier = Modifier.fillMaxSize()) {
-                            LiquidTopBar(
-                                title = Screen.Models.title,
-                                hazeState = hazeState
+                        .clipToBounds()
+                        // Bottom space belongs to floating controls; let each screen
+                        // consume the full IME inset when the keyboard opens.
+                        .consumeWindowInsets(PaddingValues(top = innerPadding.calculateTopPadding()))
+                        .pointerInput(selectedIndex, isKeyboardOpen, tabSwipeThresholdPx) {
+                            if (isKeyboardOpen) return@pointerInput
+                            var accumulatedDragX = 0f
+                            detectHorizontalDragGestures(
+                                onDragStart = { accumulatedDragX = 0f },
+                                onHorizontalDrag = { _, dragAmount ->
+                                    accumulatedDragX += dragAmount
+                                },
+                                onDragCancel = { accumulatedDragX = 0f },
+                                onDragEnd = {
+                                    val targetIndex = when {
+                                        accumulatedDragX <= -tabSwipeThresholdPx ->
+                                            (selectedIndex + 1).coerceAtMost(items.lastIndex)
+                                        accumulatedDragX >= tabSwipeThresholdPx ->
+                                            (selectedIndex - 1).coerceAtLeast(0)
+                                        else -> selectedIndex
+                                    }
+                                    if (targetIndex != selectedIndex) {
+                                        selectedIndex = targetIndex
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    }
+                                    accumulatedDragX = 0f
+                                }
                             )
-                            Box(modifier = Modifier.weight(1f)) {
-                                ModelManagerScreen(
-                                    mainViewModel = mainViewModel,
+                        }
+                ) {
+                    val page = selectedIndex
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { translationX = pageSlide.value * size.width }
+                            .background(MaterialTheme.colorScheme.background)
+                    ) {
+                        when (page) {
+                            0 -> ChatScreen(mainViewModel = mainViewModel, hazeState = hazeState,
+                                bottomContentInset = if (isKeyboardOpen) 0.dp else innerPadding.calculateBottomPadding())
+                            1 -> Column(modifier = Modifier.fillMaxSize()) {
+                                LiquidTopBar(
+                                    title = Screen.Models.title,
                                     hazeState = hazeState
                                 )
+                                Box(modifier = Modifier.weight(1f)) {
+                                    ModelManagerScreen(
+                                        mainViewModel = mainViewModel,
+                                        hazeState = hazeState,
+                                        bottomContentInset = if (isKeyboardOpen) 0.dp else innerPadding.calculateBottomPadding(),
+                                        onGoToChat = { selectedIndex = 0 }
+                                    )
+                                }
                             }
                         }
                     }
@@ -317,9 +420,11 @@ fun MainNavigation(mainViewModel: MainViewModel) {
 private fun LiquidBottomNav(
     items: List<Screen>,
     selectedIndex: Int,
+    selectionPosition: Float,
     hazeState: HazeState,
     onSelect: (Int) -> Unit
 ) {
+    val reduceMotion = com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion
     val density = LocalDensity.current
     var containerWidthPx by remember { mutableFloatStateOf(0f) }
     var dragOffsetPx by remember { mutableFloatStateOf(0f) }
@@ -353,24 +458,18 @@ private fun LiquidBottomNav(
     } else {
         0f
     }
-    val animatedIndicatorOffsetPx by animateFloatAsState(
-        targetValue = targetIndicatorOffsetPx,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "bottom_nav_indicator_offset"
-    )
+    val animatedIndicatorOffsetPx = (selectionPosition * stepPx + indicatorInsetPx)
+        .coerceIn(0f, maxIndicatorOffsetPx)
     val indicatorScale by animateFloatAsState(
         targetValue = if (isIndicatorDragging) 1.045f else 1f,
-        animationSpec = spring(
+        animationSpec = if (reduceMotion) androidx.compose.animation.core.snap() else spring(
             dampingRatio = Spring.DampingRatioLowBouncy,
             stiffness = Spring.StiffnessMediumLow
         ),
         label = "bottom_nav_indicator_scale"
     )
     val indicatorOffsetPx = if (isIndicatorDragging) targetIndicatorOffsetPx else animatedIndicatorOffsetPx
-    val switchPulse = tabSwitchBounce.value
+    val switchPulse = if (reduceMotion) 0f else tabSwitchBounce.value
 
     LaunchedEffect(selectedIndex) {
         if (!isIndicatorDragging) {
@@ -396,12 +495,14 @@ private fun LiquidBottomNav(
         }
     }
 
-    LiquidGlassBox(
+    val navShape = RoundedCornerShape(26.dp)
+    Box(
         modifier = Modifier
             .widthIn(max = 420.dp)
+            .fillMaxWidth()
             .height(84.dp)
             .fluidReveal(delayMillis = 120, initialYOffset = 18.dp)
-            .animatedGlassHalo(alpha = 0.055f, durationMillis = 5_200)
+            .clip(navShape)
             .onSizeChanged { containerWidthPx = it.width.toFloat() }
             .pointerInput(items.size, selectedIndex, containerWidthPx) {
                 var dragStartedOnIndicator = false
@@ -438,14 +539,17 @@ private fun LiquidBottomNav(
                         }
                     }
                 )
-            },
-        hazeState = hazeState,
-        cornerRadius = 22.dp,
-        refractionHeight = 30.dp,
-        dispersion = 0.82f,
-        blurRadius = 34.dp,
-        animatedCaustics = true
+            }
     ) {
+        LiquidGlassBox(
+            modifier = Modifier.matchParentSize(),
+            hazeState = hazeState,
+            cornerRadius = 22.dp,
+            refractionHeight = 30.dp,
+            dispersion = 0.82f,
+            blurRadius = 0.dp,
+            animatedCaustics = true
+        ) {}
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -464,7 +568,7 @@ private fun LiquidBottomNav(
                             translationY = -switchPulse * switchLiftPx
                         },
                     cornerRadius = 20.dp,
-                    blurRadius = 32.dp,
+                    blurRadius = 0.dp,
                     refractionStrength = 0.17f,
                     dispersionAmount = 0.032f,
                     tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
@@ -514,7 +618,7 @@ private fun LiquidTopBar(
                 .fillMaxWidth()
                 .height(56.dp)
                 .fluidReveal(initialYOffset = 10.dp)
-                .animatedGlassHalo(alpha = 0.05f, durationMillis = 4_700),
+                .animatedGlassHalo(shape = RoundedCornerShape(16.dp), alpha = 0.05f, durationMillis = 4_700),
             hazeState = hazeState,
             cornerRadius = 16.dp,
             refractionHeight = 24.dp,

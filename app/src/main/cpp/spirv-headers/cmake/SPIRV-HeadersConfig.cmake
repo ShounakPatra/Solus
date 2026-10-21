@@ -1,0 +1,6 @@
+if(NOT TARGET SPIRV-Headers::SPIRV-Headers)
+    add_library(SPIRV-Headers INTERFACE)
+    add_library(SPIRV-Headers::SPIRV-Headers ALIAS SPIRV-Headers)
+    target_include_directories(SPIRV-Headers INTERFACE "${CMAKE_CURRENT_LIST_DIR}/../include")
+endif()
+set(SPIRV-Headers_FOUND TRUE)

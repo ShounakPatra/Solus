@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -52,6 +53,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -177,6 +180,7 @@ fun Modifier.fluidReveal(
     initialXOffset: Dp = 0.dp,
     initialRotationZ: Float = 0f
 ): Modifier {
+    if (com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion) return this
     val quality = rememberLiquidGlassQuality()
     val density = LocalDensity.current
     var hasRevealed by rememberSaveable { mutableStateOf(false) }
@@ -186,19 +190,24 @@ fun Modifier.fluidReveal(
             progress.snapTo(1f)
             return@LaunchedEffect
         }
+        if (quality == LiquidGlassQuality.Fallback && delayMillis > 180) {
+            progress.snapTo(1f)
+            hasRevealed = true
+            return@LaunchedEffect
+        }
         progress.snapTo(0f)
         val effectiveDelay = if (quality == LiquidGlassQuality.Fallback) {
             delayMillis.coerceAtMost(80)
         } else {
-            delayMillis
+            delayMillis.coerceAtMost(250)
         }
         if (effectiveDelay > 0) delay(effectiveDelay.toLong())
         progress.animateTo(
             targetValue = 1f,
             animationSpec = spring(
-                dampingRatio = if (quality == LiquidGlassQuality.Fallback) 0.68f else 0.72f,
-                stiffness = if (quality == LiquidGlassQuality.Fallback) 520f else 430f,
-                visibilityThreshold = 0.001f
+                dampingRatio = if (quality == LiquidGlassQuality.Fallback) 0.85f else 0.76f,
+                stiffness = if (quality == LiquidGlassQuality.Fallback) 600f else 380f,
+                visibilityThreshold = 0.005f
             )
         )
         hasRevealed = true
@@ -225,11 +234,14 @@ fun Modifier.fluidReveal(
 @Composable
 fun Modifier.animatedGlassHalo(
     enabled: Boolean = true,
+    shape: Shape? = null,
     alpha: Float = 0.085f,
-    durationMillis: Int = 3_800
+    durationMillis: Int = 3_800,
+    accentColor: Color? = null
 ): Modifier {
-    if (!enabled) return this
-    val accent = MaterialTheme.colorScheme.primary
+    val isBusy by ModelRuntimeCoordinator.isRuntimeBusy.collectAsState()
+    if (!enabled || isBusy || com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion) return this
+    val accent = accentColor ?: MaterialTheme.colorScheme.primary
     return this.drawWithCache {
         val center = Offset(
             x = size.width * 0.34f,
@@ -246,14 +258,45 @@ fun Modifier.animatedGlassHalo(
             center = center,
             radius = radius
         )
+        val outline = shape?.createOutline(size, layoutDirection, this)
+        val cachedPath = when (outline) {
+            is Outline.Rounded -> Path().apply { addRoundRect(outline.roundRect) }
+            is Outline.Generic -> outline.path
+            else -> null
+        }
         onDrawWithContent {
             drawContent()
-            drawCircle(
-                brush = haloBrush,
-                center = center,
-                radius = radius,
-                blendMode = BlendMode.Screen
-            )
+            if (cachedPath != null) {
+                clipPath(cachedPath) {
+                    drawCircle(
+                        brush = haloBrush,
+                        center = center,
+                        radius = radius,
+                        blendMode = BlendMode.Screen
+                    )
+                }
+            } else if (outline is Outline.Rectangle) {
+                clipRect(
+                    left = outline.rect.left,
+                    top = outline.rect.top,
+                    right = outline.rect.right,
+                    bottom = outline.rect.bottom
+                ) {
+                    drawCircle(
+                        brush = haloBrush,
+                        center = center,
+                        radius = radius,
+                        blendMode = BlendMode.Screen
+                    )
+                }
+            } else {
+                drawCircle(
+                    brush = haloBrush,
+                    center = center,
+                    radius = radius,
+                    blendMode = BlendMode.Screen
+                )
+            }
         }
     }
 }
@@ -323,18 +366,26 @@ fun Modifier.glassEffect(
     blurRadius: Dp = 20.dp,
     tintColor: Color = Color.White.copy(alpha = 0.10f),
     borderAlpha: Float = 0.25f,
+    borderColor: Color? = null
 ): Modifier {
     val colors = MaterialTheme.colorScheme
     val isSurfaceLevel = tintColor == colors.surfaceContainerLowest ||
         tintColor == colors.surfaceContainerLow ||
         tintColor == colors.surfaceContainer ||
         tintColor == colors.surfaceContainerHigh ||
-        tintColor == colors.surfaceContainerHighest
+        tintColor == colors.surfaceContainerHighest ||
+        tintColor == colors.primaryContainer ||
+        tintColor == colors.primary
     val effectiveTint = if (isSurfaceLevel) {
         tintColor
     } else {
+        val resolvedAlpha = if (tintColor.alpha <= 0.40f) {
+            tintColor.alpha
+        } else {
+            (tintColor.alpha * 0.38f).coerceAtMost(0.24f)
+        }
         tintColor
-            .copy(alpha = (tintColor.alpha * 0.38f).coerceAtMost(0.14f))
+            .copy(alpha = resolvedAlpha)
             .compositeOver(colors.surfaceContainer)
     }
     // List items use cached translucent paint instead of a live background blur.
@@ -345,11 +396,12 @@ fun Modifier.glassEffect(
         .background(effectiveTint, shape)
 
     return blurred.drawWithCache {
+        val effectiveBorder = borderColor ?: colors.primary
         val surfaceBrush = Brush.linearGradient(
             colors = listOf(
                 colors.surfaceContainerHigh.copy(alpha = borderAlpha * 0.34f),
                 Color.Transparent,
-                colors.primary.copy(alpha = borderAlpha * 0.10f),
+                effectiveBorder.copy(alpha = borderAlpha * 0.10f),
                 Color.Transparent
             ),
             start = Offset(-size.width * 0.20f, -size.height * 0.10f),
@@ -358,9 +410,9 @@ fun Modifier.glassEffect(
         val outline = shape.createOutline(size, layoutDirection, this)
         val outlineBrush = Brush.linearGradient(
             listOf(
-                colors.outline.copy(alpha = borderAlpha * 1.15f),
+                (borderColor ?: colors.outline).copy(alpha = borderAlpha * 1.15f),
                 colors.outlineVariant.copy(alpha = borderAlpha * 0.72f),
-                colors.primary.copy(alpha = borderAlpha * 0.42f),
+                effectiveBorder.copy(alpha = borderAlpha * 0.42f),
                 colors.outlineVariant.copy(alpha = borderAlpha * 0.62f)
             )
         )
@@ -386,31 +438,33 @@ fun LiquidGlassButton(
     shape: Shape = RoundedCornerShape(50),
     tintColor: Color = Color.White.copy(alpha = 0.10f),
     contentPadding: PaddingValues = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
+    blurRadius: Dp = 20.dp,
     content: @Composable RowScope.() -> Unit
 ) {
+    val visuals = com.shounak.localmeshai.features.LocalWorkspaceVisuals.current
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val haptic = LocalHapticFeedback.current
     val animatedScaleX by animateFloatAsState(
-        targetValue = if (isPressed) 0.965f else 1f,
+        targetValue = if (isPressed && !visuals.reduceMotion) 0.965f else 1f,
         animationSpec = spring(
-            dampingRatio = if (isPressed) 0.92f else 0.76f,
-            stiffness = if (isPressed) 650f else 480f,
+            dampingRatio = if (isPressed) 0.88f else 0.76f,
+            stiffness = if (isPressed) 600f else 380f,
             visibilityThreshold = 0.001f
         ),
         label = "liquid_button_scale_x"
     )
     val animatedScaleY by animateFloatAsState(
-        targetValue = if (isPressed) 0.91f else 1f,
+        targetValue = if (isPressed && !visuals.reduceMotion) 0.93f else 1f,
         animationSpec = spring(
-            dampingRatio = if (isPressed) 0.94f else 0.72f,
-            stiffness = if (isPressed) 720f else 440f,
+            dampingRatio = if (isPressed) 0.90f else 0.74f,
+            stiffness = if (isPressed) 640f else 360f,
             visibilityThreshold = 0.001f
         ),
         label = "liquid_button_scale_y"
     )
     val pressGlow by animateFloatAsState(
-        targetValue = if (isPressed) 1f else 0f,
+        targetValue = if (isPressed && !visuals.reduceMotion) 1f else 0f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMedium
@@ -419,9 +473,10 @@ fun LiquidGlassButton(
     )
 
     Row(
-        modifier = modifier
+        modifier = (if (visuals.largeControls) Modifier.minimumInteractiveComponentSize().then(modifier) else modifier)
             .animatedGlassHalo(
                 enabled = enabled && isPressed,
+                shape = shape,
                 alpha = 0.14f,
                 durationMillis = 920
             )
@@ -434,7 +489,7 @@ fun LiquidGlassButton(
             .glassEffect(
                 hazeState = hazeState,
                 shape = shape,
-                blurRadius = 20.dp,
+                blurRadius = blurRadius,
                 tintColor = tintColor,
                 borderAlpha = 0.34f + pressGlow * 0.28f
             )
@@ -447,14 +502,15 @@ fun LiquidGlassButton(
                 onClick()
             }
             .padding(contentPadding),
-        horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
         content = content
     )
 }
 
 @Composable
-fun Modifier.jellyOnTouch(sensitivity: Float = 2.4f): Modifier {
+fun Modifier.jellyOnTouch(sensitivity: Float = 6f): Modifier {
+    if (com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion) return this
     val rotationX = remember { Animatable(0f) }
     val rotationY = remember { Animatable(0f) }
     val pressScale = remember { Animatable(1f) }
@@ -497,19 +553,19 @@ fun Modifier.jellyOnTouch(sensitivity: Float = 2.4f): Modifier {
                 scope.launch {
                     rotationX.animateTo(
                         0f,
-                        spring(dampingRatio = 0.65f, stiffness = 680f)
+                        spring(dampingRatio = 0.72f, stiffness = 420f)
                     )
                 }
                 scope.launch {
                     rotationY.animateTo(
                         0f,
-                        spring(dampingRatio = 0.65f, stiffness = 680f)
+                        spring(dampingRatio = 0.72f, stiffness = 420f)
                     )
                 }
                 scope.launch {
                     pressScale.animateTo(
                         1f,
-                        spring(dampingRatio = 0.56f, stiffness = 520f)
+                        spring(dampingRatio = 0.72f, stiffness = 380f)
                     )
                 }
             }
@@ -663,8 +719,9 @@ fun GlassDispersionCard(
     val elevatedTint = tintColor
         .copy(alpha = (tintColor.alpha * 0.35f).coerceAtMost(0.14f))
         .compositeOver(colors.surfaceContainerHigh)
-    val causticShader = remember(quality) {
-        if (quality == LiquidGlassQuality.Full &&
+    val isBusy by ModelRuntimeCoordinator.isRuntimeBusy.collectAsState()
+    val causticShader = remember(quality, isBusy) {
+        if (!isBusy && quality == LiquidGlassQuality.Full &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
         ) {
             runCatching { createCausticShader() }.getOrNull()
@@ -674,11 +731,11 @@ fun GlassDispersionCard(
     }
 
     val dispersionEffect: RenderEffect? =
-        if (quality == LiquidGlassQuality.Full &&
+        if (!isBusy && quality == LiquidGlassQuality.Full &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             cardSize != IntSize.Zero
         ) {
-            remember(cardSize, refractionStrength, dispersionAmount) {
+            remember(cardSize, refractionStrength, dispersionAmount, isBusy) {
                 runCatching {
                     createDispersionRenderEffect(
                         cardSize = cardSize,
@@ -689,15 +746,17 @@ fun GlassDispersionCard(
             }
         } else null
 
+    val boxShape = remember(cornerRadius) { RoundedCornerShape(cornerRadius) }
     Box(
         modifier = modifier
             .animatedGlassHalo(
                 enabled = animatedCaustics,
+                shape = boxShape,
                 alpha = if (quality == LiquidGlassQuality.Full) 0.07f else 0.045f,
                 durationMillis = 4_600
             )
             .onSizeChanged { cardSize = it }
-            .clip(RoundedCornerShape(cornerRadius))
+            .clip(boxShape)
     ) {
 
         Box(
