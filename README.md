@@ -107,7 +107,7 @@ Models run locally; downloading models, checking updates and opening external li
 
 **Requirements:** Android 9.0+ (API 28+), ARM64-v8a device. Model weights require additional storage; RAM needs depend on the model.
 
-**APK upload pending:** The release page is being prepared before the APK is attached. The download link becomes available when `app-release.apk` appears in the [v6.0.0 release assets](https://github.com/ShounakPatra/Solus/releases/tag/v6.0.0). The size above describes the verified local APK.
+The signed **v6.0.0 APK is available** in the [release assets](https://github.com/ShounakPatra/Solus/releases/tag/v6.0.0). Its published size and SHA-256 match the verified release file. See the [release verification details](docs/releases/v6.0.0.md#apk-verification).
 
 ---
 
@@ -129,6 +129,8 @@ Models run locally; downloading models, checking updates and opening external li
 [Read the full v6.0.0 release notes →](docs/releases/v6.0.0.md) · [See what's planned for v6.0.5 →](#roadmap)
 
 Backups exclude model weights, access tokens and document indexes. Model compatibility and speed vary by file and phone.
+
+**Build validation:** [Android CI passed for commit `e9a01c0`](https://github.com/ShounakPatra/Solus/actions/runs/39578235174), including native tests, unit tests, lint, instrumentation-test compilation, debug/release builds and APK packaging checks. CI does not execute inference on a physical phone.
 
 ---
 
