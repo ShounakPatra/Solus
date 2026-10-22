@@ -526,12 +526,29 @@ static bool format_and_tokenize_prompt(
             inputs.chat_template_kwargs["enable_thinking"] = enable_thinking ? "true" : "false";
             auto params = common_chat_templates_apply(tmpls.get(), inputs);
             out_tokens = common_tokenize(holder->ctx, params.prompt.str(), false, true);
-            if (out_tokens.empty() || out_tokens.size() + output_token_reserve(holder->n_ctx, requested_output_tokens) >= static_cast<size_t>(holder->n_ctx)) {
+            const auto reserve = output_token_reserve(holder->n_ctx, requested_output_tokens);
+            while (out_tokens.size() + reserve >= static_cast<size_t>(holder->n_ctx)) {
+                // Drop complete old user turns, preserving all calls/results in the current turn.
+                size_t last_user = inputs.messages.size();
+                for (size_t i = 0; i < inputs.messages.size(); ++i) if (inputs.messages[i].role == "user") last_user = i;
+                size_t first = 0;
+                while (first < inputs.messages.size() && inputs.messages[first].role == "system") ++first;
+                if (first >= last_user) break;
+                size_t end = first + 1;
+                while (end < last_user && inputs.messages[end].role != "user") ++end;
+                inputs.messages.erase(inputs.messages.begin() + first, inputs.messages.begin() + end);
+                params = common_chat_templates_apply(tmpls.get(), inputs);
+                out_tokens = common_tokenize(holder->ctx, params.prompt.str(), false, true);
+            }
+            if (out_tokens.empty() || out_tokens.size() + reserve >= static_cast<size_t>(holder->n_ctx)) {
                 out_error = "Tool conversation exceeds context capacity";
                 out_failure_category = SOLUS_FAILURE_CONTEXT_CAPACITY;
                 return false;
             }
-            if (out_session) *out_session = std::make_unique<common_chat_session>(tmpls.get(), holder->vocab, inputs);
+            if (out_session) {
+                *out_session = std::make_unique<common_chat_session>(tmpls.get(), holder->vocab, inputs);
+                if (request.value("allow_calls", true) && (*out_session)->parser().empty()) throw std::runtime_error("Template has no tool-call parser");
+            }
             return true;
         } catch (const std::exception & e) {
             out_error = std::string("Tool template failed: ") + e.what();

@@ -1387,6 +1387,7 @@ fun ChatScreen(
                                             attemptId = message.attemptId.toLong(),
                                             revision = message.revision,
                                             reasoningText = message.reasoningText,
+                                            toolUses = message.toolUses,
                                             isThinkingActive = message.isThinkingActive,
                                             responseFormatVersion = message.responseFormatVersion,
                                             terminalStatus = message.terminalStatus,
@@ -3742,6 +3743,7 @@ private fun ChatBubble(
     attemptId: Long = 0L,
     revision: Int = 0,
     reasoningText: String? = null,
+    toolUses: List<com.shounak.localmeshai.ai.tools.ToolUse> = emptyList(),
     isThinkingActive: Boolean = false,
     responseFormatVersion: Int = 0,
     terminalStatus: RequestTerminalStatus? = null,
@@ -3844,6 +3846,7 @@ private fun ChatBubble(
                     )
                 }
 
+                if (!isUser && toolUses.isNotEmpty()) ToolUseChip(toolUses, messageId)
                 if (!isUser && presentation.showThinking) {
                     ThinkingProcessCard(
                         thinkingText = presentation.reasoningText.orEmpty(),
@@ -4562,6 +4565,7 @@ private fun FullscreenAnswerPanel(
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        if (!message.isUser && message.toolUses.isNotEmpty()) ToolUseChip(message.toolUses, message.id)
                         if (!message.isUser && presentation.showThinking) {
                             ThinkingProcessCard(
                                 thinkingText = presentation.reasoningText.orEmpty(),
@@ -4624,6 +4628,26 @@ private fun FullscreenAnswerPanel(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolUseChip(uses: List<com.shounak.localmeshai.ai.tools.ToolUse>, messageId: String) {
+    var expanded by rememberSaveable(messageId) { mutableStateOf(false) }
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+    ) {
+        Column(Modifier.clickable { expanded = !expanded }.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Used ${uses.map { it.name }.distinct().joinToString()} ${if (expanded) "▴" else "▾"}",
+                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            if (expanded) uses.forEach { use ->
+                val arguments = runCatching { org.json.JSONObject(use.arguments).optString("expression", use.arguments) }.getOrDefault(use.arguments)
+                Text("${use.name}: $arguments = ${use.result}", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

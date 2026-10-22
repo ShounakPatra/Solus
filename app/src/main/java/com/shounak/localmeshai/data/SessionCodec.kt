@@ -33,6 +33,7 @@ object SessionCodec {
                 mObj.put("id", msg.id)
                 mObj.put("text", if (msg.isUser) msg.text else ModelOutputSanitizer.clean(msg.text))
                 mObj.put("isUser", msg.isUser)
+                if (msg.toolUses.isNotEmpty()) mObj.put("toolUses", com.shounak.localmeshai.ai.tools.ToolUseCodec.encode(msg.toolUses))
                 if (msg.ragPassages.isNotEmpty()) mObj.put("ragPassages", com.shounak.localmeshai.features.RagPassage.encode(msg.ragPassages))
                 if (!msg.userMessageId.isNullOrBlank()) mObj.put("userMessageId", msg.userMessageId)
                 if (!msg.requestId.isNullOrBlank()) mObj.put("requestId", msg.requestId)
@@ -113,6 +114,7 @@ object SessionCodec {
                     val sources = message.getJSONArray("ragSources")
                     for (k in 0 until sources.length()) require(sources.get(k) is String) { "Invalid source name" }
                 }
+                if (message.has("toolUses")) com.shounak.localmeshai.ai.tools.ToolUseCodec.decode(message.getJSONArray("toolUses"))
                 if (message.has("ragPassages")) {
                     val passages = message.getJSONArray("ragPassages")
                     com.shounak.localmeshai.features.RagPassage.decode(passages)
@@ -235,6 +237,7 @@ object SessionCodec {
                         isUser = isUser,
                         id = id,
                         ragSources = ragSources,
+                        toolUses = com.shounak.localmeshai.ai.tools.ToolUseCodec.decode(mObj.optJSONArray("toolUses")),
                         ragPassages = com.shounak.localmeshai.features.RagPassage.decode(mObj.optJSONArray("ragPassages")),
                         ragChunkCount = ragChunkCount,
                         ragTopMatchPct = ragTopMatchPct,

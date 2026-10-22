@@ -196,6 +196,7 @@ class WorkspaceBackup internal constructor(
                     require(turn.get("isUser") is Boolean && turn.get("text") is String)
                     require(turn.getString("text").length <= 1_000_000)
                     require(turn.get("id") is String && turn.getString("id").isNotBlank() && messageIds.add(turn.getString("id"))) { "Invalid or duplicate message ID" }
+                    if (turn.has("toolUses")) com.shounak.localmeshai.ai.tools.ToolUseCodec.decode(turn.getJSONArray("toolUses"))
                     RagPassage.decode(turn.optJSONArray("ragPassages")).forEach { passage ->
                         require(passage.documentId.isNotBlank() && passage.chunkIndex >= 0 && passage.text.length <= 1_000_000)
                     }

@@ -66,9 +66,16 @@ class ChatInferenceManager(context: Context) {
     private var liteRtConversation: Conversation? = null
     private val liteRtToolRecorder = ToolUseRecorder()
     val lastLiteRtToolsUsed: List<ToolUse> get() = liteRtToolRecorder.snapshot()
+    private var ggufConversationTools: List<com.shounak.localmeshai.ai.tools.ChatTool> = emptyList()
     private var ggufConversationHasTools = false
     private val ggufToolRecorder = ToolUseRecorder()
-    val lastToolsUsed: List<ToolUse> get() = if (runtime == RuntimeKind.LlamaCpp) ggufToolRecorder.snapshot() else lastLiteRtToolsUsed
+    val lastToolsUsed: List<ToolUse> get() = when (runtime) {
+        RuntimeKind.LlamaCpp -> ggufToolRecorder.snapshot()
+        RuntimeKind.LiteRtLm -> lastLiteRtToolsUsed
+        else -> emptyList()
+    }
+    private var lastToolsRequestId = ""
+    fun toolsUsedForRequest(requestId: String): List<ToolUse> = if (requestId == lastToolsRequestId) lastToolsUsed else emptyList()
     private var liteRtToolsDisabledForLoad = false
     private var liteRtConversationHasTools = false
     private var liteRtCompletedTurns = 0
@@ -409,6 +416,7 @@ class ChatInferenceManager(context: Context) {
             }
             llamaCppEngine = engine
             runtime = RuntimeKind.LlamaCpp
+            ggufConversationTools = toolsForNewConversation()
             ggufConversationHasTools = AppSettings.getInstance(context).settings.value.enableToolCalling && llamaCppEngine?.supportsToolCalling() == true
             _isGgufActive.value = true
 
@@ -594,8 +602,7 @@ class ChatInferenceManager(context: Context) {
                 liteRtEngine = null
                 liteRtConversation = null
             } catch (closeError: Throwable) {
-                liteRtToolsDisabledForLoad = false
-            liteRtEngine = engine // Retain the engine and both leases for shutdown retry.
+                liteRtEngine = engine // Retain the engine and both leases for shutdown retry.
                 if (closeError !== t) t.addSuppressed(closeError)
                 throw t
             }
@@ -637,6 +644,9 @@ class ChatInferenceManager(context: Context) {
         onUpdate: (String) -> Unit
     ): InferenceExecutionResult = withContext(Dispatchers.IO) {
         stopRequested = false
+        lastToolsRequestId = requestId
+        liteRtToolRecorder.clear()
+        ggufToolRecorder.clear()
         lastLiteRtSnapshot = null
         // Keep the user's original spelling in chat/history, but translate
         // Unicode scripts such as (a+b)² for the inference request.  Small
@@ -882,8 +892,10 @@ class ChatInferenceManager(context: Context) {
                 stopRequested || isBeingClosed) throw failure
             Log.w(TAG, "First LiteRT tool turn failed before text; retrying without tools", failure)
             liteRtToolsDisabledForLoad = true
+            val toolsAlreadyUsed = liteRtToolRecorder.snapshot()
             runCatching { liteRtConversation?.close() }
             liteRtConversation = createLiteRtConversation(liteRtConversationMode)
+            toolsAlreadyUsed.forEach(liteRtToolRecorder::add)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
             val answer = attempt()
@@ -1121,40 +1133,54 @@ class ChatInferenceManager(context: Context) {
             else listOf("user" to prompt.trim())
         val messages = baseMessages
 
-        ggufToolRecorder.clear()
-        if (ggufConversationHasTools && mediaInputs.isEmpty()) {
-            val history = org.json.JSONArray().apply {
-                messages.forEach { (role, content) -> put(org.json.JSONObject().put("role", role).put("content", content)) }
-            }
-            val result = com.shounak.localmeshai.ai.tools.ToolCallingLoop.run(
-                messages = history,
-                tools = listOf(CalculatorTool(), CurrentDateTimeTool()),
-                record = ggufToolRecorder::add,
-                checkActive = { if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled") }
-            ) { request ->
-                var parsed: String? = null
-                val status = engine.generateMultimodalStream(
-                    prompt = prompt, messages = messages, enableThinking = !noThinking,
-                    samplingParams = profileSampling(), onMetrics = onMetrics,
-                    toolRequestJson = request, onToolResponse = { parsed = it }, onToken = {}
-                )
-                if (status == LlamaGenerationResult.Stopped) throw CancellationException("Generation cancelled")
-                org.json.JSONObject(checkNotNull(parsed) { "Missing tool response" })
-            }
-            val answer = result.optString("content", "")
-            val reasoning = result.optString("reasoning_content", "")
-            responseController?.isStructuredMode = true
-            responseController?.appendStructured(answer, reasoning, false, reqId = requestId, attemptId = 1)
-            publisher?.notifyStructuredUpdate()
-            if (answer.isNotEmpty()) timing?.recordFirstToken()
-            return answer
-        }
-
         val isVulkan = engine.activeBackend == LlamaBackend.VULKAN
         var firstTokenRecorded = false
+        var pendingToolHistory: org.json.JSONArray? = null
         responseController?.isStructuredMode = true
-
         try {
+            ggufToolRecorder.clear()
+            if (ggufConversationHasTools && mediaInputs.isEmpty()) {
+                try {
+                    val history = org.json.JSONArray().apply {
+                        messages.forEach { (role, content) -> put(org.json.JSONObject().put("role", role).put("content", content)) }
+                    }
+                    pendingToolHistory = history
+                    val result = com.shounak.localmeshai.ai.tools.ToolCallingLoop.run(
+                        messages = history,
+                        tools = ggufConversationTools,
+                        record = ggufToolRecorder::add,
+                        checkActive = { if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled") }
+                    ) { request ->
+                        var parsed: String? = null
+                        val status = engine.generateMultimodalStream(
+                            prompt = prompt, messages = messages, enableThinking = !noThinking,
+                            samplingParams = profileSampling(), onMetrics = onMetrics,
+                            toolRequestJson = request, onToolResponse = { parsed = it }, onToken = {}
+                        )
+                        if (status == LlamaGenerationResult.Stopped) throw CancellationException("Generation cancelled")
+                        org.json.JSONObject(checkNotNull(parsed) { "Missing tool response" })
+                    }
+                    val answer = result.optString("content", "")
+                    val reasoning = result.optString("reasoning_content", "")
+                    responseController?.isStructuredMode = true
+                    responseController?.appendStructured(answer, reasoning, false, reqId = requestId, attemptId = 1)
+                    publisher?.notifyStructuredUpdate()
+                    if (answer.isNotEmpty()) timing?.recordFirstToken()
+                    return answer
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    if (failure is LlamaExecutionException && failure.category in setOf(
+                        LlamaFailureCategory.NumericalInstability, LlamaFailureCategory.BackendExecution,
+                        LlamaFailureCategory.GenerationDecodeFailed, LlamaFailureCategory.PromptDecodeFailed
+                    )) throw failure
+                    if (ggufToolRecorder.snapshot().isNotEmpty()) throw failure
+                    pendingToolHistory = null
+                    ggufConversationHasTools = false
+                    Log.w(TAG, "GGUF tools unavailable; retrying this conversation as ordinary chat", failure)
+                }
+            }
+
             val result = engine.generateMultimodalStream(
                 prompt = prompt,
                 messages = messages,
@@ -1254,7 +1280,15 @@ class ChatInferenceManager(context: Context) {
 
                 // 4. Retry generation once on CPU with the same messages
                 var retryFirstTokenRecorded = false
+                val recoveryToolRequest = pendingToolHistory?.takeIf { cpuEngine.supportsToolCalling() }?.let { history ->
+                    org.json.JSONObject().put("messages", history).put("allow_calls", false)
+                        .put("tools", org.json.JSONArray().apply {
+                            ggufConversationTools.forEach { put(org.json.JSONObject().put("type", "function")
+                                .put("function", org.json.JSONObject(it.getToolDescriptionJsonString()))) }
+                        }).toString()
+                }
                 val retryResult = cpuEngine.generateMultimodalStream(
+                    toolRequestJson = recoveryToolRequest,
                     prompt = prompt,
                     messages = messages,
                     mediaInputs = mediaInputs,
@@ -1332,6 +1366,7 @@ class ChatInferenceManager(context: Context) {
     fun resetConversation(noThinking: Boolean = false) {
         if (runtime == RuntimeKind.LlamaCpp) {
             llamaCppEngine?.resetAfterValidation()
+            ggufConversationTools = toolsForNewConversation()
             ggufConversationHasTools = AppSettings.getInstance(context).settings.value.enableToolCalling && llamaCppEngine?.supportsToolCalling() == true
             ggufToolRecorder.clear()
         }
@@ -1349,6 +1384,33 @@ class ChatInferenceManager(context: Context) {
         stopRequested = false
     }
 
+    private fun toolsForNewConversation(): List<com.shounak.localmeshai.ai.tools.ChatTool> = buildList {
+        add(CalculatorTool())
+        add(CurrentDateTimeTool())
+        if (AppSettings.getInstance(context).settings.value.enableRag) {
+            add(com.shounak.localmeshai.ai.tools.DocumentSearchTool { query ->
+                if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
+                try {
+                    kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+                        kotlinx.coroutines.withTimeout(5_000) {
+                            val settings = AppSettings.getInstance(context).settings.value
+                            val matches = com.shounak.localmeshai.rag.RagManager.getInstance(context).retrieve(
+                                query, topK = settings.ragTopK.coerceIn(1, 5), minScore = settings.ragMinSimilarity
+                            ).matches
+                            org.json.JSONObject().put("matches", org.json.JSONArray().apply {
+                                matches.forEach { match -> put(org.json.JSONObject()
+                                    .put("document", match.chunk.documentName).put("chunk", match.chunk.chunkIndex)
+                                    .put("text", match.chunk.text.take(2000))) }
+                            }).toString()
+                        }
+                    }
+                } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                    "Error: Document search timed out"
+                }
+            })
+        }
+    }
+
     private fun createLiteRtConversation(mode: LiteRtConversationMode): Conversation? {
         val engine = liteRtEngine ?: return null
         liteRtConversationMode = mode
@@ -1357,7 +1419,7 @@ class ChatInferenceManager(context: Context) {
         liteRtToolRecorder.clear()
         if (!liteRtToolsDisabledForLoad && AppSettings.getInstance(context).settings.value.enableToolCalling) {
             try {
-                val providers = listOf(CalculatorTool(), CurrentDateTimeTool()).map {
+                val providers = toolsForNewConversation().map {
                     tool(liteRtToolRecorder.recording(it))
                 }
                 val conversation = engine.createConversation(ConversationConfig(
@@ -1370,6 +1432,7 @@ class ChatInferenceManager(context: Context) {
                 liteRtConversationHasTools = true
                 return conversation
             } catch (failure: Exception) {
+                if (failure is CancellationException || stopRequested || isBeingClosed) throw failure
                 liteRtToolsDisabledForLoad = true
                 Log.w(TAG, "LiteRT tool conversation unavailable; using ordinary chat for this load", failure)
             }

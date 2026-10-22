@@ -99,6 +99,7 @@ data class ChatMessage(
     val emptyReason: EmptyResponseReason? = null,
     val revision: Int = 0,
     val responseFormatVersion: Int = 0,
+    val toolUses: List<com.shounak.localmeshai.ai.tools.ToolUse> = emptyList(),
     val ragPassages: List<com.shounak.localmeshai.features.RagPassage> = emptyList()
 )
 
@@ -1384,6 +1385,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             val currentMessage = messages[assistantIndex]
                             messages[assistantIndex] = currentMessage.copy(
                                 text = finalResponse,
+                                toolUses = inferenceManager.toolsUsedForRequest(requestId),
                                 errorMessage = errorMessageToDisplay,
                                 ragSources = if (isErrorResponse) emptyList() else ragSources,
                                 ragPassages = if (isErrorResponse) emptyList() else ragPassages,
@@ -1434,6 +1436,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             ?: messages[assistantIndex].reasoningText?.trim()?.takeIf { it.isNotBlank() }
                         messages[assistantIndex] = messages[assistantIndex].copy(
                             text = finalAnswer,
+                            toolUses = inferenceManager.toolsUsedForRequest(requestId),
                             reasoningText = finalReasoning,
                             isThinkingActive = false,
                             progress = null,
@@ -1477,6 +1480,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 ?: messages[assistantIndex].reasoningText?.trim()?.takeIf { it.isNotBlank() }
                             messages[assistantIndex] = messages[assistantIndex].copy(
                                 text = partialAnswer,
+                                toolUses = inferenceManager.toolsUsedForRequest(requestId),
                                 reasoningText = partialReasoning,
                                 isThinkingActive = false,
                                 errorMessage = t.message ?: "Model inference failure",

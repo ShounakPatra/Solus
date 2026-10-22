@@ -13,6 +13,7 @@ internal object PortableSettings {
         put("hideBottomBar", value.enableAutoHideBottomBar); put("autoUnloadMinutes", value.autoUnloadMinutes)
         put("autoUpdates", value.autoCheckUpdates); put("backend", value.llamaBackendPreference)
         put("memory", value.enablePersistentMemory); put("autoMemories", value.autoExtractMemories)
+        put("toolCalling", value.enableToolCalling)
         put("rag", value.enableRag); put("ragTopK", value.ragTopK); put("ragMinSimilarity", value.ragMinSimilarity)
     }
     fun decode(input: JSONObject, current: AppSettingsData): AppSettingsData {
@@ -40,6 +41,7 @@ internal object PortableSettings {
             enableAutoHideBottomBar = json.getBoolean("hideBottomBar"), autoUnloadMinutes = unload,
             autoCheckUpdates = json.getBoolean("autoUpdates"), llamaBackendPreference = backend,
             enablePersistentMemory = json.getBoolean("memory"), autoExtractMemories = json.getBoolean("autoMemories"),
+            enableToolCalling = json.getBoolean("toolCalling"),
             enableRag = json.getBoolean("rag"), ragTopK = topK, ragMinSimilarity = similarity
         )
     }
