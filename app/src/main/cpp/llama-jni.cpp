@@ -199,6 +199,8 @@ struct LlamaContextHolder {
     llama_model * model = nullptr;
     llama_context * ctx = nullptr;
     const llama_vocab * vocab = nullptr;
+    std::string tool_request_json;
+    std::string tool_response_json;
     std::string model_path;
     std::vector<std::string> model_paths;
     std::string projector_path;
@@ -510,6 +512,34 @@ static bool format_and_tokenize_prompt(
         return false;
     }
 
+    if (!holder->tool_request_json.empty()) {
+        try {
+            const auto request = common_json::parse(holder->tool_request_json);
+            auto tmpls = common_chat_templates_init(holder->model, "");
+            if (!tmpls) throw std::runtime_error("No chat template");
+            common_chat_templates_inputs inputs;
+            inputs.messages = common_chat_msgs_parse_oaicompat(request.at("messages"));
+            inputs.tools = common_chat_tools_parse_oaicompat(request.at("tools"));
+            inputs.tool_choice = request.value("allow_calls", true) ? COMMON_CHAT_TOOL_CHOICE_AUTO : COMMON_CHAT_TOOL_CHOICE_NONE;
+            inputs.enable_thinking = enable_thinking;
+            inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
+            inputs.chat_template_kwargs["enable_thinking"] = enable_thinking ? "true" : "false";
+            auto params = common_chat_templates_apply(tmpls.get(), inputs);
+            out_tokens = common_tokenize(holder->ctx, params.prompt.str(), false, true);
+            if (out_tokens.empty() || out_tokens.size() + output_token_reserve(holder->n_ctx, requested_output_tokens) >= static_cast<size_t>(holder->n_ctx)) {
+                out_error = "Tool conversation exceeds context capacity";
+                out_failure_category = SOLUS_FAILURE_CONTEXT_CAPACITY;
+                return false;
+            }
+            if (out_session) *out_session = std::make_unique<common_chat_session>(tmpls.get(), holder->vocab, inputs);
+            return true;
+        } catch (const std::exception & e) {
+            out_error = std::string("Tool template failed: ") + e.what();
+            out_failure_category = SOLUS_FAILURE_UNSUPPORTED_TEMPLATE;
+            return false;
+        }
+    }
+
     std::vector<std::string> roles_storage;
     std::vector<std::string> contents_storage;
     bool had_structured_messages = false;
@@ -710,6 +740,32 @@ static bool is_vulkan_supported_internal() {
 }
 
 extern "C" {
+
+// Called only while Kotlin holds the native operation lock and a lifecycle lease.
+JNIEXPORT jboolean JNICALL
+Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeSupportsTools(JNIEnv *, jclass, jlong handle) {
+    auto * holder = reinterpret_cast<LlamaContextHolder *>(handle);
+    if (!holder || !holder->model) return false;
+    try {
+        auto tmpls = common_chat_templates_init(holder->model, "");
+        if (!tmpls) return false;
+        auto caps = common_chat_templates_get_caps(tmpls.get());
+        return caps["supports_tools"] && caps["supports_tool_calls"];
+    } catch (...) { return false; }
+}
+
+JNIEXPORT void JNICALL
+Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeSetToolRequest(JNIEnv * env, jclass, jlong handle, jstring request) {
+    auto * holder = reinterpret_cast<LlamaContextHolder *>(handle);
+    holder->tool_request_json = request ? jstring_to_utf8(env, request) : "";
+    holder->tool_response_json.clear();
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGetToolResponse(JNIEnv * env, jclass, jlong handle) {
+    auto * holder = reinterpret_cast<LlamaContextHolder *>(handle);
+    return safe_new_string(env, holder->tool_response_json);
+}
 
 JNIEXPORT jstring JNICALL
 Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGetLastError(
@@ -2187,7 +2243,11 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateMultimodalStream(
 
     if (chat_session) {
         try {
-            chat_session->finish();
+            chat_session->finish(); // common_chat_parse applies the template's native PEG parser.
+            if (!holder->tool_request_json.empty() && !aborted) {
+                const auto & msg = chat_session->msg();
+                holder->tool_response_json = common_chat_msgs_to_json_oaicompat({msg}).at(0).dump();
+            }
             if (on_structured_token_method && !aborted) {
                 const auto & cmsg = chat_session->msg();
                 call_jni_structured_token_method_checked(env, callback_obj, on_structured_token_method,

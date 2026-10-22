@@ -66,6 +66,9 @@ class ChatInferenceManager(context: Context) {
     private var liteRtConversation: Conversation? = null
     private val liteRtToolRecorder = ToolUseRecorder()
     val lastLiteRtToolsUsed: List<ToolUse> get() = liteRtToolRecorder.snapshot()
+    private var ggufConversationHasTools = false
+    private val ggufToolRecorder = ToolUseRecorder()
+    val lastToolsUsed: List<ToolUse> get() = if (runtime == RuntimeKind.LlamaCpp) ggufToolRecorder.snapshot() else lastLiteRtToolsUsed
     private var liteRtToolsDisabledForLoad = false
     private var liteRtConversationHasTools = false
     private var liteRtCompletedTurns = 0
@@ -406,6 +409,7 @@ class ChatInferenceManager(context: Context) {
             }
             llamaCppEngine = engine
             runtime = RuntimeKind.LlamaCpp
+            ggufConversationHasTools = AppSettings.getInstance(context).settings.value.enableToolCalling && llamaCppEngine?.supportsToolCalling() == true
             _isGgufActive.value = true
 
             // Set current model configuration for recovery fallback
@@ -1117,6 +1121,35 @@ class ChatInferenceManager(context: Context) {
             else listOf("user" to prompt.trim())
         val messages = baseMessages
 
+        ggufToolRecorder.clear()
+        if (ggufConversationHasTools && mediaInputs.isEmpty()) {
+            val history = org.json.JSONArray().apply {
+                messages.forEach { (role, content) -> put(org.json.JSONObject().put("role", role).put("content", content)) }
+            }
+            val result = com.shounak.localmeshai.ai.tools.ToolCallingLoop.run(
+                messages = history,
+                tools = listOf(CalculatorTool(), CurrentDateTimeTool()),
+                record = ggufToolRecorder::add,
+                checkActive = { if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled") }
+            ) { request ->
+                var parsed: String? = null
+                val status = engine.generateMultimodalStream(
+                    prompt = prompt, messages = messages, enableThinking = !noThinking,
+                    samplingParams = profileSampling(), onMetrics = onMetrics,
+                    toolRequestJson = request, onToolResponse = { parsed = it }, onToken = {}
+                )
+                if (status == LlamaGenerationResult.Stopped) throw CancellationException("Generation cancelled")
+                org.json.JSONObject(checkNotNull(parsed) { "Missing tool response" })
+            }
+            val answer = result.optString("content", "")
+            val reasoning = result.optString("reasoning_content", "")
+            responseController?.isStructuredMode = true
+            responseController?.appendStructured(answer, reasoning, false, reqId = requestId, attemptId = 1)
+            publisher?.notifyStructuredUpdate()
+            if (answer.isNotEmpty()) timing?.recordFirstToken()
+            return answer
+        }
+
         val isVulkan = engine.activeBackend == LlamaBackend.VULKAN
         var firstTokenRecorded = false
         responseController?.isStructuredMode = true
@@ -1297,7 +1330,11 @@ class ChatInferenceManager(context: Context) {
     }
 
     fun resetConversation(noThinking: Boolean = false) {
-        if (runtime == RuntimeKind.LlamaCpp) llamaCppEngine?.resetAfterValidation()
+        if (runtime == RuntimeKind.LlamaCpp) {
+            llamaCppEngine?.resetAfterValidation()
+            ggufConversationHasTools = AppSettings.getInstance(context).settings.value.enableToolCalling && llamaCppEngine?.supportsToolCalling() == true
+            ggufToolRecorder.clear()
+        }
         if (runtime != RuntimeKind.LiteRtLm) return
         val mode = if (noThinking && isDefaultThinkingModel) {
             LiteRtConversationMode.NoThinking

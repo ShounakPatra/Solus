@@ -40,6 +40,7 @@ class CurrentDateTimeTool(private val clock: Clock = Clock.systemDefaultZone()) 
 /** SDK callbacks can execute on worker threads. Snapshot copies never expose mutable state. */
 class ToolUseRecorder {
     private val uses = mutableListOf<ToolUse>()
+    @Synchronized fun add(use: ToolUse) { uses.add(use) }
     @Synchronized fun clear() { uses.clear() }
     @Synchronized fun snapshot(): List<ToolUse> = uses.toList()
     fun recording(delegate: ChatTool): OpenApiTool = object : OpenApiTool {
