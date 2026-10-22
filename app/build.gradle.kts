@@ -13,6 +13,11 @@ plugins {
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val nativeSourceDigest = MessageDigest.getInstance("SHA-256").apply {
     update("toolchain:ndk-28.2.13676358;cmake-3.22.1;platform:android-28;abi:arm64-v8a;c++17".toByteArray())
+    fileTree("src/main/rust") { include("src/**/*.rs", "Cargo.toml", "Cargo.lock") }
+        .files.sortedBy { it.relativeTo(projectDir).invariantSeparatorsPath }.forEach { source ->
+            update(source.relativeTo(projectDir).invariantSeparatorsPath.toByteArray())
+            update(source.readBytes())
+        }
     fileTree("src/main/cpp") {
         include(
             "**/*.c", "**/*.cpp", "**/*.h", "**/*.hpp",
@@ -288,6 +293,31 @@ kotlin {
             "-Xbackend-threads=1"
         )
     }
+}
+
+// Keep Rust compilation out of Kotlin-only checks; every packaged APK includes the JNI runtime.
+val candleJniDirectory = layout.buildDirectory.dir("generated/candleJni")
+android.sourceSets.getByName("main").jniLibs.srcDir(candleJniDirectory.get().asFile)
+val buildCandleAndroid = tasks.register<Exec>("buildCandleAndroid") {
+    workingDir(rootDir)
+    inputs.dir("src/main/rust/src")
+    inputs.file("src/main/rust/Cargo.toml")
+    inputs.file("src/main/rust/Cargo.lock")
+    inputs.file(rootProject.file("tools/build-candle.ps1"))
+    inputs.file(rootProject.file("tools/build-candle.sh"))
+    outputs.dir(candleJniDirectory)
+    val ndkPath = androidComponents.sdkComponents.ndkDirectory.get().asFile.absolutePath
+    if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+        commandLine("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            rootProject.file("tools/build-candle.ps1").absolutePath, "-NdkPath", ndkPath,
+            "-OutputDirectory", candleJniDirectory.get().asFile.absolutePath)
+    } else {
+        commandLine("bash", rootProject.file("tools/build-candle.sh").absolutePath,
+            ndkPath, candleJniDirectory.get().asFile.absolutePath)
+    }
+}
+tasks.configureEach {
+    if (name.startsWith("merge") && (name.endsWith("NativeLibs") || name.endsWith("JniLibFolders"))) dependsOn(buildCandleAndroid)
 }
 
 configurations.all {

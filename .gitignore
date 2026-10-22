@@ -51,6 +51,10 @@ traces/
 *.tflite
 *.task
 *.litertlm
+*.onnx
+*.safetensors
+/app/src/main/rust/target/
+/tools/solus-rust/
 
 # Firebase / Google services config (contains API keys)
 google-services.json

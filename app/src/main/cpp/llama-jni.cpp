@@ -759,6 +759,26 @@ static bool is_vulkan_supported_internal() {
 extern "C" {
 
 // Called only while Kotlin holds the native operation lock and a lifecycle lease.
+JNIEXPORT jstring JNICALL
+Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeRenderPortableChat(
+        JNIEnv * env, jclass, jstring source, jstring messages, jstring bos, jstring eos) {
+    try {
+        const auto text = jstring_to_utf8(env, source);
+        if (text.empty() || text.size() > 262144) throw std::runtime_error("Invalid chat template size");
+        auto tmpls = common_chat_templates_init(nullptr, text, jstring_to_utf8(env, bos), jstring_to_utf8(env, eos));
+        if (!tmpls) throw std::runtime_error("Unable to initialize chat template");
+        common_chat_templates_inputs inputs;
+        inputs.messages = common_chat_msgs_parse_oaicompat(common_json::parse(jstring_to_utf8(env, messages)));
+        inputs.enable_thinking = false;
+        inputs.chat_template_kwargs["enable_thinking"] = "false";
+        return safe_new_string(env, common_chat_templates_apply(tmpls.get(), inputs).prompt.str());
+    } catch (const std::exception & error) {
+        auto clazz = env->FindClass("java/lang/IllegalArgumentException");
+        if (clazz) env->ThrowNew(clazz, error.what());
+        return nullptr;
+    }
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeSupportsTools(JNIEnv *, jclass, jlong handle) {
     auto * holder = reinterpret_cast<LlamaContextHolder *>(handle);

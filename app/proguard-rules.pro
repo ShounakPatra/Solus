@@ -59,3 +59,5 @@
 # --------------------------------------------------------------------
 -dontwarn okhttp3.**
 -dontwarn okio.**
+# JNI entry points in the Rust Candle bridge use their Java symbol names.
+-keep class com.shounak.localmeshai.ai.CandleBridge { *; }
