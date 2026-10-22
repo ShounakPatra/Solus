@@ -24,7 +24,9 @@ data class AppSettingsData(
     val ragTopK: Int = 3,
     val ragMinSimilarity: Float = 0.35f,
     val enablePersistentMemory: Boolean = true,
-    val autoExtractMemories: Boolean = true
+    val autoExtractMemories: Boolean = true,
+    /** Experimental: expose built-in tools (calculator, date/time) to LiteRT-LM conversations. */
+    val enableToolCalling: Boolean = false
 )
 
 class AppSettings internal constructor(
@@ -59,7 +61,8 @@ class AppSettings internal constructor(
                 if (it < 0.30f) 0.35f else it
             },
             enablePersistentMemory = prefs.getBoolean(KEY_ENABLE_PERSISTENT_MEMORY, true),
-            autoExtractMemories = prefs.getBoolean(KEY_AUTO_EXTRACT_MEMORIES, true)
+            autoExtractMemories = prefs.getBoolean(KEY_AUTO_EXTRACT_MEMORIES, true),
+            enableToolCalling = prefs.getBoolean(KEY_ENABLE_TOOL_CALLING, false)
         )
     }
 
@@ -84,6 +87,7 @@ class AppSettings internal constructor(
             .putFloat(KEY_RAG_MIN_SIMILARITY, updated.ragMinSimilarity)
             .putBoolean(KEY_ENABLE_PERSISTENT_MEMORY, updated.enablePersistentMemory)
             .putBoolean(KEY_AUTO_EXTRACT_MEMORIES, updated.autoExtractMemories)
+            .putBoolean(KEY_ENABLE_TOOL_CALLING, updated.enableToolCalling)
             .apply()
         _settings.value = updated
     }
@@ -106,6 +110,7 @@ class AppSettings internal constructor(
         private const val KEY_RAG_MIN_SIMILARITY = "rag_min_similarity"
         private const val KEY_ENABLE_PERSISTENT_MEMORY = "enable_persistent_memory"
         private const val KEY_AUTO_EXTRACT_MEMORIES = "auto_extract_memories"
+        private const val KEY_ENABLE_TOOL_CALLING = "enable_tool_calling"
 
         @Volatile
         private var INSTANCE: AppSettings? = null
