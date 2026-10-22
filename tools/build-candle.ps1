@@ -28,7 +28,7 @@ if (!(Test-Path $taskLinker)) { throw "Android NDK compiler is missing: $taskLin
 $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = $taskLinker
 $env:CC_aarch64_linux_android = $taskLinker
 $env:AR_aarch64_linux_android = Join-Path $taskToolchain 'llvm-ar.exe'
-$env:CARGO_BUILD_JOBS = '2'
+$env:CARGO_BUILD_JOBS = '4'
 $taskManifest = Join-Path $taskRoot 'app/src/main/rust/Cargo.toml'
 if ($Test) {
     & $taskCargo.Source test --locked --lib --manifest-path $taskManifest
