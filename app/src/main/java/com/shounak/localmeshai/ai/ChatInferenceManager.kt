@@ -81,6 +81,7 @@ class ChatInferenceManager(context: Context) {
     private var liteRtCompletedTurns = 0
     private var liteRtCacheDir: File? = null
     private var llamaCppEngine: LlamaCppEngine? = null
+    private var portableTextEngine: PortableTextEngine? = null
     private var profileModelId: String = ""
     private fun profileSampling(): LlamaSamplingParams {
         val profile = com.shounak.localmeshai.features.WorkspacePreferences.get(context).profile(profileModelId)
@@ -114,9 +115,10 @@ class ChatInferenceManager(context: Context) {
         RuntimeKind.LlamaCpp -> llamaCppEngine?.isInitialized == true
         RuntimeKind.LiteRtLm -> liteRtConversation != null
         RuntimeKind.MediaPipe -> mediaPipeInference != null
+        RuntimeKind.Portable -> portableTextEngine != null
         RuntimeKind.None -> false
     }
-    val usesStructuredHistory: Boolean get() = runtime == RuntimeKind.LlamaCpp
+    val usesStructuredHistory: Boolean get() = runtime == RuntimeKind.LlamaCpp || runtime == RuntimeKind.Portable
     @Volatile private var activeOperationControlId: Long = 0L
     @Volatile private var useNativeGemmaTaskTemplate = false
     @Volatile private var mediaPipeTemperature = DEFAULT_TEMPERATURE
@@ -457,6 +459,29 @@ class ChatInferenceManager(context: Context) {
             ?: throw IllegalArgumentException("No accessible file found for model.")
         val effectiveFile = File(effectivePath)
 
+        if (detectedFormat?.isPortable == true) {
+            if (InitCrashGuard.isModelBlocked(context, effectiveId)) throw IllegalStateException(InitCrashGuard.blockedModelMessage())
+            onModelProgress?.invoke(ModelLoadStage.VerifyingFile, null, null)
+            InitCrashGuard.markInitStarted(context, effectiveId)
+            val engine = try {
+                PortableTextEngine.open(effectiveFile, detectedFormat, configuredContextWindow ?: 2048)
+            } catch (t: Throwable) {
+                InitCrashGuard.markInitFailed(context, effectiveId)
+                throw t
+            }
+            portableTextEngine = engine
+            InitCrashGuard.markInitSucceeded(context, effectiveId)
+            // Native construction is synchronous. Honor cancellation before publishing readiness;
+            // the outer cleanup owns the newly constructed engine even on this path.
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (stopRequested) throw CancellationException("Model initialization cancelled")
+            runtimeContextCapacity.initialize(engine.contextTokens) { Unit }
+            runtime = RuntimeKind.Portable
+            activeBackendDisplayName = detectedFormat.backendLabel
+            activeModelLease = modelLease ?: ModelArtifactStorage.leaseArtifact(effectiveFile)
+            return
+        }
+
         val shouldUseLiteRtLmConversation = detectedFormat == ModelFormat.LiteRtLm
         val resolvedModelPath = effectiveFile.absolutePath
 
@@ -746,6 +771,19 @@ class ChatInferenceManager(context: Context) {
 
         try {
             val response = when (runtime) {
+                RuntimeKind.Portable -> {
+                    val sampling = profileSampling()
+                    var firstToken = true
+                    requireNotNull(portableTextEngine).generate(
+                        prompt = portableTextEngine!!.renderPrompt(structuredMessages, inferencePrompt, memoryContext), limit = MAX_RESPONSE_TOKENS,
+                        temperature = sampling.temperature, topP = sampling.topP, topK = sampling.topK,
+                        onText = { delta -> timing?.recordChunk(delta); effectiveOnUpdate(delta) },
+                        onToken = {
+                            lastNonLlamaTokenCount = it
+                            if (firstToken) { firstToken = false; timing?.recordFirstToken(); reportProgress(RequestProgress.Generating) }
+                        }
+                    )
+                }
                 RuntimeKind.LiteRtLm -> streamLiteRtLm(
                     prompt = liteRtUserText,
                     thinkingMode = thinkingMode,
@@ -1349,6 +1387,7 @@ class ChatInferenceManager(context: Context) {
 
     fun cancelGeneration() {
         stopRequested = true
+        portableTextEngine?.stop()
         runCatching { llamaCppEngine?.stop() }.onFailure { error ->
             Log.w(TAG, "Native stop failed; shutdown will retain ownership until close succeeds", error)
         }
@@ -1454,6 +1493,11 @@ class ChatInferenceManager(context: Context) {
         isBeingClosed = true
         cancelGeneration()
         var closeError: Throwable? = null
+
+        if (portableTextEngine != null) {
+            try { portableTextEngine?.close(); portableTextEngine = null }
+            catch (t: Throwable) { closeError = t }
+        }
 
         val sessionToClose = activeMediaPipeSession
         if (sessionToClose != null) {
@@ -1577,6 +1621,7 @@ class ChatInferenceManager(context: Context) {
         None,
         MediaPipe,
         LiteRtLm,
+        Portable,
         LlamaCpp
     }
 

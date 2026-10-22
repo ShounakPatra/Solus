@@ -261,7 +261,7 @@ private fun PhoneImportSection(
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text(
-            text = "Select model files (.gguf) from your device storage. Multi-shard split models and companion vision/audio projectors can be selected together in one step.",
+            text = "Select model weights together with their configuration, tokenizer and processor files. Supported ONNX and safetensors pipelines include text, image classification, speech transcription and image generation. For pipelines with component folders, import a .zip or .solusmodel archive to preserve the folder structure. Compatibility depends on the architecture and tensor interface.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -485,7 +485,7 @@ private fun HuggingFaceImportSection(
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text(
-            text = "Enter a Hugging Face repository (e.g. 'unsloth/gemma-3-4b-it-GGUF'), tree URL, direct GGUF URL, or non-GGUF model URL (.litertlm, .task).",
+            text = "Enter a Hugging Face repository, folder, or model URL. Supports GGUF, .task, .litertlm, .onnx, .tflite and .safetensors. Tokenizer, configuration and weight companions are downloaded with portable models.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -617,10 +617,10 @@ private fun HuggingFaceImportSection(
 
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             variants.forEach { variant ->
-                                val isSelected = selectedVariant?.name == variant.name
+                                val isSelected = selectedVariant == variant
                                 val sizeMb = variant.totalSizeBytes / (1024 * 1024)
                                 val sizeStr = if (sizeMb > 1024) String.format(Locale.US, "%.1f GB", sizeMb / 1024f) else "$sizeMb MB"
-                                val shardInfo = if (variant.isSplit) "${variant.mainFiles.size} shards" else "1 file"
+                                val shardInfo = if (variant.isSplit) "${variant.mainFiles.size} shards" else "${variant.mainFiles.size + variant.companionFiles.size} file(s)"
 
                                 Row(
                                     modifier = Modifier
@@ -649,7 +649,7 @@ private fun HuggingFaceImportSection(
                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                         )
                                         Text(
-                                            text = "$shardInfo • $sizeStr",
+                                            text = "${variant.format.backendLabel} • $shardInfo • $sizeStr",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -913,7 +913,7 @@ private fun DirectDownloadFallbackCard(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "For direct HTTP downloads of single files (.gguf, .task, .litertlm, .tflite).",
+                text = "Direct HTTP model URLs: .gguf, .task, .litertlm, .onnx, .tflite, .safetensors. Portable models also require config.json and tokenizer.json at the same URL folder.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

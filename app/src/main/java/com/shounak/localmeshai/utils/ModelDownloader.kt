@@ -239,17 +239,20 @@ open class ModelDownloader(
         }
 
         // Validate destination names: reject collisions
-        val safeTargetNames = spec.artifacts.map { ModelArtifactStorage.sanitizeFileName(it.fileName).lowercase(Locale.ROOT) }
+        val safeTargetNames = spec.artifacts.map { (if (spec.effectiveFormat.isPortable) PortableBundlePath.normalize(it.fileName) else ModelArtifactStorage.sanitizeFileName(it.fileName)).lowercase(Locale.ROOT) }
         if (safeTargetNames.distinct().size != safeTargetNames.size) {
             throw IOException("Duplicate artifact target file names in bundle specification")
         }
 
         val stagedItems = mutableListOf<StagedArtifactItem>()
-        val totalExpectedBytes = spec.totalExpectedBytes
+        var totalExpectedBytes = spec.totalExpectedBytes
+        val artifacts = spec.artifacts.toMutableList()
         var completedArtifactsBytes = 0L
         val expectedSourceIdentity = "spec:${spec.repository}@${spec.revision}"
 
-        for ((index, artifact) in spec.artifacts.withIndex()) {
+        var index = 0
+        while (index < artifacts.size) {
+            val artifact = artifacts[index]
             ensureActive()
             val targetStagingFile = artifactStorage.getStagingFile(spec.modelId, artifact.fileName)
             val savedMeta = DownloadResumeMetadata.loadFor(targetStagingFile)
@@ -331,6 +334,20 @@ open class ModelDownloader(
                     order = index
                 )
             )
+            if (spec.effectiveFormat == ModelFormat.Onnx && artifact.fileName.endsWith(".onnx", true)) {
+                val externalNames = OnnxBundleValidation.validate(File(downloadedLocalPath), checkExternal = false)
+                for (name in externalNames) {
+                    val relative = PortableBundlePath.normalize(name)
+                    val targetName = artifact.fileName.substringBeforeLast('/', "").let { if (it.isBlank()) relative else "$it/$relative" }
+                    if (artifacts.any { it.fileName == targetName }) continue
+                    require(artifacts.none { it.fileName.equals(targetName, true) }) { "Colliding ONNX external-data path" }
+                    val primaryUrl = artifact.downloadUrl.toHttpUrlOrNull() ?: error("Invalid ONNX download URL")
+                    val externalUrl = requireNotNull(primaryUrl.resolve(relative))
+                    artifacts.add(com.shounak.localmeshai.models.DownloadArtifactSpec(externalUrl.toString(), targetName))
+                    totalExpectedBytes = 0L
+                }
+            }
+            index++
         }
 
         // Validate complete shard membership
@@ -343,7 +360,7 @@ open class ModelDownloader(
         }
 
         var format = NonGgufBundleInspector.detectFormat(stagedItems.first().stagedFile) ?: spec.effectiveFormat
-        require(format == ModelFormat.GGUF || (stagedItems.size == 1 && stagedItems.none { it.role == ArtifactRole.Projector || it.role == ArtifactRole.Shard })) {
+        require(format == ModelFormat.GGUF || format.isPortable || (stagedItems.size == 1 && stagedItems.none { it.role == ArtifactRole.Projector || it.role == ArtifactRole.Shard })) {
             "Only GGUF supports split shards and companion projectors. Select one LiteRT-LM or MediaPipe task bundle."
         }
         val validatedStagedItems = mutableListOf<StagedArtifactItem>()
@@ -390,6 +407,13 @@ open class ModelDownloader(
             }
             capabilities = bundleValidation.capabilities
             primaryName = bundleValidation.orderedMainArtifacts.first().displayName
+        } else if (format.isPortable) {
+            val files = stagedItems.associate { it.relativeTargetName to it.stagedFile }
+            val primary = stagedItems.first()
+            capabilities = PortableModelBundle.inspect(primary.stagedFile, format, files, primary.relativeTargetName)
+            derivedLoadRestriction = PortableModelBundle.runtimeRestriction(primary.stagedFile, format, files)
+            primaryName = primary.relativeTargetName
+            validatedStagedItems.addAll(stagedItems.mapIndexed { index, item -> item.copy(order = index, isPrimary = index == 0) })
         } else {
             // Non-GGUF format (.task or .litertlm): validate container structure and derive real capabilities via NonGgufBundleInspector
             var derivedCapabilities: ModelCapabilities? = null
@@ -594,7 +618,8 @@ open class ModelDownloader(
 
             val body = response.body
             val contentType = response.header("Content-Type").orEmpty().lowercase(Locale.US)
-            if (contentType.contains("text/html") || contentType.contains("application/json")) {
+            val isJsonCompanion = !publishImmediately && fileName.endsWith(".json", ignoreCase = true)
+            if (contentType.contains("text/html") || (contentType.contains("application/json") && !isJsonCompanion)) {
                 val serverMessage = readBoundedResponseBody(body)
                 response.close()
                 cancelReg?.dispose()

@@ -56,7 +56,7 @@ data class ModelDownloadSpec(
             return when {
                 firstFileName.endsWith(".task") -> ModelFormat.MediaPipeTask
                 firstFileName.endsWith(".litertlm") -> ModelFormat.LiteRtLm
-                else -> ModelFormat.GGUF
+                else -> ModelFormat.fromFileName(firstFileName) ?: ModelFormat.GGUF
             }
         }
 

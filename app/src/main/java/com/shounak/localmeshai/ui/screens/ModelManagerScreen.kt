@@ -2002,7 +2002,7 @@ fun ModelItem(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        "${model.type.label}  •  ${model.displaySize}  •  ${model.backend}",
+                        "${model.taskLabel}  •  ${model.displaySize}  •  ${model.displayBackend}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2390,7 +2390,7 @@ fun ModelItem(
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Text("Model: ${model.name}", style = MaterialTheme.typography.titleSmall)
-                                Text("Backend: ${model.backend}", style = MaterialTheme.typography.bodySmall)
+                                Text("Backend: ${model.displayBackend}", style = MaterialTheme.typography.bodySmall)
 
                                 if (isRunningBench || isStoppingBench) {
                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {

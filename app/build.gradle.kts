@@ -357,11 +357,14 @@ dependencies {
     implementation(libs.mediapipe.tasks.genai)
     implementation(libs.mediapipe.tasks.core)
     implementation(libs.litert.lm)
+    implementation(libs.tensorflow.lite)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
     implementation(libs.pdfbox.android)
     implementation(libs.haze)
     implementation(libs.haze.materials)
     implementation(libs.okhttp)
 
+    testRuntimeOnly("com.microsoft.onnxruntime:onnxruntime:1.22.0")
     testImplementation(libs.junit)
     testImplementation(libs.json)
     testImplementation(libs.mockwebserver)
@@ -375,3 +378,8 @@ dependencies {
 
 
 
+
+// JVM execution fixtures use the host ORT native library, never packaged into Android APKs.
+configurations.matching { it.name.endsWith("UnitTestRuntimeClasspath") }.configureEach {
+    exclude(group = "com.microsoft.onnxruntime", module = "onnxruntime-android")
+}

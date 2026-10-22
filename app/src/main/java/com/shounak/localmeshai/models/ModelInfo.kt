@@ -80,6 +80,14 @@ data class ModelInfo(
     val supportsVisionInput: Boolean = false,
     val loadRestriction: LoadRestriction? = null
 ) {
+    val taskLabel: String get() = when (bundle?.capabilities?.task) {
+        ModelTask.ImageClassification -> "Image classification"
+        ModelTask.SpeechRecognition -> "Speech transcription"
+        ModelTask.ImageGeneration -> "Image generation"
+        ModelTask.Unknown -> "Unrecognized task"
+        else -> type.label
+    }
+
     val canTryAnyway: Boolean
         get() = loadRestriction?.canTryAnyway == true
 
@@ -140,6 +148,13 @@ data class ModelInfo(
      */
     val displaySize: String
         get() = if (isFuturePlaceholder) "Unknown" else size
+
+    /** Derive presentation from artifact metadata, including entries saved with the old GGUF label. */
+    val displayBackend: String
+        get() {
+            val format = bundle?.format ?: downloadSpec?.effectiveFormat ?: ModelFormat.fromFileName(fileName)
+            return if (format != null && (backend.isBlank() || (format != ModelFormat.GGUF && backend.contains("GGUF", true)))) format.backendLabel else backend
+        }
 
     val contextLengthLabel: String
         get() = effectiveContextWindowTokens?.let { "Context ${it.withThousandsSeparator()}" } ?: "Context TBD"

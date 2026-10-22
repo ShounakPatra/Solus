@@ -31,7 +31,8 @@ object LocalModelImporter {
         val bundle: ModelBundle,
         val newlyAcquiredGrants: List<Uri>,
         val stagedArtifactItem: StagedArtifactItem? = null,
-        val draftStagingDir: File? = null
+        val draftStagingDir: File? = null,
+        val stagedArtifactItems: List<StagedArtifactItem> = emptyList()
     )
 
     data class GgufMetadataHeader(
@@ -68,6 +69,21 @@ object LocalModelImporter {
     ): Result<ImportResult> = withContext(Dispatchers.IO) {
         if (uris.isEmpty()) {
             return@withContext Result.failure(IllegalArgumentException("No files were selected."))
+        }
+
+        // Portable text models require explicit companions selected in the same picker operation.
+        // Copying them does not require persistent URI grants or seekable provider descriptors.
+        try {
+            val names = PortableModelImporter.names(context, uris)
+            if (uris.size == 1 && names.single().substringAfterLast('.').lowercase() in setOf("zip", "solusmodel")) {
+                return@withContext Result.success(PortableModelArchive.import(context, uris.single(), onProgress))
+            }
+            if (names.any { PortableModelBundle.format(it) != null }) {
+                return@withContext Result.success(PortableModelImporter.import(context, uris, names, onProgress))
+            }
+        } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) throw t
+            return@withContext Result.failure(t)
         }
 
         val preExistingGrants = runCatching {

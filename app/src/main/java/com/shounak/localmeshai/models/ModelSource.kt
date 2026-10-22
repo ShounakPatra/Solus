@@ -82,6 +82,11 @@ enum class ThinkingCapability {
 
 enum class ThinkingControlStrategy { None, NativeTemplate, QwenSoftSwitch }
 
+enum class ModelTask(val id: String) {
+    Chat("text_generation"), ImageClassification("image_classification"),
+    SpeechRecognition("speech_recognition"), ImageGeneration("image_generation"), Unknown("unknown")
+}
+
 @Immutable
 data class ModelCapabilities(
     val supportsText: Boolean = true,
@@ -94,9 +99,12 @@ data class ModelCapabilities(
     val visionProjectorMissing: Boolean = false,
     val thinkingControl: ThinkingControlStrategy = ThinkingControlStrategy.None,
     val reasoningChannels: Set<String> = emptySet(),
-    val reasoningPrefill: Boolean = false
+    val reasoningPrefill: Boolean = false,
+    val task: ModelTask = ModelTask.Chat
 ) {
+    val isMediaModel: Boolean get() = supportsVision || supportsAudio || task == ModelTask.ImageGeneration
     fun toJson(): JSONObject = JSONObject().apply {
+        put("task", task.id)
         put("supportsText", supportsText)
         put("supportsVision", supportsVision)
         put("supportsAudio", supportsAudio)
@@ -116,6 +124,7 @@ data class ModelCapabilities(
                 ThinkingCapability.entries.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: ThinkingCapability.Unknown
             }
             return ModelCapabilities(
+                task = ModelTask.entries.firstOrNull { it.id == json.optString("task") } ?: ModelTask.Chat,
                 supportsText = json.optBoolean("supportsText", true),
                 supportsVision = json.optBoolean("supportsVision", false),
                 supportsAudio = json.optBoolean("supportsAudio", false),
@@ -135,7 +144,33 @@ data class ModelCapabilities(
 enum class ModelFormat {
     GGUF,
     LiteRtLm,
-    MediaPipeTask
+    MediaPipeTask,
+    Onnx,
+    TensorFlowLite,
+    Safetensors;
+
+    val isPortable: Boolean get() = this in setOf(Onnx, TensorFlowLite, Safetensors)
+
+    val backendLabel: String get() = when (this) {
+        GGUF -> "llama.cpp GGUF"
+        LiteRtLm -> "LiteRT-LM GPU"
+        MediaPipeTask -> "MediaPipe LLM CPU-safe"
+        Onnx -> "ONNX Runtime CPU"
+        TensorFlowLite -> "TensorFlow Lite CPU"
+        Safetensors -> "Candle CPU"
+    }
+
+    companion object {
+        fun fromFileName(name: String): ModelFormat? = when (name.substringAfterLast('.').lowercase()) {
+            "gguf" -> GGUF
+            "litertlm" -> LiteRtLm
+            "task" -> MediaPipeTask
+            "onnx" -> Onnx
+            "tflite" -> TensorFlowLite
+            "safetensors" -> Safetensors
+            else -> null
+        }
+    }
 }
 
 @Immutable
@@ -156,7 +191,7 @@ data class ModelBundle(
         get() = mainArtifacts.sumOf { it.sizeBytes } + (projectorArtifact?.sizeBytes ?: 0L)
 
     val isSplit: Boolean
-        get() = mainArtifacts.size > 1
+        get() = format == ModelFormat.GGUF && mainArtifacts.size > 1
 
     val isMultimodal: Boolean
         get() = projectorArtifact != null || capabilities.supportsVision || capabilities.supportsAudio

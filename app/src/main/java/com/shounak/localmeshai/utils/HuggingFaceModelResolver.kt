@@ -40,6 +40,8 @@ data class RepoFile(
     val isTask: Boolean
         get() = fileName.endsWith(".task", ignoreCase = true)
 
+    val format: ModelFormat? get() = ModelFormat.fromFileName(fileName)
+
     val isProjector: Boolean
         get() {
             if (!isGguf) return false
@@ -67,8 +69,11 @@ data class ModelVariant(
     val availableProjectors: List<RepoFile> = emptyList(),
     val projectorFile: RepoFile? = null,
     val isSplit: Boolean = false,
-    val totalSizeBytes: Long = 0L
-)
+    val totalSizeBytes: Long = 0L,
+    val companionFiles: List<RepoFile> = emptyList()
+) {
+    val format: ModelFormat get() = mainFiles.firstOrNull()?.format ?: ModelFormat.GGUF
+}
 
 data class ResolvedRepoInfo(
     val repoId: String,
@@ -146,7 +151,7 @@ object HuggingFaceModelResolver {
 
             // URL with path directly after repo
             val path = segments.drop(2).joinToString("/")
-            val isFile = path.endsWith(".gguf", ignoreCase = true)
+            val isFile = ModelFormat.fromFileName(path) != null
             return ParsedHfInput(
                 repoId = repoId,
                 requestedRevision = null,
@@ -168,7 +173,7 @@ object HuggingFaceModelResolver {
         }
 
         val path = segments.drop(2).joinToString("/")
-        val isFile = path.endsWith(".gguf", ignoreCase = true)
+        val isFile = ModelFormat.fromFileName(path) != null
         return ParsedHfInput(
             repoId = repoId,
             requestedRevision = null,
@@ -454,7 +459,62 @@ object HuggingFaceModelResolver {
             )
         }
 
+        variants.addAll(portableVariants(repoInfo.files))
         return variants
+    }
+
+    private fun portableVariants(files: List<RepoFile>): List<ModelVariant> {
+        val pipelineVariants = files.filter { it.fileName == "model_index.json" }.flatMap { index ->
+            val prefix = index.directory.takeIf { it.isNotBlank() }?.plus("/").orEmpty()
+            fun relative(file: RepoFile) = file.path.removePrefix(prefix)
+            val components = files.filter { it.path.startsWith(prefix) && relative(it).substringBefore('/') in setOf("text_encoder", "unet", "vae", "vae_decoder", "tokenizer", "scheduler") &&
+                (it.format?.isPortable == true || it.fileName.endsWith(".json") || it.fileName in setOf("merges.txt", "vocab.json") || it.fileName.endsWith(".onnx_data") || it.fileName.endsWith(".data")) }
+            listOf(ModelFormat.Safetensors, ModelFormat.Onnx).mapNotNull { format ->
+                val weightNames = if (format == ModelFormat.Safetensors) setOf("text_encoder/model.safetensors", "unet/diffusion_pytorch_model.safetensors", "vae/diffusion_pytorch_model.safetensors")
+                    else setOf("text_encoder/model.onnx", "unet/model.onnx", "vae_decoder/model.onnx")
+                val mainName = weightNames.first { it.startsWith("unet/") }
+                val main = components.firstOrNull { relative(it) == mainName } ?: return@mapNotNull null
+                // Choose one precision per component. External ONNX data is discovered from these graphs.
+                val selected = components.filter { relative(it) in weightNames || it.fileName.endsWith(".json") || it.fileName == "merges.txt" }
+                ModelVariant("Complete diffusion pipeline (${format.name})", listOf(main),
+                    companionFiles = (listOf(index) + selected.filter { it != main }),
+                    totalSizeBytes = (selected + index).sumOf { it.sizeBytes })
+            }
+        }
+        val portable = files.filter { it.format?.isPortable == true }
+        val shardPattern = Regex("""^(.*?)-(\d+)-of-(\d+)\.safetensors$""", RegexOption.IGNORE_CASE)
+        val groups = portable.groupBy { file ->
+            val match = shardPattern.matchEntire(file.fileName)
+            if (match != null) "${file.directory}/${match.groupValues[1]}#${match.groupValues[3]}" else file.path
+        }
+        return pipelineVariants + groups.values.mapNotNull { unsorted ->
+            val main = unsorted.sortedBy { it.path }
+            val first = main.first()
+            val shard = shardPattern.matchEntire(first.fileName)
+            if (shard != null) {
+                val total = shard.groupValues[3].toIntOrNull() ?: return@mapNotNull null
+                val indices = main.mapNotNull { shardPattern.matchEntire(it.fileName)?.groupValues?.get(2)?.toIntOrNull() }
+                if (total !in 1..10000 || indices.toSet() != (1..total).toSet() || indices.size != total) return@mapNotNull null
+            }
+            val ancestors = generateSequence(first.directory) { current -> if (current.isBlank()) null else current.substringBeforeLast('/', "") }.toList()
+            val companionNames = listOf("config.json", "tokenizer.json", "tokenizer_config.json", "generation_config.json", "special_tokens_map.json", "preprocessor_config.json", "processor_config.json", "vocab.json", "merges.txt")
+            val companions = companionNames.mapNotNull { name ->
+                ancestors.firstNotNullOfOrNull { dir -> files.firstOrNull { it.directory == dir && it.fileName == name } }
+            }.toMutableList()
+            if (first.format == ModelFormat.Safetensors) {
+                val base = shard?.groupValues?.get(1) ?: first.fileName.removeSuffix(".safetensors")
+                files.firstOrNull { it.directory == first.directory && it.fileName == "$base.safetensors.index.json" }?.let(companions::add)
+            }
+            if (first.format == ModelFormat.Onnx && first.fileName in setOf("decoder_model.onnx", "encoder_model.onnx")) {
+                val paired = if (first.fileName == "decoder_model.onnx") "encoder_model.onnx" else "decoder_model.onnx"
+                files.firstOrNull { it.directory == first.directory && it.fileName == paired }?.let(companions::add)
+            }
+            if (first.format == ModelFormat.Onnx) companions.addAll(files.filter {
+                it.directory == first.directory && (it.fileName.endsWith(".onnx_data") || it.fileName.endsWith(".data"))
+            })
+            ModelVariant(name = first.fileName.substringBeforeLast('.') + " (${first.format!!.name})", mainFiles = main,
+                companionFiles = companions.distinctBy { it.path }, totalSizeBytes = (main + companions).distinctBy { it.path }.sumOf { it.sizeBytes })
+        }
     }
 
     /**
@@ -472,7 +532,7 @@ object HuggingFaceModelResolver {
         allVariants: List<ModelVariant>
     ): ResolvedVariantsSelection {
         if (allVariants.isEmpty()) {
-            throw NoSuchElementException("No GGUF model files found in repository ${parsed.repoId}.")
+            throw NoSuchElementException("No supported model files found in repository ${parsed.repoId}. Supported formats: GGUF, LiteRT-LM, MediaPipe task, ONNX, TFLite and safetensors.")
         }
 
         return when (parsed.kind) {
@@ -489,7 +549,7 @@ object HuggingFaceModelResolver {
                 }
 
                 if (filtered.isEmpty()) {
-                    throw NoSuchElementException("No GGUF model files found in folder '${parsed.path}' in repository ${parsed.repoId}.")
+                    throw NoSuchElementException("No supported model files found in folder '${parsed.path}' in repository ${parsed.repoId}.")
                 }
 
                 ResolvedVariantsSelection(variants = filtered, preselectedVariant = null)
@@ -502,7 +562,7 @@ object HuggingFaceModelResolver {
                 } else {
                     val matched = allVariants.firstOrNull { v ->
                         v.mainFiles.any { it.path == reqFile }
-                    } ?: throw NoSuchElementException("Requested file '$reqFile' was not found or is not a valid GGUF model in ${parsed.repoId}.")
+                    } ?: throw NoSuchElementException("Requested file '$reqFile' was not found or has an incomplete model shard set in ${parsed.repoId}.")
 
                     ResolvedVariantsSelection(variants = allVariants, preselectedVariant = matched)
                 }
@@ -546,7 +606,8 @@ object HuggingFaceModelResolver {
         val commitSha = repoInfo.commitSha.ifBlank { "main" }
         val effectiveProjector = selectedProjector
 
-        variant.mainFiles.forEachIndexed { idx, file ->
+        val pipelineRoot = variant.companionFiles.firstOrNull { it.fileName == "model_index.json" }?.directory
+        (variant.mainFiles + variant.companionFiles).distinctBy { it.path }.forEachIndexed { idx, file ->
             val downloadUrl = HttpUrl.Builder()
                 .scheme("https")
                 .host(HF_HOST)
@@ -564,7 +625,7 @@ object HuggingFaceModelResolver {
             artifactSpecs.add(
                 DownloadArtifactSpec(
                     downloadUrl = downloadUrl,
-                    fileName = file.fileName,
+                    fileName = if (pipelineRoot != null) file.path.removePrefix(if (pipelineRoot.isBlank()) "" else "$pipelineRoot/") else file.fileName,
                     role = if (variant.isSplit) ArtifactRole.Shard else ArtifactRole.Main,
                     shardIndex = if (variant.isSplit) idx else -1,
                     totalShards = if (variant.isSplit) variant.mainFiles.size else -1,
@@ -614,7 +675,7 @@ object HuggingFaceModelResolver {
         val format = when {
             isTask -> ModelFormat.MediaPipeTask
             isLiteRt -> ModelFormat.LiteRtLm
-            else -> ModelFormat.GGUF
+            else -> variant.format
         }
 
         return ModelDownloadSpec(
@@ -626,5 +687,27 @@ object HuggingFaceModelResolver {
             capabilities = capabilities,
             format = format
         )
+    }
+
+    /** Portable direct URLs keep their original filenames and fetch their sibling metadata. */
+    fun createDirectPortableSpec(url: String, modelId: String, sha256: String? = null): ModelDownloadSpec {
+        val parsed = requireNotNull(url.toHttpUrlOrNull()) { "Invalid model URL" }
+        val name = parsed.pathSegments.last()
+        val format = requireNotNull(ModelFormat.fromFileName(name))
+        require(format.isPortable)
+        val shard = Regex("""^(.*?)-(\d+)-of-(\d+)\.safetensors$""").matchEntire(name)
+        val names = if (shard == null) mutableListOf(name) else {
+            val count = shard.groupValues[3].toInt()
+            require(count in 1..10000) { "Invalid shard count" }
+            val width = shard.groupValues[2].length
+            (1..count).map { "${shard.groupValues[1]}-${it.toString().padStart(width, '0')}-of-${shard.groupValues[3]}.safetensors" }.toMutableList()
+        }
+        names.addAll(listOf("config.json", "tokenizer.json"))
+        if (shard != null) names.add("${shard.groupValues[1]}.safetensors.index.json")
+        val artifacts = names.map { fileName ->
+            DownloadArtifactSpec(parsed.newBuilder().setPathSegment(parsed.pathSegments.lastIndex, fileName).build().toString(), fileName,
+                expectedSha256 = sha256?.takeIf { fileName == name })
+        }
+        return ModelDownloadSpec(modelId, artifacts = artifacts, format = format)
     }
 }
