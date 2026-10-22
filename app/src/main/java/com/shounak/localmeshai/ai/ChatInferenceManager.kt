@@ -14,6 +14,7 @@ import com.google.ai.edge.litertlm.ThinkingConfig
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
 import com.google.mediapipe.tasks.genai.llminference.ProgressListener
+import com.shounak.localmeshai.ai.tools.SolusLiteRtTools
 import com.shounak.localmeshai.models.ArtifactSource
 import com.shounak.localmeshai.models.ModelCapabilities
 import com.shounak.localmeshai.models.ModelCapabilitySnapshot
@@ -102,6 +103,20 @@ class ChatInferenceManager(context: Context) {
     @Volatile private var mediaPipeTemperature = DEFAULT_TEMPERATURE
     @Volatile private var liteRtConversationMode = LiteRtConversationMode.Default
     @Volatile private var liteRtMessageCount = 0
+    // Experimental LiteRT-LM tool calling (Settings → "Tool calling (experimental)", default off).
+    @Volatile private var liteRtToolsActive = false
+    @Volatile private var liteRtToolsRejected = false
+    private val liteRtToolsUsedThisTurn = java.util.concurrent.CopyOnWriteArrayList<String>()
+    private val liteRtTools by lazy {
+        SolusLiteRtTools(onToolUsed = { toolName ->
+            liteRtToolsUsedThisTurn.add(toolName)
+            Log.i(TAG, "LiteRT tool invoked: $toolName")
+        })
+    }
+
+    /** Tool names LiteRT-LM executed while producing the most recent response (empty when none). */
+    @Volatile var lastLiteRtToolsUsed: List<String> = emptyList()
+        private set
     var activeBackendDisplayName: String = ""
         private set
     @Volatile private var currentGgufVerifiedSha: String = ""
@@ -566,6 +581,7 @@ class ChatInferenceManager(context: Context) {
             } else {
                 LiteRtConversationMode.Default
             }
+            liteRtToolsRejected = false
             liteRtConversation = createLiteRtConversation(initialMode)
             liteRtMessageCount = 0
             runtime = RuntimeKind.LiteRtLm
@@ -629,6 +645,12 @@ class ChatInferenceManager(context: Context) {
         val inferencePrompt = PromptMathNormalizer.normalizeForInference(prompt)
         val inferenceUserText = PromptMathNormalizer.normalizeForInference(rawUserText)
         val memoryPrefix = if (memoryContext.isNotBlank()) "${memoryContext.trim()}\n\n" else ""
+
+        // Apply a changed "Tool calling (experimental)" setting before the first turn of a
+        // fresh LiteRT conversation; mid-conversation the native history is kept intact.
+        if (runtime == RuntimeKind.LiteRtLm && liteRtMessageCount == 0) {
+            syncLiteRtToolsWithSettings()
+        }
 
         // LiteRT-LM maintains stateful conversation history in native C++ engine.
         // The memory context is seeded on the first turn or after reset, but NOT
@@ -852,9 +874,12 @@ class ChatInferenceManager(context: Context) {
         responseSnapshot: () -> String,
         publisher: StreamingResponsePublisher? = null,
         responseController: InferenceResponseController? = null,
+        allowToolFallback: Boolean = true,
         onUpdate: (String) -> Unit
     ): String {
         val conversation = liteRtConversation ?: throw IllegalStateException("Inference not initialized")
+        liteRtToolsUsedThisTurn.clear()
+        lastLiteRtToolsUsed = emptyList()
         val requestMessage = Message.of(LegacyThinkingProfiles.applyPrompt(prompt, configuredCapabilities?.capabilities?.thinkingControl ?: ThinkingControlStrategy.None, thinkingMode))
         val requestedThinking = ThinkingModeConfig.resolveRequestThinking(
             capability = resolvedThinkingCapability,
@@ -927,6 +952,7 @@ class ChatInferenceManager(context: Context) {
             )
             val finalSnapshot = adapter.awaitDone()
             lastLiteRtSnapshot = finalSnapshot
+            lastLiteRtToolsUsed = liteRtToolsUsedThisTurn.distinct()
             val answerText = finalSnapshot.answerText
             val rawTokens = if (adapter.callbackCount > 0) {
                 adapter.callbackCount
@@ -944,6 +970,31 @@ class ChatInferenceManager(context: Context) {
             lastLiteRtSnapshot = adapter.currentSnapshot()
             if (stopRequested) {
                 throw CancellationException("Generation cancelled").also { it.initCause(exception) }
+            }
+            if (allowToolFallback && liteRtToolsActive && adapter.callbackCount == 0 && liteRtMessageCount <= 1) {
+                // The model/template could not handle the tool definitions (or a tool round-trip
+                // failed) before any text was produced on the first turn. Drop tools for this
+                // model load and retry once on a plain conversation instead of surfacing an error.
+                Log.w(TAG, "LiteRT request failed with tools enabled; retrying without tools", exception)
+                liteRtToolsRejected = true
+                runCatching { conversation.close() }.onFailure { t ->
+                    Log.w(TAG, "LiteRT-LM conversation close during tool fallback failed", t)
+                }
+                liteRtConversation = createLiteRtConversation(liteRtConversationMode)
+                if (activeLiteRtAdapter === adapter) activeLiteRtAdapter = null
+                return streamLiteRtLm(
+                    prompt = prompt,
+                    thinkingMode = thinkingMode,
+                    requestId = requestId,
+                    timing = timing,
+                    onProgress = onProgress,
+                    onTokensGenerated = onTokensGenerated,
+                    responseSnapshot = responseSnapshot,
+                    publisher = publisher,
+                    responseController = responseController,
+                    allowToolFallback = false,
+                    onUpdate = onUpdate
+                )
             }
             throw exception
         } finally {
@@ -1262,9 +1313,43 @@ class ChatInferenceManager(context: Context) {
         stopRequested = false
     }
 
+    private fun shouldOfferLiteRtTools(): Boolean =
+        !liteRtToolsRejected && AppSettings.getInstance(context).settings.value.enableToolCalling
+
+    private fun syncLiteRtToolsWithSettings() {
+        if (liteRtEngine == null || shouldOfferLiteRtTools() == liteRtToolsActive) return
+        runCatching { liteRtConversation?.close() }.onFailure { t ->
+            Log.w(TAG, "LiteRT-LM conversation close during tool setting change failed", t)
+        }
+        liteRtConversation = createLiteRtConversation(liteRtConversationMode)
+    }
+
     private fun createLiteRtConversation(mode: LiteRtConversationMode): Conversation? {
         val engine = liteRtEngine ?: return null
         liteRtConversationMode = mode
+        if (shouldOfferLiteRtTools()) {
+            try {
+                val toolConversation = engine.createConversation(
+                    ConversationConfig(
+                        tools = liteRtTools.providers(),
+                        extraContext = when (mode) {
+                            LiteRtConversationMode.Default -> emptyMap()
+                            LiteRtConversationMode.NoThinking -> ThinkingModeConfig.liteRtExtraContext(
+                                isDefaultThinkingModel = true,
+                                thinkingMode = false
+                            )
+                        }
+                    )
+                )
+                liteRtToolsActive = true
+                Log.i(TAG, "LiteRT-LM conversation created with experimental tools")
+                return toolConversation
+            } catch (t: Throwable) {
+                liteRtToolsRejected = true
+                Log.w(TAG, "LiteRT-LM rejected tool definitions; continuing without tools", t)
+            }
+        }
+        liteRtToolsActive = false
         return when (mode) {
             LiteRtConversationMode.Default -> engine.createConversation()
             LiteRtConversationMode.NoThinking -> engine.createConversation(
