@@ -4,7 +4,13 @@ use tokenizers::{Tokenizer, AddedToken, models::bpe::BPE};
 
 pub fn load(root: &Path, clip: bool) -> Result<Tokenizer> {
     let json = root.join("tokenizer.json");
-    if json.is_file() { return Tokenizer::from_file(json).map_err(|e| anyhow!(e.to_string())); }
+    if json.is_file() {
+        let mut tokenizer = Tokenizer::from_file(json).map_err(|e| anyhow!(e.to_string()))?;
+        // Inference owns context limits and CLIP padding; serialized training settings must not trim prompts.
+        tokenizer.with_padding(None);
+        tokenizer.with_truncation(None).map_err(|e| anyhow!(e.to_string()))?;
+        return Ok(tokenizer);
+    }
     let vocab = root.join("vocab.json");
     let merges = root.join("merges.txt");
     let mut builder = BPE::from_file(&vocab.to_string_lossy(), &merges.to_string_lossy())
@@ -33,4 +39,27 @@ pub fn load(root: &Path, clip: bool) -> Result<Tokenizer> {
         tokenizer.with_decoder(Some(tokenizers::decoders::byte_level::ByteLevel::default()));
     }
     Ok(tokenizer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn training_padding_and_truncation_do_not_change_inference_tokens() -> Result<()> {
+        use tokenizers::{models::wordlevel::WordLevel, PaddingParams, PaddingStrategy, TruncationParams};
+        let model = WordLevel::builder().vocab([("a".to_owned(), 0), ("[UNK]".to_owned(), 1)].into_iter().collect())
+            .unk_token("[UNK]".into()).build().map_err(|e| anyhow!(e.to_string()))?;
+        let mut tokenizer = Tokenizer::new(model);
+        tokenizer.with_pre_tokenizer(Some(tokenizers::pre_tokenizers::whitespace::WhitespaceSplit));
+        tokenizer.with_padding(Some(PaddingParams { strategy: PaddingStrategy::Fixed(8), ..Default::default() }));
+        tokenizer.with_truncation(Some(TruncationParams { max_length: 3, ..Default::default() })).map_err(|e| anyhow!(e.to_string()))?;
+        let root = std::env::temp_dir().join(format!("solus-tokenizer-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()));
+        std::fs::create_dir(&root)?;
+        tokenizer.save(root.join("tokenizer.json"), false).map_err(|e| anyhow!(e.to_string()))?;
+        let loaded = load(&root, false)?;
+        let result = loaded.encode("a a a a", false).map_err(|e| anyhow!(e.to_string()))?;
+        std::fs::remove_dir_all(root)?;
+        assert_eq!(result.get_ids(), &[0, 0, 0, 0]);
+        Ok(())
+    }
 }

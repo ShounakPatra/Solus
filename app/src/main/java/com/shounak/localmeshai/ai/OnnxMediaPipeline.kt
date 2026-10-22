@@ -18,6 +18,10 @@ internal class OnnxMediaPipeline private constructor(private val root: File, pri
     private val config = File(root, "config.json").takeIf { it.isFile }?.let(PortableModelBundle::json) ?: JSONObject()
 
     companion object {
+        internal fun clipTokens(raw: IntArray, eos: Int, pad: Int): IntArray = IntArray(77) { raw.getOrElse(it) { pad } }.also {
+            if (raw.size >= it.size) it[it.lastIndex] = eos
+        }
+
         fun open(primary: File, task: ModelTask): OnnxMediaPipeline {
             val root = PortableModelProfile.root(primary)
             val pipeline = OnnxMediaPipeline(root, task)
@@ -135,10 +139,20 @@ internal class OnnxMediaPipeline private constructor(private val root: File, pri
         val unet = sessions.getValue("unet")
         val vae = sessions.getValue("vae")
         val eos = CandleBridge.tokenId(tokenizer, "<|endoftext|>").also { require(it >= 0) }
+        val tokenizerConfig = PortableModelProfile.component(root, "tokenizer/tokenizer_config.json").takeIf { it.isFile }?.let(PortableModelBundle::json)
+        val padValue = tokenizerConfig?.opt("pad_token")
+        val textConfig = PortableModelProfile.component(root, "text_encoder/config.json").takeIf { it.isFile }?.let(PortableModelBundle::json)
+        val hiddenSize = textConfig?.optInt("hidden_size", 0)?.takeIf { it > 0 }
+            ?: (text.outputInfo.getValue(output(text, "last_hidden_state")).info as? TensorInfo)?.shape?.lastOrNull()?.toInt()
+        val padName = (padValue as? String) ?: (padValue as? JSONObject)?.optString("content") ?: when (hiddenSize) {
+            768 -> "<|endoftext|>"
+            1024 -> "!"
+            else -> error("Supply the CLIP tokenizer padding token or text encoder configuration")
+        }
+        val pad = CandleBridge.tokenId(tokenizer, padName).also { require(it >= 0) { "Missing CLIP padding token" } }
         fun encode(promptText: String): FloatArray {
             val raw = CandleBridge.encode(tokenizer, promptText)
-            val tokens = IntArray(77) { raw.getOrElse(it) { eos } }
-            tokens[76] = eos
+            val tokens = clipTokens(raw, eos, pad)
             val name = text.inputNames.singleOrNull() ?: error("Expected CLIP input_ids")
             integer(text, name, tokens, longArrayOf(1, 77)).use { ids ->
                 val output = output(text, "last_hidden_state")

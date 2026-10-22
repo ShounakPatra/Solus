@@ -125,10 +125,15 @@ impl MediaModel {
         active(stopped)?;
         let encode = |text| -> Result<Tensor> {
             let mut ids = tokenizer.encode(text, true).map_err(|e| anyhow!(e.to_string()))?.get_ids().to_vec();
-            ids.truncate(config.clip.max_position_embeddings);
-            let pad = tokenizer.token_to_id("<|endoftext|>").ok_or_else(|| anyhow!("Missing CLIP end token"))?;
+            let eos = tokenizer.token_to_id("<|endoftext|>").ok_or_else(|| anyhow!("Missing CLIP end token"))?;
+            let pad = match config.clip.pad_with.as_deref() {
+                Some(token) => tokenizer.token_to_id(token).ok_or_else(|| anyhow!("Missing CLIP padding token"))?, None => eos,
+            };
+            if ids.len() >= config.clip.max_position_embeddings {
+                ids.truncate(config.clip.max_position_embeddings);
+                if let Some(last) = ids.last_mut() { *last = eos; }
+            }
             ids.resize(config.clip.max_position_embeddings, pad);
-            if let Some(last) = ids.last_mut() { *last = pad; }
             Ok(clip.forward(&Tensor::new(ids.as_slice(), &Device::Cpu)?.unsqueeze(0)?)?)
         };
         let embeddings = Tensor::cat(&[encode("")?, encode(prompt)?], 0)?;
