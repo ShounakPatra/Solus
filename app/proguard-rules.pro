@@ -61,3 +61,6 @@
 -dontwarn okio.**
 # JNI entry points in the Rust Candle bridge use their Java symbol names.
 -keep class com.shounak.localmeshai.ai.CandleBridge { *; }
+# ORT's native library resolves Java classes and members by their original names.
+# https://onnxruntime.ai/docs/build/android.html
+-keep class ai.onnxruntime.** { *; }
