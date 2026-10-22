@@ -10,6 +10,11 @@ import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.tool
+import com.shounak.localmeshai.ai.tools.CalculatorTool
+import com.shounak.localmeshai.ai.tools.CurrentDateTimeTool
+import com.shounak.localmeshai.ai.tools.ToolUseRecorder
+import com.shounak.localmeshai.ai.tools.ToolUse
 import com.google.ai.edge.litertlm.ThinkingConfig
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
@@ -59,6 +64,11 @@ class ChatInferenceManager(context: Context) {
     private var mediaPipeInference: LlmInference? = null
     private var liteRtEngine: Engine? = null
     private var liteRtConversation: Conversation? = null
+    private val liteRtToolRecorder = ToolUseRecorder()
+    val lastLiteRtToolsUsed: List<ToolUse> get() = liteRtToolRecorder.snapshot()
+    private var liteRtToolsDisabledForLoad = false
+    private var liteRtConversationHasTools = false
+    private var liteRtCompletedTurns = 0
     private var liteRtCacheDir: File? = null
     private var llamaCppEngine: LlamaCppEngine? = null
     private var profileModelId: String = ""
@@ -557,6 +567,7 @@ class ChatInferenceManager(context: Context) {
 
             // If we reach here, native init succeeded!
 
+            liteRtToolsDisabledForLoad = false
             liteRtEngine = engine
             // The UI defaults to Think off. Start default-thinking models with the
             // same hard template context so the very first request cannot inherit
@@ -579,7 +590,8 @@ class ChatInferenceManager(context: Context) {
                 liteRtEngine = null
                 liteRtConversation = null
             } catch (closeError: Throwable) {
-                liteRtEngine = engine // Retain the engine and both leases for shutdown retry.
+                liteRtToolsDisabledForLoad = false
+            liteRtEngine = engine // Retain the engine and both leases for shutdown retry.
                 if (closeError !== t) t.addSuppressed(closeError)
                 throw t
             }
@@ -843,6 +855,40 @@ class ChatInferenceManager(context: Context) {
 
     @OptIn(ExperimentalApi::class)
     private suspend fun streamLiteRtLm(
+        prompt: String, thinkingMode: Boolean, requestId: String = "",
+        timing: InferenceTiming? = null, onProgress: ((RequestProgress) -> Unit)? = null,
+        onTokensGenerated: ((Int) -> Unit)? = null, responseSnapshot: () -> String,
+        publisher: StreamingResponsePublisher? = null,
+        responseController: InferenceResponseController? = null, onUpdate: (String) -> Unit
+    ): String {
+        liteRtToolRecorder.clear()
+        val textSeen = java.util.concurrent.atomic.AtomicBoolean(false)
+        suspend fun attempt(): String = streamLiteRtLmAttempt(
+            prompt, thinkingMode, requestId, timing, onProgress, onTokensGenerated,
+            responseSnapshot, publisher, responseController, textSeen, onUpdate
+        )
+        try {
+            val answer = attempt()
+            liteRtCompletedTurns++
+            return answer
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            if (!liteRtConversationHasTools || liteRtCompletedTurns != 0 || textSeen.get() ||
+                stopRequested || isBeingClosed) throw failure
+            Log.w(TAG, "First LiteRT tool turn failed before text; retrying without tools", failure)
+            liteRtToolsDisabledForLoad = true
+            runCatching { liteRtConversation?.close() }
+            liteRtConversation = createLiteRtConversation(liteRtConversationMode)
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
+            val answer = attempt()
+            liteRtCompletedTurns++
+            return answer
+        }
+    }
+
+    private suspend fun streamLiteRtLmAttempt(
         prompt: String,
         thinkingMode: Boolean,
         requestId: String = "",
@@ -852,6 +898,7 @@ class ChatInferenceManager(context: Context) {
         responseSnapshot: () -> String,
         publisher: StreamingResponsePublisher? = null,
         responseController: InferenceResponseController? = null,
+        textSeen: java.util.concurrent.atomic.AtomicBoolean,
         onUpdate: (String) -> Unit
     ): String {
         val conversation = liteRtConversation ?: throw IllegalStateException("Inference not initialized")
@@ -902,10 +949,12 @@ class ChatInferenceManager(context: Context) {
                             "latencyMs=${System.currentTimeMillis() - requestStartedAt} chars=${delta.length}"
                     )
                 }
+                if (delta.isNotEmpty()) textSeen.set(true)
                 timing?.recordChunk(delta)
                 runCatching { onUpdate(delta) }
             },
             onSnapshot = { snap ->
+                if (snap.answerText.isNotEmpty() || snap.reasoningText.isNotEmpty()) textSeen.set(true)
                 responseController?.appendStructured(
                     answer = snap.answerText,
                     reasoning = snap.reasoningText,
@@ -942,6 +991,7 @@ class ChatInferenceManager(context: Context) {
             throw cancelled
         } catch (exception: Exception) {
             lastLiteRtSnapshot = adapter.currentSnapshot()
+            adapter.cancel(conversation)
             if (stopRequested) {
                 throw CancellationException("Generation cancelled").also { it.initCause(exception) }
             }
@@ -1265,6 +1315,28 @@ class ChatInferenceManager(context: Context) {
     private fun createLiteRtConversation(mode: LiteRtConversationMode): Conversation? {
         val engine = liteRtEngine ?: return null
         liteRtConversationMode = mode
+        liteRtCompletedTurns = 0
+        liteRtConversationHasTools = false
+        liteRtToolRecorder.clear()
+        if (!liteRtToolsDisabledForLoad && AppSettings.getInstance(context).settings.value.enableToolCalling) {
+            try {
+                val providers = listOf(CalculatorTool(), CurrentDateTimeTool()).map {
+                    tool(liteRtToolRecorder.recording(it))
+                }
+                val conversation = engine.createConversation(ConversationConfig(
+                    tools = providers,
+                    automaticToolCalling = true,
+                    extraContext = if (mode == LiteRtConversationMode.NoThinking)
+                        ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
+                    else emptyMap()
+                ))
+                liteRtConversationHasTools = true
+                return conversation
+            } catch (failure: Exception) {
+                liteRtToolsDisabledForLoad = true
+                Log.w(TAG, "LiteRT tool conversation unavailable; using ordinary chat for this load", failure)
+            }
+        }
         return when (mode) {
             LiteRtConversationMode.Default -> engine.createConversation()
             LiteRtConversationMode.NoThinking -> engine.createConversation(
