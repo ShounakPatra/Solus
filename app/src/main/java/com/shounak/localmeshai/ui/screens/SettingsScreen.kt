@@ -416,6 +416,15 @@ fun SettingsDialog(
                                 color = colors.primary.copy(alpha = 0.85f)
                             )
                         }
+                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.35f))
+                        SettingsSwitchRow(
+                            title = "Tool calling (experimental)",
+                            subtitle = "Let LiteRT-LM (.litertlm) models use a built-in calculator and the device date/time. Needs a tool-capable model; applies from the next new chat. Other runtimes are unaffected.",
+                            checked = settingsData.enableToolCalling,
+                            onCheckedChange = { isEnabled ->
+                                appSettings.updateSettings { it.copy(enableToolCalling = isEnabled) }
+                            }
+                        )
                     }
 
                     // Category 6: Access Token
