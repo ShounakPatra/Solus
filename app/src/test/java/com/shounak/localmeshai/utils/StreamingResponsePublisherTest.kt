@@ -6,6 +6,24 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class StreamingResponsePublisherTest {
+    @Test fun authoritativeToolRoundResetClearsVisiblePreambleWithoutChangingAttempt() = runBlocking {
+        val updates = Channel<String>(Channel.UNLIMITED)
+        val controller = com.shounak.localmeshai.ai.InferenceResponseController(false)
+        val publisher = StreamingResponsePublisher(this, { controller.snapshot().answerText },
+            { updates.trySend(it) }, intervalNanos = 0, snapshotProvider = { controller.snapshot() })
+        controller.appendStructured("Checking documents", "", false, replaceSnapshot = true)
+        publisher.notifyStructuredUpdate(allowEmpty = true)
+        assertEquals("Checking documents", withTimeout(5000) { updates.receive() })
+        controller.appendStructured("", "", false, replaceSnapshot = true)
+        publisher.notifyStructuredUpdate(allowEmpty = true)
+        assertEquals("", withTimeout(5000) { updates.receive() })
+        assertEquals(1, publisher.currentAttempt)
+        controller.appendStructured("Found it", "", false, replaceSnapshot = true)
+        publisher.notifyStructuredUpdate(allowEmpty = true)
+        assertEquals("Found it", withTimeout(5000) { updates.receive() })
+        assertEquals("Found it", publisher.finishExplicit("Found it"))
+    }
+
     @Test fun firstChunkPublishesWithoutAnotherChunk() = runBlocking {
         val updates = Channel<String>(Channel.UNLIMITED)
         val publisher = StreamingResponsePublisher(this, { it }, { updates.trySend(it) }, intervalNanos = 60_000_000_000)

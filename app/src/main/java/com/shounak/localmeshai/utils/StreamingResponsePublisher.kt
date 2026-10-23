@@ -26,6 +26,7 @@ internal class StreamingResponsePublisher(
     @Volatile private var lastPublished: String? = null
     @Volatile private var lastPublishedKey: String? = null
     private var version = 0
+    private var allowEmptySnapshot = false
     private var finished = false
     private var lastAt: Long? = null
     private var currentAttemptId: Int = 1
@@ -52,6 +53,7 @@ internal class StreamingResponsePublisher(
             val hasContent = formatted.isNotBlank() || (currentSnapshot != null && (currentSnapshot.answerText.isNotBlank() || currentSnapshot.reasoningText.isNotBlank() || currentSnapshot.isThinkingActive))
             var shouldPublish = false
             var isFirst = false
+            var publishEmpty = false
             synchronized(lock) {
                 if (snapVersion == version && snapAttempt == currentAttemptId && !finished) {
                     val key = if (currentSnapshot != null) {
@@ -59,8 +61,10 @@ internal class StreamingResponsePublisher(
                     } else {
                         formatted
                     }
-                    if (hasContent && key != lastPublishedKey) {
+                    if ((hasContent || allowEmptySnapshot) && key != lastPublishedKey) {
                         isFirst = lastPublished.isNullOrBlank()
+                        publishEmpty = allowEmptySnapshot
+                        allowEmptySnapshot = false
                         lastPublishedKey = key
                         lastPublished = formatted
                         lastAt = clock()
@@ -73,7 +77,7 @@ internal class StreamingResponsePublisher(
                     AppTrace.beginSection("first_visible_publication")
                 }
                 try {
-                    if (formatted.isNotBlank()) publish(formatted)
+                    if (formatted.isNotBlank() || publishEmpty) publish(formatted)
                     if (publishSnapshot != null && currentSnapshot != null) {
                         publishSnapshot(currentSnapshot)
                     }
@@ -229,9 +233,11 @@ data class StreamingSnapshot(
         finalFormattedText
     }
 
-    fun notifyStructuredUpdate() {
+    /** Tool-round replacements may explicitly clear a preamble; ordinary blank callbacks cannot. */
+    fun notifyStructuredUpdate(allowEmpty: Boolean = false) {
         synchronized(lock) {
             if (finished) return
+            allowEmptySnapshot = allowEmpty
             version++
         }
         notifications.trySend(Unit)

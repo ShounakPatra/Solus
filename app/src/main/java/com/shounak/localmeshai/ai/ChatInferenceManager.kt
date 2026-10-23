@@ -1173,6 +1173,21 @@ class ChatInferenceManager(context: Context) {
         try {
             ggufToolRecorder.clear()
             if (ggufConversationHasTools && mediaInputs.isEmpty()) {
+                val toolStream = com.shounak.localmeshai.ai.tools.GgufToolTurnStream(
+                    publish = { answer, reasoning, thinking ->
+                        responseController?.appendStructured(answer, reasoning, thinking,
+                            reqId = requestId, attemptId = 1, replaceSnapshot = true)
+                        publisher?.notifyStructuredUpdate(allowEmpty = true)
+                    },
+                    onText = { text ->
+                        if (!firstTokenRecorded) {
+                            firstTokenRecorded = true
+                            timing?.recordFirstToken()
+                            onProgress?.invoke(RequestProgress.Generating)
+                        }
+                        timing?.recordChunk(text)
+                    }
+                )
                 try {
                     val history = org.json.JSONArray().apply {
                         messages.forEach { (role, content) -> put(org.json.JSONObject().put("role", role).put("content", content)) }
@@ -1188,18 +1203,16 @@ class ChatInferenceManager(context: Context) {
                         val status = engine.generateMultimodalStream(
                             prompt = prompt, messages = messages, enableThinking = !noThinking,
                             samplingParams = profileSampling(), onMetrics = onMetrics,
-                            toolRequestJson = request, onToolResponse = { parsed = it }, onToken = {}
+                            toolRequestJson = request, onToolResponse = { parsed = it },
+                            onStructuredToken = { answer, reasoning, thinking ->
+                                if (!stopRequested && !isBeingClosed) toolStream.update(answer, reasoning, thinking)
+                            },
+                            onToken = {}
                         )
                         if (status == LlamaGenerationResult.Stopped) throw CancellationException("Generation cancelled")
-                        org.json.JSONObject(checkNotNull(parsed) { "Missing tool response" })
+                        org.json.JSONObject(checkNotNull(parsed) { "Missing tool response" }).also(toolStream::complete)
                     }
-                    val answer = result.optString("content", "")
-                    val reasoning = result.optString("reasoning_content", "")
-                    responseController?.isStructuredMode = true
-                    responseController?.appendStructured(answer, reasoning, false, reqId = requestId, attemptId = 1)
-                    publisher?.notifyStructuredUpdate()
-                    if (answer.isNotEmpty()) timing?.recordFirstToken()
-                    return answer
+                    return result.optString("content", "")
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (failure: Exception) {
@@ -1208,6 +1221,7 @@ class ChatInferenceManager(context: Context) {
                         LlamaFailureCategory.GenerationDecodeFailed, LlamaFailureCategory.PromptDecodeFailed
                     )) throw failure
                     if (ggufToolRecorder.snapshot().isNotEmpty()) throw failure
+                    toolStream.clear()
                     pendingToolHistory = null
                     ggufConversationHasTools = false
                     Log.w(TAG, "GGUF tools unavailable; retrying this conversation as ordinary chat", failure)
@@ -1422,24 +1436,19 @@ class ChatInferenceManager(context: Context) {
         add(CalculatorTool())
         add(CurrentDateTimeTool())
         if (AppSettings.getInstance(context).settings.value.enableRag) {
-            add(com.shounak.localmeshai.ai.tools.DocumentSearchTool { query ->
-                if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
-                try {
-                    kotlinx.coroutines.runBlocking(Dispatchers.IO) {
-                        kotlinx.coroutines.withTimeout(5_000) {
-                            val settings = AppSettings.getInstance(context).settings.value
-                            val matches = com.shounak.localmeshai.rag.RagManager.getInstance(context).retrieve(
-                                query, topK = settings.ragTopK.coerceIn(1, 5), minScore = settings.ragMinSimilarity
-                            ).matches
-                            org.json.JSONObject().put("matches", org.json.JSONArray().apply {
-                                matches.forEach { match -> put(org.json.JSONObject()
-                                    .put("document", match.chunk.documentName).put("chunk", match.chunk.chunkIndex)
-                                    .put("text", match.chunk.text.take(2000))) }
-                            }).toString()
-                        }
-                    }
-                } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
-                    "Error: Document search timed out"
+            add(com.shounak.localmeshai.ai.tools.DocumentSearchTool(
+                isCancelled = { stopRequested || isBeingClosed }
+            ) { query ->
+                kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+                    val settings = AppSettings.getInstance(context).settings.value
+                    val matches = com.shounak.localmeshai.rag.RagManager.getInstance(context).retrieve(
+                        query, topK = settings.ragTopK.coerceIn(1, 5), minScore = settings.ragMinSimilarity
+                    ).matches
+                    org.json.JSONObject().put("matches", org.json.JSONArray().apply {
+                        matches.forEach { match -> put(org.json.JSONObject()
+                            .put("document", match.chunk.documentName).put("chunk", match.chunk.chunkIndex)
+                            .put("text", match.chunk.text.take(2000))) }
+                    }).toString()
                 }
             })
         }
