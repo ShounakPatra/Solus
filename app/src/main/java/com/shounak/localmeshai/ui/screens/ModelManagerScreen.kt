@@ -2066,7 +2066,7 @@ fun ModelItem(
             }
 
             Text(
-                model.description,
+                model.displayDescription,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
