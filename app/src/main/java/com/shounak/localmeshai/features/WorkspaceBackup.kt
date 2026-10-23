@@ -92,6 +92,8 @@ class WorkspaceBackup internal constructor(
     internal suspend fun restoreFrom(input: java.io.InputStream): String = withContext(Dispatchers.IO) {
         check(!ModelRuntimeCoordinator.isRuntimeBusy.value) { "Finish the active model operation before restoring" }
         val stage = File(context.cacheDir, "backup_restore_${UUID.randomUUID()}").apply { check(mkdirs()) }
+        val copied = mutableMapOf<Triple<ChatKind, String, String>, File>()
+        val committed = mutableSetOf<Pair<ChatKind, String>>()
         try {
             val seen = readArchive(input, stage)
             val manifest = JSONObject(stage.resolve("manifest.json").readText())
@@ -129,9 +131,11 @@ class WorkspaceBackup internal constructor(
             val existingVision = repository.loadVisionSessions().map { it.id }.toSet()
             fun attachment(path: String?, kind: ChatKind, session: String): String? {
                 if (path.isNullOrBlank() || !assets.has(path)) return null
-                val source = stage.resolve(assets.getString(path))
-                return repository.attachmentStore.storeAttachmentFromFile(kind, session, sourceFile = source,
-                    targetFileName = File(path).name).absolutePath
+                val entry = assets.getString(path)
+                return copied.getOrPut(Triple(kind, session, entry)) {
+                    repository.attachmentStore.storeAttachmentFromFile(kind, session,
+                        sourceFile = stage.resolve(entry), targetFileName = File(path).name)
+                }.absolutePath
             }
             val text = originalText.map { session ->
                 val id = remap("text", session.id)
@@ -152,7 +156,7 @@ class WorkspaceBackup internal constructor(
                         documentPath = attachment(message.documentPath, ChatKind.Vision, id), progress = null, isThinkingActive = false
                     ) })
             }
-            val imported = repository.mergeRestoredSessions(text, vision)
+            val imported = repository.mergeRestoredSessions(text, vision) { kind, ids -> ids.forEach { committed.add(kind to it) } }
             var memoryCount = 0
             var skippedMemories = 0
             for (entry in memories) {
@@ -168,6 +172,12 @@ class WorkspaceBackup internal constructor(
             preferences.import(portable, ::remap)
             "Restored $imported new chats and $memoryCount memories ($skippedMemories already present). Existing chats were preserved. Models and document indexes are not part of backups."
         } finally {
+            copied.forEach { (key, file) ->
+                if ((key.first to key.second) !in committed) {
+                    file.delete()
+                    file.parentFile?.delete() // only the empty, newly allocated attachment directory
+                }
+            }
             check(inside(stage, context.cacheDir))
             stage.deleteRecursively()
         }

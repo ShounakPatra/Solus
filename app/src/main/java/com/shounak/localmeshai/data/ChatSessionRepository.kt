@@ -54,7 +54,7 @@ class ChatSessionRepository(
     private val _externalChanges = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val externalChanges = _externalChanges.asSharedFlow()
 
-    suspend fun mergeRestoredSessions(text: List<ChatSession>, vision: List<VisionChatSession>) = withContext(ioDispatcher) {
+    suspend fun mergeRestoredSessions(text: List<ChatSession>, vision: List<VisionChatSession>, onCommitted: (ChatKind, Set<String>) -> Unit = { _, _ -> }) = withContext(ioDispatcher) {
         lock.withLock {
             val currentText = loadChatSessions()
             val currentVision = loadVisionSessions()
@@ -62,11 +62,13 @@ class ChatSessionRepository(
             val addedText = text.filter { incoming -> currentText.none { it.id == incoming.id } && !deletionJournal.isTombstoned(ChatKind.Text, incoming.id) }
             val addedVision = vision.filter { incoming -> currentVision.none { it.id == incoming.id } && !deletionJournal.isTombstoned(ChatKind.Vision, incoming.id) }
             check(saveChatSessionsInternal(currentText + addedText)) { "Could not restore text chats; existing data was preserved" }
+            onCommitted(ChatKind.Text, addedText.map { it.id }.toSet())
             restoredTextIds.addAll(addedText.map { it.id })
             if (addedText.isNotEmpty()) _externalChanges.tryEmit(Unit)
             check(saveVisionSessionsInternal(currentVision + addedVision)) {
                 "Text chats were restored, but vision history could not be saved. Retry this same backup to finish."
             }
+            onCommitted(ChatKind.Vision, addedVision.map { it.id }.toSet())
             restoredVisionIds.addAll(addedVision.map { it.id })
             _externalChanges.tryEmit(Unit)
             addedText.size + addedVision.size
