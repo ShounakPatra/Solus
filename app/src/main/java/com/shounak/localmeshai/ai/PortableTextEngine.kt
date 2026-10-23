@@ -29,6 +29,10 @@ internal class PortableTextEngine private constructor(private val file: File, pr
     private var promptHasSpecialTokens = false
     private var reasoningPrefill = false
     private var turnStops: List<String> = emptyList()
+    private val registeredPromptTokens by lazy {
+        File(file.parentFile, "tokenizer.json").takeIf { it.isFile }
+            ?.let { PortablePrompt.registeredTokens(PortableModelBundle.json(it)) }.orEmpty()
+    }
     private val eos: Set<Int>
     @Volatile private var stopped = false
     private val lifecycle = kotlinx.coroutines.sync.Mutex()
@@ -94,12 +98,7 @@ internal class PortableTextEngine private constructor(private val file: File, pr
         val raw = messages?.takeIf { it.isNotEmpty() } ?: listOf("user" to fallback)
         val turns = if (memory.isNotBlank() && raw.none { it.first == "system" }) listOf("system" to memory) + raw else raw
         val override = config.optString("solus_prompt_format")
-        val template = when (val value = tokenizerConfig.opt("chat_template")) {
-            is String -> value
-            is JSONArray -> (0 until value.length()).mapNotNull { value.optJSONObject(it) }.firstOrNull { it.optString("name") == "default" }?.optString("template")
-            null -> null
-            else -> null
-        }
+        val template = PortablePrompt.template(tokenizerConfig)
         if (override.isBlank() && !template.isNullOrBlank()) {
             fun special(name: String): String = when (val value = tokenizerConfig.opt(name)) {
                 is String -> value
@@ -115,16 +114,7 @@ internal class PortableTextEngine private constructor(private val file: File, pr
                 reasoningPrefill = com.shounak.localmeshai.utils.PortableThinking.hasReasoningPrefill(it)
             }
         }
-        val promptFormat = override.ifBlank { when (config.optString("model_type")) {
-            "qwen2" -> "chatml"
-            "gpt2" -> "completion"
-            "llama" -> if (tokenizerConfig.toString().contains("<|start_header_id|>")) "llama3" else "llama2"
-            "mistral" -> "mistral"
-            "gemma" -> "gemma"
-            "phi3" -> "phi3"
-            "phi" -> "phi"
-            else -> "plain"
-        } }
+        val promptFormat = PortablePrompt.fallbackFormat(config, tokenizerConfig, registeredPromptTokens)
         turnStops = PortablePrompt.stopSequences(promptFormat)
         promptHasSpecialTokens = promptFormat !in setOf("plain", "completion", "phi")
         return PortablePrompt.render(promptFormat, turns)

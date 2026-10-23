@@ -74,11 +74,19 @@ mod tests {
         tokenizer.with_pre_tokenizer(Some(tokenizers::pre_tokenizers::whitespace::WhitespaceSplit));
         tokenizer.with_padding(Some(PaddingParams { strategy: PaddingStrategy::Fixed(8), ..Default::default() }));
         tokenizer.with_truncation(Some(TruncationParams { max_length: 3, ..Default::default() })).map_err(|e| anyhow!(e.to_string()))?;
+        let truncated_first = tokenizer.encode("a a a a", false).map_err(|e| anyhow!(e.to_string()))?;
+        let truncated_second = tokenizer.encode("a a a [UNK]", false).map_err(|e| anyhow!(e.to_string()))?;
+        assert_eq!(truncated_first.get_ids(), truncated_second.get_ids());
         let root = std::env::temp_dir().join(format!("solus-tokenizer-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()));
         std::fs::create_dir(&root)?;
         tokenizer.save(root.join("tokenizer.json"), false).map_err(|e| anyhow!(e.to_string()))?;
         let loaded = load(&root, false)?;
         let result = loaded.encode("a a a a", false).map_err(|e| anyhow!(e.to_string()))?;
+        // Training truncation can make different questions with a common system prefix identical.
+        // This tokenizer is shared by safetensors, ONNX and TFLite inference.
+        let first = loaded.encode("a a a a", false).map_err(|e| anyhow!(e.to_string()))?;
+        let second = loaded.encode("a a a [UNK]", false).map_err(|e| anyhow!(e.to_string()))?;
+        assert_ne!(first.get_ids(), second.get_ids());
         std::fs::remove_dir_all(root)?;
         assert_eq!(result.get_ids(), &[0, 0, 0, 0]);
         Ok(())

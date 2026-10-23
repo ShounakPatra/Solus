@@ -196,7 +196,7 @@ internal class PortableMediaEngine private constructor(
         val graph = requireNotNull(mediaGraph)
         val (name, pixels) = graphImage(bitmap, processor)
         val tokenizerConfig = File(root,"tokenizer_config.json").takeIf { it.isFile }?.let(PortableModelBundle::json) ?: JSONObject()
-        val template = tokenizerConfig.opt("chat_template") as? String
+        val template = PortablePrompt.template(tokenizerConfig)
         fun special(key: String): String = (tokenizerConfig.opt(key) as? String)
             ?: (tokenizerConfig.opt(key) as? JSONObject)?.optString("content").orEmpty()
         val enabled = thinking && PortableThinking.capability(config,tokenizerConfig) != com.shounak.localmeshai.models.ThinkingCapability.Unsupported
