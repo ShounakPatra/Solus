@@ -738,8 +738,8 @@ private fun HuggingFaceImportSection(
                         // Complete artifact list preview
                         selectedVariant?.let { variant ->
                             val artifactsToDownload = mutableListOf<Pair<String, Long>>()
-                            variant.mainFiles.forEach { file ->
-                                artifactsToDownload.add(file.fileName to file.sizeBytes)
+                            variant.downloadFiles.forEach { file ->
+                                artifactsToDownload.add(file.path to file.sizeBytes)
                             }
                             selectedProjector?.let { proj ->
                                 artifactsToDownload.add(proj.fileName to proj.sizeBytes)
@@ -753,7 +753,7 @@ private fun HuggingFaceImportSection(
                             Text("Artifacts to download ($totalStr total):", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                             artifactsToDownload.forEach { (name, size) ->
                                 val sMb = size / (1024 * 1024)
-                                val sStr = if (sMb > 1024) String.format(Locale.US, "%.1f GB", sMb / 1024f) else "$sMb MB"
+                                val sStr = if (size in 1..1048575) "${(size + 1023) / 1024} KB" else if (size <= 0) "size unknown" else if (sMb > 1024) String.format(Locale.US, "%.1f GB", sMb / 1024f) else "$sMb MB"
                                 Text("• $name ($sStr)", style = MaterialTheme.typography.labelSmall)
                             }
 

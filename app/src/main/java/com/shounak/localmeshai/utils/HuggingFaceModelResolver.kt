@@ -72,6 +72,7 @@ data class ModelVariant(
     val totalSizeBytes: Long = 0L,
     val companionFiles: List<RepoFile> = emptyList()
 ) {
+    val downloadFiles: List<RepoFile> get() = (mainFiles + companionFiles).distinctBy { it.path }
     val format: ModelFormat get() = mainFiles.firstOrNull()?.format ?: ModelFormat.GGUF
 }
 
