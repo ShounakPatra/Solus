@@ -28,6 +28,7 @@ internal class PortableTextEngine private constructor(private val file: File, pr
     private var tflitePlan: TfliteTextPlan? = null
     private var promptHasSpecialTokens = false
     private var reasoningPrefill = false
+    private var turnStops: List<String> = emptyList()
     private val eos: Set<Int>
     @Volatile private var stopped = false
     private val lifecycle = kotlinx.coroutines.sync.Mutex()
@@ -108,6 +109,7 @@ internal class PortableTextEngine private constructor(private val file: File, pr
             }
             val history = JSONArray().apply { turns.forEach { (role, content) -> put(org.json.JSONObject().put("role", role).put("content", content)) } }
             promptHasSpecialTokens = true
+            turnStops = PortablePrompt.stopSequences(template)
             val enabled = thinking && com.shounak.localmeshai.utils.PortableThinking.capability(config, tokenizerConfig) != com.shounak.localmeshai.models.ThinkingCapability.Unsupported
             return LlamaCppEngine.nativeRenderPortableChat(template, history.toString(), special("bos_token"), special("eos_token"), enabled).also {
                 reasoningPrefill = com.shounak.localmeshai.utils.PortableThinking.hasReasoningPrefill(it)
@@ -123,6 +125,7 @@ internal class PortableTextEngine private constructor(private val file: File, pr
             "phi" -> "phi"
             else -> "plain"
         } }
+        turnStops = PortablePrompt.stopSequences(promptFormat)
         promptHasSpecialTokens = promptFormat !in setOf("plain", "completion", "phi")
         return PortablePrompt.render(promptFormat, turns)
     }
@@ -144,8 +147,12 @@ internal class PortableTextEngine private constructor(private val file: File, pr
                 promptIds = encode(renderPrompt(turns, "", promptMemory, promptThinking))
             }
             require(promptIds.size < contextTokens) { "Your message and system instructions exceed the model context ($contextTokens tokens). Shorten them or choose a larger context." }
+            // Decoding omits registered special tokens, so stop single-token boundaries before decoding.
+            val turnEos = eos + turnStops.mapNotNull { marker ->
+                CandleBridge.encodeRendered(tokenizer, marker).singleOrNull()
+            }
             var pendingReasoningPrefix = reasoningPrefill
-            return PortableTokenLoop.generate(promptIds, contextTokens, limit, eos, { stopped },
+            return PortableTokenLoop.generate(promptIds, contextTokens, limit, turnEos, { stopped },
                 next = { tokens, step ->
                     val logits = when (format) {
                         ModelFormat.Safetensors -> CandleBridge.forward(tokenizer, if (step == 0) promptIds else intArrayOf(tokens.last()), if (step == 0) 0 else tokens.size - 1)
@@ -157,7 +164,7 @@ internal class PortableTextEngine private constructor(private val file: File, pr
                 }, decode = { CandleBridge.decode(tokenizer, it) }, onText = { delta ->
                     if (pendingReasoningPrefix) { onText("<think>"); pendingReasoningPrefix = false }
                     onText(delta)
-                }, onToken = onToken)
+                }, onToken = onToken, stopSequences = turnStops)
         } finally { onnxDecoder?.reset(); lifecycle.unlock() }
     }
 

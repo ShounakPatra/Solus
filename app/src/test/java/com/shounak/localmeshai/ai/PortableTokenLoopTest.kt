@@ -23,6 +23,24 @@ class PortableTokenLoopTest {
         assertEquals(listOf(10, 20, 1, 2), seen.last())
     }
 
+    @Test fun splitChatBoundaryStopsBeforeInventedNextTurn() = runBlocking {
+        val text = "Hello<|im_end|>user: invented"
+        var calls = 0
+        val chunks = mutableListOf<String>()
+        val result = PortableTokenLoop.generate(intArrayOf(1), 100, text.length, emptySet(), { false },
+            next = { _, step -> calls++; step }, decode = { text.take(it.size) },
+            onText = chunks::add, onToken = {}, stopSequences = listOf("<|im_end|>"))
+        assertEquals("Hello", result)
+        assertEquals(result, chunks.joinToString(""))
+        assertEquals("Hello<|im_end|>".length, calls)
+    }
+    @Test fun unfinishedBoundaryPrefixIsFlushedAtNaturalLimit() = runBlocking {
+        val result = PortableTokenLoop.generate(intArrayOf(1), 10, 2, emptySet(), { false },
+            next = { _, step -> step }, decode = { "x<".take(it.size) },
+            onText = {}, onToken = {}, stopSequences = listOf("<|im_end|>"))
+        assertEquals("x<", result)
+    }
+
     @Test fun stopDuringInferenceSuppressesLateToken() = runBlocking {
         var stopped = false
         val result = PortableTokenLoop.generate(intArrayOf(1), 8, 4, setOf(99), { stopped },

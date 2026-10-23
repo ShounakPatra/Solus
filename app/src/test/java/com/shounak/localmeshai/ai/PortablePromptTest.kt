@@ -5,6 +5,11 @@ import org.junit.Test
 
 class PortablePromptTest {
     private val history = listOf("system" to "Be concise.","user" to "Hello","assistant" to "Hi","user" to "Next")
+    @Test fun olderChatMlLlamaTemplateUsesChatMlBoundary() {
+        val template = "{% for message in messages %}{{ '<|im_start|>' + message['role'] + message['content'] + '<|im_end|>' }}{% endfor %}"
+        assertEquals(listOf("<|im_end|>"), PortablePrompt.stopSequences(template))
+        assertTrue(PortablePrompt.stopSequences("completion").isEmpty())
+    }
     @Test fun chatmlAndLlama3HaveOneGenerationPrefix() {
         val chatml = PortablePrompt.render("chatml",history)
         assertTrue(chatml.startsWith("<|im_start|>system\nBe concise.<|im_end|>"))

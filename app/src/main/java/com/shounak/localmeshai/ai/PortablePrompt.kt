@@ -2,6 +2,13 @@ package com.shounak.localmeshai.ai
 
 /** Explicit fallbacks for older checkpoints without tokenizer_config.chat_template. */
 internal object PortablePrompt {
+    fun stopSequences(formatOrTemplate: String): List<String> = buildList {
+        if (formatOrTemplate == "chatml" || "<|im_end|>" in formatOrTemplate) add("<|im_end|>")
+        if (formatOrTemplate == "llama3" || "<|eot_id|>" in formatOrTemplate) add("<|eot_id|>")
+        if (formatOrTemplate == "gemma" || "<end_of_turn>" in formatOrTemplate) add("<end_of_turn>")
+        if (formatOrTemplate == "phi3" || "<|end|>" in formatOrTemplate) add("<|end|>")
+    }
+
     fun render(format: String, messages: List<Pair<String, String>>): String {
         require(messages.all { it.first in setOf("system", "user", "assistant") })
         return when (format) {
