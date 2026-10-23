@@ -24,6 +24,21 @@ internal object PortableModelBundle {
         return JSONObject(file.readText())
     }
 
+    /** One metadata contract for import and inference. JSON null means absent. */
+    fun eosTokens(config: JSONObject, generation: JSONObject? = null): Set<Int> {
+        val value = listOf(generation, config, config.optJSONObject("text_config"))
+            .firstNotNullOfOrNull { it?.opt("eos_token_id")?.takeUnless { v -> v == JSONObject.NULL } }
+        fun token(v: Any?): Int {
+            require(v is Number && v.toDouble().isFinite() && v.toDouble() >= 0 &&
+                v.toDouble() <= Int.MAX_VALUE && v.toDouble() == v.toInt().toDouble()) { "Invalid eos_token_id" }
+            return v.toInt()
+        }
+        val result = if (value is org.json.JSONArray) (0 until value.length()).map { token(value.get(it)) }.toSet()
+            else setOf(token(value))
+        require(result.isNotEmpty()) { "Invalid eos_token_id: empty array" }
+        return result
+    }
+
     fun inspect(primary: File, expected: ModelFormat, companions: Map<String, File> = emptyMap(), logicalName: String = primary.name): ModelCapabilities {
         require(format(logicalName) == expected && primary.isFile && primary.length() > 8) { "Invalid model artifact" }
         val dir = requireNotNull(primary.parentFile)
@@ -46,11 +61,13 @@ internal object PortableModelBundle {
                 if (!companion("vocab.json").isFile || !companion("merges.txt").isFile) {
                     throw MissingModelFilesException("tokenizer.json or BPE vocab.json and merges.txt were not found. The model weights are kept. Retry to fetch companion files, or import the tokenizer supplied by the model author together with the weights.")
                 }
+                require(config.optString("model_type") == "gpt2") {
+                    "This model requires tokenizer.json; generic BPE fallback is supported only for GPT-2."
+                }
                 require(json(companion("vocab.json")).length() > 0) { "Empty BPE vocabulary" }
             }
             val generation = companion("generation_config.json").takeIf { it.isFile }?.let(::json)
-            val eos = generation?.opt("eos_token_id") ?: config.opt("eos_token_id") ?: config.optJSONObject("text_config")?.opt("eos_token_id")
-            require(eos is Number || eos is org.json.JSONArray) { "config.json or generation_config.json must declare eos_token_id" }
+            eosTokens(config, generation)
         }
         require(config.optString("solus_prompt_format") in setOf("", "chatml", "plain", "llama2", "llama3", "gemma", "phi3", "phi", "mistral", "completion")) { "Unsupported solus_prompt_format" }
         when (expected) {

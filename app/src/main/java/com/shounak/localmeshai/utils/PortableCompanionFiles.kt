@@ -28,6 +28,18 @@ internal object PortableCompanionFiles {
         }
     }
 
+    /** Only skip an optional asset when staged metadata proves it is irrelevant or redundant. */
+    fun dispensable(name: String, staged: (String) -> java.io.File): Boolean {
+        val config = runCatching { PortableModelBundle.json(staged("config.json")) }.getOrNull() ?: return false
+        val task = PortableModelProfile.task(config, null)
+        if (task == com.shounak.localmeshai.models.ModelTask.Chat &&
+            name in setOf("processor_config.json", "preprocessor_config.json")) return true
+        if (name in setOf("vocab.json", "merges.txt")) return runCatching {
+            PortableModelBundle.json(staged("tokenizer.json")).getJSONObject("model").has("vocab")
+        }.getOrDefault(false)
+        return false
+    }
+
     fun isMissing(message: String?): Boolean = message?.let {
         it.startsWith("Missing files:") || it.startsWith("Missing tokenizer.json or BPE")
     } == true

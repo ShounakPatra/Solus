@@ -37,7 +37,7 @@ class PortableCompanionRecoveryTest {
                     MockResponse().setBody(Buffer().write(weights()))
                 }
                 "/config.json" -> MockResponse().setHeader("Content-Type", "application/json")
-                    .setBody("""{"model_type":"qwen2","eos_token_id":2}""")
+                    .setBody("""{"model_type":"gpt2","eos_token_id":2}""")
                 "/vocab.json" -> if (tokenizerAvailable) MockResponse().setBody("""{"a":0}""") else MockResponse().setResponseCode(404)
                 "/merges.txt" -> if (tokenizerAvailable) MockResponse().setBody("#version: 0.2\na b") else MockResponse().setResponseCode(404)
                 else -> MockResponse().setResponseCode(404)
@@ -78,6 +78,26 @@ class PortableCompanionRecoveryTest {
                 downloader.downloadArtifactBundle(spec, null) {}
                 fail("403 must remain an authentication failure")
             } catch (e: ModelDownloadHttpException) { assertEquals(403, e.statusCode) }
+        } finally { server.shutdown() }
+    }
+
+    @Test fun irrelevantProcessorFailureDoesNotPreventPublishingTextModel() = runBlocking {
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/model.safetensors" -> MockResponse().setBody(Buffer().write(weights()))
+                "/config.json" -> MockResponse().setBody("""{"model_type":"gpt2","eos_token_id":2}""")
+                "/tokenizer.json" -> MockResponse().setBody("""{"model":{"vocab":{"a":0}}}""")
+                "/processor_config.json", "/preprocessor_config.json" -> MockResponse().setResponseCode(500)
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        server.start()
+        try {
+            val storage = ModelArtifactStorage(temporary.newFolder())
+            val downloader = ModelDownloader(customHttpClient = OkHttpClient(), artifactStorage = storage)
+            downloader.downloadArtifactBundle(HuggingFaceModelResolver.createDirectPortableSpec(server.url("/model.safetensors").toString(), "extras"), null) {}
+            assertNotNull(storage.getPublishedBundle("extras"))
         } finally { server.shutdown() }
     }
 

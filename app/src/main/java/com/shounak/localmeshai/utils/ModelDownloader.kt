@@ -317,7 +317,15 @@ open class ModelDownloader(
                         )
                     )
                 }
-                } catch (e: ModelDownloadHttpException) {
+                } catch (e: java.io.IOException) {
+                    if (artifact.optional && PortableCompanionFiles.dispensable(artifact.fileName) {
+                            artifactStorage.getStagingFile(spec.modelId, it)
+                        }) {
+                        android.util.Log.w("ModelDownloader", "Optional companion ${artifact.fileName} unavailable", e)
+                        index++
+                        continue
+                    }
+                    if (e !is ModelDownloadHttpException) throw e
                     if (artifact.optional && e.statusCode == 404) {
                         index++
                         continue

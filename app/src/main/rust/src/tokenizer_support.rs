@@ -11,6 +11,11 @@ pub fn load(root: &Path, clip: bool) -> Result<Tokenizer> {
         tokenizer.with_truncation(None).map_err(|e| anyhow!(e.to_string()))?;
         return Ok(tokenizer);
     }
+    if !clip {
+        let config: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("config.json"))?)?;
+        anyhow::ensure!(config["model_type"].as_str() == Some("gpt2"),
+            "This model requires tokenizer.json; generic BPE fallback is supported only for GPT-2");
+    }
     let vocab = root.join("vocab.json");
     let merges = root.join("merges.txt");
     let mut builder = BPE::from_file(&vocab.to_string_lossy(), &merges.to_string_lossy())
@@ -35,6 +40,7 @@ pub fn load(root: &Path, clip: bool) -> Result<Tokenizer> {
         tokenizer.with_post_processor(Some(TemplateProcessing::builder().try_single(format!("{start} $A {end}")).map_err(|e| anyhow!(e.to_string()))?
             .special_tokens(vec![(start, start_id), (end, end_id)]).build().map_err(|e| anyhow!(e.to_string()))?));
     } else {
+        tokenizer.add_special_tokens(&[AddedToken::from("<|endoftext|>", true)]);
         tokenizer.with_pre_tokenizer(Some(tokenizers::pre_tokenizers::byte_level::ByteLevel::new(false, true, true)));
         tokenizer.with_decoder(Some(tokenizers::decoders::byte_level::ByteLevel::default()));
     }
@@ -44,6 +50,21 @@ pub fn load(root: &Path, clip: bool) -> Result<Tokenizer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bpe_fallback_rejects_non_gpt2_and_registers_gpt2_control_token() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("solus-bpe-{}", std::process::id()));
+        std::fs::create_dir_all(&root)?;
+        std::fs::write(root.join("config.json"), r#"{"model_type":"qwen2"}"#)?;
+        assert!(load(&root, false).err().unwrap().to_string().contains("tokenizer.json"));
+        std::fs::write(root.join("config.json"), r#"{"model_type":"gpt2"}"#)?;
+        std::fs::write(root.join("vocab.json"), r#"{"<|endoftext|>":0,"a":1}"#)?;
+        std::fs::write(root.join("merges.txt"), "#version: 0.2\n")?;
+        let tokenizer = load(&root, false)?;
+        let ids = tokenizer.encode("<|endoftext|>a", false).map_err(|e| anyhow!(e.to_string()))?;
+        assert_eq!(ids.get_ids(), &[0, 1]);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
     #[test]
     fn training_padding_and_truncation_do_not_change_inference_tokens() -> Result<()> {
         use tokenizers::{models::wordlevel::WordLevel, PaddingParams, PaddingStrategy, TruncationParams};
