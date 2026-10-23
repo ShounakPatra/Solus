@@ -14,6 +14,21 @@ interface SemanticEmbeddingEngine {
     val dimension: Int
     suspend fun embed(text: String): FloatArray
     suspend fun embedBatch(texts: List<String>): List<FloatArray>
+
+    /** Embeds a search query. Asymmetric retrieval models add an instruction prefix here. */
+    suspend fun embedQuery(text: String): FloatArray = embed(text)
+
+    /**
+     * Maps a raw cosine similarity into the app's 0..1 relevance scale, so the user's
+     * "minimum similarity" setting means the same thing for every engine.
+     */
+    fun calibrate(rawCosine: Float): Float = rawCosine
+
+    /** Inverse of [calibrate]: the raw cosine that corresponds to a calibrated threshold. */
+    fun rawThreshold(calibrated: Float): Float = calibrated
+
+    /** Frees native resources (model sessions). The engine reloads lazily on next use. */
+    fun release() {}
 }
 
 /**

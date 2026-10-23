@@ -704,6 +704,44 @@ fun SettingsDialog(
                         )
 
                         if (settingsData.enableRag) {
+                            val embeddingStatus by ragManager.embeddingStatus.collectAsState()
+                            val neuralSpec = com.shounak.localmeshai.rag.embedding.EmbeddingModels.BGE_SMALL_EN_V15
+                            val neuralOn = settingsData.ragEmbeddingModel == neuralSpec.id
+                            val switching = embeddingStatus is com.shounak.localmeshai.rag.EmbeddingModelStatus.Downloading ||
+                                embeddingStatus is com.shounak.localmeshai.rag.EmbeddingModelStatus.Reindexing
+                            LaunchedEffect(embeddingStatus) {
+                                if (embeddingStatus is com.shounak.localmeshai.rag.EmbeddingModelStatus.Idle) {
+                                    ragDocCount = ragManager.indexedDocuments.size
+                                    ragChunkCount = ragManager.totalIndexedChunks
+                                }
+                            }
+                            val neuralSubtitle = when (val status = embeddingStatus) {
+                                is com.shounak.localmeshai.rag.EmbeddingModelStatus.Downloading ->
+                                    "Downloading ${neuralSpec.displayName}… ${(status.bytesDone * 100 / status.bytesTotal.coerceAtLeast(1L)).toInt()}%"
+                                is com.shounak.localmeshai.rag.EmbeddingModelStatus.Reindexing ->
+                                    "Re-indexing documents… ${status.chunksDone}/${status.chunksTotal} chunks"
+                                is com.shounak.localmeshai.rag.EmbeddingModelStatus.Failed ->
+                                    "Couldn't switch search model: ${status.message}"
+                                else -> if (neuralOn) {
+                                    "On: ${neuralSpec.displayName}, fully offline. Finds passages by meaning, not just matching words"
+                                } else {
+                                    "Downloads a ${neuralSpec.downloadBytes / 1_000_000} MB on-device model (about 90 MB RAM only while searching). Finds passages by meaning, not just matching words"
+                                }
+                            }
+                            SettingsSwitchRow(
+                                title = "Neural Semantic Search",
+                                subtitle = neuralSubtitle,
+                                checked = neuralOn,
+                                enabled = !switching,
+                                onCheckedChange = { enable ->
+                                    ragManager.requestEmbeddingModel(
+                                        if (enable) neuralSpec.id else com.shounak.localmeshai.rag.embedding.EmbeddingModels.LEXICAL_ID
+                                    )
+                                }
+                            )
+                        }
+
+                        if (settingsData.enableRag) {
                             Surface(
                                 shape = RoundedCornerShape(16.dp),
                                 color = colors.surfaceContainerLow,
