@@ -2,17 +2,26 @@
 use anyhow::{anyhow, bail, Result};
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_nn::{Module, VarBuilder};
-use candle_transformers::models::{stable_diffusion as sd, vit, whisper};
+use candle_transformers::models::{stable_diffusion as sd, vit, whisper, paligemma};
 use std::{path::{Path, PathBuf}, sync::atomic::{AtomicBool, Ordering}};
 use tokenizers::Tokenizer;
 
 pub enum MediaModel {
+    VisionLanguage { model: paligemma::Model, tokenizer: Tokenizer, size: usize, eos: Vec<u32>, context: usize, image_tokens: usize },
     Vit { model: vit::Model, size: usize },
     Whisper { model: whisper::model::Whisper, tokenizer: Tokenizer, filters: Vec<f32> },
     Diffusion { config: sd::StableDiffusionConfig, clip: sd::clip::ClipTextTransformer,
         unet: sd::unet_2d::UNet2DConditionModel, vae: sd::vae::AutoEncoderKL, tokenizer: Tokenizer, v_prediction: bool },
 }
 fn json(path: impl AsRef<Path>) -> Result<serde_json::Value> { Ok(serde_json::from_reader(std::fs::File::open(path)?)?) }
+fn eos_tokens(config: &serde_json::Value, generation: Option<&serde_json::Value>) -> Result<Vec<u32>> {
+    let value = generation.map(|v| &v["eos_token_id"]).into_iter().chain([&config["eos_token_id"], &config["text_config"]["eos_token_id"]])
+        .find(|value| !value.is_null()).ok_or_else(|| anyhow!("Missing vision decoder EOS tokens"))?;
+    let values = value.as_array().cloned().unwrap_or_else(|| vec![value.clone()]);
+    let ids: Vec<u32> = values.iter().map(|id| Ok(u32::try_from(id.as_u64().ok_or_else(|| anyhow!("Invalid EOS token"))?)?)).collect::<Result<_>>()?;
+    if ids.is_empty() { bail!("Empty EOS token list"); }
+    Ok(ids)
+}
 fn component(root: &Path, name: &str) -> Result<PathBuf> {
     let nested = root.join(name);
     if nested.is_file() { return Ok(nested); }
@@ -50,6 +59,19 @@ impl MediaModel {
         let config = json(root.join("config.json"))?;
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(paths, DType::F32, device)? };
         Ok(match config["model_type"].as_str().unwrap_or("") {
+            "paligemma" if task == "vision_language" => {
+                if config["text_config"]["model_type"].as_str().unwrap_or("gemma") != "gemma" { bail!("Only original Gemma-based PaLiGemma is supported"); }
+                let cfg: paligemma::Config = serde_json::from_value(config.clone())?;
+                let size = cfg.vision_config.image_size;
+                let patch = cfg.vision_config.patch_size;
+                if patch == 0 || size % patch != 0 { bail!("Invalid PaLiGemma image patch size"); }
+                let generation = root.join("generation_config.json");
+                let generation = if generation.is_file() { Some(json(generation)?) } else { None };
+                let eos = eos_tokens(&config, generation.as_ref())?;
+                let context = cfg.text_config.max_position_embeddings;
+                let tokenizer = crate::tokenizer_support::load(root, false)?;
+                Self::VisionLanguage { model: paligemma::Model::new(&cfg, vb)?, tokenizer, size, eos, context, image_tokens: (size/patch).pow(2) }
+            }
             "vit" if task == "image_classification" => {
                 let cfg: vit::Config = serde_json::from_value(config.clone())?;
                 if cfg.num_channels != 3 { bail!("ViT requires three RGB channels"); }
@@ -66,6 +88,31 @@ impl MediaModel {
             }
             architecture => bail!("No {task} safetensors adapter for '{architecture}'"),
         })
+    }
+    pub fn answer_image(&mut self, pixels: Vec<f32>, prompt: &str, stopped: &AtomicBool) -> Result<String> {
+        let Self::VisionLanguage { model, tokenizer, size, eos, context, image_tokens } = self else { bail!("Not a vision-language model"); };
+        active(stopped)?;
+        let prompt = format!("{}\n", prompt.trim());
+        let ids = tokenizer.encode(prompt, true).map_err(|e| anyhow!(e.to_string()))?.get_ids().to_vec();
+        let prefix = ids.len() + *image_tokens;
+        if ids.is_empty() || prefix >= *context { bail!("Image and prompt exceed model context"); }
+        let pixels = Tensor::from_vec(pixels, (1,3,*size,*size), &Device::Cpu)?;
+        let ids = Tensor::new(ids.as_slice(), &Device::Cpu)?.unsqueeze(0)?;
+        let mut logits = model.setup(&pixels, &ids)?;
+        let mut generated = Vec::new();
+        for _ in 0..256.min(*context-prefix) {
+            active(stopped)?;
+            let vocab = *logits.dims().last().ok_or_else(|| anyhow!("Missing vision logits dimensions"))?;
+            let all_scores = logits.flatten_all()?.to_vec1::<f32>()?;
+            let scores = &all_scores[all_scores.len()-vocab..];
+            let token = scores.iter().enumerate().filter(|(_,v)| v.is_finite()).max_by(|a,b| a.1.total_cmp(b.1))
+                .ok_or_else(|| anyhow!("Model produced no finite scores"))?.0 as u32;
+            if eos.contains(&token) { break; }
+            generated.push(token);
+            logits = model.forward(&Tensor::new(&[token], &Device::Cpu)?.unsqueeze(0)?)?;
+        }
+        active(stopped)?;
+        Ok(tokenizer.decode(&generated, true).map_err(|e| anyhow!(e.to_string()))?)
     }
     pub fn classify(&self, pixels: Vec<f32>, stopped: &AtomicBool) -> Result<Vec<f32>> {
         active(stopped)?;
@@ -170,4 +217,18 @@ pub fn mel_filters(count: usize) -> Vec<f32> {
         }
     }
     filters
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn vision_eos_uses_generation_config_and_nested_gemma_defaults() -> Result<()> {
+        let cfg = serde_json::json!({"text_config":{"eos_token_id":1}});
+        assert_eq!(eos_tokens(&cfg,None)?, vec![1]);
+        assert_eq!(eos_tokens(&cfg,Some(&serde_json::json!({"eos_token_id":[1,7]})))?,vec![1,7]);
+        assert!(eos_tokens(&serde_json::json!({}),None).is_err());
+        assert!(eos_tokens(&cfg,Some(&serde_json::json!({"eos_token_id":[]}))).is_err());
+        Ok(())
+    }
 }

@@ -6,9 +6,14 @@ import java.io.File
 
 internal object PortableModelProfile {
     val textArchitectures = setOf("gpt2", "qwen2", "llama", "mistral", "gemma", "phi", "phi3")
+    fun isCtc(config: JSONObject): Boolean = config.optString("solus_audio_decoder") == "ctc" ||
+        config.optJSONArray("architectures")?.toString()?.contains("ForCTC") == true
     fun task(config: JSONObject, pipeline: JSONObject? = null): ModelTask {
         if (pipeline != null) return if (pipeline.optString("_class_name") in setOf("StableDiffusionPipeline", "OnnxStableDiffusionPipeline", "ORTStableDiffusionPipeline")) ModelTask.ImageGeneration else ModelTask.Unknown
+        if (isCtc(config)) return ModelTask.SpeechRecognition
+        if (config.optString("solus_task") == "vision_language") return ModelTask.VisionLanguage
         return when (config.optString("model_type")) {
+            "paligemma", "llava", "qwen2_vl", "smolvlm" -> ModelTask.VisionLanguage
             "vit" -> ModelTask.ImageClassification
             "whisper" -> ModelTask.SpeechRecognition
             in textArchitectures -> ModelTask.Chat

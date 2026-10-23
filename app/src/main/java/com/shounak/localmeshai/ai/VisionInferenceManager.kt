@@ -359,10 +359,16 @@ class VisionInferenceManager(context: Context) {
                 com.shounak.localmeshai.utils.PortableModelBundle.runtimeRestriction(primary, detectedFormat,
                     root.walkTopDown().filter { it.isFile }.associateBy { it.relativeTo(root).invariantSeparatorsPath })?.let { error(it.reason) }
                 activeModelLease = modelLease ?: ModelArtifactStorage.leaseArtifact(primary)
-                portableMediaEngine = PortableMediaEngine.open(context, primary, detectedFormat)
+                if (InitCrashGuard.isModelBlocked(context, effectiveId)) throw IllegalStateException(InitCrashGuard.blockedModelMessage())
+                InitCrashGuard.markInitStarted(context, effectiveId)
+                portableMediaEngine = try { PortableMediaEngine.open(context, primary, detectedFormat) }
+                    catch (failure: Throwable) { InitCrashGuard.markInitFailed(context,effectiveId); throw failure }
+                InitCrashGuard.markInitSucceeded(context,effectiveId)
                 configuredCapabilities = configuredCapabilities?.copy(capabilities = mediaCaps)
                 modelSupportsAudioInput = mediaCaps.supportsAudio
-                resolvedThinkingCapability = ThinkingCapability.Unsupported
+                resolvedThinkingCapability = mediaCaps.thinking
+                this.supportsThinkingMode = mediaCaps.thinking in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled)
+                isDefaultThinkingModel = this.supportsThinkingMode
                 runtime = RuntimeKind.PortableMedia
                 activeBackendDisplayName = "${detectedFormat.backendLabel} ${mediaCaps.task.id} CPU"
             }
@@ -445,7 +451,7 @@ class VisionInferenceManager(context: Context) {
             val rawResponse = when (runtime) {
                 RuntimeKind.PortableMedia -> {
                     onProgress?.invoke(RequestProgress.Generating)
-                    val answer = requireNotNull(portableMediaEngine).generate(effectiveBitmap, audioFile, prompt)
+                    val answer = requireNotNull(portableMediaEngine).generate(effectiveBitmap, audioFile, prompt, thinkingMode)
                     if (stopRequested) throw CancellationException("Generation cancelled")
                     effectiveOnUpdate(answer)
                     answer

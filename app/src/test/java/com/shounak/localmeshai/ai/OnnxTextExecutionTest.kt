@@ -77,4 +77,26 @@ class OnnxTextExecutionTest {
     @Test fun fp16LogitsAreConvertedByOrt() = execute(true,true) { decoder ->
         assertArrayEquals(floatArrayOf(3f,4f,5f,6f),decoder.logits(listOf(1,2,3)),0f)
     }
+    @Test fun mediaGraphExecutesBothImageAndIntegerInputs() {
+        var graph = text(2,"fused-image-decoder")
+        graph += bytes(11,value("pixel_values",1,1,3,2,2)) + bytes(11,value("input_ids",6,1,-1))
+        val axes = text(1,"axes") + (0L..3L).fold(byteArrayOf()) { a,v -> a+int(8,v) } + int(20,7)
+        graph += bytes(1,node("ReduceMean",listOf("pixel_values"),"image_mean",bytes(5,axes)+bytes(5,attr("keepdims",0))))
+        graph += bytes(1,node("Cast",listOf("input_ids"),"ids",bytes(5,attr("to",1))))
+        graph += bytes(1,node("Add",listOf("ids","image_mean"),"logits"))
+        graph += bytes(12,value("logits",1,1,-1))
+        val file = java.io.File.createTempFile("solus-media-graph", ".onnx")
+        try {
+            file.writeBytes(int(1,8)+bytes(7,graph)+bytes(8,int(2,13)))
+            PortableGraph(file,com.shounak.localmeshai.models.ModelFormat.Onnx).use { model ->
+                model.requireTask(com.shounak.localmeshai.models.ModelTask.VisionLanguage)
+                try { model.requireTask(com.shounak.localmeshai.models.ModelTask.ImageClassification); fail("Fused decoder accepted as a classifier") }
+                catch (_: IllegalArgumentException) { }
+                val result = model.run(mapOf("pixel_values" to PortableGraph.Value(FloatArray(12) { 2f },longArrayOf(1,3,2,2))),
+                    mapOf("input_ids" to (intArrayOf(3,4) to longArrayOf(1,2))))
+                assertArrayEquals(floatArrayOf(5f,6f),result.values,0f)
+                assertArrayEquals(longArrayOf(1,2),result.shape)
+            }
+        } finally { file.delete() }
+    }
 }

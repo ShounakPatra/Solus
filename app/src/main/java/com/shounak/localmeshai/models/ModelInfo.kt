@@ -81,6 +81,7 @@ data class ModelInfo(
     val loadRestriction: LoadRestriction? = null
 ) {
     val taskLabel: String get() = when (bundle?.capabilities?.task) {
+        ModelTask.VisionLanguage -> "Image questions"
         ModelTask.ImageClassification -> "Image classification"
         ModelTask.SpeechRecognition -> "Speech transcription"
         ModelTask.ImageGeneration -> "Image generation"

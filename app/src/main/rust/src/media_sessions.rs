@@ -21,6 +21,18 @@ fn output(env: &JNIEnv, values: &[f32]) -> Result<jfloatArray> {
     Ok(result.into_raw())
 }
 #[no_mangle]
+pub extern "system" fn Java_com_shounak_localmeshai_ai_CandleBridge_answerImage(mut env: JNIEnv, _: JClass, id: jlong, pixels: JFloatArray, prompt: JString) -> jstring {
+    crate::guarded(&mut env, |env| {
+        let shared = session(id)?;
+        let pixels = floats(env, &pixels)?;
+        let prompt: String = env.get_string(&prompt)?.into();
+        let mut guard = shared.model.lock().map_err(|_| anyhow!("Media session unavailable"))?;
+        let model = &mut *guard;
+        let text = crate::cpu_pool().install(|| model.answer_image(pixels, &prompt, &shared.stopped))?;
+        Ok(env.new_string(text)?.into_raw())
+    })
+}
+#[no_mangle]
 pub extern "system" fn Java_com_shounak_localmeshai_ai_CandleBridge_createMedia(mut env: JNIEnv, _: JClass, root: JString, weights: JObjectArray, task: JString) -> jlong {
     crate::guarded(&mut env, |env| {
         let root = PathBuf::from(env.get_string(&root)?.to_str()?);

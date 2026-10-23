@@ -9,6 +9,7 @@ internal object CandleBridge {
     external fun diffusionStep(latents: FloatArray, prediction: FloatArray, index: Int, vPrediction: Boolean): FloatArray
     external fun createMedia(directory: String, weights: Array<String>, task: String): Long
     external fun classifyImage(handle: Long, pixels: FloatArray): FloatArray
+    external fun answerImage(handle: Long, pixels: FloatArray, prompt: String): String
     external fun transcribeAudio(handle: Long, pcm: FloatArray): String
     external fun generateImage(handle: Long, prompt: String): FloatArray
     external fun resetMedia(handle: Long)

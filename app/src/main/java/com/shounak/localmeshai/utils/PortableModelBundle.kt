@@ -34,7 +34,9 @@ internal object PortableModelBundle {
         val task = PortableModelProfile.task(config, pipeline)
         val context = config.optInt("max_position_embeddings", config.optInt("n_positions", 2048))
         require(context in 2..1_048_576) { "Invalid model context length" }
-        if (task == com.shounak.localmeshai.models.ModelTask.Chat || task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition) {
+        if (task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition && PortableModelProfile.isCtc(config)) {
+            require(json(companion("vocab.json")).length() > 0) { "CTC speech recognition needs vocab.json" }
+        } else if (task == com.shounak.localmeshai.models.ModelTask.Chat || task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition || task == com.shounak.localmeshai.models.ModelTask.VisionLanguage) {
             val tokenizerFile = companion("tokenizer.json")
             if (tokenizerFile.isFile) {
                 val tokenizer = json(tokenizerFile)
@@ -45,7 +47,7 @@ internal object PortableModelBundle {
                 require(json(companion("vocab.json")).length() > 0) { "Empty BPE vocabulary" }
             }
             val generation = companion("generation_config.json").takeIf { it.isFile }?.let(::json)
-            val eos = generation?.opt("eos_token_id") ?: config.opt("eos_token_id")
+            val eos = generation?.opt("eos_token_id") ?: config.opt("eos_token_id") ?: config.optJSONObject("text_config")?.opt("eos_token_id")
             require(eos is Number || eos is org.json.JSONArray) { "config.json or generation_config.json must declare eos_token_id" }
         }
         require(config.optString("solus_prompt_format") in setOf("", "chatml", "plain", "llama2", "llama3", "gemma", "phi3", "phi", "mistral", "completion")) { "Unsupported solus_prompt_format" }
@@ -81,9 +83,9 @@ internal object PortableModelBundle {
             else -> error("Not a portable model")
         }
         return ModelCapabilities(supportsText = task == com.shounak.localmeshai.models.ModelTask.Chat,
-            supportsVision = task == com.shounak.localmeshai.models.ModelTask.ImageClassification,
+            supportsVision = task in setOf(com.shounak.localmeshai.models.ModelTask.ImageClassification, com.shounak.localmeshai.models.ModelTask.VisionLanguage),
             supportsAudio = task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition,
-            task = task, thinking = if (task == com.shounak.localmeshai.models.ModelTask.Chat)
+            task = task, thinking = if (task in setOf(com.shounak.localmeshai.models.ModelTask.Chat, com.shounak.localmeshai.models.ModelTask.VisionLanguage))
                 PortableThinking.capability(config, companion("tokenizer_config.json").takeIf { it.isFile }?.let(::json) ?: JSONObject())
                 else ThinkingCapability.Unsupported, contextLength = context)
     }
@@ -96,11 +98,14 @@ internal object PortableModelBundle {
         val architecture = config.optString("model_type", "unknown")
         val reason = when {
             task == com.shounak.localmeshai.models.ModelTask.Unknown -> "Imported model has no supported task/architecture metadata. Supply its complete configuration and processing assets; weights alone are not an executable pipeline."
-            expected == ModelFormat.TensorFlowLite && task != com.shounak.localmeshai.models.ModelTask.Chat -> "This TFLite task needs a separate media adapter."
+            expected == ModelFormat.TensorFlowLite && task == com.shounak.localmeshai.models.ModelTask.ImageGeneration -> "TFLite diffusion requires a separate component-pipeline adapter."
+            expected == ModelFormat.TensorFlowLite && task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition && !PortableModelProfile.isCtc(config) -> "TFLite speech currently requires a CTC waveform-to-logits export with vocab.json."
+            expected == ModelFormat.Safetensors && task == com.shounak.localmeshai.models.ModelTask.VisionLanguage && (architecture != "paligemma" || config.optJSONObject("text_config")?.optString("model_type", "gemma") != "gemma") -> "Safetensors image questions currently require original PaLiGemma (Gemma + SigLIP); this vision-language architecture needs its own adapter."
+            expected == ModelFormat.Safetensors && task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition && architecture != "whisper" -> "Safetensors speech currently requires Whisper; this audio architecture needs its own adapter."
             expected == ModelFormat.Safetensors && task == com.shounak.localmeshai.models.ModelTask.Chat && architecture !in PortableModelProfile.textArchitectures -> "Imported safetensors architecture '$architecture' needs its own inference adapter. Supported text families: ${PortableModelProfile.textArchitectures.joinToString()}."
             expected == ModelFormat.Safetensors && task == com.shounak.localmeshai.models.ModelTask.ImageClassification && architecture != "vit" -> "Safetensors image classification currently requires the ViT architecture; '$architecture' needs its own adapter."
-            task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition && !file("tokenizer.json").isFile -> "Whisper needs a complete tokenizer.json including its language and task special tokens."
-            task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition && expected == ModelFormat.Onnx &&
+            task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition && !PortableModelProfile.isCtc(config) && !file("tokenizer.json").isFile -> "Whisper needs a complete tokenizer.json including its language and task special tokens."
+            task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition && !PortableModelProfile.isCtc(config) && expected == ModelFormat.Onnx &&
                 listOf("encoder_model.onnx", "decoder_model.onnx").any { !file(it).isFile } -> "Whisper ONNX needs both encoder_model.onnx and the no-cache decoder_model.onnx with its tokenizer and configuration."
             expected == ModelFormat.Safetensors && config.has("quantization_config") && !config.isNull("quantization_config") -> "Imported prequantized safetensors layout needs a quantization-specific adapter."
             expected == ModelFormat.Safetensors && !config.isNull("rope_scaling") && architecture != "llama" -> "Imported scaled RoPE checkpoint cannot run in this architecture adapter."
@@ -149,10 +154,10 @@ internal object PortableModelBundle {
             val restriction = if (old == null || old.category == com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility)
                 runtimeRestriction(file, bundle.format, companions) else old
             bundle.copy(capabilities = bundle.capabilities.copy(task = task,
-                thinking = if (task == com.shounak.localmeshai.models.ModelTask.Chat) PortableThinking.capability(config,
+                thinking = if (task in setOf(com.shounak.localmeshai.models.ModelTask.Chat, com.shounak.localmeshai.models.ModelTask.VisionLanguage)) PortableThinking.capability(config,
                     File(root, "tokenizer_config.json").takeIf { it.isFile }?.let(::json) ?: JSONObject()) else ThinkingCapability.Unsupported,
                 supportsText = task == com.shounak.localmeshai.models.ModelTask.Chat,
-                supportsVision = task == com.shounak.localmeshai.models.ModelTask.ImageClassification,
+                supportsVision = task in setOf(com.shounak.localmeshai.models.ModelTask.ImageClassification, com.shounak.localmeshai.models.ModelTask.VisionLanguage),
                 supportsAudio = task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition), loadRestriction = restriction)
         }.getOrDefault(bundle)
     }

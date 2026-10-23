@@ -83,7 +83,7 @@ enum class ThinkingCapability {
 enum class ThinkingControlStrategy { None, NativeTemplate, QwenSoftSwitch }
 
 enum class ModelTask(val id: String) {
-    Chat("text_generation"), ImageClassification("image_classification"),
+    Chat("text_generation"), VisionLanguage("vision_language"), ImageClassification("image_classification"),
     SpeechRecognition("speech_recognition"), ImageGeneration("image_generation"), Unknown("unknown")
 }
 

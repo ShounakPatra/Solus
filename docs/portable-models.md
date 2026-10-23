@@ -36,11 +36,46 @@ operators are executable.
 | Speech transcription | Whisper, 16 kHz mono, up to 30 seconds per request | Whisper `encoder_model.onnx` plus a no-cache `decoder_model.onnx`, configuration and tokenizer |
 | Image generation | Complete Diffusers StableDiffusionPipeline v1/v2: CLIP, UNet and VAE | Complete SD1/SD2 CLIP, UNet and VAE-decoder graphs with FLOAT32 graph inputs |
 
+Image questions now have an experimental safetensors adapter for original
+PaLiGemma (SigLIP + original Gemma), and fused ONNX/TFLite decoder adapters with
+one RGB image tensor plus integer `input_ids`, optional `attention_mask` and
+`position_ids`, and floating logits. These fused graph adapters recompute the
+prefix and image features per token. Separate vision-encoder/embedding/decoder
+exports and cache-dependent vision decoders still need architecture adapters.
+PaLiGemma 2, arbitrary LLaVA/Qwen-VL safetensors and arbitrary VLMs are not enabled
+by recognizing their filename. Configure image placeholder IDs/counts and
+`solus_vision_prompt` when the exported graph needs them.
+
+TFLite additionally supports single-output RGB classifiers with NCHW/NHWC layouts,
+FLOAT32 or per-tensor INT8/UINT8 inputs and outputs. Quantized values use each
+tensor's actual scale and zero point; processor resize, normalization and labels
+must match the export. Graphs requiring SELECT_TF_OPS/Flex need a matching custom
+runtime build: Maven does not publish Select TF Ops at this project's pinned
+2.17.0 version. LiteRT-LM stays 0.18.0.
+
+ONNX/TFLite CTC speech exports accept one mono waveform tensor and an optional
+integer or floating attention mask, and return `[1, frames, vocabulary]` logits.
+Supply `vocab.json`, preprocessing configuration (including sample rate and
+normalization), and a `ForCTC` architecture or `solus_audio_decoder: "ctc"`.
+Decoding removes blank tokens and collapses adjacent repeats while preserving
+repeats separated by blanks. TFLite Whisper component exports, speech synthesis,
+and arbitrary audio feature interfaces require further adapters.
+
+Thinking is supported in portable text and fused vision chat when the model's
+tokenizer template declares it. Templates using `enable_thinking` receive the
+actual request setting; fixed `<think>` templates are model-controlled. Reasoning
+prefills are passed to the existing reasoning parser so the reasoning section and
+answer remain separate. `solus_thinking: "model_controlled"` can declare a fixed
+reasoning model, and `"unsupported"` disables detection. A thinking flag cannot
+teach an ordinary model to reason or turn a fixed reasoning template into a
+toggleable one. Distilled reasoning models using supported Llama/Qwen2 weights
+use those existing safetensors adapters.
+
 Text models need `config.json` and a complete Hugging Face `tokenizer.json`, or
 BPE `vocab.json` plus `merges.txt`. EOS IDs may come from `generation_config.json`
 or `config.json`. Sharded safetensors need `model.safetensors.index.json` and every
 referenced shard. Prequantized safetensors, MoE variants, unsupported RoPE scaling,
-LoRA-only weights, multimodal chat checkpoints, SDXL and Flux need other adapters.
+LoRA-only weights, other multimodal architectures, SDXL and Flux need other adapters.
 Supported family names do not guarantee every variant of that family.
 
 Hugging Face chat templates from `tokenizer_config.json` use the existing native
@@ -65,9 +100,9 @@ All these paths run on CPU. Safetensors are loaded as FP32, which can need much
 more memory than their disk size. Complete diffusion pipelines are especially
 expensive on a phone. Existing acquisition and post-import load policies apply.
 
-TensorFlow Lite retains its existing decoder-only text contract (dynamic INT32 or
-INT64 token inputs and a FLOAT32 logits output); this work does not add TFLite media
-adapters. Existing GGUF, LiteRT-LM and MediaPipe backends remain available.
+TensorFlow Lite retains its decoder-only text contract (dynamic INT32 or INT64
+token inputs and a FLOAT32 logits output) alongside the media adapters above.
+Existing GGUF, LiteRT-LM and MediaPipe backends remain available.
 
 ## Native build and verification
 
