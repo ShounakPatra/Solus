@@ -18,11 +18,14 @@ import kotlin.math.exp
 import kotlin.random.Random
 
 /** One request at a time, including shutdown. CPU execution preserves the app's runtime ownership gate. */
-internal class PortableTextEngine private constructor(private val file: File, private val format: ModelFormat, val contextTokens: Int) : AutoCloseable {
+internal class PortableTextEngine private constructor(private val file: File, private val format: ModelFormat, contextTokens: Int) : AutoCloseable {
+    var contextTokens: Int = contextTokens
+        private set
     private var tokenizer = 0L
     private var onnx: OrtSession? = null
     private var onnxDecoder: OnnxTextSession? = null
     private var tflite: Interpreter? = null
+    private var tflitePlan: TfliteTextPlan? = null
     private var promptHasSpecialTokens = false
     private var reasoningPrefill = false
     private val eos: Set<Int>
@@ -58,16 +61,14 @@ internal class PortableTextEngine private constructor(private val file: File, pr
                     ModelFormat.TensorFlowLite -> {
                         engine.tflite = Interpreter(file, Interpreter.Options().setNumThreads(2))
                         val interpreter = requireNotNull(engine.tflite)
-                        val names = (0 until interpreter.inputTensorCount).map { tokenInputName(interpreter.getInputTensor(it).name()) }
-                        require("input_ids" in names && names.all { it in INPUTS }) {
-                            "TFLite text models must accept input_ids and optional attention_mask/position_ids, without required cache inputs"
-                        }
-                        for (i in names.indices) {
-                            val tensor = interpreter.getInputTensor(i)
-                            require(tensor.dataType() in setOf(DataType.INT32, DataType.INT64) && tensor.shape().size == 2) { "TFLite inputs must be integer [1, sequence] tensors" }
-                            require(tensor.shapeSignature().contentEquals(intArrayOf(1, -1)) || tensor.shapeSignature().contentEquals(intArrayOf(-1, -1))) { "TFLite requires a dynamic sequence dimension" }
-                        }
-                        require(interpreter.outputTensorCount == 1) { "TFLite models must expose one logits output" }
+                        fun describe(tensor: org.tensorflow.lite.Tensor) = TfliteTextPlan.Tensor(
+                            tensor.name(), tensor.shape(), tensor.shapeSignature().takeIf { it.isNotEmpty() } ?: tensor.shape(), tensor.dataType())
+                        val config = PortableModelBundle.json(File(file.parentFile, "config.json"))
+                        val plan = TfliteTextPlan((0 until interpreter.inputTensorCount).map { describe(interpreter.getInputTensor(it)) },
+                            (0 until interpreter.outputTensorCount).map { describe(interpreter.getOutputTensor(it)) },
+                            config.optString("model_type"), config.optInt("vocab_size"))
+                        engine.tflitePlan = plan
+                        plan.fixedSequence?.let { engine.contextTokens = minOf(engine.contextTokens, it) }
                     }
                     ModelFormat.Safetensors -> Unit
                     else -> error("Unsupported portable runtime")
@@ -78,7 +79,6 @@ internal class PortableTextEngine private constructor(private val file: File, pr
                 throw t
             }
         }
-        private val INPUTS = setOf("input_ids", "attention_mask", "position_ids")
         internal fun tokenInputName(name: String): String = name.substringAfterLast('/').removePrefix("serving_default_").substringBefore(':')
     }
 
@@ -150,28 +150,22 @@ internal class PortableTextEngine private constructor(private val file: File, pr
         } finally { onnxDecoder?.reset(); lifecycle.unlock() }
     }
 
-    private fun input(name: String, tokens: List<Int>): LongArray = LongArray(tokens.size) {
-        when (name) { "input_ids" -> tokens[it].toLong(); "attention_mask" -> 1L; "position_ids" -> it.toLong(); else -> error("Unsupported input $name") }
-    }
-
     private fun tfliteLogits(tokens: List<Int>): FloatArray {
         val interpreter = requireNotNull(tflite)
-        for (i in 0 until interpreter.inputTensorCount) interpreter.resizeInput(i, intArrayOf(1, tokens.size), true)
-        interpreter.allocateTensors()
-        val inputs = Array<Any>(interpreter.inputTensorCount) { i ->
-            val tensor = interpreter.getInputTensor(i)
-            val values = input(tokenInputName(tensor.name()), tokens)
-            ByteBuffer.allocateDirect(values.size * if (tensor.dataType() == DataType.INT64) 8 else 4).order(ByteOrder.nativeOrder()).apply {
-                values.forEach { if (tensor.dataType() == DataType.INT64) putLong(it) else putInt(it.toInt()) }; rewind()
-            }
+        val plan = requireNotNull(tflitePlan)
+        val sequence = plan.sequenceLength(tokens.size)
+        for (i in plan.inputs.indices) {
+            if (plan.inputs[i].signature.any { it == -1 }) interpreter.resizeInput(i, intArrayOf(1, sequence), true)
         }
-        val output = interpreter.getOutputTensor(0)
+        interpreter.allocateTensors()
+        val inputs = Array<Any>(interpreter.inputTensorCount) { i -> plan.input(i, tokens, eos.first()) }
+        val output = interpreter.getOutputTensor(plan.logitsIndex)
         val shape = output.shape()
-        require(output.dataType() == DataType.FLOAT32 && ((shape.size == 3 && shape[0] == 1 && shape[1] in intArrayOf(1, tokens.size)) || (shape.size == 2 && shape[0] == 1))) { "Expected float logits [1, sequence, vocabulary] or [1, vocabulary]" }
-        require(shape.last() in 1..1_000_000 && output.numBytes() in 4..(256 * 1024 * 1024)) { "Logits exceed the supported output size" }
+        val offset = plan.logitsOffset(shape, tokens.size)
+        require(output.dataType() == DataType.FLOAT32 && output.numBytes() in 4..(256 * 1024 * 1024)) { "Logits exceed the supported output size" }
         val buffer = ByteBuffer.allocateDirect(output.numBytes()).order(ByteOrder.nativeOrder())
-        interpreter.runForMultipleInputsOutputs(inputs, mutableMapOf<Int, Any>(0 to buffer))
-        buffer.position(output.numBytes() - shape.last() * 4)
+        interpreter.runForMultipleInputsOutputs(inputs, mutableMapOf<Int, Any>(plan.logitsIndex to buffer))
+        buffer.position(offset)
         return FloatArray(shape.last()) { buffer.float }
     }
 
