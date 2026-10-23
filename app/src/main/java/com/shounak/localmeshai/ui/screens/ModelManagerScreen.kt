@@ -250,8 +250,8 @@ internal fun ModelInfo.downloadedSectionSortRank(): Int {
 
 /** A new completed download temporarily leads the successful-load MRU list. */
 internal fun orderDownloadedModels(models: List<ModelInfo>, usedAt: Map<String, Long>): List<ModelInfo> {
-    val used = models.filter { it.id in usedAt }.sortedByDescending { usedAt[it.id] }
-    val newestDownload = models.filter { it.status in setOf(ModelStatus.Available, ModelStatus.Blocked) }
+    val used = models.filter { it.status == ModelStatus.Available && it.id in usedAt }.sortedByDescending { usedAt[it.id] }
+    val newestDownload = models.filter { it.status == ModelStatus.Available }
         .maxByOrNull { it.downloadTime() }
         ?.takeIf { it.downloadTime() > (used.firstOrNull()?.let { model -> usedAt[model.id] } ?: 0L) }
     val promoted = (listOfNotNull(newestDownload) + used).distinctBy { it.id }

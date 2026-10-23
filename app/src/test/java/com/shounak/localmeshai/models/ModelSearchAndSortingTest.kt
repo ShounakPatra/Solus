@@ -13,6 +13,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModelSearchAndSortingTest {
+    @Test fun unavailableModelsCannotUseRecencyOrNewDownloadsToJumpAboveAvailableModels() {
+        val ready = createTestModel("ready", "Ready", ModelStatus.Available, 10L)
+        val failed = createTestModel("failed", "Failed", ModelStatus.Failed, 300L)
+        val blocked = createTestModel("blocked", "Blocked", ModelStatus.Blocked, 400L)
+        val sorted = com.shounak.localmeshai.ui.screens.orderDownloadedModels(
+            listOf(blocked, failed, ready), mapOf("ready" to 20L, "failed" to 500L, "blocked" to 600L))
+        assertEquals(listOf("ready", "failed", "blocked"), sorted.map { it.id })
+        assertEquals("ready", com.shounak.localmeshai.ui.screens.orderDownloadedModels(
+            listOf(blocked, ready), emptyMap()).first().id)
+    }
+
     @Test fun downloadedOrderRemembersLastTwoLoadsAndPromotesNewDownloads() {
         val previous = createTestModel("previous", "Previous", ModelStatus.Available, 10L)
         val current = createTestModel("current", "Current", ModelStatus.Available, 20L)

@@ -15,6 +15,7 @@ class LocalMeshAIApplication : Application() {
         // Eager application-scoped composition root for singletons (no disk reads on main thread)
         com.shounak.localmeshai.data.StartupCoordinator.getInstance(this)
         com.shounak.localmeshai.data.ChatSessionRepository.getInstance(this)
+        com.shounak.localmeshai.utils.ModelUsageStore.get(this)
 
         // Attach process-level lifecycle observer for background/reopen cleanup without rotation churn
         val coordinator = CacheCleanupCoordinator.getInstance(this)
