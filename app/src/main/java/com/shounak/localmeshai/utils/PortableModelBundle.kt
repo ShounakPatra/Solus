@@ -83,7 +83,9 @@ internal object PortableModelBundle {
         return ModelCapabilities(supportsText = task == com.shounak.localmeshai.models.ModelTask.Chat,
             supportsVision = task == com.shounak.localmeshai.models.ModelTask.ImageClassification,
             supportsAudio = task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition,
-            task = task, thinking = ThinkingCapability.Unsupported, contextLength = context)
+            task = task, thinking = if (task == com.shounak.localmeshai.models.ModelTask.Chat)
+                PortableThinking.capability(config, companion("tokenizer_config.json").takeIf { it.isFile }?.let(::json) ?: JSONObject())
+                else ThinkingCapability.Unsupported, contextLength = context)
     }
 
     fun runtimeRestriction(primary: File, expected: ModelFormat, companions: Map<String, File> = emptyMap()): com.shounak.localmeshai.models.LoadRestriction? {
@@ -147,6 +149,8 @@ internal object PortableModelBundle {
             val restriction = if (old == null || old.category == com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility)
                 runtimeRestriction(file, bundle.format, companions) else old
             bundle.copy(capabilities = bundle.capabilities.copy(task = task,
+                thinking = if (task == com.shounak.localmeshai.models.ModelTask.Chat) PortableThinking.capability(config,
+                    File(root, "tokenizer_config.json").takeIf { it.isFile }?.let(::json) ?: JSONObject()) else ThinkingCapability.Unsupported,
                 supportsText = task == com.shounak.localmeshai.models.ModelTask.Chat,
                 supportsVision = task == com.shounak.localmeshai.models.ModelTask.ImageClassification,
                 supportsAudio = task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition), loadRestriction = restriction)

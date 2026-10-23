@@ -775,7 +775,7 @@ class ChatInferenceManager(context: Context) {
                     val sampling = profileSampling()
                     var firstToken = true
                     requireNotNull(portableTextEngine).generate(
-                        prompt = portableTextEngine!!.renderPrompt(structuredMessages, inferencePrompt, memoryContext), limit = MAX_RESPONSE_TOKENS,
+                        prompt = portableTextEngine!!.renderPrompt(structuredMessages, inferencePrompt, memoryContext, thinkingMode), limit = MAX_RESPONSE_TOKENS,
                         temperature = sampling.temperature, topP = sampling.topP, topK = sampling.topK,
                         onText = { delta -> timing?.recordChunk(delta); effectiveOnUpdate(delta) },
                         onToken = {

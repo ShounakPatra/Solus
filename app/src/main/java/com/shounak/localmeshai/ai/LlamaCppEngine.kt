@@ -837,7 +837,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
             return null
         }
 
-        @JvmStatic external fun nativeRenderPortableChat(template: String, messages: String, bosToken: String, eosToken: String): String
+        @JvmStatic external fun nativeRenderPortableChat(template: String, messages: String, bosToken: String, eosToken: String, thinking: Boolean): String
         @JvmStatic external fun nativeSupportsTools(handle: Long): Boolean
         @JvmStatic external fun nativeSetToolRequest(handle: Long, request: String?)
         @JvmStatic external fun nativeGetToolResponse(handle: Long): String?

@@ -24,6 +24,7 @@ internal class PortableTextEngine private constructor(private val file: File, pr
     private var onnxDecoder: OnnxTextSession? = null
     private var tflite: Interpreter? = null
     private var promptHasSpecialTokens = false
+    private var reasoningPrefill = false
     private val eos: Set<Int>
     @Volatile private var stopped = false
     private val lifecycle = kotlinx.coroutines.sync.Mutex()
@@ -83,7 +84,8 @@ internal class PortableTextEngine private constructor(private val file: File, pr
 
     fun stop() { stopped = true }
 
-    fun renderPrompt(messages: List<Pair<String, String>>?, fallback: String, memory: String): String {
+    fun renderPrompt(messages: List<Pair<String, String>>?, fallback: String, memory: String, thinking: Boolean = false): String {
+        reasoningPrefill = false
         val config = PortableModelBundle.json(File(file.parentFile, "config.json"))
         val tokenizerConfig = File(file.parentFile, "tokenizer_config.json").takeIf { it.isFile }?.let(PortableModelBundle::json) ?: org.json.JSONObject()
         val raw = messages?.takeIf { it.isNotEmpty() } ?: listOf("user" to fallback)
@@ -104,7 +106,10 @@ internal class PortableTextEngine private constructor(private val file: File, pr
             }
             val history = JSONArray().apply { turns.forEach { (role, content) -> put(org.json.JSONObject().put("role", role).put("content", content)) } }
             promptHasSpecialTokens = true
-            return LlamaCppEngine.nativeRenderPortableChat(template, history.toString(), special("bos_token"), special("eos_token"))
+            val enabled = thinking && com.shounak.localmeshai.utils.PortableThinking.capability(config, tokenizerConfig) != com.shounak.localmeshai.models.ThinkingCapability.Unsupported
+            return LlamaCppEngine.nativeRenderPortableChat(template, history.toString(), special("bos_token"), special("eos_token"), enabled).also {
+                reasoningPrefill = com.shounak.localmeshai.utils.PortableThinking.hasReasoningPrefill(it)
+            }
         }
         val promptFormat = override.ifBlank { when (config.optString("model_type")) {
             "qwen2" -> "chatml"
@@ -128,6 +133,7 @@ internal class PortableTextEngine private constructor(private val file: File, pr
             CandleBridge.reset(tokenizer)
             onnxDecoder?.reset()
             val promptIds = if (promptHasSpecialTokens) CandleBridge.encodeRendered(tokenizer, prompt) else CandleBridge.encode(tokenizer, prompt)
+            var pendingReasoningPrefix = reasoningPrefill
             return PortableTokenLoop.generate(promptIds, contextTokens, limit, eos, { stopped },
                 next = { tokens, step ->
                     val logits = when (format) {
@@ -137,7 +143,10 @@ internal class PortableTextEngine private constructor(private val file: File, pr
                         else -> error("Unsupported runtime")
                     }
                     sample(logits, temperature, topP, topK)
-                }, decode = { CandleBridge.decode(tokenizer, it) }, onText = onText, onToken = onToken)
+                }, decode = { CandleBridge.decode(tokenizer, it) }, onText = { delta ->
+                    if (pendingReasoningPrefix) { onText("<think>"); pendingReasoningPrefix = false }
+                    onText(delta)
+                }, onToken = onToken)
         } finally { onnxDecoder?.reset(); lifecycle.unlock() }
     }
 
