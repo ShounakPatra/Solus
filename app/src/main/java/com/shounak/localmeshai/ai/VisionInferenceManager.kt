@@ -69,6 +69,15 @@ class VisionInferenceManager(context: Context) {
     private var mediaPipeInference: LlmInference? = null
     private var liteRtEngine: Engine? = null
     private var liteRtConversation: Conversation? = null
+    private val toolRecorder = com.shounak.localmeshai.ai.tools.ToolUseRecorder()
+    private var toolsDisabledForLoad = false
+    private var conversationHasTools = false
+    private var completedLiteRtTurns = 0
+    private var conversationBaseConfig: ConversationConfig? = null
+    private var lastToolsRequestId = ""
+    fun toolsUsedForRequest(requestId: String): List<com.shounak.localmeshai.ai.tools.ToolUse> =
+        if (runtime == RuntimeKind.LiteRtLm && requestId == lastToolsRequestId) toolRecorder.snapshot() else emptyList()
+
     private var liteRtCacheDir: File? = null
     private var llamaCppEngine: LlamaCppEngine? = null
     private var profileModelId: String = ""
@@ -740,6 +749,7 @@ class VisionInferenceManager(context: Context) {
     ) {
         if (runtime != RuntimeKind.LiteRtLm) return
         val engine = liteRtEngine ?: return
+        stopRequested = false
         runCatching { liteRtConversation?.close() }.onFailure { t ->
             Log.w(TAG, "LiteRT-LM vision conversation close during reset failed", t)
         }
@@ -754,8 +764,29 @@ class VisionInferenceManager(context: Context) {
                 extraContext = extraCtx
             )
         } else null
-        liteRtConversation = if (config != null) engine.createConversation(config) else engine.createConversation()
-        stopRequested = false
+        liteRtConversation = createLiteRtConversation(config)
+    }
+
+    private fun createLiteRtConversation(base: ConversationConfig?): Conversation {
+        val engine = checkNotNull(liteRtEngine)
+        conversationBaseConfig = base
+        completedLiteRtTurns = 0
+        conversationHasTools = false
+        toolRecorder.clear()
+        if (!toolsDisabledForLoad && AppSettings.getInstance(context).settings.value.enableToolCalling) {
+            try {
+                val providers = com.shounak.localmeshai.ai.tools.LocalTools
+                    .forConversation(context) { stopRequested || isBeingClosed }
+                    .map { com.google.ai.edge.litertlm.tool(toolRecorder.recording(it)) }
+                val config = com.shounak.localmeshai.ai.tools.LocalTools.conversationConfig(base, providers)
+                return engine.createConversation(config).also { conversationHasTools = true }
+            } catch (failure: Exception) {
+                if (failure is CancellationException || stopRequested || isBeingClosed) throw failure
+                toolsDisabledForLoad = true
+                Log.w(TAG, "Vision tools unavailable; using ordinary conversation", failure)
+            }
+        }
+        return if (base != null) engine.createConversation(base) else engine.createConversation()
     }
 
     private fun initializeLiteRtLm(
@@ -889,7 +920,8 @@ class VisionInferenceManager(context: Context) {
                     )
                 )
             } else null
-            liteRtConversation = if (initialConfig != null) readyEngine.createConversation(initialConfig) else readyEngine.createConversation()
+            toolsDisabledForLoad = false
+            liteRtConversation = createLiteRtConversation(initialConfig)
             runtime = RuntimeKind.LiteRtLm
             if (stopRequested || isBeingClosed) throw CancellationException("Model initialization cancelled")
             InitCrashGuard.markInitSucceeded(context, modelId)
@@ -969,6 +1001,48 @@ class VisionInferenceManager(context: Context) {
         responseController: InferenceResponseController? = null,
         onUpdate: (String) -> Unit
     ): String {
+        toolRecorder.clear()
+        lastToolsRequestId = requestId
+        val textSeen = java.util.concurrent.atomic.AtomicBoolean(false)
+        suspend fun attempt() = streamLiteRtLmVisionAttempt(bitmap, prompt, audioFile, audioBytes,
+            thinkingMode, preparedImageFile, requestId, timing, onProgress, onTokensGenerated,
+            responseSnapshot, publisher, responseController, textSeen, onUpdate)
+        try {
+            return attempt().also { completedLiteRtTurns++ }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            if (!conversationHasTools || completedLiteRtTurns != 0 || textSeen.get() ||
+                stopRequested || isBeingClosed) throw failure
+            Log.w(TAG, "First vision tool turn failed before text; retrying without tools", failure)
+            toolsDisabledForLoad = true
+            val used = toolRecorder.snapshot()
+            runCatching { liteRtConversation?.close() }
+            liteRtConversation = createLiteRtConversation(conversationBaseConfig)
+            used.forEach(toolRecorder::add)
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
+            return attempt().also { completedLiteRtTurns++ }
+        }
+    }
+
+    private suspend fun streamLiteRtLmVisionAttempt(
+        bitmap: Bitmap?,
+        prompt: String,
+        audioFile: File?,
+        audioBytes: ByteArray?,
+        thinkingMode: Boolean,
+        preparedImageFile: File?,
+        requestId: String = "",
+        timing: InferenceTiming? = null,
+        onProgress: ((RequestProgress) -> Unit)? = null,
+        onTokensGenerated: ((Int) -> Unit)? = null,
+        responseSnapshot: () -> String,
+        publisher: StreamingResponsePublisher? = null,
+        responseController: InferenceResponseController? = null,
+        textSeen: java.util.concurrent.atomic.AtomicBoolean,
+        onUpdate: (String) -> Unit
+    ): String {
         require(bitmap?.isRecycled != true) { "Image was recycled before analysis" }
         if (preparedImageFile != null) {
             require(preparedImageFile.exists() && preparedImageFile.isFile) {
@@ -1032,6 +1106,7 @@ class VisionInferenceManager(context: Context) {
                     }
                 },
                 onDelta = { delta ->
+                    if (delta.isNotEmpty()) textSeen.set(true)
                     if (stopRequested) return@LiteRtStreamAdapter
                     if (!firstChunkRecorded && delta.isNotEmpty()) {
                         firstChunkRecorded = true
@@ -1042,6 +1117,7 @@ class VisionInferenceManager(context: Context) {
                     runCatching { onUpdate(delta) }
                 },
                 onSnapshot = { snap ->
+                    if (snap.answerText.isNotEmpty() || snap.reasoningText.isNotEmpty()) textSeen.set(true)
                     responseController?.appendStructured(
                         answer = snap.answerText,
                         reasoning = snap.reasoningText,

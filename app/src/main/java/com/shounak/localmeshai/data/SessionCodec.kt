@@ -332,6 +332,7 @@ object SessionCodec {
                 if (!msg.userMessageId.isNullOrBlank()) mObj.put("userMessageId", msg.userMessageId)
                 if (!msg.requestId.isNullOrBlank()) mObj.put("requestId", msg.requestId)
                 mObj.put("attemptId", msg.attemptId)
+                if (msg.toolUses.isNotEmpty()) mObj.put("toolUses", com.shounak.localmeshai.ai.tools.ToolUseCodec.encode(msg.toolUses))
                 if (!msg.reasoningText.isNullOrBlank()) mObj.put("reasoningText", msg.reasoningText)
                 if (msg.terminalStatus != null) mObj.put("terminalStatus", msg.terminalStatus.name)
                 if (!msg.errorMessage.isNullOrBlank()) mObj.put("errorMessage", msg.errorMessage)
@@ -479,6 +480,7 @@ object SessionCodec {
                             requestId = requestId,
                             attemptId = attemptId,
                             reasoningText = reasoningText,
+                            toolUses = com.shounak.localmeshai.ai.tools.ToolUseCodec.decode(mObj.optJSONArray("toolUses")),
                             userMessageId = userMessageId,
                             emptyReason = emptyReason,
                             responseFormatVersion = responseFormatVersion

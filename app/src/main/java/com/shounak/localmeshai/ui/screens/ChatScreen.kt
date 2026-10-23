@@ -1340,6 +1340,7 @@ fun ChatScreen(
                                             attemptId = message.attemptId.toLong(),
                                             revision = message.revision,
                                             reasoningText = message.reasoningText,
+                                            toolUses = message.toolUses,
                                             isThinkingActive = message.isThinkingActive,
                                             responseFormatVersion = message.responseFormatVersion,
                                             terminalStatus = message.terminalStatus,
@@ -4636,7 +4637,7 @@ private fun FullscreenAnswerPanel(
 }
 
 @Composable
-private fun ToolUseChip(uses: List<com.shounak.localmeshai.ai.tools.ToolUse>, messageId: String) {
+internal fun ToolUseChip(uses: List<com.shounak.localmeshai.ai.tools.ToolUse>, messageId: String) {
     var expanded by rememberSaveable(messageId) { mutableStateOf(false) }
     Surface(
         shape = RoundedCornerShape(12.dp),

@@ -1432,27 +1432,8 @@ class ChatInferenceManager(context: Context) {
         stopRequested = false
     }
 
-    private fun toolsForNewConversation(): List<com.shounak.localmeshai.ai.tools.ChatTool> = buildList {
-        add(CalculatorTool())
-        add(CurrentDateTimeTool())
-        if (AppSettings.getInstance(context).settings.value.enableRag) {
-            add(com.shounak.localmeshai.ai.tools.DocumentSearchTool(
-                isCancelled = { stopRequested || isBeingClosed }
-            ) { query ->
-                kotlinx.coroutines.runBlocking(Dispatchers.IO) {
-                    val settings = AppSettings.getInstance(context).settings.value
-                    val matches = com.shounak.localmeshai.rag.RagManager.getInstance(context).retrieve(
-                        query, topK = settings.ragTopK.coerceIn(1, 5), minScore = settings.ragMinSimilarity
-                    ).matches
-                    org.json.JSONObject().put("matches", org.json.JSONArray().apply {
-                        matches.forEach { match -> put(org.json.JSONObject()
-                            .put("document", match.chunk.documentName).put("chunk", match.chunk.chunkIndex)
-                            .put("text", match.chunk.text.take(2000))) }
-                    }).toString()
-                }
-            })
-        }
-    }
+    private fun toolsForNewConversation(): List<com.shounak.localmeshai.ai.tools.ChatTool> =
+        com.shounak.localmeshai.ai.tools.LocalTools.forConversation(context) { stopRequested || isBeingClosed }
 
     private fun createLiteRtConversation(mode: LiteRtConversationMode): Conversation? {
         val engine = liteRtEngine ?: return null

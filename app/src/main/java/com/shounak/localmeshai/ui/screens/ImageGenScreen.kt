@@ -483,6 +483,7 @@ fun ImageGenScreen(
                                         attemptId = message.attemptId.toLong(),
                                         revision = message.revision,
                                         reasoningText = message.reasoningText,
+                                        toolUses = message.toolUses,
                                         isThinkingActive = message.isThinkingActive,
                                         responseFormatVersion = message.responseFormatVersion,
                                         terminalStatus = message.terminalStatus,
@@ -2302,6 +2303,7 @@ fun VisionChatBubble(
     attemptId: Long = 0L,
     revision: Int = 0,
     reasoningText: String? = null,
+    toolUses: List<com.shounak.localmeshai.ai.tools.ToolUse> = emptyList(),
     isThinkingActive: Boolean = false,
     responseFormatVersion: Int = 0,
     terminalStatus: RequestTerminalStatus? = null,
@@ -2532,6 +2534,7 @@ fun VisionChatBubble(
                     }
                 }
 
+                if (!isUser && toolUses.isNotEmpty()) ToolUseChip(toolUses, messageId)
                 if (!isUser && presentation.showThinking) {
                     ThinkingProcessCard(
                         thinkingText = presentation.reasoningText.orEmpty(),

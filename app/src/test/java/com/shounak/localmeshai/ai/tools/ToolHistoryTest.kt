@@ -11,6 +11,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ToolHistoryTest {
+    @Test fun visionToolsSurviveSavedHistoryAndOldBackupsDefaultToEmpty() {
+        val use = ToolUse("calculator", """{"expression":"17.5*23"}""", "402.5")
+        val session = com.shounak.localmeshai.ui.viewmodels.VisionChatSession("vision", "Tools", "calculate", "402.5", 1,
+            messages = listOf(com.shounak.localmeshai.ui.viewmodels.VisionChatMessage("calculate", true),
+                com.shounak.localmeshai.ui.viewmodels.VisionChatMessage("402.5", false, toolUses = listOf(use))))
+        val encoded = SessionCodec.encodeVisionSessions(listOf(session))
+        assertEquals(listOf(use), SessionCodec.decodeVisionSessions(encoded).single().messages.last().toolUses)
+        val old = JSONObject(encoded)
+        old.getJSONArray("sessions").getJSONObject(0).getJSONArray("messages").getJSONObject(1).remove("toolUses")
+        assertTrue(SessionCodec.decodeVisionSessions(old.toString()).single().messages.last().toolUses.isEmpty())
+    }
     @Test fun recordedToolsSurviveHistoryAndBackupCodec() {
         val use = ToolUse("calculator", """{"expression":"17.5*23"}""", "402.5")
         val session = ChatSession(id = "chat", title = "Tools", updatedAt = 1,

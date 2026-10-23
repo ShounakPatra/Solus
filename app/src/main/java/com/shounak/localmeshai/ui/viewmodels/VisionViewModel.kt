@@ -119,6 +119,7 @@ data class VisionChatMessage(
     val emptyReason: EmptyResponseReason? = null,
     val revision: Int = 0,
     val responseFormatVersion: Int = 0,
+    val toolUses: List<com.shounak.localmeshai.ai.tools.ToolUse> = emptyList(),
     val ragPassages: List<com.shounak.localmeshai.features.RagPassage> = emptyList()
 )
 
@@ -1597,6 +1598,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                 requestId = requestId,
                                 userMessageId = userMessageId,
                                 reasoningText = finalReasoningText,
+                                toolUses = inferenceManager.toolsUsedForRequest(requestId),
                                 emptyReason = execResult.emptyReason,
                                 responseFormatVersion = 1
                             )
