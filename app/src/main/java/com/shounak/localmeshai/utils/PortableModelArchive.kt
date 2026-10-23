@@ -11,6 +11,12 @@ import java.util.zip.ZipInputStream
 
 /** Complete pipelines keep directory structure. Repository code is never executed. */
 internal object PortableModelArchive {
+    internal fun displayName(root: File, staging: File, archiveName: String): String {
+        if (root.canonicalFile != staging.canonicalFile) return root.name
+        val name = archiveName.substringAfterLast('/').substringAfterLast('\\').trim()
+        return (if (name.endsWith(".zip", ignoreCase = true)) name.dropLast(4) else name)
+            .ifBlank { "Imported model" }
+    }
     internal suspend fun extract(input: java.io.InputStream, staging: File, progress: ((String) -> Unit)? = null): Map<String, File> {
         val files = linkedMapOf<String, File>()
         val seen = mutableSetOf<String>()
@@ -69,8 +75,10 @@ internal object PortableModelArchive {
             val id = LocalModelImporter.generateStorageModelId(listOf(uri.toString()))
             val artifacts = items.map { ModelArtifact(ArtifactRole.Main, it.relativeTargetName,
                 ArtifactSource.AppManaged(it.stagedFile.absolutePath), it.stagedFile.length(), it.stagedFile.lastModified()) }
+            val archiveName = runCatching { PortableModelImporter.names(context, listOf(uri)).single() }
+                .getOrNull() ?: uri.lastPathSegment.orEmpty()
             return LocalModelImporter.ImportResult(
-                ModelBundle(id, root.name, artifacts, capabilities = capabilities, format = format,
+                ModelBundle(id, displayName(root, staging, archiveName), artifacts, capabilities = capabilities, format = format,
                     backend = format.backendLabel, description = "${capabilities.task.id} pipeline imported with its processing assets.",
                     loadRestriction = PortableModelBundle.runtimeRestriction(primary, format, components)), emptyList(),
                 stagedArtifactItem = items.first(), draftStagingDir = staging, stagedArtifactItems = items)

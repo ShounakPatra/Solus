@@ -11,6 +11,15 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 class PortableModelArchiveTest {
+    @Test fun rootLevelBundlesUseArchiveDisplayNameInsteadOfDraftDirectory() {
+        val staging = temporary.newFolder("draft_1234")
+        assertEquals("Qwen-chat", PortableModelArchive.displayName(staging, staging, "Qwen-chat.zip"))
+        assertEquals("Vision Model", PortableModelArchive.displayName(staging, staging, "Vision Model.ZIP"))
+        assertEquals("Imported model", PortableModelArchive.displayName(staging, staging, ""))
+        val modelFolder = java.io.File(staging, "whisper-tiny").apply { mkdirs() }
+        assertEquals("whisper-tiny", PortableModelArchive.displayName(modelFolder, staging, "archive.zip"))
+    }
+
     @get:Rule val temporary = TemporaryFolder()
     private fun archive(vararg names: String): ByteArrayInputStream {
         val bytes = ByteArrayOutputStream()
