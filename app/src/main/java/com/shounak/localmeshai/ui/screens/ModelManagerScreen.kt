@@ -2447,9 +2447,9 @@ fun ModelItem(
                                         Text("• Warm TTFT: ${r.cpuWarmTtftMedianMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
                                         Text("• Cold Load + First Token: ${r.cpuColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
                                         Text("• Sustained Decode: ${String.format(Locale.US, "%.1f", r.cpuDecodeTokPerSec)} t/s", style = MaterialTheme.typography.bodySmall)
-                                        Text("• Frame Time p95: ${String.format(Locale.US, "%.1f", r.cpuFrameP95Ms)} ms", style = MaterialTheme.typography.bodySmall)
+                                        if (r.uiFramesMeasured) Text("• Frame Time p95: ${String.format(Locale.US, "%.1f", r.cpuFrameP95Ms)} ms", style = MaterialTheme.typography.bodySmall)
                                     }
-                                    Text("• Max UI Render Stall: ${r.maxRenderStallMs} ms", style = MaterialTheme.typography.bodySmall)
+                                    if (r.uiFramesMeasured) Text("• Max UI Render Stall: ${r.maxRenderStallMs} ms", style = MaterialTheme.typography.bodySmall)
                                 } else {
                                     val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
                                     if (isGguf && (model.localPath != null || model.bundle != null)) {

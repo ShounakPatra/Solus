@@ -37,7 +37,8 @@ data class BenchmarkResult(
     val vulkanFrameP95Ms: Double,
     val frameP95RegressionPercent: Double,
     val maxRenderStallMs: Long,
-    val receipt: GgufPerformanceReceipt? = null
+    val receipt: GgufPerformanceReceipt? = null,
+    val uiFramesMeasured: Boolean = true
 )
 
 object GgufBenchmarkRunner {

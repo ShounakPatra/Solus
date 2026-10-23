@@ -221,7 +221,7 @@ object ModelRemovalCoordinator {
         }
         try {
             // 1. Reserve and obtain truthful runtime shutdown if model is active
-            if (isModelSelected(model.id)) {
+            if (isModelSelected(model.id) || ModelRuntimeCoordinator.getActiveStableModelId(ModelRuntimeOwner.Benchmark) == model.id) {
                 val shutdownResult = withTimeoutOrNull(10_000L) {
                     ModelRuntimeCoordinator.releaseAll()
                 } ?: ShutdownResult.TimedOut

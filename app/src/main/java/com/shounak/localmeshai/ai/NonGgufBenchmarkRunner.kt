@@ -42,6 +42,12 @@ object NonGgufBenchmarkRunner {
         val file = File(modelPath)
         require(file.exists()) { "Model file not found at $modelPath" }
 
+        if (com.shounak.localmeshai.models.ModelFormat.fromFileName(file.name)?.isPortable == true) {
+            check(!com.shounak.localmeshai.utils.InitCrashGuard.isModelBlocked(context, modelId)) {
+                com.shounak.localmeshai.utils.InitCrashGuard.blockedModelMessage()
+            }
+            return@withContext PortableBenchmarkRunner.run(file, modelId, onProgress)
+        }
         val isLiteRt = ChatRuntimePolicy.shouldUseLiteRtLmConversation(file.name, modelId)
         if (isLiteRt) {
             runLiteRtBenchmark(context, file, modelId, onProgress)

@@ -23,6 +23,7 @@ class ModelRuntimeCoordinatorTest {
     private fun doCleanup() = runBlocking {
         ModelRuntimeCoordinator.unregister(ModelRuntimeOwner.Chat)
         ModelRuntimeCoordinator.unregister(ModelRuntimeOwner.Vision)
+        ModelRuntimeCoordinator.unregister(ModelRuntimeOwner.Benchmark)
         ModelRuntimeCoordinator.setReleasedCallback(ModelRuntimeOwner.Chat, null)
         ModelRuntimeCoordinator.setReleasedCallback(ModelRuntimeOwner.Vision, null)
         ModelRuntimeCoordinator.releaseAll()
@@ -37,6 +38,23 @@ class ModelRuntimeCoordinatorTest {
     @After
     fun tearDown() {
         doCleanup()
+    }
+
+    @Test fun benchmarkReleasesChatAndPublishesBusyModelIdentity() = runBlocking {
+        var released = false
+        ModelRuntimeCoordinator.register(ModelRuntimeOwner.Chat, requestStop = {}, release = {
+            released = true; ShutdownResult.Success
+        })
+        ModelRuntimeCoordinator.activate(ModelRuntimeOwner.Chat)
+        val registration = ModelRuntimeCoordinator.register(ModelRuntimeOwner.Benchmark,
+            stableModelIdProvider = { "portable" }, requestStop = {}, release = { ShutdownResult.Success })
+        ModelRuntimeCoordinator.withRuntime(ModelRuntimeOwner.Benchmark) {
+            assertTrue(released)
+            assertTrue(ModelRuntimeCoordinator.isRuntimeBusy.value)
+            assertEquals("portable", ModelRuntimeCoordinator.getActiveStableModelId(ModelRuntimeOwner.Benchmark))
+        }
+        ModelRuntimeCoordinator.unregister(ModelRuntimeOwner.Benchmark, registration)
+        assertFalse(ModelRuntimeCoordinator.isRuntimeBusy.value)
     }
 
     @Test
