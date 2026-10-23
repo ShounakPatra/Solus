@@ -30,7 +30,6 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -141,8 +140,10 @@ fun AddModelSheet(
             performDismiss()
         },
         sheetState = sheetState,
-        modifier = modifier.imePadding(),
-        containerColor = Color.Transparent,
+        // Material already handles IME padding. Its Surface also owns the bottom
+        // safe inset, outside our glass content, so paint that area as well.
+        modifier = modifier,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         dragHandle = {
             Box(
                 modifier = Modifier

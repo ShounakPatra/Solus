@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.isImeVisible
@@ -95,6 +97,9 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+private val BottomNavHeight = 84.dp
+private val BottomNavVerticalPadding = 10.dp
 
 class MainActivity : ComponentActivity() {
     private val mainViewModel: MainViewModel by viewModels()
@@ -273,6 +278,13 @@ fun MainNavigation(mainViewModel: MainViewModel) {
     val scrollToAboutRequested by mainViewModel.scrollToAboutRequested.collectAsState()
     val appSettingsData by mainViewModel.appSettingsData.collectAsState()
 
+    // Keep the resting dock inset independent of the bar's visibility animation.
+    // Chat combines this with the animated IME inset using max, so closing the
+    // keyboard never briefly drops the composer into the navigation bar's space.
+    val bottomContentInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
+        if (appSettingsData.enableAutoHideBottomBar) 0.dp
+        else BottomNavHeight + BottomNavVerticalPadding * 2
+
     var autoHideWasEnabledWhenSettingsOpened by remember { mutableStateOf(false) }
     var autoHideTurnedOnInSettings by remember { mutableStateOf(false) }
 
@@ -326,7 +338,7 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                         modifier = Modifier
                             .fillMaxWidth()
                             .navigationBarsPadding()
-                            .padding(horizontal = 20.dp, vertical = 10.dp),
+                            .padding(horizontal = 20.dp, vertical = BottomNavVerticalPadding),
                         contentAlignment = Alignment.Center
                     ) {
                         LiquidBottomNav(
@@ -394,7 +406,7 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                     ) {
                         when (page) {
                             0 -> ChatScreen(mainViewModel = mainViewModel, hazeState = hazeState,
-                                bottomContentInset = if (isKeyboardOpen) 0.dp else innerPadding.calculateBottomPadding())
+                                bottomContentInset = bottomContentInset)
                             1 -> Column(modifier = Modifier.fillMaxSize()) {
                                 LiquidTopBar(
                                     title = Screen.Models.title,
@@ -404,7 +416,7 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                                     ModelManagerScreen(
                                         mainViewModel = mainViewModel,
                                         hazeState = hazeState,
-                                        bottomContentInset = if (isKeyboardOpen) 0.dp else innerPadding.calculateBottomPadding(),
+                                        bottomContentInset = bottomContentInset,
                                         onGoToChat = { selectedIndex = 0 }
                                     )
                                 }
@@ -501,7 +513,7 @@ private fun LiquidBottomNav(
         modifier = Modifier
             .widthIn(max = 420.dp)
             .fillMaxWidth()
-            .height(84.dp)
+            .height(BottomNavHeight)
             .fluidReveal(delayMillis = 120, initialYOffset = 18.dp)
             .clip(navShape)
             .onSizeChanged { containerWidthPx = it.width.toFloat() }

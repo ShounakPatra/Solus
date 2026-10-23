@@ -274,6 +274,13 @@ abstract class VerifyDexIntegrityTask : DefaultTask() {
 androidComponents {
     onVariants(selector().withBuildType("release")) { variant ->
         variant.packaging.dex.useLegacyPackaging.set(true)
+        val variantTaskSuffix = variant.name.replaceFirstChar { it.uppercaseChar() }
+        val verifyTask = tasks.register<VerifyDexIntegrityTask>("verify${variantTaskSuffix}ApkDexIntegrity") {
+            apkFolder.set(variant.artifacts.get(SingleArtifact.APK))
+        }
+        tasks.matching { it.name == "assemble$variantTaskSuffix" }.configureEach {
+            dependsOn(verifyTask)
+        }
     }
     onVariants(selector().withBuildType("debug")) { variant ->
         val verifyTask = tasks.register<VerifyDexIntegrityTask>("verifyDebugApkDexIntegrity") {
@@ -321,18 +328,16 @@ tasks.configureEach {
 }
 
 configurations.all {
-    // No Firebase service integration. Keep the encoder-only serialization
-    // helpers required by MediaPipe's transport classes; removing them breaks R8.
-    exclude(group = "com.google.firebase", module = "firebase-measurement-connector")
-    exclude(group = "com.google.firebase", module = "firebase-analytics")
-    exclude(group = "com.google.firebase", module = "firebase-sessions")
-    exclude(group = "com.google.firebase", module = "firebase-installations")
+    // GenAI's LlmTaskRunner does not use tasks-core's general TaskRunner logging.
+    // Remove its whole unused transport chain together: retaining TransportRuntime
+    // while removing only Firebase encoders leaves missing classes during R8.
+    exclude(group = "com.google.firebase")
+    exclude(group = "com.google.android.datatransport")
     exclude(group = "com.google.android.gms", module = "play-services-measurement")
     exclude(group = "com.google.android.gms", module = "play-services-measurement-base")
     exclude(group = "com.google.android.gms", module = "play-services-measurement-api")
     exclude(group = "com.google.android.gms", module = "play-services-measurement-sdk")
     exclude(group = "com.google.android.gms", module = "play-services-measurement-sdk-api")
-    exclude(group = "com.google.android.datatransport", module = "transport-backend-cct")
 }
 
 dependencies {
@@ -356,6 +361,9 @@ dependencies {
 
     implementation(libs.mediapipe.tasks.genai)
     implementation(libs.mediapipe.tasks.core)
+    // MediaPipe's compiled model/options classes reference these annotations.
+    // They were formerly supplied indirectly by the removed transport chain.
+    implementation(libs.auto.value.annotations)
     implementation(libs.litert.lm)
     implementation(libs.tensorflow.lite)
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")

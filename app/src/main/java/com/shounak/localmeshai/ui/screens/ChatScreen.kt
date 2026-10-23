@@ -105,14 +105,15 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -976,7 +977,9 @@ fun ChatScreen(
             // This prevents window/pager surfaces from showing through while its
             // model and reveal animations initialise.
             .background(chatBackground)
-            .imePadding()
+            // A single inset follows the IME animation and never falls below the
+            // floating navigation bar's resting space. Do not add dock padding too.
+            .windowInsetsPadding(WindowInsets.ime.union(WindowInsets(bottom = bottomContentInset)))
             .onGloballyPositioned {
                 rootCoordinates = it
                 updateComposerBounds()
@@ -1508,8 +1511,7 @@ fun ChatScreen(
                     // One transparent dock overlays the scrollable content. Only its individual
                     // controls and the rounded composer paint a surface.
                     Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                        .onSizeChanged { floatingDockHeight = with(floatingDockDensity) { it.height.toDp() } }
-                        .padding(bottom = bottomContentInset),
+                        .onSizeChanged { floatingDockHeight = with(floatingDockDensity) { it.height.toDp() } },
                         verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     if (showFloatingControls) {
                         Column(Modifier.fillMaxWidth().padding(vertical = 2.dp),
