@@ -19,6 +19,28 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 class PortableLinkImportTest {
+    @Test fun standaloneClassifierPublishesWithoutFetchingSpeculativeCompanions() = runBlocking {
+        val bytes = TfliteFixture.classifier()
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                if (request.path?.substringBefore('?') == "/model.tflite") MockResponse().setBody(Buffer().write(bytes))
+                else MockResponse().setResponseCode(403)
+        }
+        server.start()
+        try {
+            val storage = ModelArtifactStorage(temporary.newFolder())
+            val downloader = ModelDownloader(customHttpClient = OkHttpClient(), artifactStorage = storage)
+            val spec = HuggingFaceModelResolver.createDirectPortableSpec(server.url("/model.tflite").toString(), "standalone")
+            val result = downloader.downloadArtifactBundle(spec, null) { }
+            val published = requireNotNull(storage.getPublishedBundle("standalone"))
+            assertEquals(ModelTask.ImageClassification, published.capabilities.task)
+            assertNull(published.loadRestriction)
+            assertEquals(1, published.mainArtifacts.size)
+            assertTrue(File(result.localPath).isFile)
+            assertEquals(1, server.requestCount)
+        } finally { server.shutdown() }
+    }
     @get:Rule val temporary = TemporaryFolder()
     private val config = """{"model_type":"qwen2","max_position_embeddings":1024,"eos_token_id":2}"""
     private val tokenizer = """{"model":{"vocab":{"a":0}}}"""
@@ -80,7 +102,7 @@ class PortableLinkImportTest {
     @Test fun downloadsJsonCompanionsAndPublishesEachPortableFormat() = runBlocking {
         for ((index, format) in listOf(ModelFormat.Safetensors, ModelFormat.TensorFlowLite, ModelFormat.Safetensors).withIndex()) {
             val extension = if (format == ModelFormat.Safetensors) "safetensors" else "tflite"
-            val bytes = if (format == ModelFormat.Safetensors) weights() else byteArrayOf(16,0,0,0) + "TFL3".toByteArray() + ByteArray(32)
+            val bytes = if (format == ModelFormat.Safetensors) weights() else TfliteFixture.text()
             val server = MockWebServer()
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse = when (request.path?.substringBefore('?')) {

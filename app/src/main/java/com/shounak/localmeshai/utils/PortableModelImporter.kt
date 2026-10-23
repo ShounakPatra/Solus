@@ -20,7 +20,7 @@ internal object PortableModelImporter {
     /** Copy all companions into one unpublished generation; do not depend on neighbouring SAF access. */
     suspend fun import(context: Context, uris: List<Uri>, names: List<String>, progress: ((String) -> Unit)?): LocalModelImporter.ImportResult {
         val modelNames = names.filter { PortableModelBundle.format(it) != null }
-        require(modelNames.isNotEmpty()) { "Select a model and its tokenizer.json and config.json" }
+        require(modelNames.isNotEmpty()) { "Select a supported model and any processing files required by its export" }
         val format = requireNotNull(PortableModelBundle.format(modelNames.first()))
         require(modelNames.all { PortableModelBundle.format(it) == format }) { "Select one model format at a time" }
         require(format != ModelFormat.TensorFlowLite || modelNames.size == 1) { "Select a single TFLite graph" }

@@ -12,7 +12,14 @@ import java.nio.ByteOrder
 
 class PortableExtendedProfilesTest {
     @get:Rule val temp = TemporaryFolder()
-    private fun lite(root: File) = File(root,"model.tflite").apply { writeBytes(byteArrayOf(16,0,0,0)+"TFL3".toByteArray()+ByteArray(32)) }
+    private fun lite(root: File) = File(root,"model.tflite").apply {
+        val config = PortableModelBundle.json(File(root, "config.json"))
+        writeBytes(when {
+            config.optString("model_type") == "vit" -> TfliteFixture.classifier()
+            PortableModelProfile.isCtc(config) -> TfliteFixture.ctc()
+            else -> TfliteFixture.text()
+        })
+    }
     @Test fun tfliteImageClassificationNeedsProcessorConfigRatherThanTokenizer() {
         val root = temp.newFolder()
         File(root,"config.json").writeText("""{"model_type":"vit","image_size":224}""")

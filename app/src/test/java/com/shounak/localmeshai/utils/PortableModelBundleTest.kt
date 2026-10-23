@@ -71,7 +71,7 @@ class PortableModelBundleTest {
 
     @Test fun rawTfliteIsDistinctFromLiteRtLmAndMustHaveCompanions() {
         val dir = temporary.newFolder(); companions(dir)
-        val file = File(dir, "model.tflite").apply { writeBytes(byteArrayOf(16,0,0,0) + "TFL3".toByteArray() + ByteArray(32)) }
+        val file = File(dir, "model.tflite").apply { writeBytes(TfliteFixture.text()) }
         assertEquals(ModelFormat.TensorFlowLite, NonGgufBundleInspector.detectFormat(file))
         assertTrue(PortableModelBundle.inspect(file, ModelFormat.TensorFlowLite).supportsText)
         val renamed = File(dir, "raw.litertlm").apply { writeBytes(file.readBytes()) }

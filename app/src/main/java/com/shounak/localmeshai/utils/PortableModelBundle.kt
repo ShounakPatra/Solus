@@ -46,7 +46,9 @@ internal object PortableModelBundle {
         fun companion(name: String) = companions[name] ?: File(dir, name)
         val pipelineFile = companion("model_index.json")
         val pipeline = pipelineFile.takeIf { it.isFile }?.let(::json)
-        val config = companion("config.json").takeIf { it.isFile }?.let(::json) ?: JSONObject()
+        val tflite = if (expected == ModelFormat.TensorFlowLite) TfliteExportInspector.file(primary) else null
+        val config = companion("config.json").takeIf { it.isFile }?.let(::json) ?: tflite?.config ?: JSONObject()
+        tflite?.check(config)
         val task = PortableModelProfile.task(config, pipeline)
         val context = config.optInt("max_position_embeddings", config.optInt("n_positions", 2048))
         require(context in 2..1_048_576) { "Invalid model context length" }
@@ -112,8 +114,15 @@ internal object PortableModelBundle {
 
     fun runtimeRestriction(primary: File, expected: ModelFormat, companions: Map<String, File> = emptyMap()): com.shounak.localmeshai.models.LoadRestriction? {
         fun file(name: String) = companions[name] ?: File(primary.parentFile, name)
-        val config = file("config.json").takeIf { it.isFile }?.let(::json) ?: JSONObject()
+        val config = file("config.json").takeIf { it.isFile }?.let(::json)
+            ?: if (expected == ModelFormat.TensorFlowLite) TfliteExportInspector.file(primary).config ?: JSONObject() else JSONObject()
         val pipeline = file("model_index.json").takeIf { it.isFile }?.let(::json)
+        val task = PortableModelProfile.task(config, pipeline)
+        return metadataRestriction(expected, config, pipeline, { file(it).isFile }, { json(file(it)) })
+    }
+
+    internal fun metadataRestriction(expected: ModelFormat, config: JSONObject, pipeline: JSONObject?,
+        exists: (String) -> Boolean, readJson: (String) -> JSONObject): com.shounak.localmeshai.models.LoadRestriction? {
         val task = PortableModelProfile.task(config, pipeline)
         val architecture = config.optString("model_type", "unknown")
         val reason = when {
@@ -124,22 +133,22 @@ internal object PortableModelBundle {
             expected == ModelFormat.Safetensors && task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition && architecture != "whisper" -> "Safetensors speech currently requires Whisper; this audio architecture needs its own adapter."
             expected == ModelFormat.Safetensors && task == com.shounak.localmeshai.models.ModelTask.Chat && architecture !in PortableModelProfile.textArchitectures -> "Imported safetensors architecture '$architecture' needs its own inference adapter. Supported text families: ${PortableModelProfile.textArchitectures.joinToString()}."
             expected == ModelFormat.Safetensors && task == com.shounak.localmeshai.models.ModelTask.ImageClassification && architecture != "vit" -> "Safetensors image classification currently requires the ViT architecture; '$architecture' needs its own adapter."
-            task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition && !PortableModelProfile.isCtc(config) && !file("tokenizer.json").isFile -> "Whisper needs a complete tokenizer.json including its language and task special tokens."
+            task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition && !PortableModelProfile.isCtc(config) && !exists("tokenizer.json") -> "Whisper needs a complete tokenizer.json including its language and task special tokens."
             task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition && !PortableModelProfile.isCtc(config) && expected == ModelFormat.Onnx &&
-                listOf("encoder_model.onnx", "decoder_model.onnx").any { !file(it).isFile } -> "Whisper ONNX needs both encoder_model.onnx and the no-cache decoder_model.onnx with its tokenizer and configuration."
+                listOf("encoder_model.onnx", "decoder_model.onnx").any { !exists(it) } -> "Whisper ONNX needs both encoder_model.onnx and the no-cache decoder_model.onnx with its tokenizer and configuration."
             expected == ModelFormat.Safetensors && config.has("quantization_config") && !config.isNull("quantization_config") -> "Imported prequantized safetensors layout needs a quantization-specific adapter."
             expected == ModelFormat.Safetensors && !config.isNull("rope_scaling") && architecture != "llama" -> "Imported scaled RoPE checkpoint cannot run in this architecture adapter."
             task == com.shounak.localmeshai.models.ModelTask.ImageGeneration && expected == ModelFormat.Safetensors &&
                 listOf("text_encoder/config.json", "text_encoder/model.safetensors", "unet/diffusion_pytorch_model.safetensors", "vae/diffusion_pytorch_model.safetensors").any { name ->
-                    !file(name).isFile && !file(name.replace("/", "--")).isFile
+                    !exists(name) && !exists(name.replace("/", "--"))
                 } -> "Imported diffusion weights need the complete text_encoder, unet, vae and tokenizer folders. Import the whole Diffusers pipeline."
             task == com.shounak.localmeshai.models.ModelTask.ImageGeneration && pipeline?.optString("_class_name") !in setOf("StableDiffusionPipeline", "OnnxStableDiffusionPipeline", "ORTStableDiffusionPipeline") -> "Image generation requires a complete supported Diffusers pipeline, not an isolated UNet, VAE or LoRA checkpoint."
             task == com.shounak.localmeshai.models.ModelTask.ImageGeneration && expected == ModelFormat.Safetensors && pipeline?.optString("_class_name") != "StableDiffusionPipeline" -> "Safetensors diffusion needs a Diffusers StableDiffusionPipeline checkpoint."
-            task == com.shounak.localmeshai.models.ModelTask.ImageGeneration && listOf("text_encoder/model.onnx", "unet/model.onnx", "vae_decoder/model.onnx").any { !file(it).isFile } && expected == ModelFormat.Onnx -> "ONNX image generation needs the complete text_encoder, unet and vae_decoder component graphs."
+            task == com.shounak.localmeshai.models.ModelTask.ImageGeneration && listOf("text_encoder/model.onnx", "unet/model.onnx", "vae_decoder/model.onnx").any { !exists(it) } && expected == ModelFormat.Onnx -> "ONNX image generation needs the complete text_encoder, unet and vae_decoder component graphs."
             task == com.shounak.localmeshai.models.ModelTask.ImageGeneration &&
-                !file("tokenizer/tokenizer.json").isFile && !(file("tokenizer/vocab.json").isFile && file("tokenizer/merges.txt").isFile) -> "Image generation needs the pipeline's CLIP tokenizer assets."
-            task == com.shounak.localmeshai.models.ModelTask.ImageGeneration && !file("scheduler/scheduler_config.json").isFile -> "Image generation needs scheduler/scheduler_config.json to interpret the denoiser output."
-            task == com.shounak.localmeshai.models.ModelTask.ImageGeneration && !supportsDiffusionSchedule(json(file("scheduler/scheduler_config.json"))) -> "This image pipeline uses a noise schedule or prediction type outside the supported SD1/SD2 DDIM adapter."
+                !exists("tokenizer/tokenizer.json") && !(exists("tokenizer/vocab.json") && exists("tokenizer/merges.txt")) -> "Image generation needs the pipeline's CLIP tokenizer assets."
+            task == com.shounak.localmeshai.models.ModelTask.ImageGeneration && !exists("scheduler/scheduler_config.json") -> "Image generation needs scheduler/scheduler_config.json to interpret the denoiser output."
+            task == com.shounak.localmeshai.models.ModelTask.ImageGeneration && !supportsDiffusionSchedule(readJson("scheduler/scheduler_config.json")) -> "This image pipeline uses a noise schedule or prediction type outside the supported SD1/SD2 DDIM adapter."
             else -> return null
         }
         return com.shounak.localmeshai.models.LoadRestriction(reason, com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility)
@@ -162,8 +171,8 @@ internal object PortableModelBundle {
             val root = PortableModelProfile.root(file)
             val configFile = File(root, "config.json")
             val pipelineFile = File(root, "model_index.json")
-            if (!configFile.isFile && !pipelineFile.isFile) return bundle
-            val config = configFile.takeIf { it.isFile }?.let(::json) ?: JSONObject()
+            if (!configFile.isFile && !pipelineFile.isFile && bundle.format != ModelFormat.TensorFlowLite) return bundle
+            val config = configFile.takeIf { it.isFile }?.let(::json) ?: PortableModelProfile.config(file)
             val task = PortableModelProfile.task(config, pipelineFile.takeIf { it.isFile }?.let(::json))
             val companions = bundle.mainArtifacts.mapNotNull { artifact ->
                 val source = artifact.source as? com.shounak.localmeshai.models.ArtifactSource.AppManaged ?: return@mapNotNull null

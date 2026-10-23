@@ -21,7 +21,10 @@ internal class PortableMediaEngine private constructor(
     val task: ModelTask
 ) : AutoCloseable {
     private val root = PortableModelProfile.root(primary)
-    private val config = File(root, "config.json").takeIf { it.isFile }?.let(PortableModelBundle::json) ?: JSONObject()
+    private val config = PortableModelProfile.config(primary)
+    private fun imageProcessor(): JSONObject = File(root, "preprocessor_config.json").takeIf { it.isFile }
+        ?.let(PortableModelBundle::json) ?: if (format == ModelFormat.TensorFlowLite)
+            TfliteExportInspector.file(primary).processor ?: JSONObject() else JSONObject()
     private var nativeHandle = 0L
     private var onnx: OrtSession? = null
     private var onnxPipeline: OnnxMediaPipeline? = null
@@ -36,7 +39,7 @@ internal class PortableMediaEngine private constructor(
         fun open(context: Context, primary: File, format: ModelFormat): PortableMediaEngine {
             val root = PortableModelProfile.root(primary)
             val pipeline = File(root, "model_index.json").takeIf { it.isFile }?.let(PortableModelBundle::json)
-            val config = File(root, "config.json").takeIf { it.isFile }?.let(PortableModelBundle::json) ?: JSONObject()
+            val config = PortableModelProfile.config(primary)
             val task = PortableModelProfile.task(config, pipeline)
             require(task !in setOf(ModelTask.Chat, ModelTask.Unknown)) { "Select a supported image, speech or diffusion pipeline" }
             val engine = PortableMediaEngine(context.applicationContext, primary, format, task)
@@ -77,7 +80,7 @@ internal class PortableMediaEngine private constructor(
                 ModelTask.VisionLanguage -> {
                     require(bitmap != null && !bitmap.isRecycled) { "Attach an image to ask about it" }
                     require(audio == null) { "This vision-language pipeline accepts an image and text" }
-                    val processor = File(root, "preprocessor_config.json").takeIf { it.isFile }?.let(PortableModelBundle::json) ?: JSONObject()
+                    val processor = imageProcessor()
                     if (nativeHandle != 0L) {
                         val size = config.optJSONObject("vision_config")?.optInt("image_size", 224) ?: 224
                         CandleBridge.answerImage(nativeHandle, imagePixels(bitmap, size, size, processor), prompt.ifBlank { "Describe the image." })
@@ -85,7 +88,7 @@ internal class PortableMediaEngine private constructor(
                 }
                 ModelTask.ImageClassification -> {
                     require(bitmap != null && !bitmap.isRecycled) { "Attach an image to classify" }
-                    val processor = File(root, "preprocessor_config.json").takeIf { it.isFile }?.let(PortableModelBundle::json) ?: JSONObject()
+                    val processor = imageProcessor()
                     val session = onnx
                     val imageSize = config.optInt("image_size", 224)
                     val logits = if (mediaGraph != null) {
@@ -117,7 +120,7 @@ internal class PortableMediaEngine private constructor(
                 }
                 ModelTask.SpeechRecognition -> {
                     require(audio?.isFile == true) { "Attach an audio recording to transcribe" }
-                    val processor = File(root, "preprocessor_config.json").takeIf { it.isFile }?.let(PortableModelBundle::json) ?: JSONObject()
+                    val processor = imageProcessor()
                     val rate = if (PortableModelProfile.isCtc(config)) processor.optInt("sampling_rate", 16_000) else 16_000
                     require(rate in 8_000..48_000) { "Unsupported speech sample rate" }
                     val pcm = AudioUtils.decodeAudioToFloatPcm(context, Uri.fromFile(audio), maxDurationMs = 30_000, targetSampleRate = rate)

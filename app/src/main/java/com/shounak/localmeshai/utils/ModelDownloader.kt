@@ -251,8 +251,13 @@ open class ModelDownloader(
         val expectedSourceIdentity = "spec:${spec.repository}@${spec.revision}"
 
         var index = 0
+        var standaloneTflite = false
         while (index < artifacts.size) {
             val artifact = artifacts[index]
+            if (standaloneTflite && artifact.optional && artifact.fileName in PortableCompanionFiles.names) {
+                index++
+                continue
+            }
             ensureActive()
             val targetStagingFile = artifactStorage.getStagingFile(spec.modelId, artifact.fileName)
             val savedMeta = DownloadResumeMetadata.loadFor(targetStagingFile)
@@ -352,6 +357,10 @@ open class ModelDownloader(
                     order = index
                 )
             )
+            if (index == 0 && spec.effectiveFormat == ModelFormat.TensorFlowLite &&
+                spec.artifacts.none { it.fileName == "config.json" && !it.optional }) {
+                standaloneTflite = TfliteExportInspector.file(File(downloadedLocalPath)).config != null
+            }
             if (spec.effectiveFormat == ModelFormat.Onnx && artifact.fileName.endsWith(".onnx", true)) {
                 val externalNames = OnnxBundleValidation.validate(File(downloadedLocalPath), checkExternal = false)
                 for (name in externalNames) {
@@ -428,7 +437,7 @@ open class ModelDownloader(
         } else if (format.isPortable) {
             val files = stagedItems.associate { it.relativeTargetName to it.stagedFile }
             val primary = stagedItems.first()
-            if (files["config.json"]?.isFile != true && files["model_index.json"]?.isFile != true) {
+            if (format != ModelFormat.TensorFlowLite && files["config.json"]?.isFile != true && files["model_index.json"]?.isFile != true) {
                 throw MissingModelFilesException("config.json was not found at the model source. The downloaded weights are kept; retry to fetch the configuration or import a complete bundle.")
             }
             capabilities = PortableModelBundle.inspect(primary.stagedFile, format, files, primary.relativeTargetName)

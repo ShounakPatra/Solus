@@ -58,6 +58,8 @@ internal object PortableModelArchive {
                 ?: error("Cannot read model archive")
             val pipeline = files.entries.singleOrNull { it.key.substringAfterLast('/') == "model_index.json" }
             val root = pipeline?.value?.parentFile ?: files.entries.firstOrNull { it.key.substringAfterLast('/') == "config.json" }?.value?.parentFile
+                ?: files.values.filter { PortableModelBundle.format(it.name) != null }.singleOrNull()
+                    ?.takeIf { PortableModelBundle.format(it.name) == ModelFormat.TensorFlowLite }?.parentFile
                 ?: error("The model archive must include config.json or model_index.json")
             val components = files.values.filter { it.toPath().startsWith(root.toPath()) }.associateBy { it.relativeTo(root).invariantSeparatorsPath }
             val isOnnxPipeline = pipeline?.value?.let(PortableModelBundle::json)?.optString("_class_name")?.let { it.contains("Onnx") || it.startsWith("ORT") } == true

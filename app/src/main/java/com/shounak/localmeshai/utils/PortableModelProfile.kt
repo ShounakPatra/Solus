@@ -5,6 +5,13 @@ import org.json.JSONObject
 import java.io.File
 
 internal object PortableModelProfile {
+    fun config(primary: File): JSONObject {
+        val file = File(root(primary), "config.json")
+        return if (file.isFile) PortableModelBundle.json(file)
+        else if (PortableModelBundle.format(primary.name) == com.shounak.localmeshai.models.ModelFormat.TensorFlowLite)
+            TfliteExportInspector.file(primary).config ?: JSONObject()
+        else JSONObject()
+    }
     val textArchitectures = setOf("gpt2", "qwen2", "llama", "mistral", "gemma", "phi", "phi3")
     fun isCtc(config: JSONObject): Boolean = config.optString("solus_audio_decoder") == "ctc" ||
         config.optJSONArray("architectures")?.toString()?.contains("ForCTC") == true
