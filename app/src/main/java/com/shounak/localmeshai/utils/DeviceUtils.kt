@@ -728,14 +728,14 @@ object DeviceUtils {
 
     fun estimateModelParametersB(modelName: String, modelSize: String): Float? {
         val source = "$modelName $modelSize"
-        Regex("""(?i)(\d+(?:\.\d+)?)\s*B""")
+        Regex("""(?i)(?<![\d.])(\d+(?:\.\d+)?)\s*B(?![a-z0-9])""")
             .find(source)
             ?.groupValues
             ?.getOrNull(1)
             ?.toFloatOrNull()
             ?.let { return it }
 
-        Regex("""(?i)(\d+(?:\.\d+)?)\s*M""")
+        Regex("""(?i)(?<![\d.])(\d+(?:\.\d+)?)\s*M(?![a-z0-9])""")
             .find(source)
             ?.groupValues
             ?.getOrNull(1)

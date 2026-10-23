@@ -8,6 +8,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModelLoadRestrictionPolicyTest {
+    @Test fun oldIncorrectDeviceWarningsAreRecomputedForSmallQuantizedImports() {
+        val model = createTestModel("gpt2", "64-8bits (TensorFlowLite)", 122, status = ModelStatus.Blocked,
+            progress = 1f, localPath = "/models/64-8bits.tflite").copy(
+            loadRestriction = LoadRestriction("Needs 12 GB", LoadRestrictionCategory.DeviceCompatibility),
+            errorMessage = "Needs 12 GB")
+        val projected = ModelLoadRestrictionPolicy.projectCompletedModel(false, model, 7.3)
+        assertEquals(ModelStatus.Available, projected.status)
+        assertNull(projected.loadRestriction)
+        assertNull(projected.errorMessage)
+        assertEquals(model.localPath, projected.localPath)
+        assertEquals(model.downloadedBytes, projected.downloadedBytes)
+    }
 
     private fun createTestModel(
         id: String,

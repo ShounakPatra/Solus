@@ -71,9 +71,8 @@ object ModelLoadRestrictionPolicy {
         model: ModelInfo
     ): ModelInfo {
         if (model.status !in setOf(ModelStatus.Available, ModelStatus.Blocked)) return model
-        val verifiedRetry = InitCrashGuard.hasSuccessfulRetry(context, model.id)
         val inspectionRestriction = listOfNotNull(model.loadRestriction, model.bundle?.loadRestriction).firstOrNull {
-            it.category != LoadRestrictionCategory.PreviousCrash && !(verifiedRetry && it.category == LoadRestrictionCategory.DeviceCompatibility)
+            it.category == LoadRestrictionCategory.RuntimeIncompatibility
         }
         val restriction = when {
             InitCrashGuard.isModelBlocked(context, model.id) -> LoadRestriction(
@@ -98,7 +97,7 @@ object ModelLoadRestrictionPolicy {
     ): ModelInfo {
         if (model.status !in setOf(ModelStatus.Available, ModelStatus.Blocked)) return model
         val inspectionRestriction = listOfNotNull(model.loadRestriction, model.bundle?.loadRestriction).firstOrNull {
-            it.category != LoadRestrictionCategory.PreviousCrash && !(hasSuccessfulRetry && it.category == LoadRestrictionCategory.DeviceCompatibility)
+            it.category == LoadRestrictionCategory.RuntimeIncompatibility
         }
         val restriction = when {
             isCrashBlocked -> LoadRestriction(
