@@ -573,7 +573,7 @@ fun ChatScreen(
         scope.launch {
             isDecodingAudioFile = true
             try {
-                val decoded = AudioUtils.decodeAudioToPcm16Wav(context, uri, maxDurationMs = audioRecordLimitMs)
+                val decoded = AudioUtils.decodeAudioToPcm16Wav(context, uri, maxDurationMs = audioRecordLimitMs, rejectLongInput = true)
                 selectedAudioUri = decoded.cacheUri
                 selectedAudioBytes = decoded.wavBytes
                 selectedAudioName = decoded.label

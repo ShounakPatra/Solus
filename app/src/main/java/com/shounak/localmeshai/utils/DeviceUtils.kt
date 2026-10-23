@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Debug
 import android.os.PowerManager
 import com.shounak.localmeshai.BuildConfig
+import com.shounak.localmeshai.models.ModelFormat
 import com.shounak.localmeshai.models.ModelInfo
 import com.shounak.localmeshai.models.ModelType
 import java.util.Locale
@@ -135,7 +136,18 @@ object DeviceUtils {
         }.getOrNull() ?: return true to ""
         val requested = com.shounak.localmeshai.features.WorkspacePreferences.get(context).profile(modelInfo.id).contextTokens ?: 2048
         val capacity = modelInfo.bundle?.capabilities?.contextLength ?: modelInfo.downloadSpec?.capabilities?.contextLength
-        return ModelMemoryAssessment.check(total, modelInfo, capacity?.let { minOf(it, requested) } ?: requested)
+        val effective = effectiveContextTokens(modelInfo.bundle?.format ?: ModelFormat.fromFileName(modelInfo.fileName), total, requested, capacity, estimateModelParametersB(modelInfo.name, modelInfo.size))
+        return ModelMemoryAssessment.check(total, modelInfo, effective)
+    }
+
+    fun effectiveContextTokens(format: ModelFormat?, ramGiB: Double, requested: Int, capacity: Int? = null, modelParamsB: Float? = null): Int {
+        val runtimeLimit = when (format) {
+            ModelFormat.GGUF -> recommendedContextWindowForRam(ramGiB, modelParamsB)
+            ModelFormat.LiteRtLm -> 8192
+            ModelFormat.MediaPipeTask -> 4096
+            else -> Int.MAX_VALUE
+        }
+        return minOf(requested.coerceAtLeast(2), capacity?.takeIf { it > 0 } ?: Int.MAX_VALUE, runtimeLimit)
     }
 
     fun checkModelSafetyProfileForRam(

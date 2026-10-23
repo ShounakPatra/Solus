@@ -72,7 +72,7 @@ data class GgufExecutionProfile(
             val paramsB = DeviceUtils.estimateModelParametersB(modelNameOrId, modelSize)
             val maxDeviceContext = DeviceUtils.recommendedContextWindow(context, paramsB)
             val contextWindow = if (customContextTokens != null && customContextTokens > 0) {
-                minOf(customContextTokens, maxDeviceContext)
+                DeviceUtils.effectiveContextTokens(com.shounak.localmeshai.models.ModelFormat.GGUF, DeviceUtils.getTotalRamGB(context), customContextTokens, modelParamsB = paramsB)
             } else {
                 maxDeviceContext
             }
