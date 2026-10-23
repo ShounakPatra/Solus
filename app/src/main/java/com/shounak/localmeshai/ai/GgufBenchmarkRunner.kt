@@ -38,7 +38,8 @@ data class BenchmarkResult(
     val frameP95RegressionPercent: Double,
     val maxRenderStallMs: Long,
     val receipt: GgufPerformanceReceipt? = null,
-    val uiFramesMeasured: Boolean = true
+    val uiFramesMeasured: Boolean = true,
+    val taskLatencyMedianMs: Double? = null
 )
 
 object GgufBenchmarkRunner {
@@ -69,15 +70,42 @@ object GgufBenchmarkRunner {
         prefillThreads: Int = threads,
         expectedFileSizeBytes: Long = 0L,
         onProgress: ((BenchmarkProgress) -> Unit)? = null
+    ): BenchmarkResult = BenchmarkAdmission.run(modelPath) { BenchmarkFrames.measure { runBenchmarkInternal(context = context, modelPath = modelPath, modelSha256 = modelSha256, threads = threads, contextWindow = contextWindow, nBatch = nBatch, nUbatch = nUbatch, prefillThreads = prefillThreads, expectedFileSizeBytes = expectedFileSizeBytes, onProgress = onProgress) } }
+
+    suspend fun runBenchmark(
+        context: Context,
+        bundle: ModelBundle,
+        threads: Int = 4,
+        contextWindow: Int = 2048,
+        nBatch: Int = 256,
+        nUbatch: Int = 128,
+        prefillThreads: Int = threads,
+        expectedFileSizeBytes: Long = 0L,
+        onProgress: ((BenchmarkProgress) -> Unit)? = null
+    ): BenchmarkResult = BenchmarkAdmission.run(bundle.id) { BenchmarkFrames.measure { runBenchmarkInternal(context = context, bundle = bundle, threads = threads, contextWindow = contextWindow, nBatch = nBatch, nUbatch = nUbatch, prefillThreads = prefillThreads, expectedFileSizeBytes = expectedFileSizeBytes, onProgress = onProgress) } }
+
+    private suspend fun runBenchmarkInternal(
+        context: Context,
+        modelPath: String,
+        modelSha256: String,
+        threads: Int = 4,
+        contextWindow: Int = 2048,
+        nBatch: Int = 256,
+        nUbatch: Int = 128,
+        prefillThreads: Int = threads,
+        expectedFileSizeBytes: Long = 0L,
+        onProgress: ((BenchmarkProgress) -> Unit)? = null
     ): BenchmarkResult = withContext(Dispatchers.IO) {
         val file = File(modelPath)
         require(file.exists()) { "Model file not found at $modelPath" }
 
+        val frameMonitor = kotlinx.coroutines.currentCoroutineContext()[BenchmarkFrames]!!
         val totalSteps = (COLD_SAMPLES + WARM_SAMPLES) * 2 + 10 // CPU + Validation + Vulkan
         var currentStep = 0
 
         fun reportProgress(phase: String, detail: String = "") {
             currentStep++
+            frameMonitor.phase(phase)
             onProgress?.invoke(BenchmarkProgress(phase, currentStep, totalSteps, detail))
         }
 
@@ -87,7 +115,7 @@ object GgufBenchmarkRunner {
         val cpuColdTimes = mutableListOf<Double>()
         val cpuWarmTtft = mutableListOf<Double>()
         val cpuDecodeTokPerSec = mutableListOf<Double>()
-        val cpuFrameTimes = mutableListOf<Double>()
+        val cpuFrameTimes = frameMonitor.cpu
         var maxRenderStallCpu = 0L
 
         // 1A: CPU Cold Samples (Cold load + first token)
@@ -172,11 +200,6 @@ object GgufBenchmarkRunner {
                     }
                 ) {
                     val now = SystemClock.elapsedRealtime()
-                    val frameDelta = (now - lastTokenTime).toDouble()
-                    cpuFrameTimes.add(frameDelta)
-                    if (frameDelta > 100.0) {
-                        maxRenderStallCpu = max(maxRenderStallCpu, frameDelta.toLong())
-                    }
                     lastTokenTime = now
                 }
                 if (ttft > 0.0) cpuWarmTtft.add(ttft)
@@ -217,7 +240,8 @@ object GgufBenchmarkRunner {
                 cpuFrameP95Ms = percentile(cpuFrameTimes, 95.0),
                 vulkanFrameP95Ms = 0.0,
                 frameP95RegressionPercent = 0.0,
-                maxRenderStallMs = maxRenderStallCpu
+                maxRenderStallMs = synchronized(cpuFrameTimes) { (cpuFrameTimes.maxOrNull() ?: 0.0).toLong() },
+                uiFramesMeasured = frameMonitor.measured()
             )
         }
 
@@ -225,7 +249,7 @@ object GgufBenchmarkRunner {
         val vkColdTimes = mutableListOf<Double>()
         val vkWarmTtft = mutableListOf<Double>()
         val vkDecodeTokPerSec = mutableListOf<Double>()
-        val vkFrameTimes = mutableListOf<Double>()
+        val vkFrameTimes = frameMonitor.gpu
         var maxRenderStallVk = 0L
         var vkAnomalyOrFailure = false
 
@@ -315,11 +339,6 @@ object GgufBenchmarkRunner {
                         }
                     ) {
                         val now = SystemClock.elapsedRealtime()
-                        val frameDelta = (now - lastTokenTime).toDouble()
-                        vkFrameTimes.add(frameDelta)
-                        if (frameDelta > 100.0) {
-                            maxRenderStallVk = max(maxRenderStallVk, frameDelta.toLong())
-                        }
                         lastTokenTime = now
                     }
                     if (ttft > 0.0) vkWarmTtft.add(ttft)
@@ -352,7 +371,7 @@ object GgufBenchmarkRunner {
         val vkFrameP95 = percentile(vkFrameTimes, 95.0)
         val frameP95RegressionFraction = if (cpuFrameP95 > 0) max(0.0, (vkFrameP95 - cpuFrameP95) / cpuFrameP95) else 0.0
 
-        val maxStall = max(maxRenderStallCpu, maxRenderStallVk)
+        val maxStall = max(synchronized(cpuFrameTimes) { cpuFrameTimes.maxOrNull() ?: 0.0 }, synchronized(vkFrameTimes) { vkFrameTimes.maxOrNull() ?: 0.0 }).toLong()
 
         // Strict qualification rules:
         // 1. Numerical pass
@@ -362,7 +381,7 @@ object GgufBenchmarkRunner {
         // 5. Frame p95 doesn't regress by > 5%
         // 6. No rendering stall > 100ms
         // 7. No failures or numerical anomalies
-        val qualifies = !vkAnomalyOrFailure &&
+        val qualifies = frameMonitor.measured() && vkFrameTimes.isNotEmpty() && !vkAnomalyOrFailure &&
             warmImprovementFraction >= 0.10 &&
             coldRegressionFraction <= 0.05 &&
             decodeRegressionFraction <= 0.05 &&
@@ -383,7 +402,7 @@ object GgufBenchmarkRunner {
             nativeBuildId = BuildConfig.NATIVE_BUILD_ID,
             buildType = BuildConfig.BUILD_TYPE,
             deviceIdentity = GgufGpuValidator.getDeviceIdentity(),
-            backendPolicyVersion = 1,
+            backendPolicyVersion = 2,
             configurationKey = configKey,
             coldSampleCount = COLD_SAMPLES,
             warmSampleCount = WARM_SAMPLES,
@@ -411,6 +430,7 @@ object GgufBenchmarkRunner {
             "Vulkan qualified! Warm TTFT improved by ${(warmImprovementFraction * 100).toInt()}% (CPU: ${cpuWarmMedian.toInt()}ms vs GPU: ${vkWarmMedian.toInt()}ms). Auto will now select Vulkan."
         } else {
             val failReasons = mutableListOf<String>()
+            if (!frameMonitor.measured() || vkFrameTimes.isEmpty()) failReasons.add("No display-frame samples collected")
             if (warmImprovementFraction < 0.10) failReasons.add("Warm TTFT did not improve by >= 10% (was ${(warmImprovementFraction * 100).toInt()}%)")
             if (coldRegressionFraction > 0.05) failReasons.add("Cold startup regressed by ${(coldRegressionFraction * 100).toInt()}%")
             if (decodeRegressionFraction > 0.05) failReasons.add("Decode speed regressed by ${(decodeRegressionFraction * 100).toInt()}%")
@@ -438,11 +458,12 @@ object GgufBenchmarkRunner {
             vulkanFrameP95Ms = vkFrameP95,
             frameP95RegressionPercent = frameP95RegressionFraction * 100.0,
             maxRenderStallMs = maxStall,
+            uiFramesMeasured = frameMonitor.measured(),
             receipt = receipt
         )
     }
 
-    suspend fun runBenchmark(
+    private suspend fun runBenchmarkInternal(
         context: Context,
         bundle: ModelBundle,
         threads: Int = 4,
@@ -453,11 +474,13 @@ object GgufBenchmarkRunner {
         expectedFileSizeBytes: Long = 0L,
         onProgress: ((BenchmarkProgress) -> Unit)? = null
     ): BenchmarkResult = withContext(Dispatchers.IO) {
+        val frameMonitor = kotlinx.coroutines.currentCoroutineContext()[BenchmarkFrames]!!
         val totalSteps = (COLD_SAMPLES + WARM_SAMPLES) * 2 + 10 // CPU + Validation + Vulkan
         var currentStep = 0
 
         fun reportProgress(phase: String, detail: String = "") {
             currentStep++
+            frameMonitor.phase(phase)
             onProgress?.invoke(BenchmarkProgress(phase, currentStep, totalSteps, detail))
         }
 
@@ -471,7 +494,7 @@ object GgufBenchmarkRunner {
         val cpuColdTimes = mutableListOf<Double>()
         val cpuWarmTtft = mutableListOf<Double>()
         val cpuDecodeTokPerSec = mutableListOf<Double>()
-        val cpuFrameTimes = mutableListOf<Double>()
+        val cpuFrameTimes = frameMonitor.cpu
         var maxRenderStallCpu = 0L
 
         // 1A: CPU Cold Samples (Cold load + first token)
@@ -557,11 +580,6 @@ object GgufBenchmarkRunner {
                     }
                 ) {
                     val now = SystemClock.elapsedRealtime()
-                    val frameDelta = (now - lastTokenTime).toDouble()
-                    cpuFrameTimes.add(frameDelta)
-                    if (frameDelta > 100.0) {
-                        maxRenderStallCpu = max(maxRenderStallCpu, frameDelta.toLong())
-                    }
                     lastTokenTime = now
                 }
                 if (ttft > 0.0) cpuWarmTtft.add(ttft)
@@ -602,7 +620,8 @@ object GgufBenchmarkRunner {
                 cpuFrameP95Ms = percentile(cpuFrameTimes, 95.0),
                 vulkanFrameP95Ms = 0.0,
                 frameP95RegressionPercent = 0.0,
-                maxRenderStallMs = maxRenderStallCpu
+                maxRenderStallMs = synchronized(cpuFrameTimes) { (cpuFrameTimes.maxOrNull() ?: 0.0).toLong() },
+                uiFramesMeasured = frameMonitor.measured()
             )
         }
 
@@ -610,7 +629,7 @@ object GgufBenchmarkRunner {
         val vkColdTimes = mutableListOf<Double>()
         val vkWarmTtft = mutableListOf<Double>()
         val vkDecodeTokPerSec = mutableListOf<Double>()
-        val vkFrameTimes = mutableListOf<Double>()
+        val vkFrameTimes = frameMonitor.gpu
         var maxRenderStallVk = 0L
         var vkAnomalyOrFailure = false
 
@@ -702,11 +721,6 @@ object GgufBenchmarkRunner {
                         }
                     ) {
                         val now = SystemClock.elapsedRealtime()
-                        val frameDelta = (now - lastTokenTime).toDouble()
-                        vkFrameTimes.add(frameDelta)
-                        if (frameDelta > 100.0) {
-                            maxRenderStallVk = max(maxRenderStallVk, frameDelta.toLong())
-                        }
                         lastTokenTime = now
                     }
                     if (ttft > 0.0) vkWarmTtft.add(ttft)
@@ -739,9 +753,9 @@ object GgufBenchmarkRunner {
         val vkFrameP95 = percentile(vkFrameTimes, 95.0)
         val frameP95RegressionFraction = if (cpuFrameP95 > 0) max(0.0, (vkFrameP95 - cpuFrameP95) / cpuFrameP95) else 0.0
 
-        val maxStall = max(maxRenderStallCpu, maxRenderStallVk)
+        val maxStall = max(synchronized(cpuFrameTimes) { cpuFrameTimes.maxOrNull() ?: 0.0 }, synchronized(vkFrameTimes) { vkFrameTimes.maxOrNull() ?: 0.0 }).toLong()
 
-        val qualifies = !vkAnomalyOrFailure &&
+        val qualifies = frameMonitor.measured() && vkFrameTimes.isNotEmpty() && !vkAnomalyOrFailure &&
             warmImprovementFraction >= 0.10 &&
             coldRegressionFraction <= 0.05 &&
             decodeRegressionFraction <= 0.05 &&
@@ -763,7 +777,7 @@ object GgufBenchmarkRunner {
             nativeBuildId = BuildConfig.NATIVE_BUILD_ID,
             buildType = BuildConfig.BUILD_TYPE,
             deviceIdentity = GgufGpuValidator.getDeviceIdentity(),
-            backendPolicyVersion = 1,
+            backendPolicyVersion = 2,
             configurationKey = configKey,
             coldSampleCount = COLD_SAMPLES,
             warmSampleCount = WARM_SAMPLES,
@@ -791,6 +805,7 @@ object GgufBenchmarkRunner {
             "Vulkan qualified! Warm TTFT improved by ${String.format(Locale.US, "%.1f", warmImprovementFraction * 100.0)}% without regressions. Auto mode will prefer Vulkan."
         } else {
             val failReasons = mutableListOf<String>()
+            if (!frameMonitor.measured() || vkFrameTimes.isEmpty()) failReasons.add("No display-frame samples collected")
             if (warmImprovementFraction < 0.10) failReasons.add("Warm TTFT gain < 10% (${String.format(Locale.US, "%.1f", warmImprovementFraction * 100.0)}%)")
             if (coldRegressionFraction > 0.05) failReasons.add("Cold load regressed > 5% (${String.format(Locale.US, "%.1f", coldRegressionFraction * 100.0)}%)")
             if (decodeRegressionFraction > 0.05) failReasons.add("Decode speed regressed > 5% (${String.format(Locale.US, "%.1f", decodeRegressionFraction * 100.0)}%)")
@@ -818,13 +833,14 @@ object GgufBenchmarkRunner {
             vulkanFrameP95Ms = vkFrameP95,
             frameP95RegressionPercent = frameP95RegressionFraction * 100.0,
             maxRenderStallMs = maxStall,
+            uiFramesMeasured = frameMonitor.measured(),
             receipt = receipt
         )
     }
 
     private fun median(list: List<Double>): Double {
         if (list.isEmpty()) return 0.0
-        val sorted = list.sorted()
+        val sorted = synchronized(list) { list.toList().sorted() }
         val middle = sorted.size / 2
         return if (sorted.size % 2 == 1) {
             sorted[middle]
@@ -835,7 +851,7 @@ object GgufBenchmarkRunner {
 
     private fun percentile(list: List<Double>, p: Double): Double {
         if (list.isEmpty()) return 0.0
-        val sorted = list.sorted()
+        val sorted = synchronized(list) { list.toList().sorted() }
         val index = ((p / 100.0) * (sorted.size - 1)).toInt().coerceIn(0, sorted.size - 1)
         return sorted[index]
     }

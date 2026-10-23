@@ -2366,6 +2366,7 @@ fun ModelItem(
                 }
 
                 var showBenchDialog by remember { mutableStateOf(false) }
+                var benchAudioInput by remember { mutableStateOf(false) }
                 var isRunningBench by remember { mutableStateOf(false) }
                 var isStoppingBench by remember { mutableStateOf(false) }
                 var benchProgress by remember { mutableStateOf<BenchmarkProgress?>(null) }
@@ -2382,7 +2383,7 @@ fun ModelItem(
                             }
                         },
                         title = {
-                            val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
+                            val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
                             Text(if (isGguf) "⚡ CPU / GPU Performance Check" else "⚡ Performance Benchmark")
                         },
                         text = {
@@ -2394,6 +2395,12 @@ fun ModelItem(
                             ) {
                                 Text("Model: ${model.name}", style = MaterialTheme.typography.titleSmall)
                                 Text("Backend: ${model.displayBackend}", style = MaterialTheme.typography.bodySmall)
+                                if (model.supportsVision && model.supportsAudio && !isRunningBench && !isStoppingBench) {
+                                    Row {
+                                        TextButton(onClick = { benchAudioInput = false; benchResult = null }) { Text(if (!benchAudioInput) "Image ✓" else "Image") }
+                                        TextButton(onClick = { benchAudioInput = true; benchResult = null }) { Text(if (benchAudioInput) "Audio ✓" else "Audio") }
+                                    }
+                                }
 
                                 if (isRunningBench || isStoppingBench) {
                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -2425,7 +2432,7 @@ fun ModelItem(
                                     )
                                 } else if (benchResult != null) {
                                     val r = benchResult!!
-                                    val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
+                                    val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
                                     Text(
                                         if (isGguf) {
                                             if (r.qualifiesVulkan) "✅ Vulkan Qualified" else "ℹ️ CPU Preferred"
@@ -2438,7 +2445,10 @@ fun ModelItem(
                                     )
                                     Text(r.summary, style = MaterialTheme.typography.bodySmall)
                                     HorizontalDivider()
-                                    if (isGguf) {
+                                    if (r.taskLatencyMedianMs != null) {
+                                        Text("• Warm task latency: ${r.taskLatencyMedianMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+                                        Text("• Cold load + task: ${r.cpuColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+                                    } else if (isGguf) {
                                         Text("• Warm TTFT: CPU ${r.cpuWarmTtftMedianMs.toInt()} ms vs GPU ${r.vulkanWarmTtftMedianMs.toInt()} ms (${String.format(Locale.US, "%.1f", r.warmTtftImprovementPercent)}% diff)", style = MaterialTheme.typography.bodySmall)
                                         Text("• Cold Load + First Token: CPU ${r.cpuColdLoadFtMs.toInt()} ms vs GPU ${r.vulkanColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
                                         Text("• Sustained Decode: CPU ${String.format(Locale.US, "%.1f", r.cpuDecodeTokPerSec)} t/s vs GPU ${String.format(Locale.US, "%.1f", r.vulkanDecodeTokPerSec)} t/s", style = MaterialTheme.typography.bodySmall)
@@ -2451,8 +2461,10 @@ fun ModelItem(
                                     }
                                     if (r.uiFramesMeasured) Text("• Max UI Render Stall: ${r.maxRenderStallMs} ms", style = MaterialTheme.typography.bodySmall)
                                 } else {
-                                    val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
-                                    if (isGguf && (model.localPath != null || model.bundle != null)) {
+                                    val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
+                                    if (model.supportsVision || model.supportsAudio || model.bundle?.capabilities?.task == com.shounak.localmeshai.models.ModelTask.ImageGeneration) {
+                                        Text("Runs one cold and three warm tasks with synthetic inputs. Measures completion latency, not output quality.", style = MaterialTheme.typography.bodySmall)
+                                    } else if (isGguf && (model.localPath != null || model.bundle != null)) {
                                         Text(
                                             "Runs 5 cold samples and 20 warm samples across CPU and Vulkan to verify if Vulkan improves latency by >= 10% without frame stalls or regressions.",
                                             style = MaterialTheme.typography.bodySmall
@@ -2492,8 +2504,10 @@ fun ModelItem(
                                             benchError = null
                                             benchJob = benchScope.launch {
                                                 try {
-                                                    val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
-                                                    val res = if (isGguf) {
+                                                    val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
+                                                    val res = if (model.supportsVision || model.supportsAudio || model.bundle?.capabilities?.task == com.shounak.localmeshai.models.ModelTask.ImageGeneration) {
+                                                        com.shounak.localmeshai.ai.MediaBenchmarkRunner.run(context, model, { p -> benchProgress = p }, useAudio = benchAudioInput)
+                                                    } else if (isGguf) {
                                                         if (model.bundle != null) {
                                                             GgufBenchmarkRunner.runBenchmark(
                                                                 context = context,

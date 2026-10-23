@@ -10,7 +10,7 @@ data class GgufPerformanceReceipt(
     val nativeBuildId: String = BuildConfig.NATIVE_BUILD_ID,
     val buildType: String = BuildConfig.BUILD_TYPE,
     val deviceIdentity: String = "",
-    val backendPolicyVersion: Int = 1,
+    val backendPolicyVersion: Int = 2,
     val configurationKey: String = "",
     val timestampMs: Long = System.currentTimeMillis(),
     val coldSampleCount: Int = 0,
@@ -68,7 +68,7 @@ data class GgufPerformanceReceipt(
                 val obj = JSONObject(jsonStr)
                 if (obj.optString("native_build_id") != BuildConfig.NATIVE_BUILD_ID) return null
                 if (obj.optString("build_type") != BuildConfig.BUILD_TYPE) return null
-                if (obj.optInt("backend_policy_version", 0) != 1) return null
+                if (obj.optInt("backend_policy_version", 0) != 2) return null
                 val modelSha = obj.getString("model_sha")
                 if (modelSha.startsWith("local_gguf_") || modelSha.startsWith("content:") || modelSha.startsWith("file:")) return null
 
@@ -77,7 +77,7 @@ data class GgufPerformanceReceipt(
                     nativeBuildId = obj.optString("native_build_id", BuildConfig.NATIVE_BUILD_ID),
                     buildType = obj.optString("build_type", BuildConfig.BUILD_TYPE),
                     deviceIdentity = obj.optString("device_identity", ""),
-                    backendPolicyVersion = obj.optInt("backend_policy_version", 1),
+                    backendPolicyVersion = obj.optInt("backend_policy_version", 2),
                     configurationKey = obj.optString("config_key", ""),
                     timestampMs = obj.optLong("timestamp_ms", 0L),
                     coldSampleCount = obj.optInt("cold_samples", 0),

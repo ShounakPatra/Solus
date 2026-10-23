@@ -38,6 +38,13 @@ object NonGgufBenchmarkRunner {
         modelPath: String,
         modelId: String,
         onProgress: ((BenchmarkProgress) -> Unit)? = null
+    ): BenchmarkResult = BenchmarkAdmission.run(modelId) { BenchmarkFrames.measure { runBenchmarkInternal(context = context, modelPath = modelPath, modelId = modelId, onProgress = onProgress) } }
+
+    private suspend fun runBenchmarkInternal(
+        context: Context,
+        modelPath: String,
+        modelId: String,
+        onProgress: ((BenchmarkProgress) -> Unit)? = null
     ): BenchmarkResult = withContext(Dispatchers.IO) {
         val file = File(modelPath)
         require(file.exists()) { "Model file not found at $modelPath" }
@@ -63,11 +70,13 @@ object NonGgufBenchmarkRunner {
         modelId: String,
         onProgress: ((BenchmarkProgress) -> Unit)?
     ): BenchmarkResult {
+        val frameMonitor = kotlinx.coroutines.currentCoroutineContext()[BenchmarkFrames]!!
         val totalSteps = 1 + WARM_PROMPTS.size
         var currentStep = 0
 
         fun reportProgress(phase: String, detail: String = "") {
             currentStep++
+            frameMonitor.phase(phase)
             onProgress?.invoke(BenchmarkProgress(phase, currentStep, totalSteps, detail))
         }
 
@@ -77,7 +86,7 @@ object NonGgufBenchmarkRunner {
         var coldLoadFtMs = 0.0
         val warmTtftList = mutableListOf<Double>()
         val decodeTokPerSecList = mutableListOf<Double>()
-        val frameTimes = mutableListOf<Double>()
+        val frameTimes = frameMonitor.cpu
         var maxRenderStall = 0L
 
         try {
@@ -142,11 +151,6 @@ object NonGgufBenchmarkRunner {
                         },
                         onDelta = { _ ->
                             val now = SystemClock.elapsedRealtime()
-                            val frameDelta = (now - lastTokenTime).toDouble()
-                            frameTimes.add(frameDelta)
-                            if (frameDelta > 100.0) {
-                                maxRenderStall = max(maxRenderStall, frameDelta.toLong())
-                            }
                             lastTokenTime = now
                         }
                     )
@@ -181,7 +185,7 @@ object NonGgufBenchmarkRunner {
         } else 0.0
 
         val frameP95 = if (frameTimes.isNotEmpty()) {
-            val sorted = frameTimes.sorted()
+            val sorted = synchronized(frameTimes) { frameTimes.toList().sorted() }
             val p95Index = ((sorted.size - 1) * 0.95).toInt().coerceIn(0, sorted.size - 1)
             sorted[p95Index]
         } else 0.0
@@ -201,7 +205,8 @@ object NonGgufBenchmarkRunner {
             cpuFrameP95Ms = frameP95,
             vulkanFrameP95Ms = 0.0,
             frameP95RegressionPercent = 0.0,
-            maxRenderStallMs = maxRenderStall
+            maxRenderStallMs = synchronized(frameTimes) { (frameTimes.maxOrNull() ?: 0.0).toLong() },
+            uiFramesMeasured = frameMonitor.measured()
         )
     }
 
@@ -211,11 +216,13 @@ object NonGgufBenchmarkRunner {
         file: File,
         onProgress: ((BenchmarkProgress) -> Unit)?
     ): BenchmarkResult {
+        val frameMonitor = kotlinx.coroutines.currentCoroutineContext()[BenchmarkFrames]!!
         val totalSteps = 1 + WARM_PROMPTS.size
         var currentStep = 0
 
         fun reportProgress(phase: String, detail: String = "") {
             currentStep++
+            frameMonitor.phase(phase)
             onProgress?.invoke(BenchmarkProgress(phase, currentStep, totalSteps, detail))
         }
 
@@ -256,7 +263,7 @@ object NonGgufBenchmarkRunner {
 
         val warmTtftList = mutableListOf<Double>()
         val decodeTokPerSecList = mutableListOf<Double>()
-        val frameTimes = mutableListOf<Double>()
+        val frameTimes = frameMonitor.cpu
         var maxRenderStall = 0L
 
         var warmInference: LlmInference? = null
@@ -283,11 +290,6 @@ object NonGgufBenchmarkRunner {
                         if (firstTokenTime == 0L) {
                             firstTokenTime = now
                             ttft = (now - startGen).toDouble()
-                        }
-                        val frameDelta = (now - lastTokenTime).toDouble()
-                        frameTimes.add(frameDelta)
-                        if (frameDelta > 100.0) {
-                            maxRenderStall = max(maxRenderStall, frameDelta.toLong())
                         }
                         lastTokenTime = now
                     }
@@ -319,7 +321,7 @@ object NonGgufBenchmarkRunner {
         } else 0.0
 
         val frameP95 = if (frameTimes.isNotEmpty()) {
-            val sorted = frameTimes.sorted()
+            val sorted = synchronized(frameTimes) { frameTimes.toList().sorted() }
             val p95Index = ((sorted.size - 1) * 0.95).toInt().coerceIn(0, sorted.size - 1)
             sorted[p95Index]
         } else 0.0
@@ -339,7 +341,8 @@ object NonGgufBenchmarkRunner {
             cpuFrameP95Ms = frameP95,
             vulkanFrameP95Ms = 0.0,
             frameP95RegressionPercent = 0.0,
-            maxRenderStallMs = maxRenderStall
+            maxRenderStallMs = synchronized(frameTimes) { (frameTimes.maxOrNull() ?: 0.0).toLong() },
+            uiFramesMeasured = frameMonitor.measured()
         )
     }
 }

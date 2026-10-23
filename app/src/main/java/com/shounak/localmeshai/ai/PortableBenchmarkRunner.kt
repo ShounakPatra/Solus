@@ -14,23 +14,15 @@ import java.util.Locale
 
 /** Uses the production tokenizer, prompt renderer and decoder; samples independent conversations. */
 internal object PortableBenchmarkRunner {
-    private val gate = Mutex()
-    suspend fun run(file: File, modelId: String, progress: ((BenchmarkProgress) -> Unit)?): BenchmarkResult = gate.withLock {
+    suspend fun run(file: File, modelId: String, progress: ((BenchmarkProgress) -> Unit)?): BenchmarkResult =
         runLocked(file, modelId, progress)
-    }
     private suspend fun runLocked(file: File, modelId: String, progress: ((BenchmarkProgress) -> Unit)?): BenchmarkResult {
         val format = requireNotNull(PortableModelBundle.format(file.name))
         require(PortableModelBundle.inspect(file, format).task == ModelTask.Chat) {
             "This benchmark measures text generation. Image, audio and diffusion pipelines need task-specific benchmarks."
         }
         PortableModelBundle.runtimeRestriction(file, format)?.let { error(it.reason) }
-        val job = currentCoroutineContext()[Job]
-        val registration = ModelRuntimeCoordinator.register(ModelRuntimeOwner.Benchmark,
-            stableModelIdProvider = { modelId }, modelPathProvider = { file.absolutePath },
-            requestStop = { job?.cancel() }, release = { ShutdownResult.Success })
-        try {
-            return ModelRuntimeCoordinator.withRuntime(ModelRuntimeOwner.Benchmark) {
-                check(!com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(modelId)) { "Model is being removed" }
+        return BenchmarkAdmission.run(modelId) {
                 val prompts = listOf("The capital of France is", "Explain gravity briefly.", "Write a short greeting.")
                 val ttfts = mutableListOf<Double>()
                 val rates = mutableListOf<Double>()
@@ -68,10 +60,9 @@ internal object PortableBenchmarkRunner {
                 progress?.invoke(BenchmarkProgress("Complete", 4, 4))
                 val rate = rates.sorted()[rates.size / 2]
                 BenchmarkResult(false,
-                    "${format.backendLabel}: CPU text generation, ${String.format(Locale.US, "%.1f", rate)} tokens/s. UI frame timing was not sampled.",
+                    "${format.backendLabel}: CPU text generation, ${String.format(Locale.US, "%.1f", rate)} tokens/s. UI frame timing is not reported for this benchmark.",
                     ttfts.sorted()[ttfts.size / 2], 0.0, 0.0, cold, 0.0, 0.0,
                     rate, 0.0, 0.0, 0.0, 0.0, 0.0, 0L, uiFramesMeasured = false)
-            }
-        } finally { ModelRuntimeCoordinator.unregister(ModelRuntimeOwner.Benchmark, registration) }
+        }
     }
 }
