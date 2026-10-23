@@ -40,7 +40,7 @@ class ModelLoadRestrictionPolicyTest {
             size = sizeStr,
             status = status,
             type = ModelType.Text,
-            fileName = "$effectiveId.bin",
+            fileName = "$effectiveId.gguf",
             packageType = ModelPackage.SingleFile,
             description = "Test model $effectiveId",
             backend = "test",
@@ -160,12 +160,13 @@ class ModelLoadRestrictionPolicyTest {
             totalRamGB = totalRamGB
         )
 
-        // Both are blocked with identical category and reason
+        // Both warn with the same category; verified artifacts and declared sizes have different confidence.
         assertEquals(ModelStatus.Blocked, projectedPhone.status)
         assertEquals(ModelStatus.Blocked, projectedNetwork.status)
         assertEquals(LoadRestrictionCategory.DeviceCompatibility, projectedPhone.loadRestriction?.category)
         assertEquals(LoadRestrictionCategory.DeviceCompatibility, projectedNetwork.loadRestriction?.category)
-        assertEquals(projectedNetwork.loadRestriction?.reason, projectedPhone.loadRestriction?.reason)
+        assertTrue(projectedNetwork.loadRestriction!!.reason.startsWith("Memory estimate:"))
+        assertTrue(projectedPhone.loadRestriction!!.reason.startsWith("Memory estimate:"))
 
         // Both support Try Anyway
         assertTrue(projectedPhone.canTryAnyway)

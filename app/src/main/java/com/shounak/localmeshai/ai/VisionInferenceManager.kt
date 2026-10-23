@@ -308,13 +308,7 @@ class VisionInferenceManager(context: Context) {
                 val inferenceBackend = when (pref) {
                     "CPU" -> InferenceBackend.LITERT_CPU
                     "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
-                    else -> {
-                        if (allowUnsafeOverride) {
-                            InferenceBackend.LITERT_GPU
-                        } else {
-                            DeviceUtils.selectBackendForModelFile(context, effectiveFile?.name.orEmpty())
-                        }
-                    }
+                    else -> DeviceUtils.selectBackendForModelFile(context, effectiveFile?.name.orEmpty())
                 }
                 val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                     context = context,
@@ -336,7 +330,8 @@ class VisionInferenceManager(context: Context) {
                         isVision = true,
                         fileName = effectiveFile?.name.orEmpty(),
                         backendLabel = "LiteRT-LM multimodal",
-                        supportsAudioInput = audioInputAvailable
+                        supportsAudioInput = audioInputAvailable,
+                        modelFilePath = resolvedModelPath
                     )
                     if (!allowed) {
                         throw IllegalStateException(reason)

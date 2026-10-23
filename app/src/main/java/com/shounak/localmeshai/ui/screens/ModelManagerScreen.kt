@@ -2168,7 +2168,9 @@ fun ModelItem(
 
             val displayError = relinkError ?: model.errorMessage?.takeIf { it != "Paused — download kept" }
             displayError?.let { error ->
-                val classified = remember(error) { ErrorClassifier.classify(error) }
+                val classified = remember(error, model.loadRestriction?.category) {
+                    ErrorClassifier.classify(error, model.loadRestriction?.category)
+                }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),

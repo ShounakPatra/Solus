@@ -489,13 +489,7 @@ class ChatInferenceManager(context: Context) {
             val inferenceBackend = when (pref) {
                 "CPU" -> InferenceBackend.LITERT_CPU
                 "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
-                else -> {
-                    if (allowUnsafeOverride) {
-                        InferenceBackend.LITERT_GPU
-                    } else {
-                        DeviceUtils.selectBackendForModelFile(context, effectiveFile.name)
-                    }
-                }
+                else -> DeviceUtils.selectBackendForModelFile(context, effectiveFile.name)
             }
             val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                 context = context,
@@ -515,7 +509,8 @@ class ChatInferenceManager(context: Context) {
                     modelSize = modelSize,
                     isVision = false,
                     fileName = effectiveFile.name,
-                    backendLabel = "LiteRT-LM"
+                    backendLabel = "LiteRT-LM",
+                    modelFilePath = effectiveFile.absolutePath
                 )
                 if (!allowed) {
                     throw IllegalStateException(reason)
