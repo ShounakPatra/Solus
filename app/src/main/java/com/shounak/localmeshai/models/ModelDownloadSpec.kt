@@ -10,7 +10,9 @@ data class DownloadArtifactSpec(
     val shardIndex: Int = -1,
     val totalShards: Int = -1,
     val expectedSizeBytes: Long = 0L,
-    val expectedSha256: String? = null
+    val expectedSha256: String? = null,
+    /** A metadata alternative may be absent (404); authentication and transport failures still fail. */
+    val optional: Boolean = false
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("downloadUrl", downloadUrl)
@@ -20,6 +22,7 @@ data class DownloadArtifactSpec(
         put("totalShards", totalShards)
         put("expectedSizeBytes", expectedSizeBytes)
         if (expectedSha256 != null) put("expectedSha256", expectedSha256)
+        put("optional", optional)
     }
 
     companion object {
@@ -31,7 +34,8 @@ data class DownloadArtifactSpec(
                 shardIndex = json.optInt("shardIndex", -1),
                 totalShards = json.optInt("totalShards", -1),
                 expectedSizeBytes = json.optLong("expectedSizeBytes", 0L),
-                expectedSha256 = if (json.has("expectedSha256") && !json.isNull("expectedSha256")) json.getString("expectedSha256") else null
+                expectedSha256 = if (json.has("expectedSha256") && !json.isNull("expectedSha256")) json.getString("expectedSha256") else null,
+                optional = json.optBoolean("optional", false)
             )
         }
     }

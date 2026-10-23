@@ -151,7 +151,7 @@ object HuggingFaceModelResolver {
 
             // URL with path directly after repo
             val path = segments.drop(2).joinToString("/")
-            val isFile = ModelFormat.fromFileName(path) != null
+            val isFile = ModelFormat.fromFileName(path) != null || PortableCompanionFiles.unsupported(path) != null
             return ParsedHfInput(
                 repoId = repoId,
                 requestedRevision = null,
@@ -173,7 +173,7 @@ object HuggingFaceModelResolver {
         }
 
         val path = segments.drop(2).joinToString("/")
-        val isFile = ModelFormat.fromFileName(path) != null
+        val isFile = ModelFormat.fromFileName(path) != null || PortableCompanionFiles.unsupported(path) != null
         return ParsedHfInput(
             repoId = repoId,
             requestedRevision = null,
@@ -201,6 +201,11 @@ object HuggingFaceModelResolver {
     ): Result<ResolvedRepoInfo> = withContext(Dispatchers.IO) {
         val parsed = parseInput(input)
         val repoId = parsed.repoId
+        if (parsed.kind == HfInputKind.FILE) {
+            PortableCompanionFiles.unsupported(parsed.path.orEmpty())?.let {
+                return@withContext Result.failure(IllegalArgumentException(it))
+            }
+        }
         if (repoId.isBlank() || !repoId.contains('/')) {
             return@withContext Result.failure(IllegalArgumentException("Invalid Hugging Face repository identifier: '$input'"))
         }
@@ -531,8 +536,11 @@ object HuggingFaceModelResolver {
         parsed: ParsedHfInput,
         allVariants: List<ModelVariant>
     ): ResolvedVariantsSelection {
+        if (parsed.kind == HfInputKind.FILE) {
+            PortableCompanionFiles.unsupported(parsed.path.orEmpty())?.let { throw IllegalArgumentException(it) }
+        }
         if (allVariants.isEmpty()) {
-            throw NoSuchElementException("No supported model files found in repository ${parsed.repoId}. Supported formats: GGUF, LiteRT-LM, MediaPipe task, ONNX, TFLite and safetensors.")
+            throw NoSuchElementException("Supported model files weren't found in repository ${parsed.repoId}. Look for a .safetensors version of this model with config.json and tokenizer files, or supported GGUF, LiteRT-LM, MediaPipe task, ONNX or TFLite files.")
         }
 
         return when (parsed.kind) {
@@ -706,7 +714,7 @@ object HuggingFaceModelResolver {
         if (shard != null) names.add("${shard.groupValues[1]}.safetensors.index.json")
         val artifacts = names.map { fileName ->
             DownloadArtifactSpec(parsed.newBuilder().setPathSegment(parsed.pathSegments.lastIndex, fileName).build().toString(), fileName,
-                expectedSha256 = sha256?.takeIf { fileName == name })
+                expectedSha256 = sha256?.takeIf { fileName == name }, optional = fileName in PortableCompanionFiles.names)
         }
         return ModelDownloadSpec(modelId, artifacts = artifacts, format = format)
     }

@@ -75,6 +75,7 @@ object LocalModelImporter {
         // Copying them does not require persistent URI grants or seekable provider descriptors.
         try {
             val names = PortableModelImporter.names(context, uris)
+            names.firstNotNullOfOrNull(PortableCompanionFiles::unsupported)?.let { throw IllegalArgumentException(it) }
             if (uris.size == 1 && names.single().substringAfterLast('.').lowercase() in setOf("zip", "solusmodel")) {
                 return@withContext Result.success(PortableModelArchive.import(context, uris.single(), onProgress))
             }

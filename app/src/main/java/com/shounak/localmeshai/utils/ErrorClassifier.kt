@@ -51,6 +51,13 @@ object ErrorClassifier {
         val lower = rawError.lowercase(Locale.US)
 
         return when {
+            PortableCompanionFiles.isMissing(rawError) -> ClassifiedError(
+                category = ErrorCategory.InvalidFormat,
+                headline = "Missing files",
+                message = rawError,
+                suggestion = "The weights are kept. Fetch the configuration and tokenizer files, or import the complete model bundle. Some models use a separate tokenizer repository requiring access permission.",
+                isRetryAction = true
+            )
             // 1. Offline / No internet connection
             lower.contains("no internet connection") ||
                 lower.contains("unable to resolve host") ||

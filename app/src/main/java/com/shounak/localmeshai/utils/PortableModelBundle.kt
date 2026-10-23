@@ -43,7 +43,9 @@ internal object PortableModelBundle {
                 val vocab = tokenizer.getJSONObject("model").opt("vocab")
                 require((vocab is JSONObject && vocab.length() > 0) || (vocab is org.json.JSONArray && vocab.length() > 0)) { "tokenizer.json must contain a nonempty Hugging Face vocabulary" }
             } else {
-                require(companion("vocab.json").isFile && companion("merges.txt").isFile) { "Missing tokenizer.json or BPE vocab.json and merges.txt" }
+                if (!companion("vocab.json").isFile || !companion("merges.txt").isFile) {
+                    throw MissingModelFilesException("tokenizer.json or BPE vocab.json and merges.txt were not found. The model weights are kept. Retry to fetch companion files, or import the tokenizer supplied by the model author together with the weights.")
+                }
                 require(json(companion("vocab.json")).length() > 0) { "Empty BPE vocabulary" }
             }
             val generation = companion("generation_config.json").takeIf { it.isFile }?.let(::json)

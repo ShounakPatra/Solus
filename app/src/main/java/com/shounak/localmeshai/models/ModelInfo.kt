@@ -80,6 +80,16 @@ data class ModelInfo(
     val supportsVisionInput: Boolean = false,
     val loadRestriction: LoadRestriction? = null
 ) {
+    val hasMissingFiles: Boolean
+        get() = com.shounak.localmeshai.utils.PortableCompanionFiles.isMissing(errorMessage)
+
+    val failureLabel: String
+        get() = when {
+            hasMissingFiles -> "Missing files"
+            downloadedBytes > 0L && progress >= 1f -> "Model validation failed"
+            else -> "Download Failed"
+        }
+
     val taskLabel: String get() = when (bundle?.capabilities?.task) {
         ModelTask.VisionLanguage -> "Image questions"
         ModelTask.ImageClassification -> "Image classification"

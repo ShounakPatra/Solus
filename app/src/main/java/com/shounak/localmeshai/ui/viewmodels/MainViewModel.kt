@@ -2037,6 +2037,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        val fileName = clean.toHttpUrlOrNull()?.pathSegments?.lastOrNull() ?: clean.substringAfterLast('/')
+        com.shounak.localmeshai.utils.PortableCompanionFiles.unsupported(fileName)?.let {
+            hfResolutionJob?.cancel()
+            _hfResolutionState.value = HfResolutionUiState.Error(it)
+            return
+        }
+
         val classification = classifyModelInput(clean)
         when (classification) {
             ModelInputClassification.Invalid -> {
@@ -2724,7 +2731,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val clean = input.trim()
             if (clean.isBlank()) return ModelInputClassification.Invalid
 
-            val directFormats = listOf(".task", ".litertlm", ".tflite", ".zip")
+            val directFormats = listOf(".task", ".litertlm", ".tflite", ".onnx", ".safetensors", ".zip")
 
             val parsedUrl = clean.toHttpUrlOrNull()
             val path = parsedUrl?.encodedPath ?: clean

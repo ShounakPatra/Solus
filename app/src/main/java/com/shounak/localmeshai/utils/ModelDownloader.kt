@@ -246,7 +246,7 @@ open class ModelDownloader(
 
         val stagedItems = mutableListOf<StagedArtifactItem>()
         var totalExpectedBytes = spec.totalExpectedBytes
-        val artifacts = spec.artifacts.toMutableList()
+        val artifacts = PortableCompanionFiles.complete(spec).toMutableList()
         var completedArtifactsBytes = 0L
         val expectedSourceIdentity = "spec:${spec.repository}@${spec.revision}"
 
@@ -291,7 +291,7 @@ open class ModelDownloader(
                     )
                 )
             } else {
-                val downloadedResult = downloadModel(
+                val downloadedResult = try { downloadModel(
                     url = artifact.downloadUrl,
                     modelId = spec.modelId,
                     fileName = artifact.fileName,
@@ -316,6 +316,16 @@ open class ModelDownloader(
                             bytesPerSecond = perFileProgress.bytesPerSecond
                         )
                     )
+                }
+                } catch (e: ModelDownloadHttpException) {
+                    if (artifact.optional && e.statusCode == 404) {
+                        index++
+                        continue
+                    }
+                    if (spec.effectiveFormat.isPortable && e.statusCode == 404 && artifact.fileName in PortableCompanionFiles.names) {
+                        throw MissingModelFilesException("${artifact.fileName} was not found at the model source. The downloaded weights are kept; retry to fetch the companion files or import a complete bundle.")
+                    }
+                    throw e
                 }
                 downloadedLocalPath = downloadedResult.localPath
                 downloadedBytes = downloadedResult.bytesDownloaded
@@ -410,6 +420,9 @@ open class ModelDownloader(
         } else if (format.isPortable) {
             val files = stagedItems.associate { it.relativeTargetName to it.stagedFile }
             val primary = stagedItems.first()
+            if (files["config.json"]?.isFile != true && files["model_index.json"]?.isFile != true) {
+                throw MissingModelFilesException("config.json was not found at the model source. The downloaded weights are kept; retry to fetch the configuration or import a complete bundle.")
+            }
             capabilities = PortableModelBundle.inspect(primary.stagedFile, format, files, primary.relativeTargetName)
             derivedLoadRestriction = PortableModelBundle.runtimeRestriction(primary.stagedFile, format, files)
             primaryName = primary.relativeTargetName
@@ -613,7 +626,7 @@ open class ModelDownloader(
                 response.close()
                 cancelReg?.dispose()
                 activeCalls.remove(modelId, call)
-                throw IOException(downloadErrorMessage(url, responseCode, serverMessage))
+                throw ModelDownloadHttpException(responseCode, downloadErrorMessage(url, responseCode, serverMessage))
             }
 
             val body = response.body

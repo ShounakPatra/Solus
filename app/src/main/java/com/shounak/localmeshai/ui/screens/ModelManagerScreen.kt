@@ -2020,7 +2020,7 @@ fun ModelItem(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 GlassLabelChip(
-                    label = if (isSelected) "Selected" else model.status.label,
+                    label = if (isSelected) "Selected" else if (model.hasMissingFiles) "Missing files" else model.status.label,
                     accentColor = statusColor
                 )
                 GlassLabelChip(
@@ -2077,9 +2077,10 @@ fun ModelItem(
             ) {
                 val cardAccent = if (model.status == ModelStatus.Failed) MaterialTheme.colorScheme.error else modelFamilyAccent
                 val cardTitle = when {
+                    model.hasMissingFiles -> "Missing files"
                     model.status == ModelStatus.Paused -> "Paused — download kept"
                     model.status == ModelStatus.Downloading -> "Downloading Model…"
-                    model.status == ModelStatus.Failed -> "Download Failed"
+                    model.status == ModelStatus.Failed -> model.failureLabel
                     else -> "Download Status"
                 }
                 Surface(
@@ -2814,6 +2815,7 @@ fun ModelItem(
                             isUnloading -> "Ejecting…"
                             isSelected -> "Eject"
                             model.status == ModelStatus.Downloading -> "Pause"
+                            model.hasMissingFiles -> "Fetch files"
                             model.status == ModelStatus.Paused -> "Resume"
                             model.status == ModelStatus.Available -> "Select"
                             model.status == ModelStatus.Failed -> "Retry"
