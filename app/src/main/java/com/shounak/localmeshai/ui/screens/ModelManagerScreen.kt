@@ -248,6 +248,19 @@ internal fun ModelInfo.downloadedSectionSortRank(): Int {
     }
 }
 
+/** A new completed download temporarily leads the successful-load MRU list. */
+internal fun orderDownloadedModels(models: List<ModelInfo>, usedAt: Map<String, Long>): List<ModelInfo> {
+    val used = models.filter { it.id in usedAt }.sortedByDescending { usedAt[it.id] }
+    val newestDownload = models.filter { it.status in setOf(ModelStatus.Available, ModelStatus.Blocked) }
+        .maxByOrNull { it.downloadTime() }
+        ?.takeIf { it.downloadTime() > (used.firstOrNull()?.let { model -> usedAt[model.id] } ?: 0L) }
+    val promoted = (listOfNotNull(newestDownload) + used).distinctBy { it.id }
+    val promotedIds = promoted.map { it.id }.toSet()
+    return promoted + models.filter { it.id !in promotedIds }.sortedWith(
+        compareBy<ModelInfo> { it.downloadedSectionSortRank() }.thenByDescending { it.downloadTime() }.thenBy { it.id }
+    )
+}
+
 /**
  * Combined search + tier filter used to scope which models show up
  * on the Models tab. Supports multi-word matching across name, id,
@@ -361,6 +374,7 @@ fun ModelManagerScreen(
     bottomContentInset: androidx.compose.ui.unit.Dp = 0.dp
 ) {
     val context = LocalContext.current
+    val modelUsedAt by com.shounak.localmeshai.utils.ModelUsageStore.get(context).usedAt.collectAsState()
     val selectedTextModel by mainViewModel.selectedTextModelPath.collectAsState()
     val selectedVisionModel by mainViewModel.selectedVisionModelPath.collectAsState()
     val unloadingModelIds by mainViewModel.unloadingModelIds.collectAsState()
@@ -387,13 +401,7 @@ fun ModelManagerScreen(
 
     // Active downloads and local files are pinned to the top so progress/status
     // does not jump around between catalog sections.
-    // Downloaded models are sorted so the most recently downloaded appears at the top.
-    val downloadedModels = filteredModels
-        .filter { it.isPinnedDownloadCard() }
-        .sortedWith(
-            compareBy<ModelInfo> { it.downloadedSectionSortRank() }
-                .thenByDescending { it.downloadTime() }
-        )
+    val downloadedModels = orderDownloadedModels(filteredModels.filter { it.isPinnedDownloadCard() }, modelUsedAt)
     val downloadedIds = downloadedModels.map { it.id }.toSet()
 
     val textModels = filteredModels.filter { it.id !in downloadedIds && it.type == ModelType.Text }

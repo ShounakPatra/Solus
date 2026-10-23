@@ -518,6 +518,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
         // Auto-unload idle vision model timer
         viewModelScope.launch {
+            isModelReady.collect { ready ->
+                if (ready) com.shounak.localmeshai.utils.ModelUsageStore.get(getApplication()).recordUsed(currentModelId)
+            }
+        }
+        viewModelScope.launch {
             combine(isModelReady, isAnalyzing, isInitializing) { ready, analyzing, initializing ->
                 Triple(ready, analyzing, initializing)
             }.distinctUntilChanged().collect { (ready, analyzing, initializing) ->

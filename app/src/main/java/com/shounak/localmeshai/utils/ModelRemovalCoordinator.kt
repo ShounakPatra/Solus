@@ -356,6 +356,7 @@ object ModelRemovalCoordinator {
                 )
             }
 
+            ModelUsageStore.get(context).remove(model.id)
             RemovalResult.Success
         } catch (t: Throwable) {
             Log.e(TAG, "Error executing removal sequence for ${model.id}", t)
@@ -408,7 +409,7 @@ object ModelRemovalCoordinator {
                     }
                 }
                 if (!filesFailed) {
-                    markDeletionComplete(context, record.modelId)
+                    if (markDeletionComplete(context, record.modelId)) ModelUsageStore.get(context).remove(record.modelId)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to recover deletion for ${record.modelId}", e)

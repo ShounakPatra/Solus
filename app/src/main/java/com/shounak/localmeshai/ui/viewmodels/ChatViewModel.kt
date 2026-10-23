@@ -516,7 +516,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         // Promote any deferred history selection once a model finishes initialising.
         viewModelScope.launch {
             isModelReady.collect { ready ->
-                if (ready) commitPendingSession()
+                if (ready) {
+                    com.shounak.localmeshai.utils.ModelUsageStore.get(getApplication()).recordUsed(currentModelId)
+                    commitPendingSession()
+                }
             }
         }
         // Auto-unload idle model timer
