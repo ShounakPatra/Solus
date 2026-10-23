@@ -10,16 +10,15 @@ on:
       run_id:
         description: Successful Android CI run containing the APK
         required: true
-        default: "39999274715"
         type: string
       kind:
         description: APK to attach
         required: true
-        default: debug
+        default: signed-release
         type: choice
         options:
-          - debug
           - signed-release
+          - debug
 
 permissions:
   contents: read

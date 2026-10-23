@@ -6,6 +6,8 @@ download to your PC and no additional Gradle build. CI artifacts expire after 14
 
 The workflow file must be merged into the default branch before the manual run
 button appears in Actions. It never runs automatically on a push or tag.
+Each dispatch requires an explicit source CI run ID. The APK kind defaults to
+`signed-release`; transferring a debug APK requires selecting `debug` explicitly.
 
 ## Debug APK
 
