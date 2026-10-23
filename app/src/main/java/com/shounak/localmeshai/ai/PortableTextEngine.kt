@@ -14,8 +14,6 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.LongBuffer
-import kotlin.math.exp
-import kotlin.random.Random
 
 /** One request at a time, including shutdown. CPU execution preserves the app's runtime ownership gate. */
 internal class PortableTextEngine private constructor(private val file: File, private val format: ModelFormat, contextTokens: Int) : AutoCloseable {
@@ -166,7 +164,7 @@ internal class PortableTextEngine private constructor(private val file: File, pr
             if (plan.inputs[i].signature.any { it == -1 }) interpreter.resizeInput(i, intArrayOf(1, sequence), true)
         }
         interpreter.allocateTensors()
-        val inputs = Array<Any>(interpreter.inputTensorCount) { i -> plan.input(i, tokens, eos.first()) }
+        val inputs = Array<Any>(interpreter.inputTensorCount) { i -> plan.input(i, tokens, eos.firstOrNull() ?: 0) }
         val output = interpreter.getOutputTensor(plan.logitsIndex)
         val shape = output.shape()
         val offset = plan.logitsOffset(shape, tokens.size)
@@ -190,16 +188,6 @@ internal class PortableTextEngine private constructor(private val file: File, pr
     }
 
     internal fun sample(logits: FloatArray, temperature: Float, topP: Float, topK: Int): Int {
-        require(logits.isNotEmpty() && logits.any { it.isFinite() }) { "Model produced no finite logits" }
-        val candidates = logits.indices.filter { logits[it].isFinite() }.sortedByDescending { logits[it] }.take(if (topK > 0) topK else logits.size)
-        if (temperature <= 0f) return candidates.first()
-        val max = logits[candidates.first()]
-        val probabilities = candidates.map { exp(((logits[it] - max) / temperature).toDouble()) }
-        val total = probabilities.sum()
-        var cumulative = 0.0
-        val count = probabilities.indexOfFirst { cumulative += it / total; cumulative >= topP.coerceIn(0.01f, 1f) }.let { if (it < 0) probabilities.size else it + 1 }
-        var draw = Random.nextDouble() * probabilities.take(count).sum()
-        for (i in 0 until count) { draw -= probabilities[i]; if (draw <= 0) return candidates[i] }
-        return candidates[count - 1]
+        return PortableSampler.sample(logits, temperature, topP, topK)
     }
 }

@@ -28,6 +28,7 @@ internal object PortableModelBundle {
     fun eosTokens(config: JSONObject, generation: JSONObject? = null): Set<Int> {
         val value = listOf(generation, config, config.optJSONObject("text_config"))
             .firstNotNullOfOrNull { it?.opt("eos_token_id")?.takeUnless { v -> v == JSONObject.NULL } }
+        requireNotNull(value) { "Missing eos_token_id in config.json, text_config or generation_config.json; import the complete model configuration" }
         fun token(v: Any?): Int {
             require(v is Number && v.toDouble().isFinite() && v.toDouble() >= 0 &&
                 v.toDouble() <= Int.MAX_VALUE && v.toDouble() == v.toInt().toDouble()) { "Invalid eos_token_id" }

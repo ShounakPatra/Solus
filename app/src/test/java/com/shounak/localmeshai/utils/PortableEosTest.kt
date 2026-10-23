@@ -5,6 +5,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PortableEosTest {
+    @Test fun missingEosReportsConfigurationProblemBeforeInference() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            PortableModelBundle.eosTokens(JSONObject(), JSONObject())
+        }
+        assertTrue(error.message.orEmpty().startsWith("Missing eos_token_id"))
+    }
+
     @Test fun nestedAndNullMetadataUseTheSameResolver() {
         val config = JSONObject("""{"eos_token_id":null,"text_config":{"eos_token_id":[2,3]}}""")
         assertEquals(setOf(2,3), PortableModelBundle.eosTokens(config, JSONObject("""{"eos_token_id":null}""")))
