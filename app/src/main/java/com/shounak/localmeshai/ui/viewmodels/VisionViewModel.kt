@@ -518,6 +518,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
         // Auto-unload idle vision model timer
         viewModelScope.launch {
+            isModelReady.collect { ready ->
+                if (ready) com.shounak.localmeshai.utils.ModelUsageStore.get(getApplication()).recordUsed(currentModelId)
+            }
+        }
+        viewModelScope.launch {
             combine(isModelReady, isAnalyzing, isInitializing) { ready, analyzing, initializing ->
                 Triple(ready, analyzing, initializing)
             }.distinctUntilChanged().collect { (ready, analyzing, initializing) ->
@@ -1446,6 +1451,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     if (currentModelId.isNotBlank() && (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(currentModelId) || com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(currentModelId))) {
                         throw IllegalStateException("Model is pending deletion or has been removed.")
                     }
+                    var generatedImagePath: String? = null
                     val execResult = ModelRuntimeCoordinator.withRuntime(ModelRuntimeOwner.Vision) {
                       ioMutex.withLock {
                         timing.endQueue()
@@ -1485,7 +1491,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         val fullLlamaMessages = llamaMultimodalHistory.messages + listOf("user" to prompt)
 
                         timing.startInference()
-                        inferenceManager.askStreaming(
+                        val mediaResult = inferenceManager.askStreaming(
                             bitmap = bitmapCopy,
                             question = prompt,
                             audioFile = audioFile,
@@ -1517,6 +1523,16 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             timing.recordChunk(partial)
                             latestResponse.set(partial)
                         }
+                        if (mediaResult.status == RequestTerminalStatus.Completed) {
+                            inferenceManager.generatedImage?.let { output ->
+                                val stored = attachmentStoreForChat.storeAttachmentFromFile(
+                                    chatKind = com.shounak.localmeshai.data.ChatKind.Vision, sessionId = activeSessionId,
+                                    attachmentId = assistantMessageId, sourceFile = output, targetFileName = "generated.png")
+                                generatedImagePath = stored.absolutePath
+                                output.delete()
+                            }
+                        }
+                        mediaResult
                     }
 
                     }
@@ -1565,6 +1581,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         if (!isCurrentRequest()) return@withContext
                         if (myGen == analysisGeneration && reqModelEpoch == currentModelEpoch && _currentSessionId.value == activeSessionId && assistantIndex < messages.size) {
                             messages[assistantIndex] = messages[assistantIndex].copy(
+                                imagePath = generatedImagePath,
                                 text = textToDisplay,
                                 errorMessage = errorMessageToDisplay,
                                 bitmap = null,

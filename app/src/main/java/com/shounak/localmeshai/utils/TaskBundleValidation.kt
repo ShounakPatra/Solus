@@ -4,7 +4,6 @@ import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.zip.ZipEntry
-import java.util.zip.ZipFile
 
 /** Bounded protobuf reader shared by task metadata and SentencePiece component validation. */
 internal class ProtoReader(private val input: InputStream, private var remaining: Long) {
@@ -66,7 +65,7 @@ internal class ProtoReader(private val input: InputStream, private var remaining
 }
 
 internal object TaskBundleValidation {
-    fun metadata(zip: ZipFile, entry: ZipEntry): ByteArray {
+    fun metadata(zip: TaskBundleArchive, entry: ZipEntry): ByteArray {
         require(entry.size in 1..131072) { "Task metadata is empty or exceeds 128 KiB" }
         return zip.getInputStream(entry).use { stream ->
             val result = ByteArray(entry.size.toInt())
@@ -81,7 +80,7 @@ internal object TaskBundleValidation {
     }
 
     // Inspect FlatBuffer table/vector boundaries without mapping multi-GB tensor data into Java memory.
-    fun graph(zip: ZipFile, entry: ZipEntry): Boolean = runCatching {
+    fun graph(zip: TaskBundleArchive, entry: ZipEntry): Boolean = runCatching {
         fun read(offset: Long, count: Int): ByteBuffer {
             require(offset >= 0 && offset <= entry.size - count)
             val data = ByteArray(count)
@@ -131,7 +130,7 @@ internal object TaskBundleValidation {
         true
     }.getOrDefault(false)
 
-    fun tokenizer(zip: ZipFile, entry: ZipEntry): Boolean = runCatching {
+    fun tokenizer(zip: TaskBundleArchive, entry: ZipEntry): Boolean = runCatching {
         require(entry.size in 1..(64L * 1024 * 1024))
         zip.getInputStream(entry).buffered().use { stream ->
             if (entry.name.endsWith(".json", ignoreCase = true)) {

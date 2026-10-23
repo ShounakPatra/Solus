@@ -248,6 +248,19 @@ internal fun ModelInfo.downloadedSectionSortRank(): Int {
     }
 }
 
+/** A new completed download temporarily leads the successful-load MRU list. */
+internal fun orderDownloadedModels(models: List<ModelInfo>, usedAt: Map<String, Long>): List<ModelInfo> {
+    val used = models.filter { it.id in usedAt }.sortedByDescending { usedAt[it.id] }
+    val newestDownload = models.filter { it.status in setOf(ModelStatus.Available, ModelStatus.Blocked) }
+        .maxByOrNull { it.downloadTime() }
+        ?.takeIf { it.downloadTime() > (used.firstOrNull()?.let { model -> usedAt[model.id] } ?: 0L) }
+    val promoted = (listOfNotNull(newestDownload) + used).distinctBy { it.id }
+    val promotedIds = promoted.map { it.id }.toSet()
+    return promoted + models.filter { it.id !in promotedIds }.sortedWith(
+        compareBy<ModelInfo> { it.downloadedSectionSortRank() }.thenByDescending { it.downloadTime() }.thenBy { it.id }
+    )
+}
+
 /**
  * Combined search + tier filter used to scope which models show up
  * on the Models tab. Supports multi-word matching across name, id,
@@ -361,6 +374,7 @@ fun ModelManagerScreen(
     bottomContentInset: androidx.compose.ui.unit.Dp = 0.dp
 ) {
     val context = LocalContext.current
+    val modelUsedAt by com.shounak.localmeshai.utils.ModelUsageStore.get(context).usedAt.collectAsState()
     val selectedTextModel by mainViewModel.selectedTextModelPath.collectAsState()
     val selectedVisionModel by mainViewModel.selectedVisionModelPath.collectAsState()
     val unloadingModelIds by mainViewModel.unloadingModelIds.collectAsState()
@@ -387,13 +401,7 @@ fun ModelManagerScreen(
 
     // Active downloads and local files are pinned to the top so progress/status
     // does not jump around between catalog sections.
-    // Downloaded models are sorted so the most recently downloaded appears at the top.
-    val downloadedModels = filteredModels
-        .filter { it.isPinnedDownloadCard() }
-        .sortedWith(
-            compareBy<ModelInfo> { it.downloadedSectionSortRank() }
-                .thenByDescending { it.downloadTime() }
-        )
+    val downloadedModels = orderDownloadedModels(filteredModels.filter { it.isPinnedDownloadCard() }, modelUsedAt)
     val downloadedIds = downloadedModels.map { it.id }.toSet()
 
     val textModels = filteredModels.filter { it.id !in downloadedIds && it.type == ModelType.Text }
@@ -2002,7 +2010,7 @@ fun ModelItem(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        "${model.type.label}  •  ${model.displaySize}  •  ${model.backend}",
+                        "${model.taskLabel}  •  ${model.displaySize}  •  ${model.displayBackend}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2020,7 +2028,7 @@ fun ModelItem(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 GlassLabelChip(
-                    label = if (isSelected) "Selected" else model.status.label,
+                    label = if (isSelected) "Selected" else if (model.hasMissingFiles) "Missing files" else model.status.label,
                     accentColor = statusColor
                 )
                 GlassLabelChip(
@@ -2066,7 +2074,7 @@ fun ModelItem(
             }
 
             Text(
-                model.description,
+                model.displayDescription,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2077,9 +2085,10 @@ fun ModelItem(
             ) {
                 val cardAccent = if (model.status == ModelStatus.Failed) MaterialTheme.colorScheme.error else modelFamilyAccent
                 val cardTitle = when {
+                    model.hasMissingFiles -> "Missing files"
                     model.status == ModelStatus.Paused -> "Paused — download kept"
                     model.status == ModelStatus.Downloading -> "Downloading Model…"
-                    model.status == ModelStatus.Failed -> "Download Failed"
+                    model.status == ModelStatus.Failed -> model.failureLabel
                     else -> "Download Status"
                 }
                 Surface(
@@ -2167,7 +2176,9 @@ fun ModelItem(
 
             val displayError = relinkError ?: model.errorMessage?.takeIf { it != "Paused — download kept" }
             displayError?.let { error ->
-                val classified = remember(error) { ErrorClassifier.classify(error) }
+                val classified = remember(error, model.loadRestriction?.category) {
+                    ErrorClassifier.classify(error, model.loadRestriction?.category)
+                }
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
@@ -2363,6 +2374,7 @@ fun ModelItem(
                 }
 
                 var showBenchDialog by remember { mutableStateOf(false) }
+                var benchAudioInput by remember { mutableStateOf(false) }
                 var isRunningBench by remember { mutableStateOf(false) }
                 var isStoppingBench by remember { mutableStateOf(false) }
                 var benchProgress by remember { mutableStateOf<BenchmarkProgress?>(null) }
@@ -2379,7 +2391,7 @@ fun ModelItem(
                             }
                         },
                         title = {
-                            val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
+                            val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
                             Text(if (isGguf) "⚡ CPU / GPU Performance Check" else "⚡ Performance Benchmark")
                         },
                         text = {
@@ -2390,7 +2402,13 @@ fun ModelItem(
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Text("Model: ${model.name}", style = MaterialTheme.typography.titleSmall)
-                                Text("Backend: ${model.backend}", style = MaterialTheme.typography.bodySmall)
+                                Text("Backend: ${model.displayBackend}", style = MaterialTheme.typography.bodySmall)
+                                if (model.supportsVision && model.supportsAudio && !isRunningBench && !isStoppingBench) {
+                                    Row {
+                                        TextButton(onClick = { benchAudioInput = false; benchResult = null }) { Text(if (!benchAudioInput) "Image ✓" else "Image") }
+                                        TextButton(onClick = { benchAudioInput = true; benchResult = null }) { Text(if (benchAudioInput) "Audio ✓" else "Audio") }
+                                    }
+                                }
 
                                 if (isRunningBench || isStoppingBench) {
                                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -2422,7 +2440,7 @@ fun ModelItem(
                                     )
                                 } else if (benchResult != null) {
                                     val r = benchResult!!
-                                    val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
+                                    val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
                                     Text(
                                         if (isGguf) {
                                             if (r.qualifiesVulkan) "✅ Vulkan Qualified" else "ℹ️ CPU Preferred"
@@ -2435,7 +2453,10 @@ fun ModelItem(
                                     )
                                     Text(r.summary, style = MaterialTheme.typography.bodySmall)
                                     HorizontalDivider()
-                                    if (isGguf) {
+                                    if (r.taskLatencyMedianMs != null) {
+                                        Text("• Warm task latency: ${r.taskLatencyMedianMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+                                        Text("• Cold load + task: ${r.cpuColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+                                    } else if (isGguf) {
                                         Text("• Warm TTFT: CPU ${r.cpuWarmTtftMedianMs.toInt()} ms vs GPU ${r.vulkanWarmTtftMedianMs.toInt()} ms (${String.format(Locale.US, "%.1f", r.warmTtftImprovementPercent)}% diff)", style = MaterialTheme.typography.bodySmall)
                                         Text("• Cold Load + First Token: CPU ${r.cpuColdLoadFtMs.toInt()} ms vs GPU ${r.vulkanColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
                                         Text("• Sustained Decode: CPU ${String.format(Locale.US, "%.1f", r.cpuDecodeTokPerSec)} t/s vs GPU ${String.format(Locale.US, "%.1f", r.vulkanDecodeTokPerSec)} t/s", style = MaterialTheme.typography.bodySmall)
@@ -2444,12 +2465,14 @@ fun ModelItem(
                                         Text("• Warm TTFT: ${r.cpuWarmTtftMedianMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
                                         Text("• Cold Load + First Token: ${r.cpuColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
                                         Text("• Sustained Decode: ${String.format(Locale.US, "%.1f", r.cpuDecodeTokPerSec)} t/s", style = MaterialTheme.typography.bodySmall)
-                                        Text("• Frame Time p95: ${String.format(Locale.US, "%.1f", r.cpuFrameP95Ms)} ms", style = MaterialTheme.typography.bodySmall)
+                                        if (r.uiFramesMeasured) Text("• Frame Time p95: ${String.format(Locale.US, "%.1f", r.cpuFrameP95Ms)} ms", style = MaterialTheme.typography.bodySmall)
                                     }
-                                    Text("• Max UI Render Stall: ${r.maxRenderStallMs} ms", style = MaterialTheme.typography.bodySmall)
+                                    if (r.uiFramesMeasured) Text("• Max UI Render Stall: ${r.maxRenderStallMs} ms", style = MaterialTheme.typography.bodySmall)
                                 } else {
-                                    val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
-                                    if (isGguf && (model.localPath != null || model.bundle != null)) {
+                                    val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
+                                    if (model.supportsVision || model.supportsAudio || model.bundle?.capabilities?.task == com.shounak.localmeshai.models.ModelTask.ImageGeneration) {
+                                        Text("Runs one cold and three warm tasks with synthetic inputs. Measures completion latency, not output quality.", style = MaterialTheme.typography.bodySmall)
+                                    } else if (isGguf && (model.localPath != null || model.bundle != null)) {
                                         Text(
                                             "Runs 5 cold samples and 20 warm samples across CPU and Vulkan to verify if Vulkan improves latency by >= 10% without frame stalls or regressions.",
                                             style = MaterialTheme.typography.bodySmall
@@ -2489,8 +2512,10 @@ fun ModelItem(
                                             benchError = null
                                             benchJob = benchScope.launch {
                                                 try {
-                                                    val isGguf = model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)
-                                                    val res = if (isGguf) {
+                                                    val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
+                                                    val res = if (model.supportsVision || model.supportsAudio || model.bundle?.capabilities?.task == com.shounak.localmeshai.models.ModelTask.ImageGeneration) {
+                                                        com.shounak.localmeshai.ai.MediaBenchmarkRunner.run(context, model, { p -> benchProgress = p }, useAudio = benchAudioInput)
+                                                    } else if (isGguf) {
                                                         if (model.bundle != null) {
                                                             GgufBenchmarkRunner.runBenchmark(
                                                                 context = context,
@@ -2814,6 +2839,7 @@ fun ModelItem(
                             isUnloading -> "Ejecting…"
                             isSelected -> "Eject"
                             model.status == ModelStatus.Downloading -> "Pause"
+                            model.hasMissingFiles -> "Fetch files"
                             model.status == ModelStatus.Paused -> "Resume"
                             model.status == ModelStatus.Available -> "Select"
                             model.status == ModelStatus.Failed -> "Retry"

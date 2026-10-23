@@ -13,6 +13,11 @@ plugins {
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val nativeSourceDigest = MessageDigest.getInstance("SHA-256").apply {
     update("toolchain:ndk-28.2.13676358;cmake-3.22.1;platform:android-28;abi:arm64-v8a;c++17".toByteArray())
+    fileTree("src/main/rust") { include("src/**/*.rs", "Cargo.toml", "Cargo.lock") }
+        .files.sortedBy { it.relativeTo(projectDir).invariantSeparatorsPath }.forEach { source ->
+            update(source.relativeTo(projectDir).invariantSeparatorsPath.toByteArray())
+            update(source.readBytes())
+        }
     fileTree("src/main/cpp") {
         include(
             "**/*.c", "**/*.cpp", "**/*.h", "**/*.hpp",
@@ -269,6 +274,13 @@ abstract class VerifyDexIntegrityTask : DefaultTask() {
 androidComponents {
     onVariants(selector().withBuildType("release")) { variant ->
         variant.packaging.dex.useLegacyPackaging.set(true)
+        val variantTaskSuffix = variant.name.replaceFirstChar { it.uppercaseChar() }
+        val verifyTask = tasks.register<VerifyDexIntegrityTask>("verify${variantTaskSuffix}ApkDexIntegrity") {
+            apkFolder.set(variant.artifacts.get(SingleArtifact.APK))
+        }
+        tasks.matching { it.name == "assemble$variantTaskSuffix" }.configureEach {
+            dependsOn(verifyTask)
+        }
     }
     onVariants(selector().withBuildType("debug")) { variant ->
         val verifyTask = tasks.register<VerifyDexIntegrityTask>("verifyDebugApkDexIntegrity") {
@@ -290,19 +302,42 @@ kotlin {
     }
 }
 
+// Keep Rust compilation out of Kotlin-only checks; every packaged APK includes the JNI runtime.
+val candleJniDirectory = layout.buildDirectory.dir("generated/candleJni")
+android.sourceSets.getByName("main").jniLibs.srcDir(candleJniDirectory.get().asFile)
+val buildCandleAndroid = tasks.register<Exec>("buildCandleAndroid") {
+    workingDir(rootDir)
+    inputs.dir("src/main/rust/src")
+    inputs.file("src/main/rust/Cargo.toml")
+    inputs.file("src/main/rust/Cargo.lock")
+    inputs.file(rootProject.file("tools/build-candle.ps1"))
+    inputs.file(rootProject.file("tools/build-candle.sh"))
+    outputs.dir(candleJniDirectory)
+    val ndkPath = androidComponents.sdkComponents.ndkDirectory.get().asFile.absolutePath
+    if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+        commandLine("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            rootProject.file("tools/build-candle.ps1").absolutePath, "-NdkPath", ndkPath,
+            "-OutputDirectory", candleJniDirectory.get().asFile.absolutePath)
+    } else {
+        commandLine("bash", rootProject.file("tools/build-candle.sh").absolutePath,
+            ndkPath, candleJniDirectory.get().asFile.absolutePath)
+    }
+}
+tasks.configureEach {
+    if (name.startsWith("merge") && (name.endsWith("NativeLibs") || name.endsWith("JniLibFolders"))) dependsOn(buildCandleAndroid)
+}
+
 configurations.all {
-    // No Firebase service integration. Keep the encoder-only serialization
-    // helpers required by MediaPipe's transport classes; removing them breaks R8.
-    exclude(group = "com.google.firebase", module = "firebase-measurement-connector")
-    exclude(group = "com.google.firebase", module = "firebase-analytics")
-    exclude(group = "com.google.firebase", module = "firebase-sessions")
-    exclude(group = "com.google.firebase", module = "firebase-installations")
+    // GenAI's LlmTaskRunner does not use tasks-core's general TaskRunner logging.
+    // Remove its whole unused transport chain together: retaining TransportRuntime
+    // while removing only Firebase encoders leaves missing classes during R8.
+    exclude(group = "com.google.firebase")
+    exclude(group = "com.google.android.datatransport")
     exclude(group = "com.google.android.gms", module = "play-services-measurement")
     exclude(group = "com.google.android.gms", module = "play-services-measurement-base")
     exclude(group = "com.google.android.gms", module = "play-services-measurement-api")
     exclude(group = "com.google.android.gms", module = "play-services-measurement-sdk")
     exclude(group = "com.google.android.gms", module = "play-services-measurement-sdk-api")
-    exclude(group = "com.google.android.datatransport", module = "transport-backend-cct")
 }
 
 dependencies {
@@ -326,12 +361,18 @@ dependencies {
 
     implementation(libs.mediapipe.tasks.genai)
     implementation(libs.mediapipe.tasks.core)
+    // MediaPipe's compiled model/options classes reference these annotations.
+    // They were formerly supplied indirectly by the removed transport chain.
+    implementation(libs.auto.value.annotations)
     implementation(libs.litert.lm)
+    implementation(libs.tensorflow.lite)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
     implementation(libs.pdfbox.android)
     implementation(libs.haze)
     implementation(libs.haze.materials)
     implementation(libs.okhttp)
 
+    testRuntimeOnly("com.microsoft.onnxruntime:onnxruntime:1.22.0")
     testImplementation(libs.junit)
     testImplementation(libs.json)
     testImplementation(libs.mockwebserver)
@@ -345,3 +386,8 @@ dependencies {
 
 
 
+
+// JVM execution fixtures use the host ORT native library, never packaged into Android APKs.
+configurations.matching { it.name.endsWith("UnitTestRuntimeClasspath") }.configureEach {
+    exclude(group = "com.microsoft.onnxruntime", module = "onnxruntime-android")
+}

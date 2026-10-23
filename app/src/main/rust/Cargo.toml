@@ -1,0 +1,22 @@
+[package]
+name = "solus-candle"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "solus_candle"
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1"
+candle-core = "=0.9.1"
+candle-nn = "=0.9.1"
+candle-transformers = "=0.9.1"
+jni = "0.21"
+rayon = "1"
+serde_json = "1"
+tokenizers = { version = "=0.21.1", default-features = false, features = ["onig"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

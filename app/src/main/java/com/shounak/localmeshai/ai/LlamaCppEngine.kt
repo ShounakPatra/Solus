@@ -837,6 +837,10 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
             return null
         }
 
+        @JvmStatic external fun nativeRenderPortableChat(template: String, messages: String, bosToken: String, eosToken: String, thinking: Boolean): String
+        @JvmStatic external fun nativeSupportsTools(handle: Long): Boolean
+        @JvmStatic external fun nativeSetToolRequest(handle: Long, request: String?)
+        @JvmStatic external fun nativeGetToolResponse(handle: Long): String?
         @JvmStatic external fun nativeGetLastError(): String?
         @JvmStatic external fun nativeInspectModel(modelPath: String): String?
         @JvmStatic external fun nativeIsVulkanAvailable(): Boolean
@@ -1197,6 +1201,8 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         onMetrics: ((LlamaGenerationMetrics) -> Unit)? = null,
         onFirstToken: (() -> Unit)? = null,
         onStructuredToken: ((answer: String, reasoning: String, isThinkingActive: Boolean) -> Unit)? = null,
+        toolRequestJson: String? = null,
+        onToolResponse: ((String) -> Unit)? = null,
         onToken: (String) -> Unit
     ): LlamaGenerationResult = withContext(Dispatchers.IO) {
         val genId = generationIdCounter.incrementAndGet()
@@ -1285,6 +1291,10 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         try {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             synchronized(lifecycleLock) { activeGenerationId = genId }
+            if (toolRequestJson != null) {
+                check(nativeBridge === DefaultLlamaNativeBridge && nativeSupportsTools(leaseHandle)) { "Template does not support tools" }
+                nativeSetToolRequest(leaseHandle, toolRequestJson)
+            }
             val res = nativeBridge.generateMultimodalStream(
                 handle = leaseHandle,
                 generationId = genId,
@@ -1316,8 +1326,14 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                 throw LlamaExecutionException(errMessage, category, code)
             }
             if (res == 1 || wasStopped) return@withContext LlamaGenerationResult.Stopped
+            if (toolRequestJson != null) {
+                val response = nativeGetToolResponse(leaseHandle)
+                check(!response.isNullOrBlank()) { "Tool response could not be parsed" }
+                onToolResponse?.invoke(response)
+            }
             return@withContext LlamaGenerationResult.Completed
         } finally {
+            if (toolRequestJson != null && nativeBridge === DefaultLlamaNativeBridge) nativeSetToolRequest(leaseHandle, null)
             nativeOperations.unlock()
             synchronized(lifecycleLock) {
                 if (activeGenerationId == genId) activeGenerationId = 0L
@@ -1353,6 +1369,17 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
     /**
      * Runs reference probe on current model context to record token probabilities.
      */
+    fun supportsToolCalling(): Boolean {
+        if (nativeBridge !== DefaultLlamaNativeBridge) return false
+        val handle = synchronized(lifecycleLock) { acquireOperationLeaseUnlocked() }
+        if (handle == 0L) return false
+        nativeOperations.lock()
+        return try { nativeSupportsTools(handle) } finally {
+            nativeOperations.unlock()
+            synchronized(lifecycleLock) { releaseOperationLeaseUnlocked() }
+        }
+    }
+
     fun resetAfterValidation() {
         val handle = synchronized(lifecycleLock) { acquireOperationLeaseUnlocked() }
         check(handle != 0L) { "Engine is not loaded" }

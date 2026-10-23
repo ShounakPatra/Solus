@@ -34,11 +34,25 @@ object AudioUtils {
     const val TARGET_CHANNELS = 1 // Mono
     const val BITS_PER_SAMPLE = 16
 
+    internal fun validateImportedAudioDuration(durationMs: Long, limitMs: Long) {
+        require(durationMs in 1..limitMs) { "This audio exceeds the ${limitMs / 1000}-second limit or has an invalid duration. Trim it before importing; it has not been attached or truncated." }
+    }
+
     suspend fun decodeAudioToPcm16Wav(
         context: Context,
         uri: Uri,
-        maxDurationMs: Long = 30_000L
+        maxDurationMs: Long = 30_000L,
+        rejectLongInput: Boolean = false
     ): DecodedAudio = withContext(Dispatchers.IO) {
+        if (rejectLongInput) {
+            val metadata = android.media.MediaMetadataRetriever()
+            try {
+                metadata.setDataSource(context, uri)
+                val duration = metadata.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+                    ?: error("Could not determine audio duration. Choose a clip of 30 seconds or less.")
+                validateImportedAudioDuration(duration, maxDurationMs)
+            } finally { metadata.release() }
+        }
         val fileName = getDisplayName(context, uri).ifBlank { "audio_attachment.wav" }
         val rawPcm = decodeToRawPcm(context, uri, maxDurationMs)
         val wavBytes = createWavFromPcm16(rawPcm.pcmBytes, TARGET_SAMPLE_RATE, TARGET_CHANNELS)

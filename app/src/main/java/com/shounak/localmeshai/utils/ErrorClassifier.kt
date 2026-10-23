@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.ui.graphics.vector.ImageVector
+import com.shounak.localmeshai.models.LoadRestrictionCategory
 import java.util.Locale
 
 enum class ErrorCategory(
@@ -29,7 +30,9 @@ enum class ErrorCategory(
     StorageFull("Low Storage", Icons.Default.Storage),
     ChecksumCorrupted("Integrity Failed", Icons.Default.Warning),
     InvalidFormat("Invalid Format", Icons.Default.BrokenImage),
-    HardwareIncompatible("Incompatible Device", Icons.Default.Memory),
+    HardwareIncompatible("Device warning", Icons.Default.Memory),
+    MemoryEstimate("Memory estimate", Icons.Default.Memory),
+    RuntimeUnsupported("Unsupported runtime", Icons.Default.BrokenImage),
     NativeCrash("Native Engine Crash", Icons.Default.BugReport),
     General("Error", Icons.Default.ErrorOutline)
 }
@@ -46,11 +49,30 @@ data class ClassifiedError(
 
 object ErrorClassifier {
 
-    fun classify(rawError: String?): ClassifiedError? {
+    fun classify(rawError: String?, restriction: LoadRestrictionCategory? = null): ClassifiedError? {
         if (rawError.isNullOrBlank()) return null
         val lower = rawError.lowercase(Locale.US)
 
         return when {
+            restriction == LoadRestrictionCategory.RuntimeIncompatibility -> ClassifiedError(
+                category = ErrorCategory.RuntimeUnsupported,
+                headline = "Runtime compatibility issue",
+                message = rawError,
+                suggestion = "This model needs a supported architecture or export. A memory override cannot add runtime support."
+            )
+            lower.startsWith("memory estimate:") -> ClassifiedError(
+                category = ErrorCategory.MemoryEstimate,
+                headline = "Memory estimate warning",
+                message = rawError,
+                suggestion = "This is a resource estimate. Try Anyway can attempt loading; a successful load does not guarantee that every context length will fit."
+            )
+            PortableCompanionFiles.isMissing(rawError) -> ClassifiedError(
+                category = ErrorCategory.InvalidFormat,
+                headline = "Missing files",
+                message = rawError,
+                suggestion = "The weights are kept. Fetch the configuration and tokenizer files, or import the complete model bundle. Some models use a separate tokenizer repository requiring access permission.",
+                isRetryAction = true
+            )
             // 1. Offline / No internet connection
             lower.contains("no internet connection") ||
                 lower.contains("unable to resolve host") ||
@@ -182,7 +204,7 @@ object ErrorClassifier {
                 lower.contains("ram") && lower.contains("gb") -> {
                 ClassifiedError(
                     category = ErrorCategory.HardwareIncompatible,
-                    headline = "Blocked by Device Profile",
+                    headline = "Device resource warning",
                     message = rawError,
                     suggestion = "Your device hardware or RAM may not safely support this model size."
                 )

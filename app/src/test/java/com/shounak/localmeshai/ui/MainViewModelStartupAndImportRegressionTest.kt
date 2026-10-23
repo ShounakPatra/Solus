@@ -189,8 +189,8 @@ class MainViewModelStartupAndImportRegressionTest {
     fun testOfficialPaddedTaggedTaskBundleAndTruncatedLitertlm() {
         val testDir = tempFolder.newFolder("inspector_tests")
 
-        // 1. Official-style padded MediaPipe task bundle
-        // MediaPipe bundler writes TF_LITE_PREFILL_DECODE, TOKENIZER_MODEL, and METADATA
+        // 1. Task ZIP with entry-extra padding. Whole-file AlignZipFile padding is
+        // covered separately in TaskBundleValidationTest (Android rejects that in ZipFile).
         val paddedTaskFile = File(testDir, "official_model.task")
         ZipOutputStream(FileOutputStream(paddedTaskFile)).use { zos ->
             // Prefill/decode LLM entry
@@ -216,7 +216,7 @@ class MainViewModelStartupAndImportRegressionTest {
         }
 
         val taskInspection = NonGgufBundleInspector.inspectMediaPipeTask(paddedTaskFile)
-        assertTrue("Official-style padded/tagged task bundle must pass inspection", taskInspection.isValid)
+        assertTrue("Task bundle with entry-extra padding must pass inspection", taskInspection.isValid)
         assertEquals(ModelFormat.MediaPipeTask, taskInspection.format)
 
         // 2. Incomplete task bundle (has metadata but lacks LLM model or tokenizer)

@@ -2379,7 +2379,7 @@ fun VisionChatBubble(
         presentation.segments
     }
     val showStreamingDots = presentation.showStreamingDots
-    val hasTopImage = isUser && resolvedBitmap != null && !resolvedBitmap.isRecycled
+    val hasTopImage = resolvedBitmap != null && !resolvedBitmap.isRecycled
     val hasTopAudio = isUser && !audioPath.isNullOrBlank()
     val hasTopDoc = isUser && !documentName.isNullOrBlank()
     val entryValue = entryProgress.value
@@ -2441,7 +2441,7 @@ fun VisionChatBubble(
                     ) {
                         Image(
                             bitmap = resolvedBitmap.asImageBitmap(),
-                            contentDescription = "Query image. Tap to view full size",
+                            contentDescription = if (isUser) "Query image. Tap to view full size" else "Generated image. Tap to view full size",
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(min = 100.dp, max = 220.dp),

@@ -9,7 +9,6 @@ import java.io.FileInputStream
 import java.io.RandomAccessFile
 import java.nio.charset.StandardCharsets
 import java.util.Locale
-import java.util.zip.ZipFile
 
 /**
  * Inspection result for non-GGUF model artifacts (.task and .litertlm).
@@ -124,6 +123,14 @@ object NonGgufBundleInspector {
         val format = detectFormat(file) ?: expectedFormat ?: ModelFormat.MediaPipeTask
 
         return when (format) {
+            ModelFormat.Onnx, ModelFormat.TensorFlowLite, ModelFormat.Safetensors -> runCatching {
+                val root = PortableModelProfile.root(file)
+                val companions = root.walkTopDown().filter { it.isFile }.associateBy { it.relativeTo(root).invariantSeparatorsPath }
+                NonGgufBundleInspection(true, format, PortableModelBundle.inspect(file, format, companions, file.relativeTo(root).invariantSeparatorsPath), file.name, backend = format.backendLabel,
+                    loadRestriction = PortableModelBundle.runtimeRestriction(file, format, companions))
+            }.getOrElse {
+                NonGgufBundleInspection(false, format, ModelCapabilities(), file.name, errorMessage = it.message, backend = format.backendLabel)
+            }
             ModelFormat.LiteRtLm -> runCatching { inspectLiteRtLm(file, verifiedSha256) }.getOrElse { t ->
                 Log.w(TAG, "LiteRT-LM inspection threw for ${file.name}: ${t.message}")
                 NonGgufBundleInspection(
@@ -164,6 +171,9 @@ object NonGgufBundleInspector {
         when {
             bytes.size >= 4 && String(bytes, 0, 4, StandardCharsets.US_ASCII) == "GGUF" -> ModelFormat.GGUF
             bytes.size >= 8 && String(bytes, 0, 8, StandardCharsets.US_ASCII) == "LITERTLM" -> ModelFormat.LiteRtLm
+            bytes.size >= 8 && String(bytes, 4, 4, StandardCharsets.US_ASCII) == "TFL3" && file.extension.equals("tflite", true) -> ModelFormat.TensorFlowLite
+            file.extension.equals("safetensors", true) && runCatching { PortableModelBundle.validateSafetensors(file) }.isSuccess -> ModelFormat.Safetensors
+            file.extension.equals("onnx", true) && bytes.firstOrNull()?.let { (it.toInt() and 7) in setOf(0, 1, 2, 5) } == true -> ModelFormat.Onnx
             FileHeaderSniffer.isZip(bytes) -> ModelFormat.MediaPipeTask
             else -> null
         }
@@ -198,7 +208,7 @@ object NonGgufBundleInspector {
         var mediaPipeMeta: DecodedMediaPipeMetadata? = null
 
         try {
-            ZipFile(file).use { zip ->
+            TaskBundleArchive(file).use { zip ->
                 val entries = zip.entries()
                 while (entries.hasMoreElements()) {
                     val entry = entries.nextElement()

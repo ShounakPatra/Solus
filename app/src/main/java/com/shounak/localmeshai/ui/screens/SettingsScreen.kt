@@ -409,6 +409,12 @@ fun SettingsDialog(
                                 )
                             }
                         }
+                        SettingsSwitchRow(
+                            title = "Tool calling (experimental)",
+                            subtitle = "Calculator, local date/time and enabled document search for compatible LiteRT-LM and GGUF models. Applies to new conversations.",
+                            checked = settingsData.enableToolCalling,
+                            onCheckedChange = { enabled -> appSettings.updateSettings { it.copy(enableToolCalling = enabled) } }
+                        )
                         if (isGgufActive) {
                             Text(
                                 text = "GGUF models support Auto (prefers validated GPU with automatic CPU fallback), explicit Vulkan GPU, and explicit CPU mode.",

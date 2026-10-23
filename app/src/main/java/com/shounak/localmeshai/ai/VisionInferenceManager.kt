@@ -87,6 +87,8 @@ class VisionInferenceManager(context: Context) {
     private var currentGgufVerifiedSha: String = ""
     private var currentGgufExpectedBytes: Long = 0L
     @Volatile private var runtime = RuntimeKind.None
+    private var portableMediaEngine: PortableMediaEngine? = null
+    val generatedImage: File? get() = portableMediaEngine?.generatedImage
     private var activeModelLease: AutoCloseable? = null
     private val runtimeContextCapacity = RuntimeContextCapacity()
     val runtimeCapabilities: ModelCapabilitySnapshot?
@@ -101,6 +103,7 @@ class VisionInferenceManager(context: Context) {
         RuntimeKind.LiteRtLm -> liteRtConversation != null
         RuntimeKind.MediaPipeVision -> mediaPipeInference != null
         RuntimeKind.LlamaCpp -> llamaCppEngine?.isInitialized == true
+        RuntimeKind.PortableMedia -> portableMediaEngine != null
         RuntimeKind.None -> false
     }
     @Volatile private var activeMediaPipeSession: LlmInferenceSession? = null
@@ -305,13 +308,7 @@ class VisionInferenceManager(context: Context) {
                 val inferenceBackend = when (pref) {
                     "CPU" -> InferenceBackend.LITERT_CPU
                     "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
-                    else -> {
-                        if (allowUnsafeOverride) {
-                            InferenceBackend.LITERT_GPU
-                        } else {
-                            DeviceUtils.selectBackendForModelFile(context, effectiveFile?.name.orEmpty())
-                        }
-                    }
+                    else -> DeviceUtils.selectBackendForModelFile(context, effectiveFile?.name.orEmpty())
                 }
                 val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                     context = context,
@@ -333,7 +330,8 @@ class VisionInferenceManager(context: Context) {
                         isVision = true,
                         fileName = effectiveFile?.name.orEmpty(),
                         backendLabel = "LiteRT-LM multimodal",
-                        supportsAudioInput = audioInputAvailable
+                        supportsAudioInput = audioInputAvailable,
+                        modelFilePath = resolvedModelPath
                     )
                     if (!allowed) {
                         throw IllegalStateException(reason)
@@ -348,6 +346,27 @@ class VisionInferenceManager(context: Context) {
                 )
                 activeBackendDisplayName = if (inferenceBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
             }
+            detectedFormat?.isPortable == true -> {
+                val primary = requireNotNull(effectiveFile) { "Portable media requires an app-managed model bundle" }
+                val root = com.shounak.localmeshai.utils.PortableModelProfile.root(primary)
+                val mediaCaps = com.shounak.localmeshai.utils.PortableModelBundle.inspect(primary, detectedFormat,
+                    root.walkTopDown().filter { it.isFile }.associateBy { it.relativeTo(root).invariantSeparatorsPath }, primary.relativeTo(root).invariantSeparatorsPath)
+                com.shounak.localmeshai.utils.PortableModelBundle.runtimeRestriction(primary, detectedFormat,
+                    root.walkTopDown().filter { it.isFile }.associateBy { it.relativeTo(root).invariantSeparatorsPath })?.let { error(it.reason) }
+                activeModelLease = modelLease ?: ModelArtifactStorage.leaseArtifact(primary)
+                if (InitCrashGuard.isModelBlocked(context, effectiveId)) throw IllegalStateException(InitCrashGuard.blockedModelMessage())
+                InitCrashGuard.markInitStarted(context, effectiveId)
+                portableMediaEngine = try { PortableMediaEngine.open(context, primary, detectedFormat) }
+                    catch (failure: Throwable) { InitCrashGuard.markInitFailed(context,effectiveId); throw failure }
+                InitCrashGuard.markInitSucceeded(context,effectiveId)
+                configuredCapabilities = configuredCapabilities?.copy(capabilities = mediaCaps)
+                modelSupportsAudioInput = mediaCaps.supportsAudio
+                resolvedThinkingCapability = mediaCaps.thinking
+                this.supportsThinkingMode = mediaCaps.thinking in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled)
+                isDefaultThinkingModel = this.supportsThinkingMode
+                runtime = RuntimeKind.PortableMedia
+                activeBackendDisplayName = "${detectedFormat.backendLabel} ${mediaCaps.task.id} CPU"
+            }
             detectedFormat == ModelFormat.MediaPipeTask -> {
                 val resolvedModelPath = effectiveFile?.absolutePath ?: modelPath
                 initializeMediaPipeVision(resolvedModelPath, audioInputAvailable, configuredContextWindow)
@@ -357,7 +376,7 @@ class VisionInferenceManager(context: Context) {
                 throw IllegalArgumentException("Unsupported vision model format. Solus multimodal models require GGUF, LiteRT (.litertlm), or MediaPipe (.task) bundles.")
             }
         }
-        activeModelLease = modelLease ?: effectiveFile?.let { ModelArtifactStorage.leaseArtifact(it) }
+        activeModelLease = modelLease ?: activeModelLease ?: effectiveFile?.let { ModelArtifactStorage.leaseArtifact(it) }
         } catch (t: Throwable) {
             runtimeContextCapacity.clear()
             val cleanup = close()
@@ -425,6 +444,13 @@ class VisionInferenceManager(context: Context) {
         var lastGeneratedTokens: Int? = null
         try {
             val rawResponse = when (runtime) {
+                RuntimeKind.PortableMedia -> {
+                    onProgress?.invoke(RequestProgress.Generating)
+                    val answer = requireNotNull(portableMediaEngine).generate(effectiveBitmap, audioFile, prompt, thinkingMode)
+                    if (stopRequested) throw CancellationException("Generation cancelled")
+                    effectiveOnUpdate(answer)
+                    answer
+                }
                 RuntimeKind.LiteRtLm -> streamLiteRtLmVision(
                     bitmap = bitmap,
                     prompt = prompt,
@@ -584,6 +610,10 @@ class VisionInferenceManager(context: Context) {
         isBeingClosed = true
         cancelGeneration()
         var closeError: Throwable? = null
+        if (portableMediaEngine != null) {
+            try { portableMediaEngine?.close(); portableMediaEngine = null }
+            catch (failure: Throwable) { closeError = failure }
+        }
 
         val sessionToClose = activeMediaPipeSession
         val callbackDone = activeMediaPipeCallbackDone
@@ -688,6 +718,7 @@ class VisionInferenceManager(context: Context) {
 
     fun cancelGeneration() {
         stopRequested = true
+        portableMediaEngine?.stop()
         runCatching { llamaCppEngine?.stop() }.onFailure { error ->
             Log.w(TAG, "Native stop failed; shutdown will retain ownership until close succeeds", error)
         }
@@ -1632,6 +1663,7 @@ class VisionInferenceManager(context: Context) {
     }
 
     private enum class RuntimeKind {
+        PortableMedia,
         None,
         MediaPipeVision,
         LiteRtLm,

@@ -334,15 +334,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ModelSourceResolver.resolve(getApplication(), bundleToInspect).use { lease ->
                 val detected = NonGgufBundleInspector.detectFormat(File(lease.paths.first()))
                     ?: throw IllegalArgumentException("Unrecognized model container. Select a valid GGUF, LiteRT-LM or MediaPipe task bundle.")
-                require(detected == ModelFormat.GGUF || (bundleToInspect.mainArtifacts.size == 1 && bundleToInspect.projectorArtifact == null)) {
+                require(detected == ModelFormat.GGUF || detected.isPortable || (bundleToInspect.mainArtifacts.size == 1 && bundleToInspect.projectorArtifact == null)) {
                     "Only GGUF supports split shards and companion projectors. Relink one LiteRT-LM or MediaPipe task bundle."
                 }
                 val resolvedBundle = bundleToInspect.copy(format = detected, backend = when (detected) {
+                    ModelFormat.Onnx, ModelFormat.TensorFlowLite, ModelFormat.Safetensors -> detected.backendLabel
                     ModelFormat.GGUF -> "llama.cpp GGUF"
                     ModelFormat.LiteRtLm -> "LiteRT-LM GPU"
                     ModelFormat.MediaPipeTask -> "MediaPipe LLM CPU-safe"
                 })
                 when (resolvedBundle.format) {
+                    ModelFormat.Onnx, ModelFormat.TensorFlowLite, ModelFormat.Safetensors -> {
+                        val primary = File(lease.paths.first())
+                        val root = com.shounak.localmeshai.utils.PortableModelProfile.root(primary)
+                        val companions = root.walkTopDown().filter { it.isFile }.associateBy { it.relativeTo(root).invariantSeparatorsPath }
+                        val caps = com.shounak.localmeshai.utils.PortableModelBundle.inspect(primary, resolvedBundle.format, companions, primary.relativeTo(root).invariantSeparatorsPath)
+                        val restriction = com.shounak.localmeshai.utils.PortableModelBundle.runtimeRestriction(primary, resolvedBundle.format, companions)
+                            ?: resolvedBundle.loadRestriction?.takeUnless { it.category == com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility }
+                        InspectedBundleOutcome(bundle = resolvedBundle.copy(capabilities = caps, contextLength = caps.contextLength, loadRestriction = restriction),
+                            capabilities = caps, contextLength = caps.contextLength, loadRestriction = restriction,
+                            isMultimodal = caps.isMediaModel, isValid = true)
+                    }
                     ModelFormat.GGUF -> {
                         val mainInspections = mutableListOf<GgufArtifactInspection>()
                         for ((index, artifact) in resolvedBundle.mainArtifacts.withIndex()) {
@@ -374,7 +386,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
                                 contextLength = ctx,
                                 loadRestriction = resolvedBundle.loadRestriction,
-                                isMultimodal = c.supportsVision || c.supportsAudio,
+                                isMultimodal = c.isMediaModel,
                                 isValid = true
                             )
                         } else {
@@ -383,7 +395,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 capabilities = resolvedBundle.capabilities,
                                 contextLength = model.contextWindowTokens ?: 2048,
                                 loadRestriction = resolvedBundle.loadRestriction,
-                                isMultimodal = resolvedBundle.capabilities.supportsVision || resolvedBundle.capabilities.supportsAudio,
+                                isMultimodal = resolvedBundle.capabilities.isMediaModel,
                                 isValid = false,
                                 error = bundleRes.errorMessage ?: "GGUF bundle validation failed"
                             )
@@ -395,7 +407,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             capabilities = resolvedBundle.capabilities,
                             contextLength = model.contextWindowTokens ?: 2048,
                             loadRestriction = resolvedBundle.loadRestriction,
-                            isMultimodal = resolvedBundle.capabilities.supportsVision || resolvedBundle.capabilities.supportsAudio,
+                            isMultimodal = resolvedBundle.capabilities.isMediaModel,
                             isValid = false,
                             error = "MediaPipe task path missing"
                         )
@@ -412,7 +424,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
                                 contextLength = ctx,
                                 loadRestriction = insp.loadRestriction ?: resolvedBundle.loadRestriction,
-                                isMultimodal = c.supportsVision || c.supportsAudio,
+                                isMultimodal = c.isMediaModel,
                                 isValid = true
                             )
                         } else {
@@ -421,7 +433,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 capabilities = resolvedBundle.capabilities,
                                 contextLength = model.contextWindowTokens ?: 2048,
                                 loadRestriction = resolvedBundle.loadRestriction,
-                                isMultimodal = resolvedBundle.capabilities.supportsVision || resolvedBundle.capabilities.supportsAudio,
+                                isMultimodal = resolvedBundle.capabilities.isMediaModel,
                                 isValid = false,
                                 error = insp.errorMessage ?: "MediaPipe task inspection failed"
                             )
@@ -433,7 +445,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             capabilities = resolvedBundle.capabilities,
                             contextLength = model.contextWindowTokens ?: 2048,
                             loadRestriction = resolvedBundle.loadRestriction,
-                            isMultimodal = resolvedBundle.capabilities.supportsVision || resolvedBundle.capabilities.supportsAudio,
+                            isMultimodal = resolvedBundle.capabilities.isMediaModel,
                             isValid = false,
                             error = "LiteRT-LM path missing"
                         )
@@ -451,7 +463,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
                                 contextLength = ctx,
                                 loadRestriction = insp.loadRestriction ?: resolvedBundle.loadRestriction,
-                                isMultimodal = c.supportsVision || c.supportsAudio,
+                                isMultimodal = c.isMediaModel,
                                 isValid = true
                             )
                         } else {
@@ -460,7 +472,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 capabilities = resolvedBundle.capabilities,
                                 contextLength = model.contextWindowTokens ?: 2048,
                                 loadRestriction = resolvedBundle.loadRestriction,
-                                isMultimodal = resolvedBundle.capabilities.supportsVision || resolvedBundle.capabilities.supportsAudio,
+                                isMultimodal = resolvedBundle.capabilities.isMediaModel,
                                 isValid = false,
                                 error = insp.errorMessage ?: "LiteRT-LM inspection failed"
                             )
@@ -580,6 +592,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         if (requestId != currentInspectionRequestId) {
                             withContext(NonCancellable) {
                                 phoneImportSession.cancelInspection()
+                                withContext(Dispatchers.IO) { result.getOrNull()?.draftStagingDir?.deleteRecursively() }
                             }
                             return@launch
                         }
@@ -698,7 +711,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 val stagedItem = reservedDraft.stagedArtifactItem
                                 modelDownloader.artifactStorage.beginTransaction(
                                     modelId = bundle.id,
-                                    stagedItems = listOf(stagedItem),
+                                    stagedItems = reservedDraft.stagedArtifactItems.ifEmpty { listOf(stagedItem) },
                                     primaryItemName = stagedItem.relativeTargetName,
                                     sourceIdentity = "phone_import_${bundle.id}",
                                     packageType = "ArtifactBundle",
@@ -724,8 +737,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                         lastModified = publishedFile.lastModified()
                                     )
                                     primaryLocalPath = publishedFile.absolutePath
+                                    var generationRoot = publishedFile
+                                    repeat(stagedItem.relativeTargetName.split('/').size) { generationRoot = requireNotNull(generationRoot.parentFile) }
                                     effectiveBundle = bundle.copy(
-                                        mainArtifacts = listOf(publishedArtifact),
+                                        mainArtifacts = if (reservedDraft.stagedArtifactItems.isEmpty()) listOf(publishedArtifact) else
+                                            reservedDraft.stagedArtifactItems.map { item ->
+                                                val target = File(generationRoot, com.shounak.localmeshai.utils.PortableBundlePath.normalize(item.relativeTargetName))
+                                                ModelArtifact(ArtifactRole.Main, item.relativeTargetName, ArtifactSource.AppManaged(target.absolutePath), target.length(), target.lastModified())
+                                            },
                                         capabilities = bundle.capabilities.copy(thinkingArtifactIdentity = publishedFile.absolutePath)
                                     )
                                 } else {
@@ -736,7 +755,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 }
 
                                 primaryArtifact = effectiveBundle.mainArtifacts.first()
-                                effectiveType = if (effectiveBundle.capabilities.supportsVision || effectiveBundle.capabilities.supportsAudio) ModelType.Vision else ModelType.Text
+                                effectiveType = if (effectiveBundle.capabilities.isMediaModel) ModelType.Vision else ModelType.Text
                                 val sizeMb = effectiveBundle.totalSizeBytes / (1024 * 1024)
                                 sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GB", sizeMb / 1024f) else "$sizeMb MB"
 
@@ -1167,7 +1186,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val caps = bundle.capabilities
                         model.copy(status = ModelStatus.Available, progress = 1f, errorMessage = null,
                             localPath = model.localPath ?: target?.absolutePath, bundle = bundle, backend = bundle.backend,
-                            type = if (caps.supportsVision || caps.supportsAudio) ModelType.Vision else ModelType.Text,
+                            type = if (caps.isMediaModel) ModelType.Vision else ModelType.Text,
                             supportsThinkingMode = caps.thinking in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled),
                             supportsVisionInput = caps.supportsVision, supportsAudioInput = caps.supportsAudio,
                             contextWindowTokens = bundle.contextLength.takeIf { it > 0 }, loadRestriction = bundle.loadRestriction
@@ -1783,7 +1802,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isAppManagedBundle -> publishedBundle?.mainArtifacts?.firstOrNull()?.source?.location ?: modelDownloader.artifactStorage.getPublishedArtifact(def.id)?.absolutePath
                     else -> null
                 }
-                val effectiveType = if (effectiveBundle?.capabilities?.supportsVision == true || effectiveBundle?.capabilities?.supportsAudio == true || def.bundle?.capabilities?.supportsVision == true) ModelType.Vision else def.type
+                val effectiveType = if (effectiveBundle?.capabilities?.isMediaModel == true || def.bundle?.capabilities?.isMediaModel == true) ModelType.Vision else def.type
                 val rawModel = ModelInfo(
                     id = def.id,
                     name = def.name,
@@ -1862,7 +1881,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return@withContext Result.failure(IllegalArgumentException("Imported bundle has no main artifacts"))
         }
 
-        val effectiveType = if (bundle.capabilities.supportsVision || bundle.capabilities.supportsAudio) ModelType.Vision else ModelType.Text
+        val effectiveType = if (bundle.capabilities.isMediaModel) ModelType.Vision else ModelType.Text
         val sizeMb = bundle.totalSizeBytes / (1024 * 1024)
         val sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GB", sizeMb / 1024f) else "$sizeMb MB"
 
@@ -1966,7 +1985,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             LocalModelImporter.rollbackPermissions(getApplication(), urisToRelease)
         }
 
-        val effectiveType = if (bundleWithExistingId.capabilities.supportsVision || bundleWithExistingId.capabilities.supportsAudio) ModelType.Vision else ModelType.Text
+        val effectiveType = if (bundleWithExistingId.capabilities.isMediaModel) ModelType.Vision else ModelType.Text
         val sizeMb = bundleWithExistingId.totalSizeBytes / (1024 * 1024)
         val sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GB", sizeMb / 1024f) else "$sizeMb MB"
         val oldLocation = existingDef.bundle?.mainArtifacts?.firstOrNull()?.source?.location
@@ -2018,11 +2037,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        val fileName = clean.toHttpUrlOrNull()?.pathSegments?.lastOrNull() ?: clean.substringAfterLast('/')
+        com.shounak.localmeshai.utils.PortableCompanionFiles.unsupported(fileName)?.let {
+            hfResolutionJob?.cancel()
+            _hfResolutionState.value = HfResolutionUiState.Error(it)
+            return
+        }
+
         val classification = classifyModelInput(clean)
         when (classification) {
             ModelInputClassification.Invalid -> {
                 _hfResolutionState.value = HfResolutionUiState.Error(
-                    "Please enter a valid Hugging Face repository or a direct link to a supported model file (.gguf, .task, .litertlm, .tflite)."
+                    "Please enter a valid Hugging Face repository or a direct model URL (.gguf, .task, .litertlm, .onnx, .tflite, .safetensors)."
                 )
                 return
             }
@@ -2030,8 +2056,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 hfResolutionJob?.cancel()
                 hfResolutionJob = viewModelScope.launch(Dispatchers.IO) {
                     _hfResolutionState.value = HfResolutionUiState.Loading("Starting direct download...")
-                    val isTflite = clean.endsWith(".tflite", ignoreCase = true) || clean.contains(".tflite?", ignoreCase = true)
-                    val inferredType = if (isTflite) ModelType.Vision else ModelType.Text
+                    val inferredType = ModelType.Text
                     val addResult = addCustomModel(
                         name = "",
                         url = clean,
@@ -2074,7 +2099,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val selection = try {
                             HuggingFaceModelResolver.selectVariants(parsed, allVariants)
                         } catch (e: NoSuchElementException) {
-                            _hfResolutionState.value = HfResolutionUiState.Error(e.message ?: "No matching GGUF model files found in repository ${repoInfo.repoId}.")
+                            _hfResolutionState.value = HfResolutionUiState.Error(e.message ?: "No matching supported model files found in repository ${repoInfo.repoId}.")
                             return@launch
                         }
 
@@ -2229,7 +2254,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 fileName = firstArtifact.fileName,
                 packageType = ModelPackage.SingleFile,
                 description = "Hugging Face model from ${repoInfo.repoId} (${variant.mainFiles.size} file${if (variant.mainFiles.size > 1) "s" else ""})",
-                backend = "llama.cpp GGUF",
+                backend = downloadSpec.effectiveFormat.backendLabel,
                 downloadSpec = downloadSpec
             )
 
@@ -2360,14 +2385,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val rawFileName = inferFileName(normalizedUrl, type)
         val isGguf = rawFileName.endsWith(".gguf", ignoreCase = true)
-        val effectiveType = if (isGguf) ModelType.Text else type
-        val fileName = if (isGguf) rawFileName else customTypedFileName(rawFileName, effectiveType)
+        val portableFormat = ModelFormat.fromFileName(rawFileName)?.takeIf { it.isPortable }
+        val effectiveType = if (isGguf || portableFormat != null) ModelType.Text else type
+        val fileName = if (isGguf || portableFormat != null) rawFileName else customTypedFileName(rawFileName, effectiveType)
         val packageType = if (fileName.endsWith(".zip", ignoreCase = true)) {
             ModelPackage.ZipDirectory
         } else {
             ModelPackage.SingleFile
         }
         val id = CustomModelStore.generateCustomModelId(normalizedUrl, effectiveType)
+        val portableSpec = if (portableFormat != null) HuggingFaceModelResolver.createDirectPortableSpec(normalizedUrl, id, sha256) else null
         if (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(id)) {
             return Result.failure(IllegalStateException("Model is currently undergoing removal."))
         }
@@ -2400,6 +2427,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val backendName = when {
+                portableFormat != null -> portableFormat.backendLabel
                 isGguf -> "llama.cpp GGUF"
                 effectiveType == ModelType.Vision -> if (fileName.endsWith(".tflite", ignoreCase = true)) "TensorFlow Lite" else "On-device multimodal GPU"
                 fileName.endsWith(".litertlm", ignoreCase = true) -> "LiteRT-LM GPU"
@@ -2407,6 +2435,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val descriptionText = when {
+                portableFormat != null -> "User supplied ${portableFormat.name} model with sibling config.json and tokenizer.json."
                 isGguf -> "Custom GGUF model running locally via native llama.cpp backend."
                 effectiveType == ModelType.Vision -> "User supplied image, audio, or multimodal model."
                 else -> "User supplied .task or .litertlm text model."
@@ -2421,7 +2450,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 packageType = packageType,
                 sha256 = sha256?.trim()?.ifBlank { null },
                 description = descriptionText,
-                backend = backendName
+                backend = backendName,
+                downloadSpec = portableSpec
             )
 
             withContext(NonCancellable) {
@@ -2442,6 +2472,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     packageType = packageType,
                     description = descriptionText,
                     backend = backendName,
+                    downloadSpec = portableSpec,
                     deviceTarget = "All supported chipsets",
                     url = normalizedUrl,
                     sha256 = sha256?.trim()?.ifBlank { null },
@@ -2614,7 +2645,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (!inspectFormat) return null
         when (NonGgufBundleInspector.detectFormat(runnableFile)) {
-            ModelFormat.MediaPipeTask, ModelFormat.LiteRtLm -> {
+            ModelFormat.MediaPipeTask, ModelFormat.LiteRtLm, ModelFormat.Onnx, ModelFormat.TensorFlowLite, ModelFormat.Safetensors -> {
                 val inspection = NonGgufBundleInspector.inspectFile(runnableFile)
                 if (!inspection.isValid) return inspection.errorMessage ?: "Invalid model bundle."
             }
@@ -2656,6 +2687,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         val safeName = runCatching { ModelArtifactStorage.inferFileName(url, defaultName) }.getOrDefault(defaultName)
         return when {
+            ModelFormat.fromFileName(safeName)?.isPortable == true -> safeName
             safeName.endsWith(".gguf", ignoreCase = true) -> safeName
             safeName.endsWith(".task", ignoreCase = true) -> safeName
             safeName.endsWith(".litertlm", ignoreCase = true) -> safeName
@@ -2699,10 +2731,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val clean = input.trim()
             if (clean.isBlank()) return ModelInputClassification.Invalid
 
-            val directFormats = listOf(".task", ".litertlm", ".tflite", ".zip")
+            val directFormats = listOf(".task", ".litertlm", ".tflite", ".onnx", ".safetensors", ".zip")
 
             val parsedUrl = clean.toHttpUrlOrNull()
             val path = parsedUrl?.encodedPath ?: clean
+
+            if (ModelFormat.fromFileName(parsedUrl?.pathSegments?.lastOrNull().orEmpty())?.isPortable == true &&
+                ModelDownloadUrlPolicy.isExactHuggingFace(clean)) return ModelInputClassification.HuggingFace
 
             // Direct formats (even when hosted on Hugging Face) route to DirectDownload!
             if (directFormats.any { ext -> path.endsWith(ext, ignoreCase = true) }) {

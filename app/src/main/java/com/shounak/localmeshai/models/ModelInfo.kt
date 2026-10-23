@@ -80,6 +80,37 @@ data class ModelInfo(
     val supportsVisionInput: Boolean = false,
     val loadRestriction: LoadRestriction? = null
 ) {
+    /** Old persisted descriptions counted only selected weights, before companion discovery. */
+    val displayDescription: String
+        get() {
+            val repoDescription = description.startsWith("Hugging Face model from ")
+            if (!repoDescription) return description
+            val base = description.replace(Regex("\\s*\\(\\d+ files?\\)$"), "")
+            val artifacts = bundle?.allArtifacts ?: return "$base (selected model files; companions fetched during download)"
+            val weights = artifacts.count { ModelFormat.fromFileName(it.displayName) != null }
+            val companions = artifacts.size - weights
+            return "$base ($weights model file${if (weights == 1) "" else "s"}, $companions companion file${if (companions == 1) "" else "s"})"
+        }
+
+    val hasMissingFiles: Boolean
+        get() = com.shounak.localmeshai.utils.PortableCompanionFiles.isMissing(errorMessage)
+
+    val failureLabel: String
+        get() = when {
+            hasMissingFiles -> "Missing files"
+            downloadedBytes > 0L && progress >= 1f -> "Model validation failed"
+            else -> "Download Failed"
+        }
+
+    val taskLabel: String get() = when (bundle?.capabilities?.task) {
+        ModelTask.VisionLanguage -> "Image questions"
+        ModelTask.ImageClassification -> "Image classification"
+        ModelTask.SpeechRecognition -> "Speech transcription"
+        ModelTask.ImageGeneration -> "Image generation"
+        ModelTask.Unknown -> "Unrecognized task"
+        else -> type.label
+    }
+
     val canTryAnyway: Boolean
         get() = loadRestriction?.canTryAnyway == true
 
@@ -140,6 +171,13 @@ data class ModelInfo(
      */
     val displaySize: String
         get() = if (isFuturePlaceholder) "Unknown" else size
+
+    /** Derive presentation from artifact metadata, including entries saved with the old GGUF label. */
+    val displayBackend: String
+        get() {
+            val format = bundle?.format ?: downloadSpec?.effectiveFormat ?: ModelFormat.fromFileName(fileName)
+            return if (format != null && (backend.isBlank() || (format != ModelFormat.GGUF && backend.contains("GGUF", true)))) format.backendLabel else backend
+        }
 
     val contextLengthLabel: String
         get() = effectiveContextWindowTokens?.let { "Context ${it.withThousandsSeparator()}" } ?: "Context TBD"

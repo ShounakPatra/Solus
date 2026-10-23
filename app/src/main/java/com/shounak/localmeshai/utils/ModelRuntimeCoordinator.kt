@@ -14,7 +14,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 data class RegistrationToken(val id: String = java.util.UUID.randomUUID().toString())
 
-enum class ModelRuntimeOwner { Chat, Vision }
+enum class ModelRuntimeOwner { Chat, Vision, Benchmark }
 
 /**
  * Coordinates single active model runtime ownership across Chat and Vision.

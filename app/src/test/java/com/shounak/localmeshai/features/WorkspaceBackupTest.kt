@@ -68,16 +68,17 @@ class WorkspaceBackupTest {
         val source = Workspace(folder.newFolder())
         val attachment = source.repository.attachmentStore.getAttachmentDir(ChatKind.Text, "original", "input", true).resolve("notes.txt").apply { writeText("Exact attached text") }
         val passage = RagPassage("doc", "notes.txt", 2, "Exact retrieved passage")
+        val toolUse = com.shounak.localmeshai.ai.tools.ToolUse("calculator", "{\"expression\":\"2+2\"}", "4")
         val original = chat("original").copy(messages = listOf(
             ChatMessage(id = "u", text = "Question", isUser = true, documentPath = attachment.path),
-            ChatMessage(id = "a", text = "Answer", isUser = false, userMessageId = "u", ragPassages = listOf(passage))))
+            ChatMessage(id = "a", text = "Answer", isUser = false, userMessageId = "u", ragPassages = listOf(passage), toolUses = listOf(toolUse))))
         assertTrue(source.repository.saveChatSessions(listOf(original)))
         assertTrue(source.repository.saveVisionSessions(listOf(vision("vision"))))
         assertNotNull(source.memory.addMemory("Prefer concise answers"))
         source.prefs.rename("text", original.id, "Renamed")
         source.prefs.togglePin("text", original.id)
         source.prefs.setProfile("model", ModelProfile("Custom instructions", 2048, 0.5f, 0.9f, 30))
-        source.settings.updateSettings { it.copy(huggingFaceToken = "SOURCE_SECRET", enableSuggestionPills = true) }
+        source.settings.updateSettings { it.copy(huggingFaceToken = "SOURCE_SECRET", enableSuggestionPills = true, enableToolCalling = true) }
         val output = ByteArrayOutputStream()
         source.backup.exportTo(output, true)
         val stage = folder.newFolder()
@@ -94,6 +95,8 @@ class WorkspaceBackupTest {
         assertNotEquals(original.id, restored.id)
         assertEquals("Exact attached text", File(restored.messages.first().documentPath!!).readText())
         assertEquals(listOf(passage), restored.messages.last().ragPassages)
+        assertEquals(listOf(toolUse), restored.messages.last().toolUses)
+        assertTrue(target.settings.settings.value.enableToolCalling)
         assertEquals(restored.messages.first().id, restored.messages.last().userMessageId)
         assertEquals("Renamed", target.prefs.title("text", restored.id, "fallback"))
         assertTrue(target.prefs.pinned("text", restored.id))
@@ -115,6 +118,38 @@ class WorkspaceBackupTest {
         target.backup.restoreFrom(output.toByteArray().inputStream())
         assertEquals(listOf("existing"), target.repository.loadChatSessions().map { it.id })
         assertTrue(target.cache.listFiles().orEmpty().none { it.name.startsWith("backup_restore_") })
+    }
+
+    @Test fun failedHistoryCommitRemovesUncommittedAttachments() = runBlocking {
+        val source = Workspace(folder.newFolder())
+        val photo = source.repository.attachmentStore.storeAttachmentFromFile(ChatKind.Vision, "source",
+            sourceFile = File(source.cache, "photo.jpg").apply { writeBytes(ByteArray(1024) { 1 }) })
+        source.repository.saveVisionSessions(listOf(vision("source").copy(imagePath = photo.absolutePath)))
+        val output = ByteArrayOutputStream(); source.backup.exportTo(output, true)
+        val target = Workspace(folder.newFolder())
+        // Reads remain healthy, but a nonempty temporary-file directory prevents commit after copying.
+        File(target.files, "${target.repository.visionFile.name}.tmp").apply {
+            mkdirs(); resolve("blocker").writeText("prevent atomic write")
+        }
+        try { target.backup.restoreFrom(output.toByteArray().inputStream()); fail("Expected restore failure") }
+        catch (_: IllegalStateException) { }
+        assertFalse(target.files.walkTopDown().any { it.isFile && it.name == "photo.jpg" })
+    }
+
+    @Test fun repeatedAttachmentReferencesShareOneOwnedCopy() = runBlocking {
+        val source = Workspace(folder.newFolder())
+        val image = source.repository.attachmentStore.storeAttachmentFromFile(ChatKind.Vision, "source",
+            sourceFile = File(source.cache, "photo.jpg").apply { writeBytes(ByteArray(1024) { 1 }) })
+        source.repository.saveVisionSessions(listOf(vision("source").copy(imagePath = image.absolutePath,
+            messages = listOf(VisionChatMessage(id = "m", text = "Photo", isUser = true, imagePath = image.absolutePath)))))
+        val output = ByteArrayOutputStream(); source.backup.exportTo(output, true)
+        val target = Workspace(folder.newFolder())
+        target.backup.restoreFrom(output.toByteArray().inputStream())
+        val restored = target.repository.loadVisionSessions().single()
+        assertEquals(restored.imagePath, restored.messages.first { it.isUser }.imagePath)
+        assertTrue(File(restored.imagePath!!).isFile)
+        target.backup.restoreFrom(output.toByteArray().inputStream())
+        assertEquals(restored.imagePath, target.repository.loadVisionSessions().single().imagePath)
     }
 
     @Test fun duplicateMemoryWithDifferentCapitalizationDoesNotStopRemainingRestore() = runBlocking {

@@ -221,7 +221,8 @@ object ModelRemovalCoordinator {
         }
         try {
             // 1. Reserve and obtain truthful runtime shutdown if model is active
-            if (isModelSelected(model.id)) {
+            if (isModelSelected(model.id) || ModelRuntimeCoordinator.getActiveStableModelId(ModelRuntimeOwner.Benchmark) == model.id ||
+                (model.localPath != null && ModelRuntimeCoordinator.getActiveModelPath(ModelRuntimeOwner.Benchmark) == model.localPath)) {
                 val shutdownResult = withTimeoutOrNull(10_000L) {
                     ModelRuntimeCoordinator.releaseAll()
                 } ?: ShutdownResult.TimedOut
@@ -355,6 +356,7 @@ object ModelRemovalCoordinator {
                 )
             }
 
+            ModelUsageStore.get(context).remove(model.id)
             RemovalResult.Success
         } catch (t: Throwable) {
             Log.e(TAG, "Error executing removal sequence for ${model.id}", t)
@@ -407,7 +409,7 @@ object ModelRemovalCoordinator {
                     }
                 }
                 if (!filesFailed) {
-                    markDeletionComplete(context, record.modelId)
+                    if (markDeletionComplete(context, record.modelId)) ModelUsageStore.get(context).remove(record.modelId)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to recover deletion for ${record.modelId}", e)

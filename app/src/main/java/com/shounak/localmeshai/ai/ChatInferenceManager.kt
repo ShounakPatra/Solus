@@ -10,6 +10,11 @@ import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.tool
+import com.shounak.localmeshai.ai.tools.CalculatorTool
+import com.shounak.localmeshai.ai.tools.CurrentDateTimeTool
+import com.shounak.localmeshai.ai.tools.ToolUseRecorder
+import com.shounak.localmeshai.ai.tools.ToolUse
 import com.google.ai.edge.litertlm.ThinkingConfig
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
@@ -59,8 +64,24 @@ class ChatInferenceManager(context: Context) {
     private var mediaPipeInference: LlmInference? = null
     private var liteRtEngine: Engine? = null
     private var liteRtConversation: Conversation? = null
+    private val liteRtToolRecorder = ToolUseRecorder()
+    val lastLiteRtToolsUsed: List<ToolUse> get() = liteRtToolRecorder.snapshot()
+    private var ggufConversationTools: List<com.shounak.localmeshai.ai.tools.ChatTool> = emptyList()
+    private var ggufConversationHasTools = false
+    private val ggufToolRecorder = ToolUseRecorder()
+    val lastToolsUsed: List<ToolUse> get() = when (runtime) {
+        RuntimeKind.LlamaCpp -> ggufToolRecorder.snapshot()
+        RuntimeKind.LiteRtLm -> lastLiteRtToolsUsed
+        else -> emptyList()
+    }
+    private var lastToolsRequestId = ""
+    fun toolsUsedForRequest(requestId: String): List<ToolUse> = if (requestId == lastToolsRequestId) lastToolsUsed else emptyList()
+    private var liteRtToolsDisabledForLoad = false
+    private var liteRtConversationHasTools = false
+    private var liteRtCompletedTurns = 0
     private var liteRtCacheDir: File? = null
     private var llamaCppEngine: LlamaCppEngine? = null
+    private var portableTextEngine: PortableTextEngine? = null
     private var profileModelId: String = ""
     private fun profileSampling(): LlamaSamplingParams {
         val profile = com.shounak.localmeshai.features.WorkspacePreferences.get(context).profile(profileModelId)
@@ -94,9 +115,10 @@ class ChatInferenceManager(context: Context) {
         RuntimeKind.LlamaCpp -> llamaCppEngine?.isInitialized == true
         RuntimeKind.LiteRtLm -> liteRtConversation != null
         RuntimeKind.MediaPipe -> mediaPipeInference != null
+        RuntimeKind.Portable -> portableTextEngine != null
         RuntimeKind.None -> false
     }
-    val usesStructuredHistory: Boolean get() = runtime == RuntimeKind.LlamaCpp
+    val usesStructuredHistory: Boolean get() = runtime == RuntimeKind.LlamaCpp || runtime == RuntimeKind.Portable
     @Volatile private var activeOperationControlId: Long = 0L
     @Volatile private var useNativeGemmaTaskTemplate = false
     @Volatile private var mediaPipeTemperature = DEFAULT_TEMPERATURE
@@ -396,6 +418,8 @@ class ChatInferenceManager(context: Context) {
             }
             llamaCppEngine = engine
             runtime = RuntimeKind.LlamaCpp
+            ggufConversationTools = toolsForNewConversation()
+            ggufConversationHasTools = AppSettings.getInstance(context).settings.value.enableToolCalling && llamaCppEngine?.supportsToolCalling() == true
             _isGgufActive.value = true
 
             // Set current model configuration for recovery fallback
@@ -435,6 +459,29 @@ class ChatInferenceManager(context: Context) {
             ?: throw IllegalArgumentException("No accessible file found for model.")
         val effectiveFile = File(effectivePath)
 
+        if (detectedFormat?.isPortable == true) {
+            if (InitCrashGuard.isModelBlocked(context, effectiveId)) throw IllegalStateException(InitCrashGuard.blockedModelMessage())
+            onModelProgress?.invoke(ModelLoadStage.VerifyingFile, null, null)
+            InitCrashGuard.markInitStarted(context, effectiveId)
+            val engine = try {
+                PortableTextEngine.open(effectiveFile, detectedFormat, configuredContextWindow ?: 2048)
+            } catch (t: Throwable) {
+                InitCrashGuard.markInitFailed(context, effectiveId)
+                throw t
+            }
+            portableTextEngine = engine
+            InitCrashGuard.markInitSucceeded(context, effectiveId)
+            // Native construction is synchronous. Honor cancellation before publishing readiness;
+            // the outer cleanup owns the newly constructed engine even on this path.
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (stopRequested) throw CancellationException("Model initialization cancelled")
+            runtimeContextCapacity.initialize(engine.contextTokens) { Unit }
+            runtime = RuntimeKind.Portable
+            activeBackendDisplayName = detectedFormat.backendLabel
+            activeModelLease = modelLease ?: ModelArtifactStorage.leaseArtifact(effectiveFile)
+            return
+        }
+
         val shouldUseLiteRtLmConversation = detectedFormat == ModelFormat.LiteRtLm
         val resolvedModelPath = effectiveFile.absolutePath
 
@@ -442,13 +489,7 @@ class ChatInferenceManager(context: Context) {
             val inferenceBackend = when (pref) {
                 "CPU" -> InferenceBackend.LITERT_CPU
                 "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
-                else -> {
-                    if (allowUnsafeOverride) {
-                        InferenceBackend.LITERT_GPU
-                    } else {
-                        DeviceUtils.selectBackendForModelFile(context, effectiveFile.name)
-                    }
-                }
+                else -> DeviceUtils.selectBackendForModelFile(context, effectiveFile.name)
             }
             val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                 context = context,
@@ -468,7 +509,8 @@ class ChatInferenceManager(context: Context) {
                     modelSize = modelSize,
                     isVision = false,
                     fileName = effectiveFile.name,
-                    backendLabel = "LiteRT-LM"
+                    backendLabel = "LiteRT-LM",
+                    modelFilePath = effectiveFile.absolutePath
                 )
                 if (!allowed) {
                     throw IllegalStateException(reason)
@@ -557,6 +599,7 @@ class ChatInferenceManager(context: Context) {
 
             // If we reach here, native init succeeded!
 
+            liteRtToolsDisabledForLoad = false
             liteRtEngine = engine
             // The UI defaults to Think off. Start default-thinking models with the
             // same hard template context so the very first request cannot inherit
@@ -621,6 +664,9 @@ class ChatInferenceManager(context: Context) {
         onUpdate: (String) -> Unit
     ): InferenceExecutionResult = withContext(Dispatchers.IO) {
         stopRequested = false
+        lastToolsRequestId = requestId
+        liteRtToolRecorder.clear()
+        ggufToolRecorder.clear()
         lastLiteRtSnapshot = null
         // Keep the user's original spelling in chat/history, but translate
         // Unicode scripts such as (a+b)² for the inference request.  Small
@@ -720,6 +766,19 @@ class ChatInferenceManager(context: Context) {
 
         try {
             val response = when (runtime) {
+                RuntimeKind.Portable -> {
+                    val sampling = profileSampling()
+                    var firstToken = true
+                    requireNotNull(portableTextEngine).generate(
+                        prompt = portableTextEngine!!.renderPrompt(structuredMessages, inferencePrompt, memoryContext, thinkingMode), limit = MAX_RESPONSE_TOKENS,
+                        temperature = sampling.temperature, topP = sampling.topP, topK = sampling.topK,
+                        onText = { delta -> timing?.recordChunk(delta); effectiveOnUpdate(delta) },
+                        onToken = {
+                            lastNonLlamaTokenCount = it
+                            if (firstToken) { firstToken = false; timing?.recordFirstToken(); reportProgress(RequestProgress.Generating) }
+                        }
+                    )
+                }
                 RuntimeKind.LiteRtLm -> streamLiteRtLm(
                     prompt = liteRtUserText,
                     thinkingMode = thinkingMode,
@@ -843,6 +902,42 @@ class ChatInferenceManager(context: Context) {
 
     @OptIn(ExperimentalApi::class)
     private suspend fun streamLiteRtLm(
+        prompt: String, thinkingMode: Boolean, requestId: String = "",
+        timing: InferenceTiming? = null, onProgress: ((RequestProgress) -> Unit)? = null,
+        onTokensGenerated: ((Int) -> Unit)? = null, responseSnapshot: () -> String,
+        publisher: StreamingResponsePublisher? = null,
+        responseController: InferenceResponseController? = null, onUpdate: (String) -> Unit
+    ): String {
+        liteRtToolRecorder.clear()
+        val textSeen = java.util.concurrent.atomic.AtomicBoolean(false)
+        suspend fun attempt(): String = streamLiteRtLmAttempt(
+            prompt, thinkingMode, requestId, timing, onProgress, onTokensGenerated,
+            responseSnapshot, publisher, responseController, textSeen, onUpdate
+        )
+        try {
+            val answer = attempt()
+            liteRtCompletedTurns++
+            return answer
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            if (!liteRtConversationHasTools || liteRtCompletedTurns != 0 || textSeen.get() ||
+                stopRequested || isBeingClosed) throw failure
+            Log.w(TAG, "First LiteRT tool turn failed before text; retrying without tools", failure)
+            liteRtToolsDisabledForLoad = true
+            val toolsAlreadyUsed = liteRtToolRecorder.snapshot()
+            runCatching { liteRtConversation?.close() }
+            liteRtConversation = createLiteRtConversation(liteRtConversationMode)
+            toolsAlreadyUsed.forEach(liteRtToolRecorder::add)
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
+            val answer = attempt()
+            liteRtCompletedTurns++
+            return answer
+        }
+    }
+
+    private suspend fun streamLiteRtLmAttempt(
         prompt: String,
         thinkingMode: Boolean,
         requestId: String = "",
@@ -852,6 +947,7 @@ class ChatInferenceManager(context: Context) {
         responseSnapshot: () -> String,
         publisher: StreamingResponsePublisher? = null,
         responseController: InferenceResponseController? = null,
+        textSeen: java.util.concurrent.atomic.AtomicBoolean,
         onUpdate: (String) -> Unit
     ): String {
         val conversation = liteRtConversation ?: throw IllegalStateException("Inference not initialized")
@@ -902,10 +998,12 @@ class ChatInferenceManager(context: Context) {
                             "latencyMs=${System.currentTimeMillis() - requestStartedAt} chars=${delta.length}"
                     )
                 }
+                if (delta.isNotEmpty()) textSeen.set(true)
                 timing?.recordChunk(delta)
                 runCatching { onUpdate(delta) }
             },
             onSnapshot = { snap ->
+                if (snap.answerText.isNotEmpty() || snap.reasoningText.isNotEmpty()) textSeen.set(true)
                 responseController?.appendStructured(
                     answer = snap.answerText,
                     reasoning = snap.reasoningText,
@@ -942,6 +1040,7 @@ class ChatInferenceManager(context: Context) {
             throw cancelled
         } catch (exception: Exception) {
             lastLiteRtSnapshot = adapter.currentSnapshot()
+            adapter.cancel(conversation)
             if (stopRequested) {
                 throw CancellationException("Generation cancelled").also { it.initCause(exception) }
             }
@@ -1069,9 +1168,52 @@ class ChatInferenceManager(context: Context) {
 
         val isVulkan = engine.activeBackend == LlamaBackend.VULKAN
         var firstTokenRecorded = false
+        var pendingToolHistory: org.json.JSONArray? = null
         responseController?.isStructuredMode = true
-
         try {
+            ggufToolRecorder.clear()
+            if (ggufConversationHasTools && mediaInputs.isEmpty()) {
+                try {
+                    val history = org.json.JSONArray().apply {
+                        messages.forEach { (role, content) -> put(org.json.JSONObject().put("role", role).put("content", content)) }
+                    }
+                    pendingToolHistory = history
+                    val result = com.shounak.localmeshai.ai.tools.ToolCallingLoop.run(
+                        messages = history,
+                        tools = ggufConversationTools,
+                        record = ggufToolRecorder::add,
+                        checkActive = { if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled") }
+                    ) { request ->
+                        var parsed: String? = null
+                        val status = engine.generateMultimodalStream(
+                            prompt = prompt, messages = messages, enableThinking = !noThinking,
+                            samplingParams = profileSampling(), onMetrics = onMetrics,
+                            toolRequestJson = request, onToolResponse = { parsed = it }, onToken = {}
+                        )
+                        if (status == LlamaGenerationResult.Stopped) throw CancellationException("Generation cancelled")
+                        org.json.JSONObject(checkNotNull(parsed) { "Missing tool response" })
+                    }
+                    val answer = result.optString("content", "")
+                    val reasoning = result.optString("reasoning_content", "")
+                    responseController?.isStructuredMode = true
+                    responseController?.appendStructured(answer, reasoning, false, reqId = requestId, attemptId = 1)
+                    publisher?.notifyStructuredUpdate()
+                    if (answer.isNotEmpty()) timing?.recordFirstToken()
+                    return answer
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    if (failure is LlamaExecutionException && failure.category in setOf(
+                        LlamaFailureCategory.NumericalInstability, LlamaFailureCategory.BackendExecution,
+                        LlamaFailureCategory.GenerationDecodeFailed, LlamaFailureCategory.PromptDecodeFailed
+                    )) throw failure
+                    if (ggufToolRecorder.snapshot().isNotEmpty()) throw failure
+                    pendingToolHistory = null
+                    ggufConversationHasTools = false
+                    Log.w(TAG, "GGUF tools unavailable; retrying this conversation as ordinary chat", failure)
+                }
+            }
+
             val result = engine.generateMultimodalStream(
                 prompt = prompt,
                 messages = messages,
@@ -1171,7 +1313,15 @@ class ChatInferenceManager(context: Context) {
 
                 // 4. Retry generation once on CPU with the same messages
                 var retryFirstTokenRecorded = false
+                val recoveryToolRequest = pendingToolHistory?.takeIf { cpuEngine.supportsToolCalling() }?.let { history ->
+                    org.json.JSONObject().put("messages", history).put("allow_calls", false)
+                        .put("tools", org.json.JSONArray().apply {
+                            ggufConversationTools.forEach { put(org.json.JSONObject().put("type", "function")
+                                .put("function", org.json.JSONObject(it.getToolDescriptionJsonString()))) }
+                        }).toString()
+                }
                 val retryResult = cpuEngine.generateMultimodalStream(
+                    toolRequestJson = recoveryToolRequest,
                     prompt = prompt,
                     messages = messages,
                     mediaInputs = mediaInputs,
@@ -1232,6 +1382,7 @@ class ChatInferenceManager(context: Context) {
 
     fun cancelGeneration() {
         stopRequested = true
+        portableTextEngine?.stop()
         runCatching { llamaCppEngine?.stop() }.onFailure { error ->
             Log.w(TAG, "Native stop failed; shutdown will retain ownership until close succeeds", error)
         }
@@ -1247,7 +1398,12 @@ class ChatInferenceManager(context: Context) {
     }
 
     fun resetConversation(noThinking: Boolean = false) {
-        if (runtime == RuntimeKind.LlamaCpp) llamaCppEngine?.resetAfterValidation()
+        if (runtime == RuntimeKind.LlamaCpp) {
+            llamaCppEngine?.resetAfterValidation()
+            ggufConversationTools = toolsForNewConversation()
+            ggufConversationHasTools = AppSettings.getInstance(context).settings.value.enableToolCalling && llamaCppEngine?.supportsToolCalling() == true
+            ggufToolRecorder.clear()
+        }
         if (runtime != RuntimeKind.LiteRtLm) return
         val mode = if (noThinking && isDefaultThinkingModel) {
             LiteRtConversationMode.NoThinking
@@ -1262,9 +1418,59 @@ class ChatInferenceManager(context: Context) {
         stopRequested = false
     }
 
+    private fun toolsForNewConversation(): List<com.shounak.localmeshai.ai.tools.ChatTool> = buildList {
+        add(CalculatorTool())
+        add(CurrentDateTimeTool())
+        if (AppSettings.getInstance(context).settings.value.enableRag) {
+            add(com.shounak.localmeshai.ai.tools.DocumentSearchTool { query ->
+                if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
+                try {
+                    kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+                        kotlinx.coroutines.withTimeout(5_000) {
+                            val settings = AppSettings.getInstance(context).settings.value
+                            val matches = com.shounak.localmeshai.rag.RagManager.getInstance(context).retrieve(
+                                query, topK = settings.ragTopK.coerceIn(1, 5), minScore = settings.ragMinSimilarity
+                            ).matches
+                            org.json.JSONObject().put("matches", org.json.JSONArray().apply {
+                                matches.forEach { match -> put(org.json.JSONObject()
+                                    .put("document", match.chunk.documentName).put("chunk", match.chunk.chunkIndex)
+                                    .put("text", match.chunk.text.take(2000))) }
+                            }).toString()
+                        }
+                    }
+                } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                    "Error: Document search timed out"
+                }
+            })
+        }
+    }
+
     private fun createLiteRtConversation(mode: LiteRtConversationMode): Conversation? {
         val engine = liteRtEngine ?: return null
         liteRtConversationMode = mode
+        liteRtCompletedTurns = 0
+        liteRtConversationHasTools = false
+        liteRtToolRecorder.clear()
+        if (!liteRtToolsDisabledForLoad && AppSettings.getInstance(context).settings.value.enableToolCalling) {
+            try {
+                val providers = toolsForNewConversation().map {
+                    tool(liteRtToolRecorder.recording(it))
+                }
+                val conversation = engine.createConversation(ConversationConfig(
+                    tools = providers,
+                    automaticToolCalling = true,
+                    extraContext = if (mode == LiteRtConversationMode.NoThinking)
+                        ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
+                    else emptyMap()
+                ))
+                liteRtConversationHasTools = true
+                return conversation
+            } catch (failure: Exception) {
+                if (failure is CancellationException || stopRequested || isBeingClosed) throw failure
+                liteRtToolsDisabledForLoad = true
+                Log.w(TAG, "LiteRT tool conversation unavailable; using ordinary chat for this load", failure)
+            }
+        }
         return when (mode) {
             LiteRtConversationMode.Default -> engine.createConversation()
             LiteRtConversationMode.NoThinking -> engine.createConversation(
@@ -1282,6 +1488,11 @@ class ChatInferenceManager(context: Context) {
         isBeingClosed = true
         cancelGeneration()
         var closeError: Throwable? = null
+
+        if (portableTextEngine != null) {
+            try { portableTextEngine?.close(); portableTextEngine = null }
+            catch (t: Throwable) { closeError = t }
+        }
 
         val sessionToClose = activeMediaPipeSession
         if (sessionToClose != null) {
@@ -1405,6 +1616,7 @@ class ChatInferenceManager(context: Context) {
         None,
         MediaPipe,
         LiteRtLm,
+        Portable,
         LlamaCpp
     }
 

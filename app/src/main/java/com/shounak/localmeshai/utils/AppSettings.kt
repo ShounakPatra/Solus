@@ -20,6 +20,7 @@ data class AppSettingsData(
     val huggingFaceToken: String = "",
     val autoCheckUpdates: Boolean = true,
     val llamaBackendPreference: String = "AUTO",
+    val enableToolCalling: Boolean = false,
     val enableRag: Boolean = false,
     val ragTopK: Int = 3,
     val ragMinSimilarity: Float = 0.35f,
@@ -53,6 +54,7 @@ class AppSettings internal constructor(
             llamaBackendPreference = prefs.getString(KEY_LLAMA_BACKEND_PREF, "AUTO")?.let {
                 if (it.uppercase() in listOf("AUTO", "CPU", "VULKAN")) it.uppercase() else "AUTO"
             } ?: "AUTO",
+            enableToolCalling = prefs.getBoolean(KEY_ENABLE_TOOL_CALLING, false),
             enableRag = prefs.getBoolean(KEY_ENABLE_RAG, false),
             ragTopK = prefs.getInt(KEY_RAG_TOP_K, 3),
             ragMinSimilarity = prefs.getFloat(KEY_RAG_MIN_SIMILARITY, 0.35f).let {
@@ -79,6 +81,7 @@ class AppSettings internal constructor(
             .putInt(KEY_AUTO_UNLOAD_MINS, updated.autoUnloadMinutes)
             .putBoolean(KEY_AUTO_CHECK_UPDATES, updated.autoCheckUpdates)
             .putString(KEY_LLAMA_BACKEND_PREF, updated.llamaBackendPreference)
+            .putBoolean(KEY_ENABLE_TOOL_CALLING, updated.enableToolCalling)
             .putBoolean(KEY_ENABLE_RAG, updated.enableRag)
             .putInt(KEY_RAG_TOP_K, updated.ragTopK)
             .putFloat(KEY_RAG_MIN_SIMILARITY, updated.ragMinSimilarity)
@@ -101,6 +104,7 @@ class AppSettings internal constructor(
         internal const val KEY_AUTO_UNLOAD_MINS = "auto_unload_minutes"
         private const val KEY_AUTO_CHECK_UPDATES = "auto_check_updates"
         private const val KEY_LLAMA_BACKEND_PREF = "llama_backend_pref"
+        private const val KEY_ENABLE_TOOL_CALLING = "enable_tool_calling"
         private const val KEY_ENABLE_RAG = "enable_rag"
         private const val KEY_RAG_TOP_K = "rag_top_k"
         private const val KEY_RAG_MIN_SIMILARITY = "rag_min_similarity"

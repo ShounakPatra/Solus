@@ -137,18 +137,6 @@ object ModelCatalog {
             isRecommended = true,
             contextWindowTokens = 2048
         ),
-        ModelInfo(
-            id = "safetensors_conversion_info",
-            name = "Safetensors Guide 💡",
-            size = "N/A",
-            status = ModelStatus.ComingSoon,
-            type = ModelType.Text,
-            fileName = "model.safetensors",
-            description = "Raw .safetensors (PyTorch FP16/BF16) checkpoints exceed mobile RAM limits. Download corresponding pre-quantized .gguf or .litertlm models above for on-device chat.",
-            backend = "Needs GGUF / LiteRT conversion",
-            deviceTarget = "Conversion guidance"
-        ),
-
         // ── Coding specialists ────────────────────────────────────────
         ModelInfo(
             id = "qwen25_coder_05b_gguf",

@@ -13,6 +13,30 @@ import java.io.File
 import java.io.IOException
 
 class ModelArtifactStorageTest {
+    @Test fun deletingPortableBundlesRemovesWeightsCompanionsAndPartialDownloadsOnlyForThatModel() {
+        for (extension in listOf("onnx", "safetensors")) {
+            val id = "portable_$extension"
+            val names = listOf("model.$extension", "config.json", "tokenizer.json", "tokenizer_config.json",
+                if (extension == "onnx") "model.onnx_data" else "model-00002-of-00002.safetensors")
+            val staging = storage.getStagingDir(id).apply { mkdirs() }
+            val items = names.mapIndexed { index, name ->
+                StagedArtifactItem(File(staging, name).apply { writeText("fixture $name") }, name, isPrimary = index == 0, order = index)
+            }
+            val primary = storage.publishArtifactBundle(id, items, names.first(), "source_$id")
+            val bundleDir = primary.parentFile!!
+            names.forEach { assertTrue(File(bundleDir, it).isFile) }
+            File(storage.getStagingDir(id).apply { mkdirs() }, "unfinished.download").writeText("partial download")
+            val other = storage.getModelDir("retained_$extension", true)
+            val retained = File(other, "tokenizer.json").apply { writeText("other model tokenizer") }
+            val lease = ModelArtifactStorage.leaseArtifact(File(bundleDir, "tokenizer.json"))
+            try { assertFalse("Companions in use must protect the whole bundle", storage.deleteModel(id)) }
+            finally { lease.close() }
+            assertTrue(storage.deleteModel(id))
+            assertFalse(storage.getModelDir(id).exists())
+            assertTrue(retained.isFile)
+        }
+    }
+
 
     @get:Rule
     val tempFolder = TemporaryFolder()

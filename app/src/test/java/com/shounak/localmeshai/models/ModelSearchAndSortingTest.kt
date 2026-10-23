@@ -13,6 +13,24 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModelSearchAndSortingTest {
+    @Test fun downloadedOrderRemembersLastTwoLoadsAndPromotesNewDownloads() {
+        val previous = createTestModel("previous", "Previous", ModelStatus.Available, 10L)
+        val current = createTestModel("current", "Current", ModelStatus.Available, 20L)
+        val other = createTestModel("other", "Other", ModelStatus.Available, 30L)
+        val failed = createTestModel("failed", "Failed", ModelStatus.Failed, 40L)
+        val models = listOf(other, previous, failed, current)
+        val used = mapOf("previous" to 100L, "current" to 200L)
+        fun order(items: List<ModelInfo>, usage: Map<String, Long>) =
+            com.shounak.localmeshai.ui.screens.orderDownloadedModels(items, usage).map { it.id }
+        // Unloading does not erase recency; no active selection is needed to restore this order.
+        assertEquals(listOf("current", "previous", "failed", "other"), order(models, used))
+        val downloaded = other.copy(downloadedAt = 300L)
+        assertEquals(listOf("other", "current", "previous", "failed"), order(listOf(downloaded, previous, failed, current), used))
+        assertEquals(listOf("previous", "current", "failed", "other"), order(models, used + ("previous" to 400L)))
+        assertEquals("other", order(listOf(previous, current, other), emptyMap()).first())
+        assertFalse(order(listOf(current, other), used).contains("previous"))
+    }
+
 
     private fun createTestModel(
         id: String,

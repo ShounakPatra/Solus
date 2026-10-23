@@ -6,6 +6,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DeviceUtilsSafetyTest {
+    @Test fun quantizationAndStorageUnitsAreNotParameterCounts() {
+        for (name in listOf("64-8bits (TensorFlowLite)", "64-fp16", "8bit", "model-4bits")) {
+            org.junit.Assert.assertNull(DeviceUtils.estimateModelParametersB(name, "122 MB"))
+        }
+        org.junit.Assert.assertNull(DeviceUtils.estimateModelParametersB("Model", "512 MiB"))
+        org.junit.Assert.assertEquals(0.135f, DeviceUtils.estimateModelParametersB("SmolLM2-135M-Instruct", "270 MB")!!, .0001f)
+        org.junit.Assert.assertEquals(7f, DeviceUtils.estimateModelParametersB("Qwen-7B-Instruct", "4 GB")!!, .0001f)
+    }
     @Test
     fun smallModelsAllowedOnLowRamDevice() {
         val qwen05b = ModelCatalog.defaultModels.single { it.id == "qwen25_05b_gguf" }

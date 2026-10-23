@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Debug
 import android.os.PowerManager
 import com.shounak.localmeshai.BuildConfig
+import com.shounak.localmeshai.models.ModelFormat
 import com.shounak.localmeshai.models.ModelInfo
 import com.shounak.localmeshai.models.ModelType
 import java.util.Locale
@@ -18,13 +19,7 @@ enum class InferenceBackend {
 }
 
 object DeviceUtils {
-    private const val MIN_RAM_GIB_FOR_8_GB_DEVICE = 7.0
-    private const val MIN_RAM_GIB_FOR_SUB_1B_LITERT_LM = 3.5
     private const val MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM = 5.0
-    private const val MIN_RAM_GIB_FOR_SMALL_LITERT_LM = 6.5
-    private const val MIN_RAM_GIB_FOR_COMPACT_LITERT_LM = 10.5
-    private const val MIN_RAM_GIB_FOR_LARGE_LITERT_LM = 14.5
-    private const val MIN_RAM_GIB_FOR_HUGE_LITERT_LM = 22.0
 
     fun getTotalRamGB(context: Context): Double {
         val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
@@ -133,70 +128,32 @@ object DeviceUtils {
         context: Context,
         modelInfo: ModelInfo
     ): Pair<Boolean, String> {
-        val fileName = modelInfo.fileName
-        val modelId = modelInfo.id
-        val modelName = modelInfo.name
-        val modelSize = modelInfo.size
+        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return true to ""
+        val total = runCatching {
+            val info = ActivityManager.MemoryInfo()
+            manager.getMemoryInfo(info)
+            info.totalMem / (1024.0 * 1024.0 * 1024.0)
+        }.getOrNull() ?: return true to ""
+        val requested = com.shounak.localmeshai.features.WorkspacePreferences.get(context).profile(modelInfo.id).contextTokens ?: 2048
+        val capacity = modelInfo.bundle?.capabilities?.contextLength ?: modelInfo.downloadSpec?.capabilities?.contextLength
+        val effective = effectiveContextTokens(modelInfo.bundle?.format ?: ModelFormat.fromFileName(modelInfo.fileName), total, requested, capacity, estimateModelParametersB(modelInfo.name, modelInfo.size))
+        return ModelMemoryAssessment.check(total, modelInfo, effective)
+    }
 
-        // LiteRT-LM models have specialized GPU / CPU chipset checks
-        if (fileName.endsWith(".litertlm", ignoreCase = true)) {
-            return canInitializeLiteRtLm(
-                context = context,
-                modelId = modelId,
-                modelName = modelName,
-                modelSize = modelSize,
-                isVision = modelInfo.type == ModelType.Vision,
-                fileName = fileName,
-                backendLabel = modelInfo.backend,
-                supportsAudioInput = modelInfo.supportsAudioInput
-            )
+    fun effectiveContextTokens(format: ModelFormat?, ramGiB: Double, requested: Int, capacity: Int? = null, modelParamsB: Float? = null): Int {
+        val runtimeLimit = when (format) {
+            ModelFormat.GGUF -> recommendedContextWindowForRam(ramGiB, modelParamsB)
+            ModelFormat.LiteRtLm -> 8192
+            ModelFormat.MediaPipeTask -> 4096
+            else -> Int.MAX_VALUE
         }
-
-        return checkModelSafetyProfileForRam(getTotalRamGB(context), modelInfo)
+        return minOf(requested.coerceAtLeast(2), capacity?.takeIf { it > 0 } ?: Int.MAX_VALUE, runtimeLimit)
     }
 
     fun checkModelSafetyProfileForRam(
         totalRamGB: Double,
         modelInfo: ModelInfo
-    ): Pair<Boolean, String> {
-        val fileName = modelInfo.fileName
-        val modelId = modelInfo.id
-        val modelName = modelInfo.name
-        val modelSize = modelInfo.size
-
-        // GGUF, Task, and TFLite models check device RAM vs model parameter size
-        val paramsB = estimateModelParametersB(modelName.ifBlank { modelId }, modelSize)
-
-        return when {
-            // Models >= 6.5B
-            paramsB != null && paramsB >= 6.5f -> {
-                val minRam = 10.5
-                if (totalRamGB < minRam) {
-                    false to "This ${modelName.ifBlank { "large" }} model needs a 12 GB device profile. This device has ${String.format(Locale.US, "%.1f", totalRamGB)} GiB usable RAM, so it is blocked by default to prevent out-of-memory crashes."
-                } else {
-                    true to ""
-                }
-            }
-            // Models >= 2.8B
-            paramsB != null && paramsB >= 2.8f -> {
-                if (totalRamGB < 6.5) {
-                    false to "This ${modelName.ifBlank { "3B" }} model needs an 8 GB device profile. This device has ${String.format(Locale.US, "%.1f", totalRamGB)} GiB usable RAM, so it is blocked by default to prevent out-of-memory crashes."
-                } else {
-                    true to ""
-                }
-            }
-            // Models >= 1.4B
-            paramsB != null && paramsB >= 1.4f -> {
-                if (totalRamGB < 4.5) {
-                    false to "This ${modelName.ifBlank { "1.5B" }} model needs a 6 GB device profile. This device has ${String.format(Locale.US, "%.1f", totalRamGB)} GiB usable RAM, so it is blocked by default to prevent out-of-memory crashes."
-                } else {
-                    true to ""
-                }
-            }
-            // Small / sub-1B models run on all supported devices
-            else -> true to ""
-        }
-    }
+    ): Pair<Boolean, String> = ModelMemoryAssessment.check(totalRamGB, modelInfo)
 
     fun isDeviceCompatible(context: Context): Pair<Boolean, String> {
         val ram = getTotalRamGB(context)
@@ -211,66 +168,15 @@ object DeviceUtils {
         isVision: Boolean = false,
         fileName: String = "",
         backendLabel: String = "",
-        supportsAudioInput: Boolean = false
+        supportsAudioInput: Boolean = false,
+        modelFilePath: String? = null
     ): Pair<Boolean, String> {
-        val ram = getTotalRamGB(context)
-        val soc = deviceSoCText()
-        val chipsetSupported = isSupportedChipset(soc)
-        val highEndForLiteRtLm = supportsLiteRtLmGpu()
-        val paramsB = estimateModelParametersB(modelName.ifBlank { modelId }, modelSize)
-        val effectiveFileName = fileName.ifBlank { "$modelId.litertlm" }
-        val selectedBackend = selectBackendForModelFile(context, effectiveFileName)
-        val isLiteRtModel = effectiveFileName.endsWith(".litertlm", ignoreCase = true)
-        val isMultimodalLiteRt = isVision ||
-            supportsAudioInput ||
-            backendLabel.contains("vision", ignoreCase = true) ||
-            backendLabel.contains("multimodal", ignoreCase = true)
-        val requiredRam = requiredRamGiBForLiteRtLm(paramsB)
-        val isGemma4E2b = isGemma4E2bLiteRt(modelId, modelName, effectiveFileName)
-        val isSafeCompactModel = isGemma4E2b || (paramsB != null && paramsB <= 2.2f)
-        val gemma4CpuFallbackAllowed = canUseGemma4LiteRtCpuFallback(
-            context = context,
-            modelId = modelId,
-            modelName = modelName,
-            modelSize = modelSize,
-            fileName = effectiveFileName,
-            isMultimodalLiteRt = isMultimodalLiteRt
-        )
-
-        return when {
-            ram < requiredRam -> {
-                false to "This LiteRT-LM model needs a ${nominalDeviceRamLabel(requiredRam)} Android device profile. This device has ${String.format(Locale.US, "%.1f", ram)} GiB usable RAM, so the model is blocked before native initialization to avoid crashes."
-            }
-            isSafeCompactModel -> true to ""
-            isLiteRtModel && isMultimodalLiteRt && !highEndForLiteRtLm -> {
-                val chip = deviceChipLabel()
-                false to "Multimodal LiteRT-LM models above 2B are enabled only on verified high-end Android GPU profiles. $chip does not meet that safe profile, so this model is blocked before native initialization to avoid crashes. Use a MediaPipe .task vision model on this device instead."
-            }
-            gemma4CpuFallbackAllowed -> true to ""
-            highEndForLiteRtLm && selectedBackend == InferenceBackend.LITERT_GPU -> true to ""
-            chipsetSupported -> {
-                // Known mid-range chipset: allow small models freely, compact text models with enough RAM.
-                when {
-                    paramsB == null -> true to ""
-                    paramsB <= 2.2f -> true to ""
-                    !isVision && paramsB <= 4.1f && ram >= MIN_RAM_GIB_FOR_COMPACT_LITERT_LM -> true to ""
-                    else -> {
-                        false to "This LiteRT-LM model is above this Android device's safe profile for ${deviceChipLabel()}. Try a <=2B LiteRT-LM model or a MediaPipe .task model on this device."
-                    }
-                }
-            }
-            else -> {
-                // Unknown chipset: allow small (<=2B) models on CPU, block larger ones.
-                when {
-                    paramsB != null && paramsB <= 2.2f -> true to ""
-                    else -> {
-                        false to "LiteRT-LM support is unverified on ${deviceChipLabel()}. " +
-                            "Small (<=2B) LiteRT-LM models can still run, but this model is too large. " +
-                            "Use a MediaPipe .task model on this device instead."
-                    }
-                }
-            }
-        }
+        // Chipset lists choose a backend; lack of a whitelist entry is not proof of incompatibility.
+        val model = ModelInfo(modelId, modelName, modelSize, com.shounak.localmeshai.models.ModelStatus.Available,
+            if (isVision) ModelType.Vision else ModelType.Text, fileName.ifBlank { "$modelId.litertlm" },
+            description = "", backend = backendLabel, deviceTarget = "", supportsAudioInput = supportsAudioInput,
+            localPath = modelFilePath)
+        return checkModelSafetyProfile(context, model)
     }
 
     fun canUseGemma4LiteRtCpuFallback(
@@ -704,38 +610,16 @@ object DeviceUtils {
             source.contains("gemma-4-e2b")
     }
 
-    private fun requiredRamGiBForLiteRtLm(paramsB: Float?): Double {
-        return when {
-            paramsB == null -> MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM
-            paramsB <= 0.8f -> MIN_RAM_GIB_FOR_SUB_1B_LITERT_LM
-            paramsB <= 2.2f -> MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM
-            paramsB <= 4.1f -> MIN_RAM_GIB_FOR_COMPACT_LITERT_LM
-            paramsB <= 14.5f -> MIN_RAM_GIB_FOR_LARGE_LITERT_LM
-            else -> MIN_RAM_GIB_FOR_HUGE_LITERT_LM
-        }
-    }
-
-    private fun nominalDeviceRamLabel(requiredRamGiB: Double): String {
-        return when {
-            requiredRamGiB <= MIN_RAM_GIB_FOR_SUB_1B_LITERT_LM -> "4 GB"
-            requiredRamGiB <= MIN_RAM_GIB_FOR_SAFE_2B_LITERT_LM -> "6 GB"
-            requiredRamGiB <= MIN_RAM_GIB_FOR_SMALL_LITERT_LM -> "8 GB"
-            requiredRamGiB <= MIN_RAM_GIB_FOR_COMPACT_LITERT_LM -> "12 GB"
-            requiredRamGiB <= MIN_RAM_GIB_FOR_LARGE_LITERT_LM -> "16 GB"
-            else -> "24 GB"
-        }
-    }
-
     fun estimateModelParametersB(modelName: String, modelSize: String): Float? {
         val source = "$modelName $modelSize"
-        Regex("""(?i)(\d+(?:\.\d+)?)\s*B""")
+        Regex("""(?i)(?<![\d.])(\d+(?:\.\d+)?)\s*B(?![a-z0-9])""")
             .find(source)
             ?.groupValues
             ?.getOrNull(1)
             ?.toFloatOrNull()
             ?.let { return it }
 
-        Regex("""(?i)(\d+(?:\.\d+)?)\s*M""")
+        Regex("""(?i)(?<![\d.])(\d+(?:\.\d+)?)\s*M(?![a-z0-9])""")
             .find(source)
             ?.groupValues
             ?.getOrNull(1)

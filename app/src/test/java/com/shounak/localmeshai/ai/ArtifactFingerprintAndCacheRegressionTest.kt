@@ -112,7 +112,7 @@ class ArtifactFingerprintAndCacheRegressionTest {
         val baseObj = JSONObject().apply {
             put("native_build_id", com.shounak.localmeshai.BuildConfig.NATIVE_BUILD_ID)
             put("build_type", com.shounak.localmeshai.BuildConfig.BUILD_TYPE)
-            put("backend_policy_version", 1)
+            put("backend_policy_version", 2)
             put("config_key", "sample_key")
         }
 
@@ -136,6 +136,8 @@ class ArtifactFingerprintAndCacheRegressionTest {
         val validReceipt = GgufPerformanceReceipt.fromJson(validObj.toString())
         assertNotNull(validReceipt)
         assertEquals(validSha, validReceipt?.modelSha256)
+        // The old timing policy used token gaps as display-frame measurements.
+        assertNull(GgufPerformanceReceipt.fromJson(JSONObject(validObj.toString()).put("backend_policy_version", 1).toString()))
     }
 
     @Test

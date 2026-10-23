@@ -188,7 +188,11 @@ class ModelArtifactStorage(val rootDir: File) {
     }
 
     fun getStagingFile(modelId: String, fileName: String): File {
-        val safeName = sanitizeFileName(fileName)
+        val safeName = if ('/' in fileName) {
+            val relative = PortableBundlePath.normalize(fileName)
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(relative.toByteArray()).joinToString("") { "%02x".format(it) }
+            "component_${digest.take(24)}_${File(relative).name}"
+        } else sanitizeFileName(fileName)
         val stagingDir = getStagingDir(modelId)
         stagingDir.mkdirs()
         val file = File(stagingDir, "$safeName.download")
@@ -319,17 +323,18 @@ class ModelArtifactStorage(val rootDir: File) {
         }
         val bundleFormat = ModelFormat.entries.firstOrNull { it.name.equals(formatStr, ignoreCase = true) } ?: ModelFormat.GGUF
         val backend = when (bundleFormat) {
+            ModelFormat.Onnx, ModelFormat.TensorFlowLite, ModelFormat.Safetensors -> bundleFormat.backendLabel
             ModelFormat.LiteRtLm -> "LiteRT-LM GPU"
             ModelFormat.MediaPipeTask -> "MediaPipe LLM CPU-safe"
             ModelFormat.GGUF -> "llama.cpp GGUF"
         }
 
-        // Restoration reads manifests only. Deep inspection belongs to the background validation queue.
+        // Tensor validation belongs to the background queue; portable runtime policy can change between app versions.
         val caps = manifest.capabilities ?: ModelCapabilities()
 
         val primaryName = mainArtifacts.firstOrNull()?.displayName?.substringBeforeLast('.')?.replace('-', ' ')?.replace('_', ' ') ?: sanitizedId
 
-        return ModelBundle(
+        return PortableModelBundle.refreshRuntimeMetadata(ModelBundle(
             id = sanitizedId,
             displayName = primaryName,
             mainArtifacts = mainArtifacts,
@@ -338,7 +343,7 @@ class ModelArtifactStorage(val rootDir: File) {
             backend = backend,
             format = bundleFormat,
             loadRestriction = manifest.loadRestriction
-        )
+        ))
     }
 
     fun publishArtifact(
@@ -549,7 +554,8 @@ class ModelArtifactStorage(val rootDir: File) {
         if (stagedItems.isEmpty()) {
             throw IOException("No staged items provided for bundle publication")
         }
-        val safeNames = stagedItems.map { sanitizeFileName(it.relativeTargetName).lowercase(Locale.ROOT) }
+        fun targetName(raw: String): String = if (format?.isPortable == true) PortableBundlePath.normalize(raw) else sanitizeFileName(raw)
+        val safeNames = stagedItems.map { targetName(it.relativeTargetName).lowercase(Locale.ROOT) }
         if (safeNames.distinct().size != safeNames.size) {
             throw IOException("Duplicate artifact target file names in bundle publication")
         }
@@ -614,9 +620,10 @@ class ModelArtifactStorage(val rootDir: File) {
                 if (isCancelled?.invoke() == true) {
                     throw kotlinx.coroutines.CancellationException("Bundle publication cancelled during staging")
                 }
-                val safeName = sanitizeFileName(item.relativeTargetName)
+                val safeName = targetName(item.relativeTargetName)
                 val genTarget = File(genDir, safeName)
                 verifyContainment(genDir, genTarget)
+                genTarget.parentFile?.let { check(it.isDirectory || it.mkdirs()) { "Cannot create pipeline component directory" } }
 
                 val moved = item.stagedFile.renameTo(genTarget)
                 if (!moved) {
@@ -646,7 +653,7 @@ class ModelArtifactStorage(val rootDir: File) {
                 )
 
                 val matchesPrimary = when {
-                    primaryItemName != null -> safeName.equals(sanitizeFileName(primaryItemName), ignoreCase = true)
+                    primaryItemName != null -> safeName.equals(targetName(primaryItemName), ignoreCase = true)
                     item.isPrimary -> true
                     else -> false
                 }

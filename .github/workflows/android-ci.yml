@@ -48,8 +48,13 @@ jobs:
       - name: Run host C++ native tests
         run: |
           cmake -S app/src/test/cpp -B build/host-native-tests
-          cmake --build build/host-native-tests --config Release
+          cmake --build build/host-native-tests --config Release --parallel 4
           ctest --test-dir build/host-native-tests -C Release --output-on-failure
+
+      - name: Prepare and test Candle runtime
+        run: |
+          rustup target add aarch64-linux-android
+          cargo test --locked --jobs 4 --lib --manifest-path app/src/main/rust/Cargo.toml
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -86,12 +91,13 @@ jobs:
           echo "RELEASE_APK=$RELEASE_APK" >> $GITHUB_ENV
           echo "Resolved release APK: $RELEASE_APK"
           mkdir -p build/reports/apk-size
-          # v6.0.0 signed baseline: 39,849,556 bytes. Keep ~5% headroom
-          # while retaining a hard size-regression gate for this runtime bundle.
+          # Portable inference adds arm64 ONNX, TFLite and Candle libraries to
+          # the former 39,849,556-byte baseline. Retain a bounded size gate;
+          # refresh the signed baseline after device validation of these runtimes.
           python3 tools/apk_size_report.py \
             --apk "$RELEASE_APK" \
             --output build/reports/apk-size/release-size-report.json \
-            --max-apk-bytes 42000000 \
+            --max-apk-bytes 64000000 \
             --verify-optimized
 
       - name: Upload release APK (unsigned CI build)

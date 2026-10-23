@@ -105,14 +105,15 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -573,7 +574,7 @@ fun ChatScreen(
         scope.launch {
             isDecodingAudioFile = true
             try {
-                val decoded = AudioUtils.decodeAudioToPcm16Wav(context, uri, maxDurationMs = audioRecordLimitMs)
+                val decoded = AudioUtils.decodeAudioToPcm16Wav(context, uri, maxDurationMs = audioRecordLimitMs, rejectLongInput = true)
                 selectedAudioUri = decoded.cacheUri
                 selectedAudioBytes = decoded.wavBytes
                 selectedAudioName = decoded.label
@@ -976,7 +977,9 @@ fun ChatScreen(
             // This prevents window/pager surfaces from showing through while its
             // model and reveal animations initialise.
             .background(chatBackground)
-            .imePadding()
+            // A single inset follows the IME animation and never falls below the
+            // floating navigation bar's resting space. Do not add dock padding too.
+            .windowInsetsPadding(WindowInsets.ime.union(WindowInsets(bottom = bottomContentInset)))
             .onGloballyPositioned {
                 rootCoordinates = it
                 updateComposerBounds()
@@ -1387,6 +1390,7 @@ fun ChatScreen(
                                             attemptId = message.attemptId.toLong(),
                                             revision = message.revision,
                                             reasoningText = message.reasoningText,
+                                            toolUses = message.toolUses,
                                             isThinkingActive = message.isThinkingActive,
                                             responseFormatVersion = message.responseFormatVersion,
                                             terminalStatus = message.terminalStatus,
@@ -1507,8 +1511,7 @@ fun ChatScreen(
                     // One transparent dock overlays the scrollable content. Only its individual
                     // controls and the rounded composer paint a surface.
                     Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                        .onSizeChanged { floatingDockHeight = with(floatingDockDensity) { it.height.toDp() } }
-                        .padding(bottom = bottomContentInset),
+                        .onSizeChanged { floatingDockHeight = with(floatingDockDensity) { it.height.toDp() } },
                         verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     if (showFloatingControls) {
                         Column(Modifier.fillMaxWidth().padding(vertical = 2.dp),
@@ -3742,6 +3745,7 @@ private fun ChatBubble(
     attemptId: Long = 0L,
     revision: Int = 0,
     reasoningText: String? = null,
+    toolUses: List<com.shounak.localmeshai.ai.tools.ToolUse> = emptyList(),
     isThinkingActive: Boolean = false,
     responseFormatVersion: Int = 0,
     terminalStatus: RequestTerminalStatus? = null,
@@ -3844,6 +3848,7 @@ private fun ChatBubble(
                     )
                 }
 
+                if (!isUser && toolUses.isNotEmpty()) ToolUseChip(toolUses, messageId)
                 if (!isUser && presentation.showThinking) {
                     ThinkingProcessCard(
                         thinkingText = presentation.reasoningText.orEmpty(),
@@ -4562,6 +4567,7 @@ private fun FullscreenAnswerPanel(
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        if (!message.isUser && message.toolUses.isNotEmpty()) ToolUseChip(message.toolUses, message.id)
                         if (!message.isUser && presentation.showThinking) {
                             ThinkingProcessCard(
                                 thinkingText = presentation.reasoningText.orEmpty(),
@@ -4624,6 +4630,26 @@ private fun FullscreenAnswerPanel(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolUseChip(uses: List<com.shounak.localmeshai.ai.tools.ToolUse>, messageId: String) {
+    var expanded by rememberSaveable(messageId) { mutableStateOf(false) }
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+    ) {
+        Column(Modifier.clickable { expanded = !expanded }.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Used ${uses.map { it.name }.distinct().joinToString()} ${if (expanded) "▴" else "▾"}",
+                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            if (expanded) uses.forEach { use ->
+                val arguments = runCatching { org.json.JSONObject(use.arguments).optString("expression", use.arguments) }.getOrDefault(use.arguments)
+                Text("${use.name}: $arguments = ${use.result}", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
