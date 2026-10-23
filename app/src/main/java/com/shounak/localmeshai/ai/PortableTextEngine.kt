@@ -35,12 +35,7 @@ internal class PortableTextEngine private constructor(private val file: File, pr
     init {
         val config = PortableModelBundle.json(File(file.parentFile, "config.json"))
         val generation = File(file.parentFile, "generation_config.json").takeIf { it.isFile }?.let(PortableModelBundle::json)
-        eos = when (val value = generation?.opt("eos_token_id") ?: config.get("eos_token_id")) {
-            is JSONArray -> (0 until value.length()).map { value.getInt(it) }.toSet()
-            is Number -> setOf(value.toInt())
-            else -> error("Invalid eos_token_id")
-        }
-        require(eos.isNotEmpty() && eos.all { it >= 0 }) { "Invalid eos_token_id" }
+        eos = PortableModelBundle.eosTokens(config, generation)
     }
 
     companion object {
@@ -84,7 +79,14 @@ internal class PortableTextEngine private constructor(private val file: File, pr
 
     fun stop() { stopped = true }
 
+    private var promptTurns: List<Pair<String, String>> = emptyList()
+    private var promptMemory = ""
+    private var promptThinking = false
+
     fun renderPrompt(messages: List<Pair<String, String>>?, fallback: String, memory: String, thinking: Boolean = false): String {
+        promptTurns = messages?.takeIf { it.isNotEmpty() } ?: listOf("user" to fallback)
+        promptMemory = memory
+        promptThinking = thinking
         reasoningPrefill = false
         val config = PortableModelBundle.json(File(file.parentFile, "config.json"))
         val tokenizerConfig = File(file.parentFile, "tokenizer_config.json").takeIf { it.isFile }?.let(PortableModelBundle::json) ?: org.json.JSONObject()
@@ -132,7 +134,16 @@ internal class PortableTextEngine private constructor(private val file: File, pr
             stopped = false
             CandleBridge.reset(tokenizer)
             onnxDecoder?.reset()
-            val promptIds = if (promptHasSpecialTokens) CandleBridge.encodeRendered(tokenizer, prompt) else CandleBridge.encode(tokenizer, prompt)
+            fun encode(text: String) = if (promptHasSpecialTokens) CandleBridge.encodeRendered(tokenizer, text) else CandleBridge.encode(tokenizer, text)
+            var promptIds = encode(prompt)
+            var turns = promptTurns
+            val budget = contextTokens - minOf(limit.coerceAtLeast(1), maxOf(1, contextTokens / 4))
+            while (promptIds.size > budget) {
+                val trimmed = PortableHistoryBudget.dropOldestTurn(turns) ?: break
+                turns = trimmed
+                promptIds = encode(renderPrompt(turns, "", promptMemory, promptThinking))
+            }
+            require(promptIds.size < contextTokens) { "Your message and system instructions exceed the model context ($contextTokens tokens). Shorten them or choose a larger context." }
             var pendingReasoningPrefix = reasoningPrefill
             return PortableTokenLoop.generate(promptIds, contextTokens, limit, eos, { stopped },
                 next = { tokens, step ->

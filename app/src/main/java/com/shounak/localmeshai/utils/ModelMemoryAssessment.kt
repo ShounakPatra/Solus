@@ -20,7 +20,7 @@ internal object ModelMemoryAssessment {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<HeaderKey, Double?>?) = size > 32
     }
 
-    fun estimate(model: ModelInfo): Estimate? {
+    fun estimate(model: ModelInfo, contextTokens: Int? = null): Estimate? {
         val format = model.bundle?.format ?: model.downloadSpec?.effectiveFormat ?: ModelFormat.fromFileName(model.fileName) ?: return null
         val artifacts = model.bundle?.allArtifacts.orEmpty().filter { artifact ->
             val name = artifact.displayName.lowercase(Locale.ROOT)
@@ -64,13 +64,25 @@ internal object ModelMemoryAssessment {
             else -> if (model.isMultimodal) .5 else 0.0
         }
         // Reserve for interpreter/workspace and a modest context cache. It is deliberately labelled an estimate.
-        return Estimate(weights * factor + .6 + media,
+        val config = local.firstOrNull()?.parentFile?.resolve("config.json")?.takeIf { it.isFile }
+            ?.let { runCatching { PortableModelBundle.json(it) }.getOrNull() }
+        val text = config?.optJSONObject("text_config") ?: config
+        val context = (contextTokens ?: model.bundle?.capabilities?.contextLength ?: model.downloadSpec?.capabilities?.contextLength ?: 2048).coerceIn(2, 1_048_576)
+        val layers = text?.optInt("num_hidden_layers", text.optInt("n_layer", 0)) ?: 0
+        val heads = text?.optInt("num_attention_heads", text.optInt("n_head", 0)) ?: 0
+        val kvHeads = text?.optInt("num_key_value_heads", heads) ?: heads
+        val hidden = text?.optInt("hidden_size", text.optInt("n_embd", 0)) ?: 0
+        val headDim = text?.optInt("head_dim", if (heads > 0) hidden / heads else 0) ?: 0
+        // FP32 caches for portable CPU runtimes; other backends may use smaller caches.
+        val cache = if (layers > 0 && kvHeads > 0 && headDim > 0)
+            2.0 * layers * kvHeads * headDim * context * 4 / GIB else .15 * context / 2048.0
+        return Estimate(weights * factor + .6 + media + cache,
             if (expanded != null) "tensor shapes and FP32 runtime weights" else if (measured) "model artifact sizes and runtime overhead" else "declared download size and runtime overhead")
     }
 
-    fun check(totalRamGiB: Double, model: ModelInfo): Pair<Boolean, String> {
+    fun check(totalRamGiB: Double, model: ModelInfo, contextTokens: Int? = null): Pair<Boolean, String> {
         if (!totalRamGiB.isFinite() || totalRamGiB <= 0) return true to ""
-        val estimate = estimate(model) ?: return true to "" // Unknown is not evidence of incompatibility.
+        val estimate = estimate(model, contextTokens) ?: return true to "" // Unknown is not evidence of incompatibility.
         val budget = (totalRamGiB - maxOf(1.0, totalRamGiB * .2)).coerceAtLeast(0.0)
         if (estimate.requiredGiB <= budget) return true to ""
         return false to String.format(Locale.US,

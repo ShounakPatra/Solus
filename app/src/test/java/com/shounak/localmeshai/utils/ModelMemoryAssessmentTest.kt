@@ -26,6 +26,11 @@ class ModelMemoryAssessmentTest {
             "model.${if (format == ModelFormat.Safetensors) "safetensors" else "gguf"}", description = "", backend = "", deviceTarget = "", bundle = bundle)
     }
 
+    @Test fun contextLengthChangesCacheEstimate() {
+        val model = model(artifacts = listOf(artifact("model.gguf", gib)))
+        assertTrue(ModelMemoryAssessment.estimate(model, 8192)!!.requiredGiB > ModelMemoryAssessment.estimate(model, 512)!!.requiredGiB)
+    }
+
     @Test fun actualSmallArtifactsOverrideMisleadingNamesAndUnknownMetadataDoesNotBlock() {
         val small = model("70B-64-8bits", listOf(artifact("small.gguf", 122_000_000)))
         assertTrue(ModelMemoryAssessment.check(3.8, small).first)

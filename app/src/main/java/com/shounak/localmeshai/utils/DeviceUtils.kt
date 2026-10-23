@@ -133,7 +133,9 @@ object DeviceUtils {
             manager.getMemoryInfo(info)
             info.totalMem / (1024.0 * 1024.0 * 1024.0)
         }.getOrNull() ?: return true to ""
-        return checkModelSafetyProfileForRam(total, modelInfo)
+        val requested = com.shounak.localmeshai.features.WorkspacePreferences.get(context).profile(modelInfo.id).contextTokens ?: 2048
+        val capacity = modelInfo.bundle?.capabilities?.contextLength ?: modelInfo.downloadSpec?.capabilities?.contextLength
+        return ModelMemoryAssessment.check(total, modelInfo, capacity?.let { minOf(it, requested) } ?: requested)
     }
 
     fun checkModelSafetyProfileForRam(
