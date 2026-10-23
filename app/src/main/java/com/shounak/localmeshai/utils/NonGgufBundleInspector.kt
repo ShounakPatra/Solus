@@ -9,7 +9,6 @@ import java.io.FileInputStream
 import java.io.RandomAccessFile
 import java.nio.charset.StandardCharsets
 import java.util.Locale
-import java.util.zip.ZipFile
 
 /**
  * Inspection result for non-GGUF model artifacts (.task and .litertlm).
@@ -209,7 +208,7 @@ object NonGgufBundleInspector {
         var mediaPipeMeta: DecodedMediaPipeMetadata? = null
 
         try {
-            ZipFile(file).use { zip ->
+            TaskBundleArchive(file).use { zip ->
                 val entries = zip.entries()
                 while (entries.hasMoreElements()) {
                     val entry = entries.nextElement()
