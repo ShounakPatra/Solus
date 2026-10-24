@@ -9,6 +9,8 @@ import android.provider.OpenableColumns
 import android.util.Log
 import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -54,7 +56,8 @@ object AudioUtils {
             } finally { metadata.release() }
         }
         val fileName = getDisplayName(context, uri).ifBlank { "audio_attachment.wav" }
-        val rawPcm = decodeToRawPcm(context, uri, maxDurationMs)
+        val jobContext = currentCoroutineContext()
+        val rawPcm = decodeToRawPcm(context, uri, maxDurationMs, checkActive = { jobContext.ensureActive() })
         val wavBytes = createWavFromPcm16(rawPcm.pcmBytes, TARGET_SAMPLE_RATE, TARGET_CHANNELS)
 
         val cacheDir = File(context.cacheDir, "multimodal_inputs").apply { mkdirs() }
@@ -251,7 +254,8 @@ object AudioUtils {
         maxDurationMs: Long = 30_000L,
         targetSampleRate: Int = TARGET_SAMPLE_RATE
     ): FloatArray = withContext(Dispatchers.IO) {
-        val rawPcm = decodeToRawPcm(context, uri, maxDurationMs, targetSampleRate)
+        val jobContext = currentCoroutineContext()
+        val rawPcm = decodeToRawPcm(context, uri, maxDurationMs, targetSampleRate) { jobContext.ensureActive() }
         pcm16BytesToFloatPcm(rawPcm.pcmBytes)
     }
 
@@ -261,7 +265,8 @@ object AudioUtils {
         context: Context,
         uri: Uri,
         maxDurationMs: Long,
-        targetSampleRate: Int = TARGET_SAMPLE_RATE
+        targetSampleRate: Int = TARGET_SAMPLE_RATE,
+        checkActive: () -> Unit = {}
     ): PcmResult {
         val extractor = MediaExtractor()
         try {
@@ -302,11 +307,11 @@ object AudioUtils {
                 codec.start()
 
                 val bufferInfo = MediaCodec.BufferInfo()
-                var isEos = false
                 var totalPcmBytes = 0
 
                 val timeoutUs = 10_000L
-                while (!isEos) {
+                AudioDecodeLoop.run(checkActive, feedInput = {
+                    var inputEnded = false
                     val inIndex = codec.dequeueInputBuffer(timeoutUs)
                     if (inIndex >= 0) {
                         val inBuffer = codec.getInputBuffer(inIndex)
@@ -314,7 +319,7 @@ object AudioUtils {
                             val sampleSize = extractor.readSampleData(inBuffer, 0)
                             if (sampleSize < 0) {
                                 codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                isEos = true
+                                inputEnded = true
                             } else {
                                 codec.queueInputBuffer(inIndex, 0, sampleSize, extractor.sampleTime, 0)
                                 extractor.advance()
@@ -322,8 +327,12 @@ object AudioUtils {
                         }
                     }
 
+                    inputEnded
+                }, drainOutput = {
+                    var outputEnded = false
                     var outIndex = codec.dequeueOutputBuffer(bufferInfo, timeoutUs)
                     while (outIndex >= 0) {
+                        checkActive()
                         val outBuffer = codec.getOutputBuffer(outIndex)
                         if (outBuffer != null && bufferInfo.size > 0) {
                             outBuffer.position(bufferInfo.offset)
@@ -338,12 +347,12 @@ object AudioUtils {
                         // Check if we already exceeded duration limit plus a small safety margin
                         val approxSeconds = totalPcmBytes / (decodedSampleRate * decodedChannels * 2.0)
                         if (approxSeconds * 1000 >= maxDurationMs + 2000) {
-                            isEos = true
+                            outputEnded = true
                             break
                         }
 
                         if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                            isEos = true
+                            outputEnded = true
                             break
                         }
                         outIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
@@ -358,7 +367,8 @@ object AudioUtils {
                             decodedChannels = newFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                         }
                     }
-                }
+                    outputEnded
+                })
             } finally {
                 runCatching { codec.stop() }
                 codec.release()
