@@ -53,10 +53,12 @@ class SkillNetworkAndCancellationTest {
             assertEquals("Error: cancelled", BoundedSkillTool(delegate, { true }).execute("{}"))
         } finally { worker.shutdownNow() }
     }
-    @Test fun decodedExcerptNeverEndsWithHalfAnEmoji() {
+    @Test fun boundedSkillFieldsNeverEndWithHalfAnEmoji() {
         val text = "x".repeat(1199) + "🌍"
-        assertEquals("x".repeat(1199), WikipediaLookup.boundedText(text, 1200))
-        assertEquals(text, WikipediaLookup.boundedText(text, 1201))
+        assertEquals("x".repeat(1199), boundedSkillText(text, 1200))
+        assertEquals(text, boundedSkillText(text, 1201))
+        assertEquals("x".repeat(199), boundedSkillText("x".repeat(199) + "🌍", 200))
+        assertEquals("x".repeat(399), boundedSkillText("x".repeat(399) + "🌍", 400))
     }
     @Test fun stoppingNetworkToolCancelsItsActualCallAndReleasesWorker() {
         MockWebServer().use { server ->
