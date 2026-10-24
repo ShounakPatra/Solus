@@ -798,6 +798,7 @@ class ChatInferenceManager(context: Context) {
                     timing = timing,
                     onProgress = reportProgress,
                     onTokensGenerated = { lastNonLlamaTokenCount = it },
+                    onAttemptChanged = { attempt = it; lastNonLlamaTokenCount = null; timing?.beginAttempt() },
                     responseSnapshot = publisher::rawText,
                     publisher = publisher,
                     responseController = responseController,
@@ -825,7 +826,7 @@ class ChatInferenceManager(context: Context) {
                     publisher = publisher,
                     responseController = responseController,
                     onUpdate = effectiveOnUpdate,
-                    onAttemptChanged = { attempt = it }
+                    onAttemptChanged = { attempt = it; lastNonLlamaTokenCount = null; timing?.beginAttempt() }
                 )
                 RuntimeKind.None -> throw IllegalStateException("Inference not initialized")
             } }
@@ -916,7 +917,7 @@ class ChatInferenceManager(context: Context) {
     private suspend fun streamLiteRtLm(
         prompt: String, thinkingMode: Boolean, requestId: String = "",
         timing: InferenceTiming? = null, onProgress: ((RequestProgress) -> Unit)? = null,
-        onTokensGenerated: ((Int) -> Unit)? = null, responseSnapshot: () -> String,
+        onTokensGenerated: ((Int) -> Unit)? = null, onAttemptChanged: ((Int) -> Unit)? = null, responseSnapshot: () -> String,
         publisher: StreamingResponsePublisher? = null,
         responseController: InferenceResponseController? = null, onUpdate: (String) -> Unit
     ): String {
@@ -934,10 +935,13 @@ class ChatInferenceManager(context: Context) {
             throw cancelled
         } catch (failure: Exception) {
             if (!liteRtConversationHasTools || liteRtCompletedTurns != 0 || textSeen.get() ||
-                stopRequested || isBeingClosed) throw failure
+                stopRequested || isBeingClosed || liteRtToolRecorder.snapshot().isNotEmpty()) throw failure
             Log.w(TAG, "First LiteRT tool turn failed before text; retrying without tools", failure)
             liteRtToolsDisabledForLoad = true
             val toolsAlreadyUsed = liteRtToolRecorder.snapshot()
+            onAttemptChanged?.invoke(2)
+            responseController?.beginAttempt(2)
+            publisher?.beginAttempt(2)
             runCatching { liteRtConversation?.close() }
             liteRtConversation = createLiteRtConversation(liteRtConversationMode)
             toolsAlreadyUsed.forEach(liteRtToolRecorder::add)
@@ -1451,6 +1455,7 @@ class ChatInferenceManager(context: Context) {
     private fun createLiteRtConversation(mode: LiteRtConversationMode): Conversation? {
         val engine = liteRtEngine ?: return null
         val settings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
+        if (conversationToolSettings?.requiresRefresh(settings) == true) liteRtToolsDisabledForLoad = false
         conversationToolSettings = settings
         liteRtConversationMode = mode
         liteRtCompletedTurns = 0

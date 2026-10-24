@@ -162,4 +162,18 @@ class InferenceTimingTest {
         assertTrue(summary.contains("evalToks=32"))
         assertTrue(summary.contains("prefillMs=250"))
     }
+    @org.junit.Test fun recoveredAttemptDoesNotUseFailedAttemptDecodeTime() {
+        var now = 0L
+        val timing = InferenceTiming { now }
+        timing.startInference()
+        now = 1_000_000_000L; timing.recordFirstToken()
+        now = 3_000_000_000L; timing.beginAttempt()
+        now = 5_000_000_000L; timing.recordFirstToken()
+        now = 7_000_000_000L; timing.endGeneration()
+        val metrics = timing.buildMetrics("retry", "chat", attempt = 2, generatedTokens = 4)
+        org.junit.Assert.assertEquals(2000L, metrics.decodeDurationMs)
+        org.junit.Assert.assertEquals(5000L, metrics.firstTokenLatencyMs)
+        org.junit.Assert.assertEquals(2.0, metrics.decodeThroughputTokPerSec!!, 0.001)
+    }
+
 }

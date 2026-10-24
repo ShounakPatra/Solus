@@ -484,6 +484,7 @@ class VisionInferenceManager(context: Context) {
                     timing = timing,
                     onProgress = reportProgress,
                     onTokensGenerated = { lastGeneratedTokens = it },
+                    onAttemptChanged = { currentAttemptId = it; lastGeneratedTokens = null; timing?.beginAttempt() },
                     responseSnapshot = publisher::rawText,
                     publisher = publisher,
                     responseController = responseController,
@@ -519,7 +520,7 @@ class VisionInferenceManager(context: Context) {
                         publisher = publisher,
                         responseSnapshot = publisher::rawText,
                         onUpdate = effectiveOnUpdate,
-                        onAttemptChanged = { currentAttemptId = it }
+                        onAttemptChanged = { currentAttemptId = it; lastGeneratedTokens = null; timing?.beginAttempt() }
                     )
                 }
                 RuntimeKind.None -> throw IllegalStateException("Choose and initialise a multimodal model first.")
@@ -783,6 +784,7 @@ class VisionInferenceManager(context: Context) {
     private fun createLiteRtConversation(base: ConversationConfig?): Conversation {
         val engine = checkNotNull(liteRtEngine)
         val settings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
+        if (conversationToolSettings?.requiresRefresh(settings) == true) toolsDisabledForLoad = false
         conversationToolSettings = settings
         conversationBaseConfig = base
         completedLiteRtTurns = 0
@@ -1013,7 +1015,7 @@ class VisionInferenceManager(context: Context) {
         timing: InferenceTiming? = null,
         onProgress: ((RequestProgress) -> Unit)? = null,
         onTokensGenerated: ((Int) -> Unit)? = null,
-        responseSnapshot: () -> String,
+        onAttemptChanged: ((Int) -> Unit)? = null, responseSnapshot: () -> String,
         publisher: StreamingResponsePublisher? = null,
         responseController: InferenceResponseController? = null,
         onUpdate: (String) -> Unit
@@ -1030,10 +1032,13 @@ class VisionInferenceManager(context: Context) {
             throw cancelled
         } catch (failure: Exception) {
             if (!conversationHasTools || completedLiteRtTurns != 0 || textSeen.get() ||
-                stopRequested || isBeingClosed) throw failure
+                stopRequested || isBeingClosed || toolRecorder.snapshot().isNotEmpty()) throw failure
             Log.w(TAG, "First vision tool turn failed before text; retrying without tools", failure)
             toolsDisabledForLoad = true
             val used = toolRecorder.snapshot()
+            onAttemptChanged?.invoke(2)
+            responseController?.beginAttempt(2)
+            publisher?.beginAttempt(2)
             runCatching { liteRtConversation?.close() }
             liteRtConversation = createLiteRtConversation(conversationBaseConfig)
             used.forEach(toolRecorder::add)

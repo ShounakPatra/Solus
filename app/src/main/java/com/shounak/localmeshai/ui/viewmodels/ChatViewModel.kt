@@ -1294,16 +1294,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     if (activeRequestId != requestId || currentModelEpoch != reqModelEpoch) {
                         throw CancellationException("Request configuration changed")
                     }
-                    if (shouldResetRuntimeConversation) {
+                    val resetForRequest = shouldResetRuntimeConversation || inferenceManager.needsToolSettingsRefresh
+                    var lockedPrompt = prompt
+                    var lockedMessages = structuredMessages
+                    if (resetForRequest && !shouldResetRuntimeConversation) {
+                        val history = if (isRetry) messages.take(assistantIndex) else messages.toList()
+                        val rebuilt = withContext(Dispatchers.Default) {
+                            if (inferenceManager.usesStructuredHistory) "" to buildStructuredHistory(effectivePromptText, memoryContext, thinkingModeForRequest, history)
+                            else buildPrompt(effectivePromptText, memoryContext, thinkingModeForRequest, history) to null
+                        }
+                        lockedPrompt = rebuilt.first
+                        lockedMessages = rebuilt.second
+                    }
+                    if (resetForRequest) {
                         inferenceManager.resetConversation(noThinking = !thinkingModeForRequest)
                         resetRuntimeConversationBeforeNextSend = false
                     }
                     inferenceManager.generateResponseStreaming(
-                        prompt = prompt,
+                        prompt = lockedPrompt,
                         rawUserText = effectivePromptText,
                         memoryContext = memoryContext,
-                        structuredMessages = structuredMessages,
-                        restoreStatefulHistory = shouldResetRuntimeConversation,
+                        structuredMessages = lockedMessages,
+                        restoreStatefulHistory = resetForRequest,
                         thinkingMode = thinkingModeForRequest,
                         requestId = requestId,
                         sessionId = targetSessionId ?: "",

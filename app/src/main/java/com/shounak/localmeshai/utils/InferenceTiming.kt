@@ -78,6 +78,15 @@ class InferenceTiming(private val clock: () -> Long = System::nanoTime) {
         if (loadingFinishedAt == null && loadingStartedAt != null) loadingFinishedAt = now
     }
 
+    /** Request wall time includes recovery, but decode throughput describes only the accepted attempt. */
+    @Synchronized
+    fun beginAttempt() {
+        firstTokenAt = null
+        firstChunkAt = null
+        firstVisibleTextAt = null
+        generationFinishedAt = null
+    }
+
     @Synchronized
     fun recordFirstToken() {
         if (firstTokenAt == null) firstTokenAt = clock()
