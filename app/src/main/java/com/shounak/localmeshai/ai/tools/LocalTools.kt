@@ -16,10 +16,10 @@ internal object LocalTools {
         tools = tools, automaticToolCalling = true
     )
 
-    fun forConversation(context: Context, isCancelled: () -> Boolean): List<ChatTool> = buildList {
+    fun forConversation(context: Context, documentSearch: Boolean = AppSettings.getInstance(context).settings.value.enableRag, isCancelled: () -> Boolean): List<ChatTool> = buildList {
         add(CalculatorTool())
         add(CurrentDateTimeTool())
-        if (AppSettings.getInstance(context).settings.value.enableRag) {
+        if (documentSearch) {
             add(DocumentSearchTool(isCancelled = isCancelled) { query ->
                 runBlocking(Dispatchers.IO) {
                     val settings = AppSettings.getInstance(context).settings.value

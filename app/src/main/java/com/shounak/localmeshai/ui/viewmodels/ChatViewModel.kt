@@ -1246,6 +1246,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         inferenceManager.needsResetWhenThinkingModeChanges()
                 val shouldResetRuntimeConversation =
                     resetRuntimeConversationBeforeNextSend ||
+                        inferenceManager.needsToolSettingsRefresh ||
                         modeChangedInStatefulThinkingRuntime ||
                         isRetry
 

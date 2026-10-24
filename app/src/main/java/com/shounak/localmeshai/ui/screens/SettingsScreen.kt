@@ -411,7 +411,7 @@ fun SettingsDialog(
                         }
                         SettingsSwitchRow(
                             title = "Tool calling (experimental)",
-                            subtitle = "Calculator, local date/time and enabled document search for compatible LiteRT-LM and GGUF models. Start a new chat after changing this setting.",
+                            subtitle = "Calculator, local date/time and enabled document search for compatible LiteRT-LM and GGUF models. Changes apply to your next message, including in the current chat.",
                             checked = settingsData.enableToolCalling,
                             onCheckedChange = { enabled -> appSettings.updateSettings { it.copy(enableToolCalling = enabled) } }
                         )
@@ -693,7 +693,7 @@ fun SettingsDialog(
                     SettingsCategory(title = "📚 Retrieval-Augmented Generation (RAG)", hazeState = hazeState) {
                         SettingsSwitchRow(
                             title = "Enable RAG Knowledge Base",
-                            subtitle = "Semantically search indexed documents and inject relevant context into chats. Start a new chat to change document-search tool availability.",
+                            subtitle = "Semantically search indexed documents and inject relevant context into chats. Changes, including document-search tool availability, apply to your next message in the current chat.",
                             checked = settingsData.enableRag,
                             onCheckedChange = { isEnabled ->
                                 appSettings.updateSettings { it.copy(enableRag = isEnabled) }

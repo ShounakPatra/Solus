@@ -1457,7 +1457,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                       ioMutex.withLock {
                         timing.endQueue()
                         if (myGen != analysisGeneration || reqModelEpoch != currentModelEpoch) return@withLock null
-                        if (resetRuntimeConversationBeforeNextAsk) {
+                        if (resetRuntimeConversationBeforeNextAsk || inferenceManager.needsToolSettingsRefresh) {
                             val previousMessages = historySnapshot.filter { it.id != userMessageId && it.id != assistantMessageId }
                             val restorationHistory = VisionRequestContextResolver.buildRestorationHistory(
                                 sessionMessages = previousMessages,

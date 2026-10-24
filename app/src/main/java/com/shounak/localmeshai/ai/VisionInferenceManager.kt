@@ -1,6 +1,7 @@
 @file:Suppress("DEPRECATION")
 package com.shounak.localmeshai.ai
 
+import com.shounak.localmeshai.ai.tools.ConversationToolSettings
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -71,6 +72,12 @@ class VisionInferenceManager(context: Context) {
     private var liteRtConversation: Conversation? = null
     private val toolRecorder = com.shounak.localmeshai.ai.tools.ToolUseRecorder()
     private var toolsDisabledForLoad = false
+    @Volatile private var conversationToolSettings: ConversationToolSettings? = null
+    val needsToolSettingsRefresh: Boolean
+        get() = (runtime == RuntimeKind.LiteRtLm) && conversationToolSettings?.requiresRefresh(
+            ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
+        ) == true
+
     private var conversationHasTools = false
     private var completedLiteRtTurns = 0
     private var conversationBaseConfig: ConversationConfig? = null
@@ -769,14 +776,16 @@ class VisionInferenceManager(context: Context) {
 
     private fun createLiteRtConversation(base: ConversationConfig?): Conversation {
         val engine = checkNotNull(liteRtEngine)
+        val settings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
+        conversationToolSettings = settings
         conversationBaseConfig = base
         completedLiteRtTurns = 0
         conversationHasTools = false
         toolRecorder.clear()
-        if (!toolsDisabledForLoad && AppSettings.getInstance(context).settings.value.enableToolCalling) {
+        if (!toolsDisabledForLoad && settings.enabled) {
             try {
                 val providers = com.shounak.localmeshai.ai.tools.LocalTools
-                    .forConversation(context) { stopRequested || isBeingClosed }
+                    .forConversation(context, documentSearch = settings.documentSearch) { stopRequested || isBeingClosed }
                     .map { com.google.ai.edge.litertlm.tool(toolRecorder.recording(it)) }
                 val config = com.shounak.localmeshai.ai.tools.LocalTools.conversationConfig(base, providers)
                 return engine.createConversation(config).also { conversationHasTools = true }

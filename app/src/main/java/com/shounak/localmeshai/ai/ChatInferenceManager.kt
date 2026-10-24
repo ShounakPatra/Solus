@@ -1,6 +1,7 @@
 @file:Suppress("DEPRECATION")
 package com.shounak.localmeshai.ai
 
+import com.shounak.localmeshai.ai.tools.ConversationToolSettings
 import android.content.Context
 import android.util.Log
 import com.google.ai.edge.litertlm.Backend
@@ -100,6 +101,12 @@ class ChatInferenceManager(context: Context) {
     @Volatile private var resolvedThinkingCapability: ThinkingCapability = ThinkingCapability.Unknown
     @Volatile private var isDefaultThinkingModel = false
     @Volatile private var supportsTextNoThinkingSwitch = false
+    @Volatile private var conversationToolSettings: ConversationToolSettings? = null
+    val needsToolSettingsRefresh: Boolean
+        get() = (runtime == RuntimeKind.LiteRtLm || runtime == RuntimeKind.LlamaCpp) && conversationToolSettings?.requiresRefresh(
+            ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
+        ) == true
+
     val usesStatefulHistory: Boolean get() = runtime == RuntimeKind.LiteRtLm
     val hasActiveStatefulConversation: Boolean get() = runtime == RuntimeKind.LiteRtLm && liteRtConversation != null && liteRtMessageCount > 0
     private val runtimeContextCapacity = RuntimeContextCapacity()
@@ -418,8 +425,9 @@ class ChatInferenceManager(context: Context) {
             }
             llamaCppEngine = engine
             runtime = RuntimeKind.LlamaCpp
+            conversationToolSettings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
             ggufConversationTools = toolsForNewConversation()
-            ggufConversationHasTools = AppSettings.getInstance(context).settings.value.enableToolCalling && llamaCppEngine?.supportsToolCalling() == true
+            ggufConversationHasTools = conversationToolSettings?.enabled == true && llamaCppEngine?.supportsToolCalling() == true
             _isGgufActive.value = true
 
             // Set current model configuration for recovery fallback
@@ -1414,8 +1422,9 @@ class ChatInferenceManager(context: Context) {
     fun resetConversation(noThinking: Boolean = false) {
         if (runtime == RuntimeKind.LlamaCpp) {
             llamaCppEngine?.resetAfterValidation()
+            conversationToolSettings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
             ggufConversationTools = toolsForNewConversation()
-            ggufConversationHasTools = AppSettings.getInstance(context).settings.value.enableToolCalling && llamaCppEngine?.supportsToolCalling() == true
+            ggufConversationHasTools = conversationToolSettings?.enabled == true && llamaCppEngine?.supportsToolCalling() == true
             ggufToolRecorder.clear()
         }
         if (runtime != RuntimeKind.LiteRtLm) return
@@ -1427,21 +1436,23 @@ class ChatInferenceManager(context: Context) {
         runCatching { liteRtConversation?.close() }.onFailure { t ->
             Log.w(TAG, "LiteRT-LM conversation close during reset failed", t)
         }
+        stopRequested = false
         liteRtConversation = createLiteRtConversation(mode)
         liteRtMessageCount = 0
-        stopRequested = false
     }
 
     private fun toolsForNewConversation(): List<com.shounak.localmeshai.ai.tools.ChatTool> =
-        com.shounak.localmeshai.ai.tools.LocalTools.forConversation(context) { stopRequested || isBeingClosed }
+        com.shounak.localmeshai.ai.tools.LocalTools.forConversation(context, documentSearch = requireNotNull(conversationToolSettings).documentSearch) { stopRequested || isBeingClosed }
 
     private fun createLiteRtConversation(mode: LiteRtConversationMode): Conversation? {
         val engine = liteRtEngine ?: return null
+        val settings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
+        conversationToolSettings = settings
         liteRtConversationMode = mode
         liteRtCompletedTurns = 0
         liteRtConversationHasTools = false
         liteRtToolRecorder.clear()
-        if (!liteRtToolsDisabledForLoad && AppSettings.getInstance(context).settings.value.enableToolCalling) {
+        if (!liteRtToolsDisabledForLoad && settings.enabled) {
             try {
                 val providers = toolsForNewConversation().map {
                     tool(liteRtToolRecorder.recording(it))
