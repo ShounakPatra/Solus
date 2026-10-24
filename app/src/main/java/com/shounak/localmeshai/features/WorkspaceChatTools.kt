@@ -174,14 +174,14 @@ fun MessageRevisionActions(text: String, onEdit: ((String) -> Unit)?, onRegenera
             contentDescription = if (onEdit != null) "Edit prompt and regenerate" else "Regenerate answer",
             tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
     }
-    if (dialog) AlertDialog(onDismissRequest = { dialog = false },
+    if (dialog) GlassContentDialog(hazeState = hazeState, onDismissRequest = { dialog = false },
         title = { Text(if (onEdit != null) "Edit prompt" else "Regenerate answer?") },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        text = { Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("This replaces responses and messages after this prompt in the current conversation. Earlier messages remain.")
             if (onEdit != null) OutlinedTextField(edited, { edited = it }, label = { Text("Prompt") }, modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp), minLines = 3)
         } },
-        confirmButton = { TextButton(enabled = onEdit == null || edited.isNotBlank(), onClick = { dialog = false; if (onEdit != null) onEdit(edited) else onRegenerate?.invoke() }) { Text("Regenerate") } },
-        dismissButton = { TextButton(onClick = { dialog = false }) { Text("Cancel") } })
+        confirmButton = { GlassActionButton(hazeState = hazeState, enabled = onEdit == null || edited.isNotBlank(), onClick = { dialog = false; if (onEdit != null) onEdit(edited) else onRegenerate?.invoke() }) { Text("Regenerate") } },
+        dismissButton = { GlassActionButton(hazeState = hazeState, onClick = { dialog = false }) { Text("Cancel") } })
 }
 
 @Composable
