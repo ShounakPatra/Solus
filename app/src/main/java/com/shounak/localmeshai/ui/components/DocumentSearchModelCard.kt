@@ -51,7 +51,7 @@ fun DocumentSearchModelCard(hazeState: HazeState, modifier: Modifier = Modifier)
     val settings by appSettings.settings.collectAsState()
     val status by ragManager.embeddingStatus.collectAsState()
     val spec = EmbeddingModels.BGE_SMALL_EN_V15
-    val installed = settings.ragEmbeddingModel == spec.id
+    val installed = ragManager.embeddingEngine.algorithmId == spec.id
     val sizeMb = spec.downloadBytes / 1_000_000
     val colors = MaterialTheme.colorScheme
     val busy = status is EmbeddingModelStatus.Downloading || status is EmbeddingModelStatus.Reindexing
