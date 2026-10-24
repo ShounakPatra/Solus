@@ -88,4 +88,62 @@ class RepositoryFileTransferTest {
             assertThrows(IllegalArgumentException::class.java) { transfer.target("owner/repo", "sha", RepoFile(path)) }
         }
     }
+    @Test fun caseOnlyPathsCanBothBeStoredWithoutOverwriting() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("upper")); server.enqueue(MockResponse().setBody("lower"))
+            val transfer = RepositoryFileTransfer(folder.root, OkHttpClient())
+            val upper = transfer.download("owner/repo", "sha", RepoFile("README.md", 5), server.url("/upper").toString())
+            val lower = transfer.download("owner/repo", "sha", RepoFile("readme.md", 5), server.url("/lower").toString())
+            assertNotEquals(upper.canonicalFile, lower.canonicalFile)
+            assertEquals("upper", upper.readText()); assertEquals("lower", lower.readText())
+        }
+    }
+    @Test fun previousDownloadLayoutRemainsDiscoverableWithoutAliasingCaseOnlySiblings() {
+        val file = RepoFile("nested/README.md", 7, sha("weights"))
+        val legacy = File(folder.root, RepositoryFileTransfer.key("owner/repo", "sha", "") + "/files/nested/README.md")
+        legacy.parentFile!!.mkdirs(); legacy.writeText("weights")
+        val transfer = RepositoryFileTransfer(folder.root, OkHttpClient())
+        assertEquals(legacy.canonicalFile, transfer.existingTarget("owner/repo", "sha", file))
+        assertEquals(legacy.canonicalFile, transfer.download("owner/repo", "sha", file).canonicalFile)
+        assertNotEquals(legacy.canonicalFile, transfer.existingTarget("owner/repo", "sha", file.copy(path = "nested/readme.md")))
+        assertEquals("weights", legacy.readText())
+    }
+    @Test fun interruptedTransferResumesWithRangeAndVerifiesWholeFile() {
+        exerciseResume(ignoreRange = false)
+    }
+    @Test fun serverIgnoringRangeRestartsCleanlyInsteadOfAppending() {
+        exerciseResume(ignoreRange = true)
+    }
+    private fun exerciseResume(ignoreRange: Boolean) {
+        MockWebServer().use { server ->
+            val payload = "x".repeat(200_000)
+            val ranges = java.util.concurrent.CopyOnWriteArrayList<String>()
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                    val header = request.getHeader("Range")
+                    if (header != null) ranges.add(header)
+                    val start = if (header == null || ignoreRange) 0 else header.removePrefix("bytes=").removeSuffix("-").toInt()
+                    return MockResponse().setBody(payload.substring(start)).setHeader("ETag", "v1").apply {
+                        if (start > 0) setResponseCode(206).setHeader("Content-Range", "bytes $start-${payload.lastIndex}/${payload.length}")
+                    }
+                }
+            }
+            val transfer = RepositoryFileTransfer(folder.root, OkHttpClient())
+            val file = RepoFile("model.bin", payload.length.toLong(), sha(payload))
+            var stopped = false
+            assertThrows(CancellationException::class.java) {
+                transfer.download("owner/repo", "sha", file, server.url("/file").toString(),
+                    checkActive = { if (stopped) throw CancellationException("Stopped") }, onProgress = { _, _ -> stopped = true })
+            }
+            val part = File(folder.root, "staging").listFiles()!!.single { it.extension == "part" }
+            val prefix = part.length()
+            assertTrue(prefix in 1 until payload.length.toLong())
+            assertFalse(transfer.target("owner/repo", "sha", file).exists())
+            val saved = transfer.download("owner/repo", "sha", file, server.url("/file").toString())
+            assertEquals(payload, saved.readText())
+            assertEquals(listOf("bytes=$prefix-"), ranges.toList())
+            assertTrue(File(folder.root, "staging").listFiles().orEmpty().isEmpty())
+        }
+    }
+
 }

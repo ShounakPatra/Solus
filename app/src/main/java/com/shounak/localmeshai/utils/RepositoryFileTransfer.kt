@@ -30,9 +30,25 @@ internal class RepositoryFileTransfer(private val root: File, private val client
         val base = root.canonicalFile
         val directory = File(base, key(repo, revision, "") + "/files").canonicalFile
         require(directory.path.startsWith(base.path + File.separator)) { "Unsafe repository directory" }
-        val target = File(directory, safePath(file.path)).canonicalFile
+        val path = safePath(file.path)
+        // The digest keeps distinct repository paths distinct even on case-insensitive storage.
+        val target = File(directory, key(repo, revision, path) + "/" + path.substringAfterLast('/')).canonicalFile
         require(target.path.startsWith(directory.path + File.separator)) { "Unsafe repository path" }
         return target
+    }
+
+    /** Keep pre-upgrade downloads discoverable, but never alias a case-only sibling to them. */
+    fun existingTarget(repo: String, revision: String, file: RepoFile): File {
+        val modern = target(repo, revision, file)
+        if (modern.isFile) return modern
+        val directory = File(root.canonicalFile, key(repo, revision, "") + "/files").canonicalFile
+        var legacy = directory
+        for (segment in safePath(file.path).split('/')) {
+            legacy = legacy.listFiles()?.singleOrNull { it.name == segment } ?: return modern
+        }
+        val resolved = legacy.canonicalFile
+        require(resolved.path.startsWith(directory.path + File.separator)) { "Unsafe legacy repository path" }
+        return if (resolved.isFile) resolved else modern
     }
 
     fun download(repo: String, revision: String, file: RepoFile,
@@ -50,35 +66,93 @@ internal class RepositoryFileTransfer(private val root: File, private val client
             }
             return digest.digest().joinToString("") { "%02x".format(it) }.equals(expected, true)
         }
-        if (verify(target)) { onProgress(target.length(), target.length()); return target }
+        val existing = existingTarget(repo, revision, file)
+        if (verify(existing)) { onProgress(existing.length(), existing.length()); return existing }
         val part = File(root, "staging/" + key(repo, revision, file.path) + ".part")
+        val metadata = File(part.path + ".json")
         part.parentFile?.mkdirs()
-        val call = client.newCall(Request.Builder().url(downloadUrl).build())
+        val identity = org.json.JSONObject().put("url", downloadUrl).put("size", file.sizeBytes).put("sha256", file.sha256.orEmpty())
+        val saved = runCatching { org.json.JSONObject(metadata.readText()) }.getOrNull()
+        if (saved == null || saved.optString("url") != downloadUrl || saved.optLong("size") != file.sizeBytes ||
+            saved.optString("sha256") != file.sha256.orEmpty() ||
+            (file.sizeBytes > 0 && part.length() > file.sizeBytes)) {
+            part.delete(); metadata.delete()
+        }
+        val completeSize = file.sizeBytes.takeIf { it > 0 } ?: saved?.optLong("total", -1L) ?: -1L
+        if (completeSize > 0 && part.isFile && part.length() == completeSize) {
+            if (verify(part)) {
+                target.parentFile?.mkdirs()
+                if (target.exists() && !target.delete()) throw IOException("Could not replace ${file.path}")
+                if (!part.renameTo(target)) throw IOException("Could not publish ${file.path}")
+                metadata.delete()
+                onProgress(completeSize, completeSize)
+                return target
+            }
+            part.delete(); metadata.delete()
+        }
+        val offset = part.takeIf { it.isFile }?.length() ?: 0L
+        val builder = Request.Builder().url(downloadUrl).header("Accept-Encoding", "identity")
+        if (offset > 0) {
+            builder.header("Range", "bytes=$offset-")
+            saved?.optString("validator")?.takeIf { it.isNotBlank() }?.let { builder.header("If-Range", it) }
+        }
+        val call = client.newCall(builder.build())
         onCall(call)
+        var discardPartial = false
         try {
+            checkActive()
             call.execute().use { response ->
                 if (!response.isSuccessful) throw IOException("HTTP ${response.code} downloading ${file.path}")
-                val length = response.body.contentLength()
-                val expected = file.sizeBytes.takeIf { it > 0 } ?: length
-                var bytes = 0L
-                response.body.byteStream().use { input -> part.outputStream().use { output ->
+                val append = response.code == 206
+                val range = if (append) Regex("bytes (\\d+)-(\\d+)/(\\d+)")
+                    .matchEntire(response.header("Content-Range").orEmpty()) ?: throw IOException("Invalid download range") else null
+                if (append && (offset <= 0 || range!!.groupValues[1].toLong() != offset ||
+                        range.groupValues[2].toLong() < offset || range.groupValues[2].toLong() >= range.groupValues[3].toLong()))
+                    throw IOException("Incorrect download range")
+                val total = range?.groupValues?.get(3)?.toLong() ?: response.body.contentLength()
+                if (file.sizeBytes > 0 && total >= 0 && total != file.sizeBytes) throw IOException("Unexpected file size")
+                val expected = file.sizeBytes.takeIf { it > 0 } ?: total
+                val digest = file.sha256?.let { MessageDigest.getInstance("SHA-256") }
+                var bytes = if (append) offset else 0L
+                if (append && digest != null) part.inputStream().use { input ->
+                    val buffer = ByteArray(65536)
+                    while (true) { checkActive(); val n = input.read(buffer); if (n < 0) break; digest.update(buffer, 0, n) }
+                }
+                val validator = response.header("ETag")?.takeUnless { it.startsWith("W/") } ?: response.header("Last-Modified").orEmpty()
+                val oldValidator = saved?.optString("validator").orEmpty()
+                if (append && oldValidator.isNotBlank() && validator.isNotBlank() && oldValidator != validator) {
+                    discardPartial = true
+                    throw IOException("Download source changed; select again to restart")
+                }
+                if (!append) part.delete()
+                identity.put("total", expected)
+                identity.put("validator", response.header("ETag")?.takeUnless { it.startsWith("W/") }
+                    ?: response.header("Last-Modified").orEmpty())
+                metadata.writeText(identity.toString())
+                response.body.byteStream().use { input -> java.io.FileOutputStream(part, append).use { output ->
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
                         checkActive()
                         val n = input.read(buffer); if (n < 0) break
                         bytes += n
-                        if (expected >= 0 && bytes > expected) throw IOException("Unexpected size for ${file.path}")
+                        if (expected >= 0 && bytes > expected) { discardPartial = true; throw IOException("Unexpected size for ${file.path}") }
                         output.write(buffer, 0, n)
+                        digest?.update(buffer, 0, n)
                         onProgress(bytes, expected)
                     }
                 } }
                 checkActive()
-                if ((expected >= 0 && bytes != expected) || !verify(part)) throw IOException("Size or checksum verification failed for ${file.path}")
+                if (expected >= 0 && bytes != expected) throw IOException("Incomplete download for ${file.path}; select again to resume")
+                if (digest != null && !digest.digest().joinToString("") { "%02x".format(it) }.equals(file.sha256, true)) {
+                    part.delete(); metadata.delete()
+                    throw IOException("Checksum verification failed for ${file.path}")
+                }
             }
             target.parentFile?.mkdirs()
             if (target.exists() && !target.delete()) throw IOException("Could not replace ${file.path}")
             if (!part.renameTo(target)) throw IOException("Could not publish ${file.path}")
+            metadata.delete()
             return target
-        } finally { onCall(null); if (part.exists()) part.delete() }
+        } finally { onCall(null); if (discardPartial) { part.delete(); metadata.delete() } }
     }
 }
