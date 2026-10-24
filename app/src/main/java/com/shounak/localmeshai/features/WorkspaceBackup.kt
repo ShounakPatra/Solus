@@ -78,6 +78,8 @@ class WorkspaceBackup internal constructor(
             put("text", textJson); put("vision", visionJson); put("memories", memories)
             put("preferences", preferences.export()); put("attachments", mapping)
             put("settings", PortableSettings.encode(settings))
+            put("skills", com.shounak.localmeshai.ai.tools.ToolSkillStore.get(context).export()
+                .put("reminders", com.shounak.localmeshai.ai.tools.ToolReminders.records(context)))
         }.toString().toByteArray(Charsets.UTF_8)
         writeArchive(output, manifest, attachments.mapKeys { (path, _) -> mapping.getString(path) })
         "Exported ${text.size + vision.size} chats, ${memories.length()} memories and ${attachments.size} attachments. " +
@@ -107,6 +109,12 @@ class WorkspaceBackup internal constructor(
             validatePreferences(portable)
             val settings = manifest.getJSONObject("settings")
             PortableSettings.decode(settings, appSettings.settings.value)
+            val skillData = if (manifest.has("skills")) manifest.getJSONObject("skills") else null
+            skillData?.let { data ->
+                com.shounak.localmeshai.ai.tools.ToolSkillStore.validate(data)
+                val reminders = data.getJSONArray("reminders"); require(reminders.length() <= 64)
+                for (i in 0 until reminders.length()) com.shounak.localmeshai.ai.tools.ToolReminders.validate(reminders.getJSONObject(i))
+            }
             val rawMemories = manifest.getJSONArray("memories")
             require(rawMemories.length() <= 10_000)
             val memories = (0 until rawMemories.length()).map { index -> rawMemories.getJSONObject(index).let { item ->
@@ -170,7 +178,11 @@ class WorkspaceBackup internal constructor(
             }
             appSettings.updateSettings { old -> PortableSettings.decode(settings, old) }
             preferences.import(portable, ::remap)
-            "Restored $imported new chats and $memoryCount memories ($skippedMemories already present). Existing chats were preserved. Models and document indexes are not part of backups."
+            skillData?.let { data ->
+                com.shounak.localmeshai.ai.tools.ToolSkillStore.get(context).merge(data)
+                com.shounak.localmeshai.ai.tools.ToolReminders.importPaused(context, data.getJSONArray("reminders"))
+            }
+            "Restored $imported new chats and $memoryCount memories ($skippedMemories already present). Existing chats were preserved. Models and document indexes are not part of backups. Restored reminders stay paused until enabled in Manage skills."
         } finally {
             copied.forEach { (key, file) ->
                 if ((key.first to key.second) !in committed) {

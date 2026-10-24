@@ -21,6 +21,8 @@ data class AppSettingsData(
     val autoCheckUpdates: Boolean = true,
     val llamaBackendPreference: String = "AUTO",
     val enableToolCalling: Boolean = false,
+    val enabledToolSkills: Set<String> = setOf("calculator", "get_current_datetime", "search_documents"),
+    val customToolSkills: String = "[]",
     val enableRag: Boolean = false,
     val ragTopK: Int = 3,
     val ragMinSimilarity: Float = 0.35f,
@@ -55,6 +57,10 @@ class AppSettings internal constructor(
                 if (it.uppercase() in listOf("AUTO", "CPU", "VULKAN")) it.uppercase() else "AUTO"
             } ?: "AUTO",
             enableToolCalling = prefs.getBoolean(KEY_ENABLE_TOOL_CALLING, false),
+            enabledToolSkills = prefs.getStringSet(KEY_TOOL_SKILLS, setOf("calculator", "get_current_datetime", "search_documents"))?.toSet().orEmpty(),
+            customToolSkills = prefs.getString(KEY_CUSTOM_SKILLS, "[]")?.takeIf {
+                runCatching { com.shounak.localmeshai.ai.tools.CustomSkillCodec.decode(it) }.isSuccess
+            } ?: "[]",
             enableRag = prefs.getBoolean(KEY_ENABLE_RAG, false),
             ragTopK = prefs.getInt(KEY_RAG_TOP_K, 3),
             ragMinSimilarity = prefs.getFloat(KEY_RAG_MIN_SIMILARITY, 0.35f).let {
@@ -66,7 +72,9 @@ class AppSettings internal constructor(
     }
 
     @Synchronized fun updateSettings(transform: (AppSettingsData) -> AppSettingsData) {
-        val updated = transform(_settings.value).let { it.copy(huggingFaceToken = it.huggingFaceToken.trim()) }
+        val updated = transform(_settings.value).let { it.copy(huggingFaceToken = it.huggingFaceToken.trim(), enabledToolSkills = it.enabledToolSkills.toSet()) }
+        require(updated.enabledToolSkills.size <= 64 && updated.enabledToolSkills.all { it.matches(Regex("[a-z][a-z0-9_]{0,63}")) }) { "Invalid skill IDs" }
+        com.shounak.localmeshai.ai.tools.CustomSkillCodec.decode(updated.customToolSkills)
         if (updated.huggingFaceToken != _settings.value.huggingFaceToken) tokenStore.write(updated.huggingFaceToken)
         prefs.edit()
             .putBoolean(KEY_DARK_MODE, updated.enableDarkMode)
@@ -82,6 +90,8 @@ class AppSettings internal constructor(
             .putBoolean(KEY_AUTO_CHECK_UPDATES, updated.autoCheckUpdates)
             .putString(KEY_LLAMA_BACKEND_PREF, updated.llamaBackendPreference)
             .putBoolean(KEY_ENABLE_TOOL_CALLING, updated.enableToolCalling)
+            .putStringSet(KEY_TOOL_SKILLS, updated.enabledToolSkills.toSet())
+            .putString(KEY_CUSTOM_SKILLS, updated.customToolSkills)
             .putBoolean(KEY_ENABLE_RAG, updated.enableRag)
             .putInt(KEY_RAG_TOP_K, updated.ragTopK)
             .putFloat(KEY_RAG_MIN_SIMILARITY, updated.ragMinSimilarity)
@@ -105,6 +115,8 @@ class AppSettings internal constructor(
         private const val KEY_AUTO_CHECK_UPDATES = "auto_check_updates"
         private const val KEY_LLAMA_BACKEND_PREF = "llama_backend_pref"
         private const val KEY_ENABLE_TOOL_CALLING = "enable_tool_calling"
+        private const val KEY_TOOL_SKILLS = "enabled_tool_skills"
+        private const val KEY_CUSTOM_SKILLS = "custom_tool_skills"
         private const val KEY_ENABLE_RAG = "enable_rag"
         private const val KEY_RAG_TOP_K = "rag_top_k"
         private const val KEY_RAG_MIN_SIMILARITY = "rag_min_similarity"

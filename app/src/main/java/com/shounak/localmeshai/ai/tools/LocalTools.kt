@@ -16,10 +16,10 @@ internal object LocalTools {
         tools = tools, automaticToolCalling = true
     )
 
-    fun forConversation(context: Context, documentSearch: Boolean = AppSettings.getInstance(context).settings.value.enableRag, isCancelled: () -> Boolean): List<ChatTool> = buildList {
-        add(CalculatorTool())
-        add(CurrentDateTimeTool())
-        if (documentSearch) {
+    fun forConversation(context: Context, settings: ConversationToolSettings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value), isCancelled: () -> Boolean): List<ChatTool> = buildList {
+        if ("calculator" in settings.skills) add(CalculatorTool())
+        if ("get_current_datetime" in settings.skills) add(CurrentDateTimeTool())
+        if (settings.documentSearch && "search_documents" in settings.skills) {
             add(DocumentSearchTool(isCancelled = isCancelled) { query ->
                 runBlocking(Dispatchers.IO) {
                     val settings = AppSettings.getInstance(context).settings.value
@@ -32,6 +32,13 @@ internal object LocalTools {
                     }).toString()
                 }
             })
+        }
+        val services = AndroidSkillServices(context, isCancelled)
+        SkillCatalog.builtins.filter { it.id in settings.skills }.forEach {
+            add(BoundedSkillTool(it.tool(services), isCancelled))
+        }
+        CustomSkillCodec.decode(settings.customSkills).filter { it.id in settings.skills }.forEach {
+            add(BoundedSkillTool(it.definition().tool(services), isCancelled))
         }
     }
 }

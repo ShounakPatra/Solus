@@ -427,7 +427,7 @@ class ChatInferenceManager(context: Context) {
             runtime = RuntimeKind.LlamaCpp
             conversationToolSettings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
             ggufConversationTools = toolsForNewConversation()
-            ggufConversationHasTools = conversationToolSettings?.enabled == true && llamaCppEngine?.supportsToolCalling() == true
+            ggufConversationHasTools = conversationToolSettings?.enabled == true && ggufConversationTools.isNotEmpty() && llamaCppEngine?.supportsToolCalling() == true
             _isGgufActive.value = true
 
             // Set current model configuration for recovery fallback
@@ -1424,7 +1424,7 @@ class ChatInferenceManager(context: Context) {
             llamaCppEngine?.resetAfterValidation()
             conversationToolSettings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
             ggufConversationTools = toolsForNewConversation()
-            ggufConversationHasTools = conversationToolSettings?.enabled == true && llamaCppEngine?.supportsToolCalling() == true
+            ggufConversationHasTools = conversationToolSettings?.enabled == true && ggufConversationTools.isNotEmpty() && llamaCppEngine?.supportsToolCalling() == true
             ggufToolRecorder.clear()
         }
         if (runtime != RuntimeKind.LiteRtLm) return
@@ -1442,7 +1442,7 @@ class ChatInferenceManager(context: Context) {
     }
 
     private fun toolsForNewConversation(): List<com.shounak.localmeshai.ai.tools.ChatTool> =
-        com.shounak.localmeshai.ai.tools.LocalTools.forConversation(context, documentSearch = requireNotNull(conversationToolSettings).documentSearch) { stopRequested || isBeingClosed }
+        com.shounak.localmeshai.ai.tools.LocalTools.forConversation(context, settings = requireNotNull(conversationToolSettings)) { stopRequested || isBeingClosed }
 
     private fun createLiteRtConversation(mode: LiteRtConversationMode): Conversation? {
         val engine = liteRtEngine ?: return null
@@ -1457,15 +1457,17 @@ class ChatInferenceManager(context: Context) {
                 val providers = toolsForNewConversation().map {
                     tool(liteRtToolRecorder.recording(it))
                 }
-                val conversation = engine.createConversation(ConversationConfig(
-                    tools = providers,
-                    automaticToolCalling = true,
-                    extraContext = if (mode == LiteRtConversationMode.NoThinking)
-                        ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
-                    else emptyMap()
-                ))
-                liteRtConversationHasTools = true
-                return conversation
+                if (providers.isNotEmpty()) {
+                    val conversation = engine.createConversation(ConversationConfig(
+                        tools = providers,
+                        automaticToolCalling = true,
+                        extraContext = if (mode == LiteRtConversationMode.NoThinking)
+                            ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
+                        else emptyMap()
+                    ))
+                    liteRtConversationHasTools = true
+                    return conversation
+                }
             } catch (failure: Exception) {
                 if (failure is CancellationException || stopRequested || isBeingClosed) throw failure
                 liteRtToolsDisabledForLoad = true

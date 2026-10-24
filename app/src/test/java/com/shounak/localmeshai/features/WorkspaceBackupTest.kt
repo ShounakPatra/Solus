@@ -23,7 +23,9 @@ class WorkspaceBackupTest {
     private class Workspace(root: File) {
         val files = root.resolve("files").apply { mkdirs() }
         val cache = root.resolve("cache").apply { mkdirs() }
+        private val skillPrefs = mutableMapOf<String, FeatureTestPreferences>()
         val context = object : ContextWrapper(null) {
+            override fun getSharedPreferences(name: String, mode: Int): android.content.SharedPreferences = skillPrefs.getOrPut(name) { FeatureTestPreferences() }
             override fun getApplicationContext(): Context = this
             override fun getFilesDir(): File = files
             override fun getCacheDir(): File = cache
@@ -43,6 +45,36 @@ class WorkspaceBackupTest {
         ZipOutputStream(bytes).use { zip -> entries.forEach { (name, body) -> zip.putNextEntry(ZipEntry(name)); zip.write(body.toByteArray()); zip.closeEntry() } }
     }.toByteArray()
     private fun rejects(block: () -> Unit) { try { block(); fail("Expected rejection") } catch (_: IllegalArgumentException) { } }
+
+    @Test fun skillDataAndSelectionsRoundTripWithRemindersPausedAndExistingMoodsPreserved() = runBlocking {
+        val source = Workspace(folder.newFolder())
+        val target = Workspace(folder.newFolder())
+        val custom = com.shounak.localmeshai.ai.tools.CustomSkill("custom_tutor", "Tutor", "Teach a topic", "Use examples.")
+        source.settings.updateSettings { it.copy(
+            enabledToolSkills = setOf("calculator", "mood_tracker", custom.id),
+            customToolSkills = com.shounak.localmeshai.ai.tools.CustomSkillCodec.encode(listOf(custom))
+        ) }
+        val date = java.time.LocalDate.of(2020, 1, 1)
+        com.shounak.localmeshai.ai.tools.ToolSkillStore.get(source.context).mood(
+            JSONObject().put("operation", "log").put("date", date.toString()).put("mood", "Happy"), date)
+        val reminder = JSONObject().put("id", "8e630917-1638-4e47-9528-51294427db5e")
+            .put("title", "Learn").put("message", "Ask for a lesson")
+            .put("datetime", "2027-01-01T09:00:00+05:30").put("repeat", "daily").put("active", true)
+        source.context.getSharedPreferences("tool_reminders", Context.MODE_PRIVATE).edit()
+            .putString("records", org.json.JSONArray().put(reminder).toString()).commit()
+        val bytes = ByteArrayOutputStream()
+        source.backup.exportTo(bytes, false)
+        target.backup.restoreFrom(bytes.toByteArray().inputStream())
+        val store = com.shounak.localmeshai.ai.tools.ToolSkillStore.get(target.context)
+        assertEquals("Happy", store.export().getJSONObject("moods").getJSONObject(date.toString()).getString("mood"))
+        assertEquals(source.settings.settings.value.enabledToolSkills, target.settings.settings.value.enabledToolSkills)
+        assertEquals(source.settings.settings.value.customToolSkills, target.settings.settings.value.customToolSkills)
+        assertFalse(com.shounak.localmeshai.ai.tools.ToolReminders.records(target.context).getJSONObject(0).getBoolean("active"))
+        store.mood(JSONObject().put("operation", "log").put("date", date.toString()).put("mood", "Calm"), date)
+        target.backup.restoreFrom(bytes.toByteArray().inputStream())
+        assertEquals("Calm", store.export().getJSONObject("moods").getJSONObject(date.toString()).getString("mood"))
+        assertEquals(1, com.shounak.localmeshai.ai.tools.ToolReminders.records(target.context).length())
+    }
 
     @Test fun v600BackupRestoresIntoV601WithLegacySettingsSchema() = runBlocking {
         val source = Workspace(folder.newFolder())

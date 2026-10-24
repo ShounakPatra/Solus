@@ -785,10 +785,12 @@ class VisionInferenceManager(context: Context) {
         if (!toolsDisabledForLoad && settings.enabled) {
             try {
                 val providers = com.shounak.localmeshai.ai.tools.LocalTools
-                    .forConversation(context, documentSearch = settings.documentSearch) { stopRequested || isBeingClosed }
+                    .forConversation(context, settings = settings) { stopRequested || isBeingClosed }
                     .map { com.google.ai.edge.litertlm.tool(toolRecorder.recording(it)) }
-                val config = com.shounak.localmeshai.ai.tools.LocalTools.conversationConfig(base, providers)
-                return engine.createConversation(config).also { conversationHasTools = true }
+                if (providers.isNotEmpty()) {
+                    val config = com.shounak.localmeshai.ai.tools.LocalTools.conversationConfig(base, providers)
+                    return engine.createConversation(config).also { conversationHasTools = true }
+                }
             } catch (failure: Exception) {
                 if (failure is CancellationException || stopRequested || isBeingClosed) throw failure
                 toolsDisabledForLoad = true
