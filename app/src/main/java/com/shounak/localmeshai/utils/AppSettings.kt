@@ -28,6 +28,8 @@ data class AppSettingsData(
     val ragMinSimilarity: Float = 0.35f,
     /** RAG embedder: "universal-fnv1a-384" (built-in lexical) or an EmbeddingModels id. */
     val ragEmbeddingModel: String = "universal-fnv1a-384",
+    /** User chose "Later" on the Model Manager's document-search model card. */
+    val embeddingModelPromptSkipped: Boolean = false,
     val enablePersistentMemory: Boolean = true,
     val autoExtractMemories: Boolean = true
 )
@@ -69,6 +71,7 @@ class AppSettings internal constructor(
                 if (it < 0.30f) 0.35f else it
             },
             ragEmbeddingModel = prefs.getString(KEY_RAG_EMBEDDING_MODEL, null) ?: "universal-fnv1a-384",
+            embeddingModelPromptSkipped = prefs.getBoolean(KEY_EMBEDDING_PROMPT_SKIPPED, false),
             enablePersistentMemory = prefs.getBoolean(KEY_ENABLE_PERSISTENT_MEMORY, true),
             autoExtractMemories = prefs.getBoolean(KEY_AUTO_EXTRACT_MEMORIES, true)
         )
@@ -99,6 +102,7 @@ class AppSettings internal constructor(
             .putInt(KEY_RAG_TOP_K, updated.ragTopK)
             .putFloat(KEY_RAG_MIN_SIMILARITY, updated.ragMinSimilarity)
             .putString(KEY_RAG_EMBEDDING_MODEL, updated.ragEmbeddingModel)
+            .putBoolean(KEY_EMBEDDING_PROMPT_SKIPPED, updated.embeddingModelPromptSkipped)
             .putBoolean(KEY_ENABLE_PERSISTENT_MEMORY, updated.enablePersistentMemory)
             .putBoolean(KEY_AUTO_EXTRACT_MEMORIES, updated.autoExtractMemories)
             .apply()
@@ -125,6 +129,7 @@ class AppSettings internal constructor(
         private const val KEY_RAG_TOP_K = "rag_top_k"
         private const val KEY_RAG_MIN_SIMILARITY = "rag_min_similarity"
         private const val KEY_RAG_EMBEDDING_MODEL = "rag_embedding_model"
+        private const val KEY_EMBEDDING_PROMPT_SKIPPED = "embedding_model_prompt_skipped"
         private const val KEY_ENABLE_PERSISTENT_MEMORY = "enable_persistent_memory"
         private const val KEY_AUTO_EXTRACT_MEMORIES = "auto_extract_memories"
 

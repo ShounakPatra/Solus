@@ -20,7 +20,14 @@ import kotlin.coroutines.coroutineContext
  */
 object EmbeddingModels {
 
-    data class RemoteFile(val remotePath: String, val localName: String, val sizeBytes: Long, val sha256: String)
+    data class RemoteFile(
+        val remotePath: String,
+        val localName: String,
+        val sizeBytes: Long,
+        val sha256: String,
+        /** Asset name of this file on the Solus GitHub release used as a mirror. */
+        val mirrorName: String = localName
+    )
 
     data class Spec(
         val id: String,
@@ -32,11 +39,14 @@ object EmbeddingModels {
         val calibrationFloor: Float,
         val calibrationSpan: Float,
         val model: RemoteFile,
-        val vocab: RemoteFile
+        val vocab: RemoteFile,
+        /** Release-asset folder tried when Hugging Face is unreachable; same SHA-256 checks apply. */
+        val mirrorBaseUrl: String? = null
     ) {
         val files: List<RemoteFile> get() = listOf(model, vocab)
         val downloadBytes: Long get() = files.sumOf { it.sizeBytes }
         fun url(file: RemoteFile) = "https://huggingface.co/$repository/resolve/$revision/${file.remotePath}"
+        fun urls(file: RemoteFile): List<String> = listOfNotNull(url(file), mirrorBaseUrl?.let { "$it/${file.mirrorName}" })
     }
 
     /** Built-in lexical hashing engine. Needs no download. */
@@ -60,14 +70,17 @@ object EmbeddingModels {
             remotePath = "onnx/model_quantized.onnx",
             localName = "model_quantized.onnx",
             sizeBytes = 34_014_426L,
-            sha256 = "6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4"
+            sha256 = "6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4",
+            mirrorName = "bge-small-en-v1.5-int8.onnx"
         ),
         vocab = RemoteFile(
             remotePath = "vocab.txt",
             localName = "vocab.txt",
             sizeBytes = 231_508L,
-            sha256 = "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
-        )
+            sha256 = "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+            mirrorName = "bge-small-en-v1.5-vocab.txt"
+        ),
+        mirrorBaseUrl = "https://github.com/ShounakPatra/Solus/releases/download/v6.0.5"
     )
 
     val all: List<Spec> = listOf(BGE_SMALL_EN_V15)
@@ -113,7 +126,7 @@ object EmbeddingModels {
         spec: Spec,
         client: OkHttpClient,
         onProgress: (Long, Long) -> Unit,
-        urlFor: (RemoteFile) -> String = spec::url
+        urlsFor: (RemoteFile) -> List<String> = spec::urls
     ) = withContext(Dispatchers.IO) {
         if (!dir.isDirectory && !dir.mkdirs()) throw IOException("Cannot create ${dir.absolutePath}")
         val total = spec.downloadBytes
@@ -126,40 +139,56 @@ object EmbeddingModels {
                 continue
             }
             val partial = File(dir, file.localName + ".part")
-            partial.delete()
-            val request = Request.Builder().url(urlFor(file)).build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) throw IOException("Download failed (HTTP ${response.code}) for ${file.remotePath}")
-                val body = response.body
-                val digest = MessageDigest.getInstance("SHA-256")
-                var written = 0L
-                body.byteStream().use { input ->
-                    partial.outputStream().use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            coroutineContext.ensureActive()
-                            val read = input.read(buffer)
-                            if (read < 0) break
-                            written += read
-                            if (written > file.sizeBytes) throw IOException("${file.remotePath} is larger than expected")
-                            digest.update(buffer, 0, read)
-                            output.write(buffer, 0, read)
-                            onProgress(done + written, total)
-                        }
-                        output.fd.sync()
-                    }
-                }
-                val hash = digest.digest().joinToString("") { "%02x".format(it) }
-                if (written != file.sizeBytes || hash != file.sha256) {
+            var lastError: IOException? = null
+            for (url in urlsFor(file)) {
+                try {
+                    fetchVerified(client, url, file, partial) { written -> onProgress(done + written, total) }
+                    lastError = null
+                    break
+                } catch (e: IOException) {
                     partial.delete()
-                    throw IOException("Checksum mismatch for ${file.remotePath}")
+                    lastError = e
                 }
             }
+            lastError?.let { throw it }
             if (!partial.renameTo(target)) {
                 partial.delete()
                 throw IOException("Cannot finalise ${file.localName}")
             }
             done += file.sizeBytes
+        }
+    }
+
+    private suspend fun fetchVerified(
+        client: OkHttpClient,
+        url: String,
+        file: RemoteFile,
+        partial: File,
+        onBytes: (Long) -> Unit
+    ) {
+        partial.delete()
+        client.newCall(Request.Builder().url(url).build()).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("Download failed (HTTP ${response.code}) for ${file.remotePath}")
+            val digest = MessageDigest.getInstance("SHA-256")
+            var written = 0L
+            response.body.byteStream().use { input ->
+                partial.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        written += read
+                        if (written > file.sizeBytes) throw IOException("${file.remotePath} is larger than expected")
+                        digest.update(buffer, 0, read)
+                        output.write(buffer, 0, read)
+                        onBytes(written)
+                    }
+                    output.fd.sync()
+                }
+            }
+            val hash = digest.digest().joinToString("") { "%02x".format(it) }
+            if (written != file.sizeBytes || hash != file.sha256) throw IOException("Checksum mismatch for ${file.remotePath}")
         }
     }
 

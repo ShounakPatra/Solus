@@ -613,6 +613,10 @@ fun ModelManagerScreen(
         }
 
         if (!isSearching) {
+            item(key = "document_search_model") {
+                com.shounak.localmeshai.ui.components.DocumentSearchModelCard(hazeState = hazeState)
+            }
+
             item(key = "storage_summary") {
                 // Storage usage summary
                 val downloadedForSummary = mainViewModel.availableModels.filter {

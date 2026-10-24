@@ -35,7 +35,7 @@ class EmbeddingModelsDownloadTest {
             val s = spec(model, vocab)
             val dir = temp.newFolder("bge")
             var last = 0L
-            EmbeddingModels.download(dir, s, OkHttpClient(), { done, _ -> last = done }) { server.url("/" + it.remotePath).toString() }
+            EmbeddingModels.download(dir, s, OkHttpClient(), { done, _ -> last = done }) { listOf(server.url("/" + it.remotePath).toString()) }
             assertTrue(EmbeddingModels.isInstalled(dir, s))
             assertEquals(s.downloadBytes, last)
             assertFalse(dir.listFiles()!!.any { it.name.endsWith(".part") })
@@ -54,7 +54,7 @@ class EmbeddingModelsDownloadTest {
             val s = spec(model, vocab, modelHash = "0".repeat(64))
             val dir = temp.newFolder("bad")
             val result = runCatching {
-                EmbeddingModels.download(dir, s, OkHttpClient(), { _, _ -> }) { server.url("/" + it.remotePath).toString() }
+                EmbeddingModels.download(dir, s, OkHttpClient(), { _, _ -> }) { listOf(server.url("/" + it.remotePath).toString()) }
             }
             assertTrue(result.isFailure)
             assertFalse(EmbeddingModels.isInstalled(dir, s))
@@ -62,5 +62,35 @@ class EmbeddingModelsDownloadTest {
         } finally {
             server.shutdown()
         }
+    }
+
+    @Test
+    fun fallsBackToMirrorWhenPrimaryFails() = runBlocking {
+        val model = ByteArray(5_000) { 3 }
+        val vocab = "[UNK]\n".toByteArray()
+        val server = MockWebServer().apply { start() }
+        try {
+            server.enqueue(MockResponse().setResponseCode(503))
+            server.enqueue(MockResponse().setBody(okio.Buffer().write(model)))
+            server.enqueue(MockResponse().setResponseCode(404))
+            server.enqueue(MockResponse().setBody(okio.Buffer().write(vocab)))
+            val s = spec(model, vocab)
+            val dir = temp.newFolder("mirror")
+            EmbeddingModels.download(dir, s, OkHttpClient(), { _, _ -> }) {
+                listOf(server.url("/hf/" + it.remotePath).toString(), server.url("/gh/" + it.mirrorName).toString())
+            }
+            assertTrue(EmbeddingModels.isInstalled(dir, s))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun builtInSpecListsHuggingFaceThenReleaseMirror() {
+        val spec = EmbeddingModels.BGE_SMALL_EN_V15
+        val urls = spec.urls(spec.model)
+        assertEquals(2, urls.size)
+        assertTrue(urls[0].startsWith("https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/"))
+        assertEquals("https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/bge-small-en-v1.5-int8.onnx", urls[1])
     }
 }

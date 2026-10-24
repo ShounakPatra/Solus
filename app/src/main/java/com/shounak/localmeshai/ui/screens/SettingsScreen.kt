@@ -734,6 +734,8 @@ fun SettingsDialog(
                                 checked = neuralOn,
                                 enabled = !switching,
                                 onCheckedChange = { enable ->
+                                    // Turning it off here is a deliberate choice; don't re-prompt in Model Manager.
+                                    if (!enable) appSettings.updateSettings { it.copy(embeddingModelPromptSkipped = true) }
                                     ragManager.requestEmbeddingModel(
                                         if (enable) neuralSpec.id else com.shounak.localmeshai.rag.embedding.EmbeddingModels.LEXICAL_ID
                                     )
