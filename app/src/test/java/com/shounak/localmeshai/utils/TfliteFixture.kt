@@ -5,6 +5,16 @@ import java.nio.ByteOrder
 
 /** Tiny forward-built schema tables; tensor payloads are intentionally absent. */
 internal object TfliteFixture {
+    /** Representative of the probed Qwen seq128 export's decode/cache signature. */
+    fun cachedText(): ByteArray = Builder("TFL3").build { b ->
+        b.table(mapOf(0 to { 3 }, 2 to { b.tables(listOf { b.table(mapOf(
+            0 to { b.tables(listOf(
+                { b.tensor("decode_tokens", intArrayOf(1,1), 2) },
+                { b.tensor("decode_input_pos", intArrayOf(1), 2) },
+                { b.tensor("decode_kv_cache_k_0", intArrayOf(1,2,1280,64), 0) },
+                { b.tensor("logits", intArrayOf(1,1,151936), 0) })) },
+            1 to { b.vector(intArrayOf(0,1,2)) }, 2 to { b.vector(intArrayOf(3)) }), setOf(0,1,2)) }) }), setOf(2))
+    }
     fun ctc(): ByteArray = Builder("TFL3").build { b ->
         b.table(mapOf(0 to { 3 }, 2 to { b.tables(listOf { b.table(mapOf(
             0 to { b.tables(listOf({ b.tensor("input_values", intArrayOf(1,-1), 0) },

@@ -16,6 +16,10 @@ internal object TfliteExportInspector {
         val customOps: List<String>, val config: JSONObject?, val processor: JSONObject?) {
         fun check(config: JSONObject) {
             require(customOps.isEmpty()) { "This TFLite export requires custom operators (${customOps.joinToString()}). Use the author's .task or .litertlm package; adding config.json cannot supply those kernels." }
+            val caches = inputs.filter { it.name.contains("kv_cache", ignoreCase = true) || it.name.startsWith("past_key_values") }
+            require(caches.isEmpty()) {
+                "This TFLite export requires ${caches.size} external KV-cache inputs and a cache-aware generation adapter. Use the author's packaged .task or .litertlm version. Adding config.json does not provide that adapter."
+            }
             if (PortableModelProfile.task(config) == ModelTask.Chat) {
                 TfliteTextPlan(inputs, outputs, config.optString("model_type"), config.optInt("vocab_size", 0))
             }

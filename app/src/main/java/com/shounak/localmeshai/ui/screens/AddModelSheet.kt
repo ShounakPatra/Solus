@@ -486,7 +486,7 @@ private fun HuggingFaceImportSection(
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text(
-            text = "Enter a Hugging Face repository, folder, or model URL. Supports GGUF, .task, .litertlm, .onnx, .tflite and .safetensors. Tokenizer, configuration and weight companions are downloaded with portable models.",
+            text = "Enter a Hugging Face repository, folder, or model URL. Supports GGUF, .task, .litertlm, .onnx, .tflite and .safetensors. Export requirements are checked before downloading weights. Companion files depend on the export; supported self-contained TFLite models use embedded metadata.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

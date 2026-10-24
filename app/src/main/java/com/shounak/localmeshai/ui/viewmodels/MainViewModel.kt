@@ -2239,6 +2239,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             val isNewModel = existingModel == null
             val downloadSpec = HuggingFaceModelResolver.createDownloadSpec(repoInfo, variant, modelId, selectedProjector)
+            try {
+                com.shounak.localmeshai.utils.ModelImportPreflight.check(downloadSpec,
+                    appSettingsData.value.huggingFaceToken.ifBlank { null })
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                return@withLock Result.failure(failure)
+            }
             val firstArtifact = downloadSpec.artifacts.firstOrNull()
                 ?: return@withLock Result.failure(IllegalArgumentException("Specification has no artifacts"))
 
@@ -2424,6 +2432,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val isNewModel = existingModel == null
             val displayName = name.trim().ifBlank {
                 fileName.substringBeforeLast('.').replace('-', ' ').replace('_', ' ')
+            }
+
+            if (packageType == ModelPackage.SingleFile) {
+                val preflightSpec = portableSpec ?: com.shounak.localmeshai.models.ModelDownloadSpec(id,
+                    artifacts = listOf(com.shounak.localmeshai.models.DownloadArtifactSpec(normalizedUrl, fileName)))
+                try {
+                    com.shounak.localmeshai.utils.ModelImportPreflight.check(preflightSpec,
+                        appSettingsData.value.huggingFaceToken.ifBlank { null })
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    return@withLock Result.failure(failure)
+                }
             }
 
             val backendName = when {

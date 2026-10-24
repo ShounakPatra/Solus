@@ -9,6 +9,14 @@ import org.junit.rules.TemporaryFolder
 
 class TfliteExportInspectorTest {
     @get:Rule val temp = TemporaryFolder()
+    @Test fun rawGenAiCacheSignatureIsIdentifiedWithoutConfig() {
+        val file = temp.newFile("decode.tflite").apply { writeBytes(TfliteFixture.cachedText()) }
+        try { TfliteExportInspector.file(file).check(JSONObject()); fail("Cache-aware export accepted") }
+        catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message!!.contains("external KV-cache"))
+            assertTrue(expected.message!!.contains("packaged .task or .litertlm"))
+        }
+    }
     @Test fun standaloneClassifierUsesEmbeddedTaskAndNormalizationWithoutConfig() {
         val file = temp.newFile("classifier.tflite").apply { writeBytes(TfliteFixture.classifier()) }
         val export = TfliteExportInspector.file(file)
