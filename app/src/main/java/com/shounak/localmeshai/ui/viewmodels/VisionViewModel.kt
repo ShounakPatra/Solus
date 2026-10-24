@@ -1081,6 +1081,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         val timing = InferenceTiming()
+        var capturedMetrics: com.shounak.localmeshai.ai.InferenceMetrics? = null
         val basePrompt = resolved.effectivePrompt
         val displayPrompt = if (resolved.isImageOnlyPrompt) "" else question.trim()
         val targetDocId = if (fileUri != null) null else pendingRagDocumentId ?: currentSessionDocumentId
@@ -1388,7 +1389,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 } else {
                     ""
                 }).let { memory ->
-                    listOf(com.shounak.localmeshai.features.WorkspacePreferences.get(getApplication()).profile(currentModelId).systemPrompt, memory)
+                    val system = com.shounak.localmeshai.features.WorkspacePreferences.get(getApplication()).profile(currentModelId).systemPrompt
+                    timing.recordPromptBlocks(systemChars = system.length, memoryChars = memory.length, ragChars = ragAugmentedContext?.length ?: 0)
+                    listOf(system, memory)
                         .filter { it.isNotBlank() }.joinToString("\n\n")
                 }
 
@@ -1461,6 +1464,16 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                       ioMutex.withLock {
                         timing.endQueue()
                         if (myGen != analysisGeneration || reqModelEpoch != currentModelEpoch) return@withLock null
+                        val needsVision = effectiveBitmap != null || persistentImageFile != null || resolved.imageFileToUse != null || resolved.bitmapToUse != null ||
+                            historySnapshot.any { it.imagePath != null || it.bitmap != null }
+                        val needsAudio = persistentAudioFile != null || audioUri != null ||
+                            historySnapshot.any { it.audioPath != null }
+                        if (inferenceManager.needsMediaEncoders(needsVision, needsAudio)) {
+                            timing.startLoading()
+                            inferenceManager.prepareMediaEncoders(needsVision, needsAudio)
+                            timing.endLoading()
+                            resetRuntimeConversationBeforeNextAsk = true
+                        }
                         if (resetRuntimeConversationBeforeNextAsk || inferenceManager.needsToolSettingsRefresh) {
                             val previousMessages = historySnapshot.filter { it.id != userMessageId && it.id != assistantMessageId }
                             val restorationHistory = VisionRequestContextResolver.buildRestorationHistory(
@@ -1499,6 +1512,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         val mediaResult = inferenceManager.askStreaming(
                             bitmap = bitmapCopy,
                             question = prompt,
+                            memoryContext = memoryContext,
                             audioFile = audioFile,
                             audioBytes = audioBytes,
                             thinkingMode = thinkingModeForRequest,
@@ -1543,6 +1557,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     liveUpdates.close()
                     liveUpdateJob.join()
+                    capturedMetrics = execResult?.metrics
                     if (myGen != analysisGeneration || execResult == null) return@launch
 
                     val snap = latestStructuredSnapshot.get()
@@ -1733,7 +1748,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 } finally {
                     liveUpdateJob.cancel()
-                    Log.i("VisionLatency", timing.summary())
                     liveUpdates.close()
                     if (activeRequestId == requestId) {
                         _isAnalyzing.value = false
@@ -1775,6 +1789,10 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
             } finally {
+                val latency = capturedMetrics?.let { metrics ->
+                    timing.formatMetricsSummary(metrics.copy(firstVisibleTextLatencyMs = timing.buildMetrics(requestId, activeSessionId).firstVisibleTextLatencyMs))
+                } ?: timing.detailedSummary(requestId, activeSessionId)
+                Log.i("VisionLatency", latency)
                 preparedInput?.close()
                 documentPreparation.release(preparation)
                 imagePreparation.release(imageInput)

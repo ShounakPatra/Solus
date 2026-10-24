@@ -4,6 +4,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class InferenceTimingTest {
+    @Test fun runtimeSummaryDistinguishesLoadWarmupFromRequestAndKeepsPromptBlockSizes() {
+        val timing = InferenceTiming { 1_000_000L }
+        timing.recordRuntime(1, 4, "LiteRT-LM CPU", 3, 0)
+        timing.recordPromptBlocks(systemChars = 0, memoryChars = 0, ragChars = 0)
+        timing.recordPromptBlocks(toolChars = 0)
+        val cold = timing.detailedSummary("request", "session")
+        assertTrue(cold.contains("reqSinceLoad=1 threads=4 backend=LiteRT-LM_CPU promptChars=3 coldRun=true warmupMs=0"))
+        assertTrue(cold.contains("systemChars=0 memoryChars=0 toolsChars=0 ragChars=0"))
+        assertTrue(cold.contains("queueMs=0 loadMs=0"))
+        timing.recordRuntime(1, 4, "LiteRT-LM CPU", 3, 1200)
+        assertTrue(timing.detailedSummary("request", "session").contains("coldRun=false warmupMs=1200"))
+    }
     @Test fun separatesInputPreparationFromPrefillAndDoesNotCountEmptyChunks() {
         var now = 0L
         val timing = InferenceTiming { now }

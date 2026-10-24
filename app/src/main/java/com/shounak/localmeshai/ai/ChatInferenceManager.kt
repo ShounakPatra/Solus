@@ -133,6 +133,9 @@ class ChatInferenceManager(context: Context) {
     @Volatile private var liteRtMessageCount = 0
     var activeBackendDisplayName: String = ""
         private set
+    private var requestsSinceLoad = 0
+    private var warmupMs = 0L
+    private var runtimeThreads = 0
     @Volatile private var currentGgufVerifiedSha: String = ""
     @Volatile private var currentGgufModelPath: String = ""
     @Volatile private var currentGgufThreads: Int = 4
@@ -204,6 +207,9 @@ class ChatInferenceManager(context: Context) {
         val effectiveId = modelId.ifBlank { bundle?.id ?: file?.nameWithoutExtension.orEmpty() }
         val effectiveName = modelName.ifBlank { bundle?.displayName ?: file?.nameWithoutExtension.orEmpty() }
         val shutdownResult = close()
+        requestsSinceLoad = 0
+        warmupMs = 0
+        runtimeThreads = RuntimeExecutionPolicy.resolve(context).cpuThreads
         if (shutdownResult is ShutdownResult.Failed) {
             throw IllegalStateException("Cannot initialize model: previous engine failed to shut down cleanly (${shutdownResult.error.message})", shutdownResult.error)
         }
@@ -449,7 +455,9 @@ class ChatInferenceManager(context: Context) {
             } else {
                 "GGUF CPU"
             }
-            Log.i(TAG, "LlamaCpp GGUF engine initialized for: $effectiveName on $activeBackendDisplayName (ctx: $dynamicContext, threads: $dynamicThreads, prefillThreads: $prefillThreads, batch: $nBatch/$nUbatch)")
+            runtimeThreads = dynamicThreads
+            warmupMs = RuntimeWarmup.gguf(context, engine)
+            Log.i(TAG, "LlamaCpp GGUF engine initialized for: $effectiveName on $activeBackendDisplayName (ctx: $dynamicContext, threads: $dynamicThreads, prefillThreads: $prefillThreads, batch: $nBatch/$nUbatch, warmupMs=$warmupMs)")
             activeModelLease = modelLease
             return
         }
@@ -472,12 +480,19 @@ class ChatInferenceManager(context: Context) {
             onModelProgress?.invoke(ModelLoadStage.VerifyingFile, null, null)
             InitCrashGuard.markInitStarted(context, effectiveId)
             val engine = try {
-                PortableTextEngine.open(effectiveFile, detectedFormat, configuredContextWindow ?: 2048)
+                PortableTextEngine.open(effectiveFile, detectedFormat, configuredContextWindow ?: 2048, runtimeThreads)
             } catch (t: Throwable) {
                 InitCrashGuard.markInitFailed(context, effectiveId)
                 throw t
             }
             portableTextEngine = engine
+            try {
+                if (RuntimeWarmup.enabled(context)) warmupMs = RuntimeWarmup.portable(engine)
+            } catch (failure: Throwable) {
+                InitCrashGuard.markInitFailed(context, effectiveId)
+                throw failure
+            }
+            Log.i(TAG, "Portable text engine ready warmupMs=$warmupMs threads=$runtimeThreads")
             InitCrashGuard.markInitSucceeded(context, effectiveId)
             // Native construction is synchronous. Honor cancellation before publishing readiness;
             // the outer cleanup owns the newly constructed engine even on this path.
@@ -497,7 +512,7 @@ class ChatInferenceManager(context: Context) {
             val inferenceBackend = when (pref) {
                 "CPU" -> InferenceBackend.LITERT_CPU
                 "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
-                else -> DeviceUtils.selectBackendForModelFile(context, effectiveFile.name)
+                else -> RuntimeSpeedTuner.liteRtBackend(context, effectiveId, effectiveFile.absolutePath, configuredContextWindow)
             }
             val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                 context = context,
@@ -524,13 +539,21 @@ class ChatInferenceManager(context: Context) {
                     throw IllegalStateException(reason)
                 }
             }
-            initLiteRtLm(
-                modelPath = resolvedModelPath,
-                modelId = effectiveId,
-                inferenceBackend = inferenceBackend,
-                contextWindowTokens = configuredContextWindow
-            )
-            activeBackendDisplayName = if (inferenceBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
+            var loadedBackend = inferenceBackend
+            try {
+                initLiteRtLm(resolvedModelPath, effectiveId, loadedBackend, configuredContextWindow)
+            } catch (failure: Exception) {
+                if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
+                    pref != "AUTO" || inferenceBackend != InferenceBackend.LITERT_GPU) throw failure
+                RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, resolvedModelPath, configuredContextWindow)
+                liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
+                liteRtCacheDir = null
+                loadedBackend = InferenceBackend.LITERT_CPU
+                warmupMs = 0
+                Log.w(TAG, "Measured GPU failed; retrying LiteRT initialization on CPU", failure)
+                initLiteRtLm(resolvedModelPath, effectiveId, loadedBackend, configuredContextWindow)
+            }
+            activeBackendDisplayName = if (loadedBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
         } else {
             initMediaPipe(resolvedModelPath, configuredContextWindow)
             activeBackendDisplayName = "MediaPipe CPU"
@@ -575,6 +598,7 @@ class ChatInferenceManager(context: Context) {
                 InferenceBackend.LITERT_CPU,
                 InferenceBackend.MEDIAPIPE -> Backend.CPU(executionPolicy.cpuThreads)
             }
+            runtimeThreads = if (backend is Backend.CPU) executionPolicy.cpuThreads else 0
             val runtimeCacheDir = LiteRtRuntimeCache.prepare(context, modelId, inferenceBackend, modelPath)
             liteRtCacheDir = runtimeCacheDir
             engine = Engine(
@@ -605,7 +629,9 @@ class ChatInferenceManager(context: Context) {
                 }
             }
 
-            // If we reach here, native init succeeded!
+            if (RuntimeWarmup.enabled(context)) {
+                warmupMs = RuntimeWarmup.liteRt(requireNotNull(engine)) { liteRtConversation = it }.coerceAtLeast(1)
+            }
 
             liteRtToolsDisabledForLoad = false
             liteRtEngine = engine
@@ -622,7 +648,7 @@ class ChatInferenceManager(context: Context) {
             runtime = RuntimeKind.LiteRtLm
             if (stopRequested || isBeingClosed) throw CancellationException("Model initialization cancelled")
             InitCrashGuard.markInitSucceeded(context, modelId)
-            Log.i(TAG, "LiteRT-LM engine ready on $backend: $modelPath")
+            Log.i(TAG, "LiteRT-LM engine ready on $backend warmupMs=$warmupMs: $modelPath")
         } catch (t: Throwable) {
             InitCrashGuard.markInitFailed(context, modelId)
             try {
@@ -642,6 +668,7 @@ class ChatInferenceManager(context: Context) {
     }
 
     private fun initMediaPipe(modelPath: String, contextWindowTokens: Int? = null) {
+        runtimeThreads = -1 // The MediaPipe API does not expose the CPU worker count.
         val effectiveTokens = (contextWindowTokens ?: 4096).coerceIn(1024, 4096)
         val options = LlmInference.LlmInferenceOptions.builder()
             .setModelPath(modelPath)
@@ -721,6 +748,17 @@ class ChatInferenceManager(context: Context) {
                 "Reason carefully before giving the final answer.\n\n$mediaPipeBasePrompt"
             else -> mediaPipeBasePrompt
         }
+        timing?.recordRuntime(++requestsSinceLoad, runtimeThreads, activeBackendDisplayName,
+            when (runtime) {
+                RuntimeKind.LiteRtLm -> liteRtUserText.length
+                RuntimeKind.MediaPipe -> mediaPipePrompt.length
+                else -> inferencePrompt.length
+            }, warmupMs)
+        timing?.recordPromptBlocks(toolChars = when {
+            runtime == RuntimeKind.LiteRtLm && liteRtConversationHasTools -> toolsForNewConversation().sumOf { it.getToolDescriptionJsonString().length }
+            runtime == RuntimeKind.LlamaCpp && ggufConversationHasTools -> ggufConversationTools.sumOf { it.getToolDescriptionJsonString().length }
+            else -> 0
+        })
 
         val responseController = InferenceResponseController(
             thinkingMode = thinkingMode,

@@ -72,6 +72,49 @@ class VisionInferenceManager(context: Context) {
     private var liteRtConversation: Conversation? = null
     private val toolRecorder = com.shounak.localmeshai.ai.tools.ToolUseRecorder()
     private var toolsDisabledForLoad = false
+    private var requestsSinceLoad = 0
+    private var warmupMs = 0L
+    private var runtimeThreads = 0
+    private data class LiteRtLoadSpec(val path: String, val id: String, val backend: InferenceBackend,
+        val supportsAudio: Boolean, val contextTokens: Int?)
+    private var liteRtLoadSpec: LiteRtLoadSpec? = null
+    private var visionEncoderLoaded = false
+    private var audioEncoderLoaded = false
+    private var seededMemoryPrefix: String? = null
+
+    fun needsMediaEncoders(vision: Boolean, audio: Boolean): Boolean = runtime == RuntimeKind.LiteRtLm &&
+        ((vision && !visionEncoderLoaded) || (audio && !audioEncoderLoaded))
+
+    /** Called under the same runtime/IO gate as inference; the caller restores saved history afterward. */
+    fun prepareMediaEncoders(vision: Boolean, audio: Boolean) {
+        if (!needsMediaEncoders(vision, audio)) return
+        val spec = checkNotNull(liteRtLoadSpec)
+        val enableVision = vision || visionEncoderLoaded
+        val enableAudio = audio || audioEncoderLoaded
+        liteRtConversation?.close()
+        liteRtConversation = null
+        liteRtEngine?.closeIfInitialized()
+        liteRtEngine = null
+        liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
+        liteRtCacheDir = null
+        runtime = RuntimeKind.None
+        requestsSinceLoad = 0
+        warmupMs = 0
+        try {
+            initializeLiteRtLm(spec.path, spec.id, spec.backend, spec.supportsAudio, spec.contextTokens,
+                enableVisionEncoder = enableVision, enableAudioEncoder = enableAudio)
+        } catch (failure: Exception) {
+            if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
+                spec.backend != InferenceBackend.LITERT_GPU || AppSettings.getInstance(context).settings.value.llamaBackendPreference != "AUTO") throw failure
+            RuntimeSpeedTuner.recordGpuFailure(context, spec.id, spec.path, spec.contextTokens)
+            liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
+            liteRtCacheDir = null
+            initializeLiteRtLm(spec.path, spec.id, InferenceBackend.LITERT_CPU, spec.supportsAudio, spec.contextTokens,
+                enableVisionEncoder = enableVision, enableAudioEncoder = enableAudio)
+            activeBackendDisplayName = "LiteRT-LM CPU"
+        }
+        require(!audio || audioEncoderLoaded) { "This runtime could not initialize the model's audio encoder." }
+    }
     @Volatile private var conversationToolSettings: ConversationToolSettings? = null
     val needsToolSettingsRefresh: Boolean
         get() = (runtime == RuntimeKind.LiteRtLm) && conversationToolSettings?.requiresRefresh(
@@ -218,6 +261,9 @@ class VisionInferenceManager(context: Context) {
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
         stopRequested = false
         isBeingClosed = false   // Reset after close() so initialize() starts clean
+        requestsSinceLoad = 0
+        warmupMs = 0
+        runtimeThreads = RuntimeExecutionPolicy.resolve(context).cpuThreads
 
         val detectedFormat = bundle?.format ?: file?.let { NonGgufBundleInspector.detectFormat(it) }
         val isGguf = detectedFormat == ModelFormat.GGUF
@@ -305,6 +351,9 @@ class VisionInferenceManager(context: Context) {
                 currentGgufBundle = bundle
                 currentGgufModelPath = bundle?.mainArtifacts?.firstOrNull()?.source?.location ?: file?.absolutePath.orEmpty()
                 currentGgufThreads = profile.decodeThreads
+                runtimeThreads = profile.decodeThreads
+                warmupMs = RuntimeWarmup.gguf(context, engine)
+                Log.i(TAG, "GGUF vision engine ready warmupMs=$warmupMs threads=$runtimeThreads")
                 currentGgufPrefillThreads = profile.prefillThreads
                 currentGgufContext = engine.actualConfiguration?.contextWindow?.takeIf { it > 0 } ?: profile.contextTokens
                 runtimeContextCapacity.initialize(currentGgufContext) { Unit }
@@ -324,7 +373,7 @@ class VisionInferenceManager(context: Context) {
                 val inferenceBackend = when (pref) {
                     "CPU" -> InferenceBackend.LITERT_CPU
                     "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
-                    else -> DeviceUtils.selectBackendForModelFile(context, effectiveFile?.name.orEmpty())
+                    else -> RuntimeSpeedTuner.liteRtBackend(context, modelIdForLiteRt, resolvedModelPath, configuredContextWindow)
                 }
                 val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                     context = context,
@@ -353,14 +402,20 @@ class VisionInferenceManager(context: Context) {
                         throw IllegalStateException(reason)
                     }
                 }
-                initializeLiteRtLm(
-                    modelPath = resolvedModelPath,
-                    modelId = modelIdForLiteRt,
-                    inferenceBackend = inferenceBackend,
-                    supportsAudioInput = audioInputAvailable,
-                    contextWindowTokens = configuredContextWindow
-                )
-                activeBackendDisplayName = if (inferenceBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
+                var loadedBackend = inferenceBackend
+                try {
+                    initializeLiteRtLm(resolvedModelPath, modelIdForLiteRt, loadedBackend, audioInputAvailable, configuredContextWindow)
+                } catch (failure: Exception) {
+                    if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
+                        pref != "AUTO" || inferenceBackend != InferenceBackend.LITERT_GPU) throw failure
+                    RuntimeSpeedTuner.recordGpuFailure(context, modelIdForLiteRt, resolvedModelPath, configuredContextWindow)
+                    liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
+                    liteRtCacheDir = null
+                    loadedBackend = InferenceBackend.LITERT_CPU
+                    warmupMs = 0
+                    initializeLiteRtLm(resolvedModelPath, modelIdForLiteRt, loadedBackend, audioInputAvailable, configuredContextWindow)
+                }
+                activeBackendDisplayName = if (loadedBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
             }
             detectedFormat?.isPortable == true -> {
                 val primary = requireNotNull(effectiveFile) { "Portable media requires an app-managed model bundle" }
@@ -421,11 +476,22 @@ class VisionInferenceManager(context: Context) {
         messages: List<Pair<String, String>>? = null,
         multiTurnImageFiles: Map<Int, File> = emptyMap(),
         multiTurnAudioFiles: Map<Int, File> = emptyMap(),
+        memoryContext: String = "",
         onUpdate: (String) -> Unit
     ): InferenceExecutionResult = withContext(Dispatchers.IO) {
         stopRequested = false
         lastLiteRtSnapshot = null
-        val prompt = question.trim()
+        val repeatedPrefix = memoryContext.takeIf { it.isNotBlank() }?.let { "${it.trim()}\n\n" }
+        val omitRepeatedPrefix = runtime == RuntimeKind.LiteRtLm && completedLiteRtTurns > 0 &&
+            repeatedPrefix != null && seededMemoryPrefix == repeatedPrefix && question.startsWith(repeatedPrefix)
+        val prompt = (if (omitRepeatedPrefix) question.removePrefix(repeatedPrefix) else question).trim()
+        if (runtime == RuntimeKind.LiteRtLm && repeatedPrefix != null) seededMemoryPrefix = repeatedPrefix
+        if (omitRepeatedPrefix) timing?.recordPromptBlocks(systemChars = 0, memoryChars = 0)
+        timing?.recordRuntime(++requestsSinceLoad, runtimeThreads, activeBackendDisplayName, prompt.length, warmupMs)
+        timing?.recordPromptBlocks(toolChars = if (conversationHasTools) conversationToolSettings?.let { settings ->
+            com.shounak.localmeshai.ai.tools.LocalTools.forConversation(context, settings) { stopRequested || isBeingClosed }
+                .sumOf { it.getToolDescriptionJsonString().length }
+        } ?: 0 else 0)
         val responseController = InferenceResponseController(
             thinkingMode = thinkingMode,
             rawUserText = prompt,
@@ -782,6 +848,7 @@ class VisionInferenceManager(context: Context) {
     }
 
     private fun createLiteRtConversation(base: ConversationConfig?): Conversation {
+        seededMemoryPrefix = null
         val engine = checkNotNull(liteRtEngine)
         val settings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
         if (conversationToolSettings?.requiresRefresh(settings) == true) toolsDisabledForLoad = false
@@ -813,7 +880,9 @@ class VisionInferenceManager(context: Context) {
         modelId: String,
         inferenceBackend: InferenceBackend,
         supportsAudioInput: Boolean = false,
-        contextWindowTokens: Int? = null
+        contextWindowTokens: Int? = null,
+        enableVisionEncoder: Boolean = false,
+        enableAudioEncoder: Boolean = false
     ) {
         InitCrashGuard.markInitStarted(context, modelId)
         var engine: Engine? = null
@@ -824,11 +893,13 @@ class VisionInferenceManager(context: Context) {
                 InferenceBackend.LITERT_CPU,
                 InferenceBackend.MEDIAPIPE -> Backend.CPU(executionPolicy.cpuThreads)
             }
+            runtimeThreads = if (backend is Backend.CPU) executionPolicy.cpuThreads else 0
             val runtimeCacheDir = LiteRtRuntimeCache.prepare(context, modelId, inferenceBackend, modelPath)
             liteRtCacheDir = runtimeCacheDir
 
             val effectiveMaxTokens = (contextWindowTokens ?: 4096).coerceIn(2048, 8192)
-            var audioBackendCandidate: Backend? = if (supportsAudioInput) backend else null
+            val useVisionEncoder = enableVisionEncoder && configuredCapabilities?.capabilities?.supportsVision == true
+            var audioBackendCandidate: Backend? = if (supportsAudioInput && enableAudioEncoder) backend else null
             var initialized = false
             var finalAudioSupported = supportsAudioInput
 
@@ -838,7 +909,7 @@ class VisionInferenceManager(context: Context) {
                     EngineConfig(
                         modelPath = modelPath,
                         backend = backend,
-                        visionBackend = if (configuredCapabilities?.capabilities?.supportsVision == true) backend else null,
+                        visionBackend = if (useVisionEncoder) backend else null,
                         audioBackend = audioBackendCandidate,
                         maxNumTokens = effectiveMaxTokens,
                         cacheDir = runtimeCacheDir.absolutePath
@@ -854,14 +925,14 @@ class VisionInferenceManager(context: Context) {
             }
 
             // Try 2: If primary audio backend was GPU and failed, retry with CPU audioBackend
-            if (!initialized && supportsAudioInput && backend !is Backend.CPU) {
+            if (!initialized && supportsAudioInput && enableAudioEncoder && backend !is Backend.CPU) {
                 try {
                     audioBackendCandidate = Backend.CPU(executionPolicy.cpuThreads)
                     val eng = Engine(
                         EngineConfig(
                             modelPath = modelPath,
                             backend = backend,
-                            visionBackend = if (configuredCapabilities?.capabilities?.supportsVision == true) backend else null,
+                            visionBackend = if (useVisionEncoder) backend else null,
                             audioBackend = audioBackendCandidate,
                             maxNumTokens = effectiveMaxTokens,
                             cacheDir = runtimeCacheDir.absolutePath
@@ -886,7 +957,7 @@ class VisionInferenceManager(context: Context) {
                         EngineConfig(
                             modelPath = modelPath,
                             backend = backend,
-                            visionBackend = if (configuredCapabilities?.capabilities?.supportsVision == true) backend else null,
+                            visionBackend = if (useVisionEncoder) backend else null,
                             audioBackend = null,
                             maxNumTokens = effectiveMaxTokens,
                             cacheDir = runtimeCacheDir.absolutePath
@@ -911,7 +982,7 @@ class VisionInferenceManager(context: Context) {
                         EngineConfig(
                             modelPath = modelPath,
                             backend = backend,
-                            visionBackend = if (configuredCapabilities?.capabilities?.supportsVision == true) backend else null,
+                            visionBackend = if (useVisionEncoder) backend else null,
                             audioBackend = null,
                             maxNumTokens = 2048,
                             cacheDir = runtimeCacheDir.absolutePath
@@ -928,9 +999,15 @@ class VisionInferenceManager(context: Context) {
                 }
             }
 
-            modelSupportsAudioInput = finalAudioSupported
+            modelSupportsAudioInput = if (enableAudioEncoder) finalAudioSupported else supportsAudioInput
+            visionEncoderLoaded = useVisionEncoder
+            audioEncoderLoaded = enableAudioEncoder && finalAudioSupported
+            liteRtLoadSpec = LiteRtLoadSpec(modelPath, modelId, inferenceBackend, supportsAudioInput, runtimeContextCapacity.tokens)
             val readyEngine = engine ?: throw IllegalStateException("Failed to initialize LiteRT-LM engine")
             liteRtEngine = readyEngine
+            if (RuntimeWarmup.enabled(context)) {
+                warmupMs = RuntimeWarmup.liteRt(readyEngine) { liteRtConversation = it }.coerceAtLeast(1)
+            }
             val initialConfig = if (isDefaultThinkingModel) {
                 ConversationConfig(
                     extraContext = ThinkingModeConfig.liteRtExtraContext(
@@ -944,7 +1021,7 @@ class VisionInferenceManager(context: Context) {
             runtime = RuntimeKind.LiteRtLm
             if (stopRequested || isBeingClosed) throw CancellationException("Model initialization cancelled")
             InitCrashGuard.markInitSucceeded(context, modelId)
-            Log.i(TAG, "LiteRT-LM vision engine ready on $backend (audio: $finalAudioSupported): $modelPath")
+            Log.i(TAG, "LiteRT-LM vision engine ready on $backend (audio: $audioEncoderLoaded, vision: $visionEncoderLoaded, availableAudio: $modelSupportsAudioInput) warmupMs=$warmupMs: $modelPath")
         } catch (t: Throwable) {
             InitCrashGuard.markInitFailed(context, modelId)
             try {

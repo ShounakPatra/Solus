@@ -1115,7 +1115,7 @@ fun ChatScreen(
                 when {
                     selectedVisionModelPath == null -> "Not loaded"
                     isVisionStopping -> "Stopping"
-                    isVisionInitializing -> "Loading…"
+                    isVisionInitializing -> "Preparing…"
                     !isVisionModelReady && (activeError != null || visionError != null) -> "Load failed"
                     isVisionModelReady -> "Ready"
                     else -> "Not loaded"
@@ -1124,7 +1124,7 @@ fun ChatScreen(
                 when {
                     selectedTextModelPath == null -> "Not loaded"
                     isChatStopping -> "Stopping"
-                    isInitializing || modelLoadState is ModelLoadState.Loading -> "Loading…"
+                    isInitializing || modelLoadState is ModelLoadState.Loading -> "Preparing…"
                     modelLoadState is ModelLoadState.Failed || (!isModelReady && activeError != null) -> "Load failed"
                     isModelReady -> "Ready"
                     else -> "Not loaded"

@@ -42,7 +42,7 @@ internal class PortableTextEngine private constructor(private val file: File, pr
     }
 
     companion object {
-        fun open(file: File, format: ModelFormat, requestedContext: Int): PortableTextEngine {
+        fun open(file: File, format: ModelFormat, requestedContext: Int, cpuThreads: Int = 2): PortableTextEngine {
             val caps = PortableModelBundle.inspect(file, format)
             PortableModelBundle.runtimeRestriction(file, format)?.let { throw IllegalArgumentException(it.reason) }
             val engine = PortableTextEngine(file, format, minOf(caps.contextLength, requestedContext.coerceAtLeast(2)))
@@ -51,13 +51,13 @@ internal class PortableTextEngine private constructor(private val file: File, pr
                 engine.tokenizer = CandleBridge.create(requireNotNull(file.parent), weights, engine.contextTokens)
                 when (format) {
                     ModelFormat.Onnx -> OrtSession.SessionOptions().use { options ->
-                        options.setIntraOpNumThreads(2)
+                        options.setIntraOpNumThreads(cpuThreads.coerceIn(1, 6))
                         engine.onnx = OrtEnvironment.getEnvironment().createSession(file.absolutePath, options)
                         val session = requireNotNull(engine.onnx)
                         engine.onnxDecoder = OnnxTextSession(session, PortableModelBundle.json(File(file.parentFile, "config.json")))
                     }
                     ModelFormat.TensorFlowLite -> {
-                        engine.tflite = Interpreter(file, Interpreter.Options().setNumThreads(2))
+                        engine.tflite = Interpreter(file, Interpreter.Options().setNumThreads(cpuThreads.coerceIn(1, 6)))
                         val interpreter = requireNotNull(engine.tflite)
                         fun describe(tensor: org.tensorflow.lite.Tensor) = TfliteTextPlan.Tensor(
                             tensor.name(), tensor.shape(), tensor.shapeSignature().takeIf { it.isNotEmpty() } ?: tensor.shape(), tensor.dataType())

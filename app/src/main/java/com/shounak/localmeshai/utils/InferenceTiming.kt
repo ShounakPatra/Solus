@@ -6,6 +6,24 @@ import com.shounak.localmeshai.ai.InferenceMetrics
  * Monotonic request timings; contains no prompt or response content.
  */
 class InferenceTiming(private val clock: () -> Long = System::nanoTime) {
+    private var runtimeDetails = "reqSinceLoad=-1 threads=-1 backend=unavailable promptChars=-1 coldRun=unknown warmupMs=0"
+    private var systemChars = -1
+    private var memoryChars = -1
+    private var toolChars = -1
+    private var ragChars = -1
+
+    @Synchronized fun recordRuntime(request: Int, threads: Int, backend: String, promptChars: Int, warmupMs: Long) {
+        val threadLabel = when (threads) { 0 -> "gpu_managed"; -1 -> "runtime_default"; else -> threads.toString() }
+        runtimeDetails = "reqSinceLoad=$request threads=$threadLabel backend=${backend.replace(' ', '_')} promptChars=$promptChars " +
+            "coldRun=${request == 1 && warmupMs == 0L} warmupMs=$warmupMs"
+    }
+
+    @Synchronized fun recordPromptBlocks(systemChars: Int? = null, memoryChars: Int? = null, toolChars: Int? = null, ragChars: Int? = null) {
+        systemChars?.let { this.systemChars = it }
+        memoryChars?.let { this.memoryChars = it }
+        toolChars?.let { this.toolChars = it }
+        ragChars?.let { this.ragChars = it }
+    }
     val sentAt: Long = clock()
     val requestAcceptedAt: Long get() = sentAt
 
@@ -220,6 +238,7 @@ class InferenceTiming(private val clock: () -> Long = System::nanoTime) {
             "loadMs=${m.loadingValidationTimeMs} ${prefillStr}${promptStr}${reusedStr}${evalStr}" +
             "firstTokMs=${m.firstTokenLatencyMs ?: -1} firstVisMs=${m.firstVisibleTextLatencyMs ?: -1} " +
             "decodeMs=${m.decodeDurationMs ?: -1} toks=${m.generatedTokens ?: 0} " +
-            "tok/s=${m.decodeThroughputTokPerSec?.let { "%.1f".format(it) } ?: "N/A"}"
+            "tok/s=${m.decodeThroughputTokPerSec?.let { "%.1f".format(it) } ?: "N/A"} $runtimeDetails " +
+            "systemChars=$systemChars memoryChars=$memoryChars toolsChars=$toolChars ragChars=$ragChars"
     }
 }

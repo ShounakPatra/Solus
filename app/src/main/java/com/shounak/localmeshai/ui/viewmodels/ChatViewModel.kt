@@ -1240,7 +1240,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     ""
                 }).let { memory ->
-                    listOf(com.shounak.localmeshai.features.WorkspacePreferences.get(getApplication()).profile(currentModelId).systemPrompt, memory)
+                    val system = com.shounak.localmeshai.features.WorkspacePreferences.get(getApplication()).profile(currentModelId).systemPrompt
+                    timing.recordPromptBlocks(systemChars = system.length, memoryChars = memory.length,
+                        ragChars = if (ragPassages.isEmpty()) 0 else (effectivePromptText.length - userText.length).coerceAtLeast(0))
+                    listOf(system, memory)
                         .filter { it.isNotBlank() }.joinToString("\n\n")
                 }
                 val modeChangedInStatefulThinkingRuntime =
@@ -1905,9 +1908,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val turns = mutableListOf<Pair<String, String>>()
         if (!thinkingMode) {
             val systemInstruction = if (memoryContext.isNotBlank()) {
-                "$memoryContext\n\nProvide direct, concise answers. Do not output internal monologue, reasoning steps, or <think> tags."
+                "$memoryContext\n\nAnswer concisely. Omit reasoning and <think> tags."
             } else {
-                "Provide direct, concise answers. Do not output internal monologue, reasoning steps, or <think> tags."
+                "Answer concisely. Omit reasoning and <think> tags."
             }
             turns.add("system" to systemInstruction)
         } else if (memoryContext.isNotBlank()) {
