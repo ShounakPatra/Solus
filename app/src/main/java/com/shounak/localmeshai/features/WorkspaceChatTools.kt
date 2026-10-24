@@ -26,6 +26,8 @@ import com.shounak.localmeshai.utils.glassEffect
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.shounak.localmeshai.utils.LiquidGlassButton
 import com.shounak.localmeshai.utils.GlassDispersionCard
+import com.shounak.localmeshai.ui.components.GlassActionButton
+import com.shounak.localmeshai.ui.components.GlassContentDialog
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.HazeTint
@@ -183,7 +185,7 @@ fun MessageRevisionActions(text: String, onEdit: ((String) -> Unit)?, onRegenera
 }
 
 @Composable
-fun SourcePassagesButton(passages: List<RagPassage>) {
+fun SourcePassagesButton(passages: List<RagPassage>, hazeState: HazeState) {
     if (passages.isEmpty()) return
     var show by remember { mutableStateOf(false) }
     var selectedDocument by remember { mutableStateOf<String?>(null) }
@@ -201,19 +203,27 @@ fun SourcePassagesButton(passages: List<RagPassage>) {
             catch (error: Exception) { "Could not open the indexed document: ${error.message}" }
         }
     }
-    TextButton(onClick = { selectedDocument = null; show = true }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Sources (${passages.map { it.documentId }.distinct().size})") }
-    if (show) AlertDialog(onDismissRequest = { show = false }, title = { Text(if (selectedDocument == null) "Passages used for this answer" else "Indexed document preview") },
-        text = { Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("These passages were retrieved for this answer. Retrieval does not verify every claim in the answer.", style = MaterialTheme.typography.bodySmall)
+    GlassActionButton(hazeState = hazeState, onClick = { selectedDocument = null; show = true }) { Text("Sources (${passages.map { it.documentId }.distinct().size})") }
+    if (show) GlassContentDialog(hazeState = hazeState, onDismissRequest = { show = false },
+        title = { Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(if (selectedDocument == null) "Answer sources" else "Indexed document")
+            Text(if (selectedDocument == null) "${passages.size} retrieved passages" else passages.firstOrNull { it.documentId == selectedDocument }?.documentName.orEmpty(),
+                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } },
+        text = { key(selectedDocument) { Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Retrieved passages provide context; they do not verify every claim in the answer.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (selectedDocument != null) {
                 fullText?.let { SelectionContainer { Text(it) } } ?: CircularProgressIndicator()
-                TextButton(onClick = { selectedDocument = null }) { Text("Back to retrieved passages") }
             } else passages.forEach { passage ->
+                Column(Modifier.fillMaxWidth().glassEffect(hazeState, RoundedCornerShape(16.dp),
+                    tintColor = MaterialTheme.colorScheme.surfaceContainerHigh, borderAlpha = 0.25f).padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(passage.documentName, style = MaterialTheme.typography.titleSmall)
-                Text("Passage ${passage.chunkIndex + 1}", style = MaterialTheme.typography.labelSmall)
-                SelectionContainer { Text(passage.text) }
-                TextButton(onClick = { selectedDocument = passage.documentId }) { Text("Preview indexed document") }
-                HorizontalDivider()
+                Text("Passage ${passage.chunkIndex + 1}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                SelectionContainer { Text(passage.text, style = MaterialTheme.typography.bodyMedium) }
+                GlassActionButton(hazeState = hazeState, onClick = { selectedDocument = passage.documentId }) { Text("Preview document") }
+                }
             }
-        } }, confirmButton = { TextButton(onClick = { show = false }) { Text("Close") } })
+        } } }, confirmButton = { GlassActionButton(hazeState = hazeState, onClick = { show = false }) { Text("Close") } },
+        dismissButton = { if (selectedDocument != null) GlassActionButton(hazeState = hazeState, onClick = { selectedDocument = null }) { Text("Back to passages") } })
 }

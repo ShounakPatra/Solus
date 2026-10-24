@@ -2639,7 +2639,7 @@ fun VisionChatBubble(
                         }
                     }
 
-                    if (!isUser) com.shounak.localmeshai.features.SourcePassagesButton(ragPassages)
+                    if (!isUser) com.shounak.localmeshai.features.SourcePassagesButton(ragPassages, hazeState)
                     if (!isUser && ragSources.isNotEmpty() && ragPassages.isEmpty()) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Surface(
