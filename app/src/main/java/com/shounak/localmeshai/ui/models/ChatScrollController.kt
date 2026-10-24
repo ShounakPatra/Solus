@@ -33,12 +33,22 @@ class ChatScrollController(
     private var activeScrollJobId: Long = 0L
     private var lastSessionKey: String? = null
     private var lastScrollTime = 0L
+    private var lastMessageAnchor = -1
+    private var wasStreaming = false
+
+    fun cancelPendingScroll() {
+        activeScrollJobId++
+        activeScrollJob?.cancel()
+        activeScrollJob = null
+    }
 
     fun bindConversation(sessionId: String?, mode: String) {
         val currentKey = "$sessionId:$mode"
         if (lastSessionKey != currentKey) {
             lastSessionKey = currentKey
             followLatest = true
+            lastMessageAnchor = -1
+            wasStreaming = false
             activeScrollJobId++
             activeScrollJob?.cancel()
             activeScrollJob = null
@@ -58,7 +68,7 @@ class ChatScrollController(
     }
 
     suspend fun observeScrollPosition() {
-        snapshotFlow { !listState.canScrollForward }
+        snapshotFlow { listState.layoutInfo.totalItemsCount > 0 && !listState.canScrollForward }
             .collect { isAtBottom ->
                 if (activeScrollJob?.isActive == true) return@collect
                 if (isAtBottom) {
@@ -106,6 +116,8 @@ class ChatScrollController(
     }
 
     fun onNewMessageAdded(anchorIndex: Int) {
+        if (lastMessageAnchor == anchorIndex) return
+        lastMessageAnchor = anchorIndex
         if (followLatest && anchorIndex >= 0) {
             activeScrollJob?.cancel()
             val currentJobId = ++activeScrollJobId
@@ -123,6 +135,7 @@ class ChatScrollController(
 
     suspend fun followStreaming(isStreaming: Boolean, getAnchorIndex: () -> Int) {
         if (!isStreaming) return
+        wasStreaming = true
         snapshotFlow {
             val anchor = getAnchorIndex()
             val layout = listState.layoutInfo
@@ -159,6 +172,8 @@ class ChatScrollController(
     }
 
     suspend fun onStreamingEnded(getAnchorIndex: () -> Int) {
+        if (!wasStreaming) return
+        wasStreaming = false
         if (activeScrollJob?.isActive == true) return
         if (followLatest) {
             val anchor = getAnchorIndex()

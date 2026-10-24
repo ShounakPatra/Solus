@@ -392,7 +392,8 @@ fun ChatScreen(
     visionViewModel: VisionViewModel = viewModel(),
     mainViewModel: MainViewModel = viewModel(),
     hazeState: HazeState,
-    bottomContentInset: androidx.compose.ui.unit.Dp = 0.dp
+    bottomContentInset: androidx.compose.ui.unit.Dp = 0.dp,
+    retainedScrollController: com.shounak.localmeshai.ui.models.ChatScrollController? = null
 ) {
     var selectedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var selectedFileUri by remember { mutableStateOf<Uri?>(null) }
@@ -451,7 +452,7 @@ fun ChatScreen(
         HistorySessionType.Text -> selectedTextModelPath ?: selectedVisionModelPath
         null -> selectedTextModelPath ?: selectedVisionModelPath
     }
-    val listState = rememberLazyListState()
+    val listState = retainedScrollController?.listState ?: rememberLazyListState()
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
     val context = LocalContext.current
@@ -810,7 +811,10 @@ fun ChatScreen(
         }
     }
 
-    val scrollController = com.shounak.localmeshai.ui.models.rememberChatScrollController(listState, scope)
+    val scrollController = retainedScrollController ?: com.shounak.localmeshai.ui.models.rememberChatScrollController(listState, scope)
+    DisposableEffect(scrollController) {
+        onDispose { scrollController.cancelPendingScroll() }
+    }
     val effectiveSessionId = if (effectiveSupportsAttachments) visionCurrentSessionId else currentSessionId
     val currentModeKey = if (effectiveSupportsAttachments) "vision" else "text"
 

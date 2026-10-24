@@ -21,6 +21,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.shounak.localmeshai.ui.models.ChatScrollController
 import com.shounak.localmeshai.ui.models.rememberChatScrollController
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -33,6 +34,40 @@ class ChatScrollControllerTest {
 
     @get:Rule
     val composeTestRule = createComposeRule()
+
+    @Test
+    fun returningFromModelsKeepsTheChatViewportAndDoesNotReplayIdleScroll() {
+        val chatVisible = androidx.compose.runtime.mutableStateOf(true)
+        lateinit var controller: ChatScrollController
+        lateinit var scope: kotlinx.coroutines.CoroutineScope
+        composeTestRule.setContent {
+            val listState = rememberLazyListState()
+            scope = rememberCoroutineScope()
+            controller = rememberChatScrollController(listState, scope)
+            if (chatVisible.value) {
+                androidx.compose.runtime.LaunchedEffect(Unit) {
+                    controller.bindConversation("same-session", "text")
+                    controller.onNewMessageAdded(50)
+                    controller.onStreamingEnded { 50 }
+                }
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                    items(50) { Text("Message $it", Modifier.fillMaxWidth().height(60.dp)) }
+                    item { Spacer(Modifier.height(1.dp)) }
+                }
+            } else Text("Models")
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.runOnIdle { scope.launch { controller.listState.scrollToItem(8, 13) } }
+        composeTestRule.waitForIdle()
+        val index = controller.listState.firstVisibleItemIndex
+        val offset = controller.listState.firstVisibleItemScrollOffset
+        composeTestRule.runOnIdle { chatVisible.value = false }
+        composeTestRule.waitForIdle()
+        composeTestRule.runOnIdle { chatVisible.value = true }
+        composeTestRule.waitForIdle()
+        assertEquals(index, controller.listState.firstVisibleItemIndex)
+        assertEquals(offset, controller.listState.firstVisibleItemScrollOffset)
+    }
 
     @Test
     fun userDragCancelsAutoFollowAndScrollToBottomRestoresIt() {

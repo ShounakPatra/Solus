@@ -227,6 +227,9 @@ sealed class Screen(
 fun MainNavigation(mainViewModel: MainViewModel) {
     val reduceMotion = com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion
     val items = remember { listOf(Screen.Chat, Screen.Models) }
+    val chatListState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val chatScrollController = com.shounak.localmeshai.ui.models.rememberChatScrollController(chatListState)
+    val pageState = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
     var selectedIndex by androidx.compose.runtime.saveable.rememberSaveable {
         mutableIntStateOf(0)
     }
@@ -406,8 +409,10 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                             .background(MaterialTheme.colorScheme.background)
                     ) {
                         when (page) {
-                            0 -> ChatScreen(mainViewModel = mainViewModel, hazeState = hazeState,
-                                bottomContentInset = bottomContentInset)
+                            0 -> pageState.SaveableStateProvider("chat") {
+                                ChatScreen(mainViewModel = mainViewModel, hazeState = hazeState,
+                                    bottomContentInset = bottomContentInset, retainedScrollController = chatScrollController)
+                            }
                             1 -> Column(modifier = Modifier.fillMaxSize()) {
                                 LiquidTopBar(
                                     title = Screen.Models.title,
