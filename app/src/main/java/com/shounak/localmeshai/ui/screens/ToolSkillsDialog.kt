@@ -136,6 +136,7 @@ internal fun ToolSkillsDialog(onDismiss: () -> Unit) {
                         Text("Saved reminders (restored reminders are paused)")
                         for (i in 0 until reminders.length()) {
                             val record = reminders.getJSONObject(i)
+                            key(record.getString("id")) {
                             Text("${record.getString("title")} • ${record.getString("datetime")} • ${if (record.optBoolean("active")) "Active" else "Paused"}")
                             if (!record.optBoolean("active")) SkillActionButton("reminder", record) { refresh++ }
                             TextButton(onClick = { scope.launch {
@@ -143,6 +144,7 @@ internal fun ToolSkillsDialog(onDismiss: () -> Unit) {
                                 if (failure != null) Toast.makeText(context, failure.message ?: "Could not delete reminder", Toast.LENGTH_SHORT).show()
                                 refresh++
                             } }) { Text("Delete reminder") }
+                            }
                         }
                     }
                 }

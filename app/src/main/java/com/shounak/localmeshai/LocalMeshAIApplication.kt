@@ -1,5 +1,6 @@
 package com.shounak.localmeshai
 
+import kotlinx.coroutines.launch
 import android.app.Application
 import android.content.ComponentCallbacks2
 import com.shounak.localmeshai.utils.CacheCleanupCoordinator
@@ -9,6 +10,10 @@ class LocalMeshAIApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO).launch {
+            runCatching { com.shounak.localmeshai.ai.tools.ToolReminders.reschedule(applicationContext) }
+                .onFailure { android.util.Log.w("ToolReminders", "Could not recover reminders", it) }
+        }
         // Ensure update notification channel exists (lightweight framework channel creation, no disk I/O)
         com.shounak.localmeshai.utils.AppUpdateManager.ensureNotificationChannel(this)
 

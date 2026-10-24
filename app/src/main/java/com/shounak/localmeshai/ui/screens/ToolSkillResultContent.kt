@@ -29,7 +29,7 @@ import org.json.JSONObject
 internal fun ToolSkillResultContent(use: ToolUse) {
     val data = remember(use) { runCatching { JSONObject(use.result) }.getOrNull() } ?: return
     val kind = data.optString("solus_tool_action")
-    val expected = when (use.name) { "send_email" -> "email"; "create_calendar_event" -> "calendar"; "interactive_map" -> "map"; "schedule_notification" -> "reminder"; else -> "" }
+    val expected = when (use.name) { "send_email" -> "email"; "create_calendar_event" -> "calendar"; "interactive_map" -> "map"; "schedule_notification" -> "reminder"; "mood_tracker" -> "delete_mood"; else -> "" }
     if (expected.isNotEmpty() && kind == expected) SkillActionButton(kind, data)
     val media = data.optString("solus_skill_media")
     if ((use.name == "qr_code" && media == "qr_code") || (use.name == "learn_something_new" && media == "learning_card")) {
@@ -63,7 +63,20 @@ internal fun SkillActionButton(kind: String, data: JSONObject, onDone: () -> Uni
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var status by remember(data.toString()) { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
+    var busy by remember(data.toString()) { mutableStateOf(false) }
+    var confirmDeletion by remember(data.toString()) { mutableStateOf(false) }
+    if (confirmDeletion) AlertDialog(onDismissRequest = { confirmDeletion = false },
+        title = { Text("Delete mood log?") }, text = { Text("Delete the mood log for ${data.optString("date")}? This cannot be undone.") },
+        confirmButton = { TextButton(onClick = {
+            confirmDeletion = false; busy = true
+            scope.launch {
+                status = withContext(Dispatchers.IO) {
+                    runCatching { ToolSkillStore.get(context).confirmMoodDeletion(data) }.getOrElse { it.message ?: "Could not delete mood log" }
+                }
+                busy = false; onDone()
+            }
+        }) { Text("Delete") } },
+        dismissButton = { TextButton(onClick = { confirmDeletion = false }) { Text("Cancel") } })
     fun confirmReminder() {
         if (busy) return
         busy = true
@@ -79,7 +92,9 @@ internal fun SkillActionButton(kind: String, data: JSONObject, onDone: () -> Uni
     }
     OutlinedButton(enabled = !busy, onClick = {
         try {
-            if (kind == "reminder") {
+            if (kind == "delete_mood") {
+                confirmDeletion = true
+            } else if (kind == "reminder") {
                 if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
                     permission.launch(Manifest.permission.POST_NOTIFICATIONS)
                 else confirmReminder()
@@ -104,7 +119,7 @@ internal fun SkillActionButton(kind: String, data: JSONObject, onDone: () -> Uni
             }
         } catch (failure: Exception) { status = failure.message ?: "No app is available for this action." }
     }) {
-        Text(when (kind) { "calendar" -> "Review calendar event"; "email" -> "Review email"; "map" -> "Open interactive map"; "reminder" -> "Confirm reminder"; else -> "Review" })
+        Text(when (kind) { "calendar" -> "Review calendar event"; "email" -> "Review email"; "map" -> "Open interactive map"; "reminder" -> "Confirm reminder"; "delete_mood" -> "Review mood deletion"; else -> "Review" })
     }
     status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 }

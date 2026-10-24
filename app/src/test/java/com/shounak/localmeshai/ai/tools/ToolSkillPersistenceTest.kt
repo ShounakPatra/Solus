@@ -22,7 +22,9 @@ class ToolSkillPersistenceTest {
         val target = ToolSkillStore(FeatureTestPreferences())
         target.merge(store.export()); target.merge(store.export())
         assertEquals(1, target.export().getJSONObject("moods").length())
-        target.mood(JSONObject().put("operation", "delete"), day)
+        val draft = JSONObject(target.mood(JSONObject().put("operation", "delete"), day))
+        assertEquals(1, target.export().getJSONObject("moods").length())
+        target.confirmMoodDeletion(draft)
         assertEquals(0, target.export().getJSONObject("moods").length())
     }
     @Test fun moodHistoryIsBoundedAndFutureDatesAreRejected() {
@@ -52,7 +54,9 @@ class ToolSkillPersistenceTest {
         val applied = ConversationToolSettings.from(settings)
         assertTrue(applied.requiresRefresh(ConversationToolSettings.from(settings.copy(enabledToolSkills = settings.enabledToolSkills + "qr_code"))))
         val custom = CustomSkillCodec.encode(listOf(CustomSkill("custom_tutor", "Tutor", "Teach a topic", "Use examples.")))
-        assertTrue(applied.requiresRefresh(ConversationToolSettings.from(settings.copy(customToolSkills = custom))))
+        assertFalse(applied.requiresRefresh(ConversationToolSettings.from(settings.copy(customToolSkills = custom))))
+        assertTrue(applied.requiresRefresh(ConversationToolSettings.from(settings.copy(customToolSkills = custom,
+            enabledToolSkills = settings.enabledToolSkills + "custom_tutor"))))
     }
     @Test fun restoredRemindersArePausedAndDoNotInvokeAndroidAlarms() {
         val prefs = FeatureTestPreferences()
@@ -66,4 +70,14 @@ class ToolSkillPersistenceTest {
         val restored = ToolReminders.records(context)
         assertEquals(1, restored.length()); assertFalse(restored.getJSONObject(0).getBoolean("active"))
     }
+    @Test fun staleDeletionDraftCannotDeleteANewerMoodLog() {
+        val store = ToolSkillStore(FeatureTestPreferences())
+        val day = LocalDate.of(2026, 10, 24)
+        store.mood(JSONObject().put("operation", "log").put("mood", "Calm"), day)
+        val draft = JSONObject(store.mood(JSONObject().put("operation", "delete"), day))
+        store.mood(JSONObject().put("operation", "log").put("mood", "Happy"), day)
+        assertThrows(IllegalArgumentException::class.java) { store.confirmMoodDeletion(draft) }
+        assertEquals("Happy", store.export().getJSONObject("moods").getJSONObject(day.toString()).getString("mood"))
+    }
+
 }

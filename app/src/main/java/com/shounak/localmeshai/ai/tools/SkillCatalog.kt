@@ -84,7 +84,7 @@ internal object SkillCatalog {
             fields("topic" to string("Lesson topic"), "lesson" to string("Teach a concept with an example in at most 1800 characters")), listOf("topic", "lesson")) { a, _ ->
             JSONObject().put("solus_skill_media", "learning_card").put("title", text(a, "topic", 120)).put("lesson", text(a, "lesson", 1800)).toString()
         },
-        SkillDefinition("mood_tracker", "mood-tracker", "Log a user's mood and comments for a date, list mood history, or delete a log only when the user asks. Mood data stays in Solus.",
+        SkillDefinition("mood_tracker", "mood-tracker", "Log a user's mood and comments for a date, list mood history, or prepare a deletion for user confirmation. Never claim deletion until confirmed. Mood data stays in Solus.",
             fields("operation" to choice("log", "history", "delete"), "date" to string("YYYY-MM-DD, defaults to today"), "mood" to string("Mood label"),
                 "comment" to string("Optional comment"), "days" to JSONObject().put("type", "integer").put("description", "History days, 1 to 90")), listOf("operation"), "Stores private mood logs on this device") { a, services -> services.mood(a) },
         SkillDefinition("qr_code", "qr-code", "Generate an offline QR code for text or a URL. The scannable image is shown in the tool-use card.",
@@ -108,7 +108,8 @@ internal object SkillCatalog {
                 require(next.toInstant() > Instant.now()) { "Choose a future reminder time" }
                 require(next.year <= Year.now().value + 5) { "Choose a reminder within five years" }
                 action("reminder").put("id", UUID.randomUUID().toString()).put("title", text(a, "title", 120))
-                    .put("message", text(a, "message", 500)).put("datetime", next.toString()).put("anchor", at.toString()).put("repeat", repeat).toString()
+                    .put("message", text(a, "message", 500)).put("datetime", next.toString()).put("anchor", at.toString()).put("repeat", repeat)
+                    .put("follow_device_timezone", !a.has("timezone")).toString()
             }
         },
         SkillDefinition("send_email", "send-email", "Draft an email for the user to review in their email app. The user must tap Send there; this tool never sends mail itself.",
@@ -151,6 +152,17 @@ internal object SkillCatalog {
 internal object SkillTime {
     fun parse(value: String, zone: ZoneId = ZoneId.systemDefault()): ZonedDateTime =
         try { ZonedDateTime.parse(value) } catch (_: java.time.format.DateTimeParseException) { LocalDateTime.parse(value).atZone(zone) }
+    fun calendarTime(millis: Long, allDay: Boolean, zone: ZoneId): String =
+        if (allDay) Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate().toString()
+        else Instant.ofEpochMilli(millis).atZone(zone).toString()
+    fun allDayIncludes(start: Long, end: Long, date: LocalDate): Boolean =
+        date >= Instant.ofEpochMilli(start).atZone(ZoneOffset.UTC).toLocalDate() &&
+            date < Instant.ofEpochMilli(end).atZone(ZoneOffset.UTC).toLocalDate()
+    fun reminderAt(record: JSONObject, zone: ZoneId = ZoneId.systemDefault()): ZonedDateTime {
+        val daily = record.getString("repeat") == "daily"
+        val at = parse(if (daily) record.optString("anchor", record.getString("datetime")) else record.getString("datetime"))
+        return if (daily && record.optBoolean("follow_device_timezone", true)) at.withZoneSameLocal(zone) else at
+    }
     fun next(at: ZonedDateTime, daily: Boolean, now: Instant): ZonedDateTime {
         if (!daily || at.toInstant() > now) return at
         val days = java.time.temporal.ChronoUnit.DAYS.between(at.toLocalDate(), now.atZone(at.zone).toLocalDate()).coerceAtLeast(0)

@@ -37,7 +37,7 @@ internal object ToolReminders {
         validate(draft)
         require(NotificationManagerCompat.from(context).areNotificationsEnabled()) { "Enable Solus notifications first" }
         if (Build.VERSION.SDK_INT >= 33) require(ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) { "Allow notification permission first" }
-        val at = SkillTime.next(SkillTime.parse(if (draft.getString("repeat") == "daily") draft.optString("anchor", draft.getString("datetime")) else draft.getString("datetime")), draft.getString("repeat") == "daily", Instant.now())
+        val at = SkillTime.next(SkillTime.reminderAt(draft), draft.getString("repeat") == "daily", Instant.now())
         require(at.toInstant() > Instant.now()) { "This reminder time has passed; ask for a new reminder" }
         require(at.year <= java.time.Year.now().value + 5) { "Choose a reminder within five years" }
         val existing = records(context)
@@ -84,7 +84,7 @@ internal object ToolReminders {
                 .setStyle(NotificationCompat.BigTextStyle().bigText(record.getString("message"))).setContentIntent(open).setAutoCancel(true).build())
         }
         if (record.getString("repeat") == "daily") {
-            val next = SkillTime.next(SkillTime.parse(record.optString("anchor", record.getString("datetime"))), true, Instant.now())
+            val next = SkillTime.next(SkillTime.reminderAt(record), true, Instant.now())
             record.put("datetime", next.toString()); schedule(context, record)
         } else record.put("active", false)
         write(context, array)
@@ -93,7 +93,7 @@ internal object ToolReminders {
         Intent(context, com.shounak.localmeshai.receivers.ToolReminderReceiver::class.java).setAction("com.shounak.localmeshai.SKILL_REMINDER")
             .setData("solus-reminder:$id".toUri()).putExtra("id", id), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     private fun schedule(context: Context, record: JSONObject) {
-        val at = SkillTime.next(SkillTime.parse(if (record.getString("repeat") == "daily") record.optString("anchor", record.getString("datetime")) else record.getString("datetime")), record.getString("repeat") == "daily", Instant.now())
+        val at = SkillTime.next(SkillTime.reminderAt(record), record.getString("repeat") == "daily", Instant.now())
         val time = maxOf(at.toInstant().toEpochMilli(), System.currentTimeMillis() + 1000)
         context.getSystemService(AlarmManager::class.java).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, time, pending(context, record.getString("id")))
     }

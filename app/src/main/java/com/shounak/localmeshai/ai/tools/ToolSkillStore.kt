@@ -25,9 +25,9 @@ internal class ToolSkillStore(private val prefs: SharedPreferences) {
                 return JSONObject().put("saved", entry).toString()
             }
             "delete" -> {
-                logs.remove(date.toString())
-                check(prefs.edit().putString("moods", logs.toString()).commit()) { "Could not delete mood log" }
-                return JSONObject().put("deleted_date", date.toString()).toString()
+                val entry = logs.optJSONObject(date.toString()) ?: return JSONObject().put("message", "No mood log for $date").toString()
+                return JSONObject().put("solus_tool_action", "delete_mood").put("date", date.toString())
+                    .put("expected", entry).put("message", "Awaiting user confirmation; nothing has been deleted").toString()
             }
             "history" -> {
                 val days = args.optInt("days", 7); require(days in 1..90) { "History must be 1 to 90 days" }
@@ -39,6 +39,19 @@ internal class ToolSkillStore(private val prefs: SharedPreferences) {
             }
             else -> error("Unsupported mood operation")
         }
+    }
+    @Synchronized fun confirmMoodDeletion(draft: JSONObject): String {
+        require(draft.getString("solus_tool_action") == "delete_mood")
+        val date = LocalDate.parse(draft.getString("date")).toString()
+        val logs = JSONObject(prefs.getString("moods", "{}") ?: "{}")
+        val current = logs.optJSONObject(date) ?: return "This mood log was already deleted."
+        val expected = draft.getJSONObject("expected")
+        require(listOf("date", "mood", "comment").all { current.opt(it) == expected.opt(it) }) {
+            "This log changed after the request. Ask for a new deletion request."
+        }
+        logs.remove(date)
+        check(prefs.edit().putString("moods", logs.toString()).commit()) { "Could not delete mood log" }
+        return "Mood log for $date deleted."
     }
     @Synchronized fun clearMoods() { check(prefs.edit().remove("moods").commit()) }
     @Synchronized fun export(): JSONObject = JSONObject().put("moods", JSONObject(prefs.getString("moods", "{}") ?: "{}"))
