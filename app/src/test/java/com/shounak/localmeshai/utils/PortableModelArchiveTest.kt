@@ -34,6 +34,15 @@ class PortableModelArchiveTest {
         assertEquals("component 1", files.getValue("unet/model.onnx").readText())
         assertEquals("component 2", files.getValue("vae_decoder/model.onnx").readText())
     }
+    @Test fun metadataRootDoesNotDependOnZipEntryOrder() = runBlocking {
+        val staging = temporary.newFolder()
+        val files = PortableModelArchive.extract(archive("vision/config.json", "config.json", "model.safetensors"), staging)
+        assertEquals(staging.canonicalFile, PortableModelArchive.metadataRoot(files)?.canonicalFile)
+    }
+    @Test fun separateModelRootsAreRejectedInsteadOfSelectingArbitraryWeights(): Unit = runBlocking {
+        val files = PortableModelArchive.extract(archive("first/config.json", "first/model.onnx", "second/config.json", "second/model.onnx"), temporary.newFolder())
+        assertThrows(IllegalArgumentException::class.java) { PortableModelArchive.metadataRoot(files) }
+    }
     @Test fun traversalAndCaseCollisionsAreRejected(): Unit = runBlocking {
         for (names in listOf(arrayOf("../outside"), arrayOf("unet/model.onnx", "UNET/model.onnx"), arrayOf("unet/%2e%2e/outside"))) {
             try { PortableModelArchive.extract(archive(*names), temporary.newFolder()); fail("Unsafe archive accepted") }

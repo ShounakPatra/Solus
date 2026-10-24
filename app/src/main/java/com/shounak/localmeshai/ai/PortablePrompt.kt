@@ -14,13 +14,17 @@ internal object PortablePrompt {
 
     fun fallbackFormat(config: org.json.JSONObject, tokenizer: org.json.JSONObject, registeredTokens: Set<String>): String {
         config.optString("solus_prompt_format").takeIf { it.isNotBlank() }?.let { return it }
+        val decoder = tokenizer.optJSONObject("added_tokens_decoder")
+        val specialTokens = registeredTokens + decoder?.keys()?.asSequence().orEmpty().mapNotNull { id ->
+            decoder?.optJSONObject(id)?.takeIf { it.optBoolean("special") }?.optString("content")
+        }.toSet()
         // Require complete marker sets; ordinary vocabulary text is not evidence of a chat format.
-        if (registeredTokens.containsAll(setOf("<|im_start|>", "<|im_end|>"))) return "chatml"
-        if (registeredTokens.containsAll(setOf("<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"))) return "llama3"
+        if (specialTokens.containsAll(setOf("<|im_start|>", "<|im_end|>"))) return "chatml"
+        if (specialTokens.containsAll(setOf("<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"))) return "llama3"
         return when (config.optString("model_type")) {
             "qwen2" -> "chatml"
             "gpt2" -> "completion"
-            "llama" -> if (tokenizer.toString().contains("<|start_header_id|>")) "llama3" else "llama2"
+            "llama" -> "llama2"
             "mistral" -> "mistral"
             "gemma" -> "gemma"
             "phi3" -> "phi3"

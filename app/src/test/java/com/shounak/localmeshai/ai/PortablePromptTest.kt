@@ -4,6 +4,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PortablePromptTest {
+    @Test fun descriptiveTextAndIncompleteMarkersCannotSelectLlama3Formatting() {
+        val config = org.json.JSONObject().put("model_type", "llama")
+        val metadata = org.json.JSONObject().put("description", "Does not use <|start_header_id|>")
+        assertEquals("llama2", PortablePrompt.fallbackFormat(config, metadata, emptySet()))
+        assertEquals("llama2", PortablePrompt.fallbackFormat(config, metadata, setOf("<|start_header_id|>")))
+        val decoder = org.json.JSONObject()
+        listOf("<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>").forEachIndexed { index, token ->
+            decoder.put(index.toString(), org.json.JSONObject().put("content", token).put("special", true))
+        }
+        assertEquals("llama3", PortablePrompt.fallbackFormat(config, org.json.JSONObject().put("added_tokens_decoder", decoder), emptySet()))
+    }
     @Test fun chatMlLlamaUsesTokenizerMarkersAcrossPortableBackends() {
         val config = org.json.JSONObject().put("model_type", "llama")
         val metadata = org.json.JSONObject("""{"added_tokens":[{"content":"<|im_start|>"},{"content":"<|im_end|>"}]}""")

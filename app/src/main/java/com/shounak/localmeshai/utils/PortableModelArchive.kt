@@ -11,6 +11,17 @@ import java.util.zip.ZipInputStream
 
 /** Complete pipelines keep directory structure. Repository code is never executed. */
 internal object PortableModelArchive {
+    internal fun metadataRoot(files: Map<String, File>): File? {
+        val pipelines = files.filterKeys { it.substringAfterLast('/') == "model_index.json" }
+        require(pipelines.size <= 1) { "Archive contains multiple pipelines; import one complete model at a time" }
+        pipelines.values.singleOrNull()?.let { return it.parentFile }
+        val configs = files.filterKeys { it.substringAfterLast('/') == "config.json" }
+        val depth = configs.keys.minOfOrNull { it.count { c -> c == '/' } } ?: return null
+        val roots = configs.filterKeys { it.count { c -> c == '/' } == depth }.values
+        require(roots.size == 1) { "Archive contains multiple model roots; import one complete model at a time" }
+        return roots.single().parentFile
+    }
+
     internal fun displayName(root: File, staging: File, archiveName: String): String {
         if (root.canonicalFile != staging.canonicalFile) return root.name
         val name = archiveName.substringAfterLast('/').substringAfterLast('\\').trim()
@@ -57,7 +68,7 @@ internal object PortableModelArchive {
             val files = context.contentResolver.openInputStream(uri)?.use { extract(it, staging, progress) }
                 ?: error("Cannot read model archive")
             val pipeline = files.entries.singleOrNull { it.key.substringAfterLast('/') == "model_index.json" }
-            val root = pipeline?.value?.parentFile ?: files.entries.firstOrNull { it.key.substringAfterLast('/') == "config.json" }?.value?.parentFile
+            val root = metadataRoot(files)
                 ?: files.values.filter { PortableModelBundle.format(it.name) != null }.singleOrNull()
                     ?.takeIf { PortableModelBundle.format(it.name) == ModelFormat.TensorFlowLite }?.parentFile
                 ?: error("The model archive must include config.json or model_index.json")
