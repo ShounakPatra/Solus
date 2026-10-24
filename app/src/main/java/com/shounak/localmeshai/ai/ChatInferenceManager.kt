@@ -749,7 +749,9 @@ class ChatInferenceManager(context: Context) {
         onProgress?.invoke(RequestProgress.ProcessingPrompt)
         var lastLlamaMetrics: LlamaGenerationMetrics? = null
         var lastNonLlamaTokenCount: Int? = null
+        val promptDeadline = PromptDeadline()
         val reportProgress: (RequestProgress) -> Unit = {
+            promptDeadline.onProgress(it)
             if (it == RequestProgress.RecoveringOnCpu) {
                 attempt = 2
                 lastLlamaMetrics = null
@@ -773,7 +775,9 @@ class ChatInferenceManager(context: Context) {
         )
 
         try {
-            val response = when (runtime) {
+            val response = promptDeadline.run(::cancelGeneration,
+                onTimeout = { onProgress?.invoke(RequestProgress.StoppingAfterTimeout) }
+            ) { when (runtime) {
                 RuntimeKind.Portable -> {
                     val sampling = profileSampling()
                     var firstToken = true
@@ -824,7 +828,7 @@ class ChatInferenceManager(context: Context) {
                     onAttemptChanged = { attempt = it }
                 )
                 RuntimeKind.None -> throw IllegalStateException("Inference not initialized")
-            }
+            } }
             responseController.finish()
             val rawReasoning = if (!thinkingMode) "" else if (runtime == RuntimeKind.LiteRtLm) {
                 lastLiteRtSnapshot?.reasoningText.orEmpty().ifBlank { responseController.getReasoningText() }
@@ -896,8 +900,8 @@ class ChatInferenceManager(context: Context) {
                 attemptId = attempt,
                 rawAnswer = acceptedAnswer,
                 rawReasoning = rawReasoning,
-                isStopped = stopRequested,
-                sdkError = if (stopRequested) null else exception,
+                isStopped = stopRequested && exception !is PromptTimeoutException,
+                sdkError = if (stopRequested && exception !is PromptTimeoutException) null else exception,
                 acceptedAnswerFallback = responseController.acceptedAnswerText(),
                 acceptedReasoningFallback = responseController.acceptedReasoningText(),
                 thinkingMode = thinkingMode

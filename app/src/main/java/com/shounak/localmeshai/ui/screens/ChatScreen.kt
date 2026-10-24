@@ -3874,6 +3874,7 @@ private fun ChatBubble(
                                 is RequestProgress.ValidatingBackend -> "Validating backend…"
                                 is RequestProgress.RecoveringOnCpu -> "GPU failed; retrying on CPU…"
                                 is RequestProgress.ProcessingPrompt -> "Processing prompt…"
+                                is RequestProgress.StoppingAfterTimeout -> "Input timed out; stopping model…"
                                 is RequestProgress.Generating -> "Generating…"
                             },
                             style = MaterialTheme.typography.bodyMedium,

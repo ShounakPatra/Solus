@@ -458,10 +458,16 @@ class VisionInferenceManager(context: Context) {
         val effectiveBitmap = bitmap ?: decodedBitmap
 
         var lastGeneratedTokens: Int? = null
+        val promptDeadline = PromptDeadline()
+        val reportProgress: (RequestProgress) -> Unit = {
+            promptDeadline.onProgress(it)
+            onProgress?.invoke(it)
+        }
         try {
-            val rawResponse = when (runtime) {
+            val rawResponse = promptDeadline.run(::cancelGeneration,
+                onTimeout = { onProgress?.invoke(RequestProgress.StoppingAfterTimeout) }
+            ) { when (runtime) {
                 RuntimeKind.PortableMedia -> {
-                    onProgress?.invoke(RequestProgress.Generating)
                     val answer = requireNotNull(portableMediaEngine).generate(effectiveBitmap, audioFile, prompt, thinkingMode)
                     if (stopRequested) throw CancellationException("Generation cancelled")
                     effectiveOnUpdate(answer)
@@ -476,7 +482,7 @@ class VisionInferenceManager(context: Context) {
                     preparedImageFile = preparedImageFile,
                     requestId = requestId,
                     timing = timing,
-                    onProgress = onProgress,
+                    onProgress = reportProgress,
                     onTokensGenerated = { lastGeneratedTokens = it },
                     responseSnapshot = publisher::rawText,
                     publisher = publisher,
@@ -489,7 +495,7 @@ class VisionInferenceManager(context: Context) {
                     audioFile = audioFile,
                     audioBytes = audioBytes,
                     timing = timing,
-                    onProgress = onProgress,
+                    onProgress = reportProgress,
                     onTokensGenerated = { lastGeneratedTokens = it },
                     responseSnapshot = publisher::rawText,
                     onUpdate = effectiveOnUpdate
@@ -507,7 +513,7 @@ class VisionInferenceManager(context: Context) {
                         audioFile = audioFile,
                         audioBytes = audioBytes,
                         timing = timing,
-                        onProgress = onProgress,
+                        onProgress = reportProgress,
                         onTokensGenerated = { lastGeneratedTokens = it },
                         responseController = responseController,
                         publisher = publisher,
@@ -517,7 +523,7 @@ class VisionInferenceManager(context: Context) {
                     )
                 }
                 RuntimeKind.None -> throw IllegalStateException("Choose and initialise a multimodal model first.")
-            }
+            } }
             responseController.finish()
             val rawReasoning = if (!thinkingMode) "" else if (runtime == RuntimeKind.LiteRtLm) {
                 lastLiteRtSnapshot?.reasoningText.orEmpty().ifBlank { responseController.getReasoningText() }
@@ -587,8 +593,8 @@ class VisionInferenceManager(context: Context) {
                 attemptId = currentAttemptId,
                 rawAnswer = acceptedAnswer,
                 rawReasoning = rawReasoning,
-                isStopped = stopRequested,
-                sdkError = if (stopRequested) null else t,
+                isStopped = stopRequested && t !is PromptTimeoutException,
+                sdkError = if (stopRequested && t !is PromptTimeoutException) null else t,
                 acceptedAnswerFallback = responseController.acceptedAnswerText(),
                 acceptedReasoningFallback = responseController.acceptedReasoningText(),
                 thinkingMode = thinkingMode
