@@ -490,6 +490,11 @@ private fun HuggingFaceImportSection(
     var actionError by remember { mutableStateOf<String?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (repositoryDownloadStates.values.any { it.description == "Queued" || it.description.startsWith("Downloading") }) {
+            TextButton(onClick = { com.shounak.localmeshai.utils.RepositoryFileDownloads.cancel(context) }) {
+                Text("Cancel repository downloads")
+            }
+        }
         Text(
             text = "Browse all files in a Hugging Face repository or folder and select multiple downloads. Runnable imports support GGUF, .task, .litertlm, .onnx, .tflite and .safetensors. Required companions are included automatically. Other formats can be saved as files; model compatibility is checked before downloading weights.",
             style = MaterialTheme.typography.bodyMedium,

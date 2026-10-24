@@ -28,6 +28,9 @@ class RepositoryFileDownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var drainJob: Job? = null
     private var wakeRequested = false
+    private var latestStartId = 0
+    private val notificationLock = Any()
+    @Volatile private var notificationAllowed = false
     @Volatile private var activeCall: Call? = null
     private lateinit var notifications: NotificationManager
     private var failures = 0
@@ -41,19 +44,41 @@ class RepositoryFileDownloadService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        latestStartId = startId
         if (intent?.action == ACTION_CANCEL) {
-            activeCall?.cancel()
+            wakeRequested = false
             drainJob?.cancel()
+            activeCall?.cancel()
             RepositoryFileDownloads.queue(this).listFiles()?.filter { it.extension == "json" }?.forEach { it.delete() }
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            RepositoryFileDownloads.interruptPending()
+            removeNotification()
+            stopSelfResult(startId)
             return START_NOT_STICKY
         }
-        val notification = notification("Starting repository downloads", null)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        else startForeground(NOTIFICATION_ID, notification)
+        try {
+            val notification = notification("Starting repository downloads", null)
+            synchronized(notificationLock) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                else startForeground(NOTIFICATION_ID, notification)
+                notificationAllowed = true
+            }
+        } catch (failure: Exception) {
+            RepositoryFileDownloads.interruptQueued(this, "Could not start foreground download; reopen Solus to resume")
+            wakeRequested = false
+            drainJob?.cancel()
+            activeCall?.cancel()
+            removeNotification()
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
         startDrain()
-        return START_REDELIVER_INTENT
+        return START_NOT_STICKY
+    }
+
+    private fun removeNotification() = synchronized(notificationLock) {
+        notificationAllowed = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        notifications.cancel(NOTIFICATION_ID)
     }
 
     private fun pending() = RepositoryFileDownloads.queue(this).listFiles()?.filter { it.extension == "json" }.orEmpty()
@@ -61,8 +86,13 @@ class RepositoryFileDownloadService : Service() {
     private fun startDrain() {
         if (drainJob?.isActive == true) { wakeRequested = true; return }
         wakeRequested = false
-        drainJob = scope.launch {
+        val previous = drainJob
+        val next = scope.launch(start = CoroutineStart.LAZY) {
+            val thisJob = currentCoroutineContext()[Job]
             try {
+                // A cancelled transfer still owns its partial file until it has unwound.
+                previous?.join()
+                ensureActive()
                 val client = ModelDownloadUrlPolicy.configureClient(OkHttpClient.Builder()
                     .connectTimeout(20, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)) {
                     AppSettings.getInstance(applicationContext).settings.value.huggingFaceToken.ifBlank { null }
@@ -85,14 +115,19 @@ class RepositoryFileDownloadService : Service() {
                                 RepositoryFileDownloads.update(key, RepositoryFileDownloadState("Downloading"))
                                 val saved = transfer.download(repo, revision, file, checkActive = { ensureActive() },
                                     onCall = { activeCall = it }, onProgress = { bytes, total ->
+                                        ensureActive()
                                         val now = android.os.SystemClock.elapsedRealtime()
                                         if (now - lastNotificationAt >= 500) {
                                             lastNotificationAt = now
                                             val percent = if (total > 0) ((bytes.toDouble() / total) * 100).toInt().coerceIn(0, 100) else null
                                             RepositoryFileDownloads.update(key, RepositoryFileDownloadState(if (percent == null) "Downloading" else "Downloading $percent%"))
-                                            notifications.notify(NOTIFICATION_ID, notification(file.path, percent))
+                                            synchronized(notificationLock) {
+                                                ensureActive()
+                                                if (notificationAllowed) notifications.notify(NOTIFICATION_ID, notification(file.path, percent))
+                                            }
                                         }
                                     })
+                                ensureActive()
                                 completed++
                                 RepositoryFileDownloads.update(key, RepositoryFileDownloadState("Downloaded (files only)", saved.absolutePath))
                             } catch (cancelled: CancellationException) {
@@ -111,16 +146,22 @@ class RepositoryFileDownloadService : Service() {
                 }
             } finally {
                 withContext(NonCancellable + Dispatchers.Main.immediate) {
+                    if (drainJob !== thisJob) return@withContext
                     drainJob = null
                     if (scope.isActive && wakeRequested) startDrain()
                     else {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        if (scope.isActive) notifications.notify(NOTIFICATION_ID, notification("$completed files downloaded; $failures failed", null, finished = true))
-                        stopSelf()
+                        synchronized(notificationLock) {
+                            stopForeground(STOP_FOREGROUND_REMOVE)
+                            if (scope.isActive && notificationAllowed) notifications.notify(NOTIFICATION_ID, notification("$completed files downloaded; $failures failed", null, finished = true))
+                            notificationAllowed = false
+                        }
+                        stopSelfResult(latestStartId)
                     }
                 }
             }
         }
+        drainJob = next
+        next.start()
     }
 
     private fun notification(text: String, percent: Int?, finished: Boolean = false): android.app.Notification {
@@ -132,13 +173,13 @@ class RepositoryFileDownloadService : Service() {
             .apply { if (!finished) { setProgress(100, percent ?: 0, percent == null); addAction(0, "Cancel", cancel) } }.build()
     }
 
-    override fun onTimeout(startId: Int, fgsType: Int) { activeCall?.cancel(); scope.cancel(); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
-    override fun onDestroy() { activeCall?.cancel(); scope.cancel(); RepositoryFileDownloads.interruptPending(); super.onDestroy() }
+    override fun onTimeout(startId: Int, fgsType: Int) { activeCall?.cancel(); scope.cancel(); RepositoryFileDownloads.interruptPending(); removeNotification(); stopSelfResult(latestStartId) }
+    override fun onDestroy() { activeCall?.cancel(); scope.cancel(); RepositoryFileDownloads.interruptPending(); removeNotification(); super.onDestroy() }
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
         private const val CHANNEL = "repository_files"
         private const val NOTIFICATION_ID = 17031
-        private const val ACTION_CANCEL = "com.shounak.localmeshai.CANCEL_REPOSITORY_FILES"
+        const val ACTION_CANCEL = "com.shounak.localmeshai.CANCEL_REPOSITORY_FILES"
     }
 }

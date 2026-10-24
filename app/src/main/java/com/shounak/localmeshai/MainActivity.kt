@@ -107,6 +107,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        com.shounak.localmeshai.utils.RepositoryFileDownloads.resumePending(this)
         isFirstStart = false
     }
 
