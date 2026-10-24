@@ -91,7 +91,8 @@ sealed interface HfResolutionUiState {
     data class Success(
         val repoInfo: ResolvedRepoInfo,
         val variants: List<ModelVariant>,
-        val preselectedVariant: ModelVariant?
+        val preselectedVariant: ModelVariant?,
+        val browseFiles: List<RepoFile> = repoInfo.files
     ) : HfResolutionUiState
     data class Error(val message: String, val isAuthError: Boolean = false) : HfResolutionUiState
 }
@@ -123,11 +124,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _hfInputUrl = MutableStateFlow("")
     val hfInputUrl = _hfInputUrl.asStateFlow()
 
-    private val _hfSelectedVariant = MutableStateFlow<ModelVariant?>(null)
-    val hfSelectedVariant = _hfSelectedVariant.asStateFlow()
+    private val _hfSelectedPaths = MutableStateFlow<Set<String>>(emptySet())
+    val hfSelectedPaths = _hfSelectedPaths.asStateFlow()
+    private val _hfSubmissionSummary = MutableStateFlow<String?>(null)
+    val hfSubmissionSummary = _hfSubmissionSummary.asStateFlow()
 
-    private val _hfSelectedProjector = MutableStateFlow<RepoFile?>(null)
-    val hfSelectedProjector = _hfSelectedProjector.asStateFlow()
+    fun toggleHfFile(path: String) {
+        if (_isSubmittingVariantDownload.value) return
+        val state = _hfResolutionState.value as? HfResolutionUiState.Success ?: return
+        if (state.browseFiles.none { it.path == path }) return
+        val current = _hfSelectedPaths.value
+        _hfSelectedPaths.value = if (path in current) current - path else current + path
+    }
+
+    fun selectAllHfFiles(select: Boolean) {
+        if (_isSubmittingVariantDownload.value) return
+        val state = _hfResolutionState.value as? HfResolutionUiState.Success ?: return
+        _hfSelectedPaths.value = if (select) state.browseFiles.map { it.path }.toSet() else emptySet()
+    }
 
     private val _directName = MutableStateFlow("")
     val directName = _directName.asStateFlow()
@@ -142,18 +156,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_hfInputUrl.value != url) {
             _hfInputUrl.value = url
             resetHfResolution()
-            _hfSelectedVariant.value = null
-            _hfSelectedProjector.value = null
         }
-    }
-
-    fun selectHfVariant(variant: ModelVariant?) {
-        _hfSelectedVariant.value = variant
-        _hfSelectedProjector.value = variant?.projectorFile
-    }
-
-    fun selectHfProjector(projector: RepoFile?) {
-        _hfSelectedProjector.value = projector
     }
 
     fun updateDirectName(name: String) {
@@ -172,6 +175,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         hfResolutionJob?.cancel()
         hfResolutionJob = null
         _hfResolutionState.value = HfResolutionUiState.Idle
+        _hfSelectedPaths.value = emptySet()
+        _hfSubmissionSummary.value = null
+        _variantSubmissionError.value = null
     }
 
     private val _pendingImportDraft = MutableStateFlow<LocalModelImporter.ImportResult?>(null)
@@ -2038,7 +2044,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val fileName = clean.toHttpUrlOrNull()?.pathSegments?.lastOrNull() ?: clean.substringAfterLast('/')
-        com.shounak.localmeshai.utils.PortableCompanionFiles.unsupported(fileName)?.let {
+        com.shounak.localmeshai.utils.PortableCompanionFiles.unsupported(fileName)?.takeIf {
+            classifyModelInput(clean) != ModelInputClassification.HuggingFace
+        }?.let {
             hfResolutionJob?.cancel()
             _hfResolutionState.value = HfResolutionUiState.Error(it)
             return
@@ -2084,8 +2092,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 hfResolutionJob?.cancel()
                 hfResolutionJob = viewModelScope.launch(Dispatchers.IO) {
                     _hfResolutionState.value = HfResolutionUiState.Loading(clean)
-                    _hfSelectedVariant.value = null
-                    _hfSelectedProjector.value = null
+                    _hfSelectedPaths.value = emptySet()
+                    _hfSubmissionSummary.value = null
+                    _variantSubmissionError.value = null
                     try {
                         val parsed = HuggingFaceModelResolver.parseInput(clean)
                         if (parsed.repoId.isBlank()) {
@@ -2096,54 +2105,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val token = appSettingsData.value.huggingFaceToken.ifBlank { null }
                         val repoInfo = HuggingFaceModelResolver.resolveRepository(clean, token).getOrThrow()
                         val allVariants = HuggingFaceModelResolver.groupVariants(repoInfo)
-                        val selection = try {
-                            HuggingFaceModelResolver.selectVariants(parsed, allVariants)
-                        } catch (e: NoSuchElementException) {
-                            _hfResolutionState.value = HfResolutionUiState.Error(e.message ?: "No matching supported model files found in repository ${repoInfo.repoId}.")
-                            return@launch
+                        val files = com.shounak.localmeshai.utils.RepositoryFileSelection.visibleFiles(repoInfo, parsed)
+                        if (parsed.kind == HfInputKind.FILE) {
+                            val path = parsed.path.orEmpty()
+                            require(files.any { it.path == path }) { "Requested file '$path' was not found in ${repoInfo.repoId}." }
+                            _hfSelectedPaths.value = setOf(path)
                         }
-
-                        val preselected = selection.preselectedVariant
-                        if (parsed.kind == HfInputKind.FILE && preselected != null) {
-                            val projector = preselected.projectorFile
-                            if (preselected.availableProjectors.isEmpty() || projector != null) {
-                                val result = registerAndDownloadHuggingFaceSpec(
-                                    repoInfo = repoInfo,
-                                    variant = preselected,
-                                    selectedProjector = projector,
-                                    sheetSessionId = sheetSessionId
-                                )
-                                result.onSuccess { model ->
-                                    _hfResolutionState.value = HfResolutionUiState.Idle
-                                    val opId = java.util.UUID.randomUUID().toString()
-                                    if (sheetSessionId.isNotBlank()) {
-                                        _importCompletionEvent.value = ImportCompletionEvent(
-                                            sheetSessionId = sheetSessionId,
-                                            operationId = opId,
-                                            modelId = model.id
-                                        )
-                                    }
-                                }.onFailure { err ->
-                                    _hfResolutionState.value = HfResolutionUiState.Error(err.message ?: "Failed to add model.")
-                                }
-                            } else {
-                                _hfSelectedVariant.value = preselected
-                                _hfSelectedProjector.value = null
-                                _hfResolutionState.value = HfResolutionUiState.Success(
-                                    repoInfo = repoInfo,
-                                    variants = selection.variants,
-                                    preselectedVariant = preselected
-                                )
-                            }
-                        } else {
-                            _hfSelectedVariant.value = if (parsed.kind == HfInputKind.FILE) preselected else null
-                            _hfSelectedProjector.value = if (parsed.kind == HfInputKind.FILE) preselected?.projectorFile else null
-                            _hfResolutionState.value = HfResolutionUiState.Success(
-                                repoInfo = repoInfo,
-                                variants = selection.variants,
-                                preselectedVariant = if (parsed.kind == HfInputKind.FILE) preselected else null
-                            )
-                        }
+                        com.shounak.localmeshai.utils.RepositoryFileDownloads.restoreCompleted(getApplication(), repoInfo, files)
+                        _hfResolutionState.value = HfResolutionUiState.Success(
+                            repoInfo = repoInfo, variants = allVariants, preselectedVariant = null,
+                            browseFiles = files
+                        )
                     } catch (e: Exception) {
                         if (e is kotlinx.coroutines.CancellationException) throw e
                         val msg = e.message ?: "Failed to resolve repository"
@@ -2159,39 +2131,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         submitLinkImport(input, "")
     }
 
-    fun downloadSelectedHuggingFaceVariant(sheetSessionId: String = "") {
+    fun downloadSelectedHuggingFaceFiles(sheetSessionId: String = "", filesOnly: Boolean = false) {
         val state = _hfResolutionState.value as? HfResolutionUiState.Success ?: return
-        val variant = _hfSelectedVariant.value ?: return
-        val projector = _hfSelectedProjector.value
-        viewModelScope.launch {
-            _isSubmittingVariantDownload.value = true
-            _variantSubmissionError.value = null
+        val selected = _hfSelectedPaths.value
+        if (selected.isEmpty() || !_isSubmittingVariantDownload.compareAndSet(false, true)) return
+        _variantSubmissionError.value = null
+        _hfSubmissionSummary.value = null
+        viewModelScope.launch(Dispatchers.IO) {
+            val failures = mutableListOf<String>()
+            val accepted = mutableSetOf<String>()
+            var queuedModels = 0
             try {
-                val result = registerAndDownloadHuggingFaceSpec(
-                    repoInfo = state.repoInfo,
-                    variant = variant,
-                    selectedProjector = projector,
-                    sheetSessionId = sheetSessionId
-                )
-                result.onSuccess { model ->
-                    _hfResolutionState.value = HfResolutionUiState.Idle
-                    val opId = java.util.UUID.randomUUID().toString()
-                    if (sheetSessionId.isNotBlank()) {
-                        _importCompletionEvent.value = ImportCompletionEvent(
-                            sheetSessionId = sheetSessionId,
-                            operationId = opId,
-                            modelId = model.id
-                        )
-                    }
-                }.onFailure { err ->
-                    _variantSubmissionError.value = err.message ?: "Failed to add model."
+                val plan = com.shounak.localmeshai.utils.RepositoryFileSelection.plan(state.repoInfo, state.variants, selected)
+                val modelImports = if (filesOnly) emptyList() else plan.models
+                val storedFiles = if (filesOnly) plan.downloadFiles else plan.extraFiles
+                for ((variant, projector) in modelImports) {
+                    val result = try { registerAndDownloadHuggingFaceSpec(state.repoInfo, variant, projector, sheetSessionId) }
+                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (failure: Exception) { Result.failure(failure) }
+                    result.onSuccess {
+                        queuedModels++
+                        accepted += variant.downloadFiles.map { file -> file.path }
+                        projector?.let { accepted += it.path }
+                    }.onFailure { failures += "${variant.name}: ${it.message ?: "Could not start download"}" }
                 }
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                _variantSubmissionError.value = e.message ?: "Failed to add model."
-            } finally {
-                _isSubmittingVariantDownload.value = false
-            }
+                if (storedFiles.isNotEmpty()) {
+                    try {
+                        com.shounak.localmeshai.utils.RepositoryFileDownloads.enqueue(getApplication(), state.repoInfo, storedFiles)
+                        accepted += storedFiles.map { it.path }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (failure: Exception) { failures += failure.message ?: "Could not start repository-file downloads" }
+                }
+                if (_hfResolutionState.value === state) {
+                    _hfSelectedPaths.value = selected - accepted
+                    _hfSubmissionSummary.value = "Queued $queuedModels model bundle(s) and ${storedFiles.count { it.path in accepted }} separate file(s). Required companions are included automatically."
+                    _variantSubmissionError.value = failures.takeIf { it.isNotEmpty() }?.joinToString("\n")
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (failure: Exception) { _variantSubmissionError.value = failure.message ?: "Could not start downloads" }
+            finally { _isSubmittingVariantDownload.value = false }
         }
     }
 

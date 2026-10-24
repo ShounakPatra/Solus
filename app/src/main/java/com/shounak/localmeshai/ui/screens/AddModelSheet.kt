@@ -12,6 +12,11 @@ import com.shounak.localmeshai.ui.components.SlidingGlassTabs
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -91,9 +96,6 @@ import com.shounak.localmeshai.models.ModelType
 import com.shounak.localmeshai.ui.viewmodels.HfResolutionUiState
 import com.shounak.localmeshai.ui.viewmodels.MainViewModel
 import com.shounak.localmeshai.utils.LocalModelImporter
-import com.shounak.localmeshai.utils.ModelVariant
-import com.shounak.localmeshai.utils.RepoFile
-import com.shounak.localmeshai.utils.ResolvedRepoInfo
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -478,15 +480,18 @@ private fun HuggingFaceImportSection(
     val directType by mainViewModel.directType.collectAsState()
     val directSha256 by mainViewModel.directSha256.collectAsState()
 
-    val selectedVariant by mainViewModel.hfSelectedVariant.collectAsState()
-    val selectedProjector by mainViewModel.hfSelectedProjector.collectAsState()
+    val selectedPaths by mainViewModel.hfSelectedPaths.collectAsState()
+    val submissionSummary by mainViewModel.hfSubmissionSummary.collectAsState()
+    val repositoryDownloadStates by com.shounak.localmeshai.utils.RepositoryFileDownloads.states.collectAsState()
+    val context = LocalContext.current
+    var fileFilter by rememberSaveable { mutableStateOf("") }
     val isSubmittingVariant by mainViewModel.isSubmittingVariantDownload.collectAsState()
     val variantSubmissionError by mainViewModel.variantSubmissionError.collectAsState()
     var actionError by remember { mutableStateOf<String?>(null) }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text(
-            text = "Enter a Hugging Face repository, folder, or model URL. Supports GGUF, .task, .litertlm, .onnx, .tflite and .safetensors. Export requirements are checked before downloading weights. Companion files depend on the export; supported self-contained TFLite models use embedded metadata.",
+            text = "Browse all files in a Hugging Face repository or folder and select multiple downloads. Runnable imports support GGUF, .task, .litertlm, .onnx, .tflite and .safetensors. Required companions are included automatically. Other formats can be saved as files; model compatibility is checked before downloading weights.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -524,7 +529,7 @@ private fun HuggingFaceImportSection(
                 tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
             ) {
-                Text("Add & download")
+                Text(if (mainViewModel.classifyModelInput(inputUrl) == com.shounak.localmeshai.ui.viewmodels.ModelInputClassification.HuggingFace) "Browse repository files" else "Add & download")
             }
         }
 
@@ -539,7 +544,7 @@ private fun HuggingFaceImportSection(
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text("Resolving repository and discovering variants...", style = MaterialTheme.typography.bodyMedium)
+                    Text("Listing repository files...", style = MaterialTheme.typography.bodyMedium)
                 }
             }
 
@@ -585,246 +590,94 @@ private fun HuggingFaceImportSection(
 
             is HfResolutionUiState.Success -> {
                 val repoInfo = state.repoInfo
-                val variants = state.variants
-
+                LaunchedEffect(repoInfo.repoId, repoInfo.commitSha) { fileFilter = "" }
+                val plan = remember(repoInfo, state.variants, selectedPaths) {
+                    com.shounak.localmeshai.utils.RepositoryFileSelection.plan(repoInfo, state.variants,
+                        selectedPaths.intersect(repoInfo.files.map { it.path }.toSet()))
+                }
+                val modelPaths = remember(state.variants) { state.variants.flatMap { it.mainFiles }.map { it.path }.toSet() }
+                val filtered = remember(state.browseFiles, fileFilter) {
+                    state.browseFiles.filter { it.path.contains(fileFilter, ignoreCase = true) }
+                }
                 Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .glassEffect(
-                            hazeState = hazeState,
-                            shape = RoundedCornerShape(16.dp),
-                            tintColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
-                            borderAlpha = 0.35f
-                        ),
-                    colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
                     shape = RoundedCornerShape(16.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Text(
-                            text = "Repository: ${repoInfo.repoId}",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "Revision: ${repoInfo.commitSha.take(10)} (${repoInfo.requestedRevision})",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-
-                        Text("Select Model Quantization / Variant:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            variants.forEach { variant ->
-                                val isSelected = selectedVariant == variant
-                                val sizeMb = variant.totalSizeBytes / (1024 * 1024)
-                                val sizeStr = if (sizeMb > 1024) String.format(Locale.US, "%.1f GB", sizeMb / 1024f) else "$sizeMb MB"
-                                val shardInfo = if (variant.isSplit) "${variant.mainFiles.size} shards" else "${variant.mainFiles.size + variant.companionFiles.size} file(s)"
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .defaultMinSize(minHeight = 48.dp)
-                                        .background(
-                                            color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else Color.Transparent,
-                                            shape = RoundedCornerShape(8.dp)
-                                        )
-                                        .border(
-                                            width = if (isSelected) 1.5.dp else 0.5.dp,
-                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                                            shape = RoundedCornerShape(8.dp)
-                                        )
-                                        .clickable {
-                                            mainViewModel.selectHfVariant(variant)
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Repository: ${repoInfo.repoId}", style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Text("Revision: ${repoInfo.commitSha.take(10)} (${repoInfo.requestedRevision})", style = MaterialTheme.typography.bodySmall)
+                        Text("Repository files (${state.browseFiles.size})", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                        Text("Select one or more files. Required companions and remaining shards are downloaded automatically, even when unselected. Other files are saved separately; downloading them does not add inference support.",
+                            style = MaterialTheme.typography.bodySmall)
+                        OutlinedTextField(value = fileFilter, onValueChange = { fileFilter = it },
+                            label = { Text("Filter files") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            TextButton(onClick = { mainViewModel.selectAllHfFiles(true) }, enabled = !isSubmittingVariant) { Text("Select all files") }
+                            TextButton(onClick = { mainViewModel.selectAllHfFiles(false) }, enabled = !isSubmittingVariant) { Text("Clear selection") }
+                        }
+                        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(filtered, key = { it.path }) { file ->
+                                val checked = file.path in selectedPaths
+                                val automatic = file.path in plan.automaticPaths
+                                val key = remember(repoInfo.repoId, repoInfo.commitSha, file.path) {
+                                    com.shounak.localmeshai.utils.RepositoryFileTransfer.key(repoInfo.repoId, repoInfo.commitSha, file.path)
+                                }
+                                val download = repositoryDownloadStates[key]
+                                Row(modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 56.dp)
+                                    .background(if (checked) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else Color.Transparent, RoundedCornerShape(8.dp))
+                                    .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                                    .toggleable(value = checked, enabled = !isSubmittingVariant, role = Role.Checkbox,
+                                        onValueChange = { mainViewModel.toggleHfFile(file.path) })
+                                    .padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    CircularFileSelector(checked)
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(file.path, style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (checked) FontWeight.Bold else FontWeight.Normal)
+                                        val category = when {
+                                            automatic -> "Included automatically"
+                                            file.path in modelPaths -> "${file.format?.backendLabel ?: "Model bundle"} • checked before download"
+                                            file.isProjector -> "Vision projector companion"
+                                            else -> "Files only / companion"
                                         }
-                                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = variant.name,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                        )
-                                        Text(
-                                            text = "${variant.format.backendLabel} • $shardInfo • $sizeStr",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                        Text("${repositoryFileSize(file.sizeBytes)} • $category", style = MaterialTheme.typography.labelSmall,
+                                            color = if (automatic) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                                        download?.let { Text(it.description, style = MaterialTheme.typography.labelSmall) }
                                     }
-                                    if (isSelected) {
-                                        Icon(
-                                            Icons.Default.CheckCircle,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(20.dp)
-                                        )
+                                    download?.localPath?.let { path ->
+                                        TextButton(onClick = { com.shounak.localmeshai.utils.AttachmentViewerUtils.openFileInExternalViewer(context, java.io.File(path)) }) { Text("Open") }
                                     }
                                 }
                             }
                         }
-
-                        // Projector selection if companion projectors available
-                        selectedVariant?.let { variant ->
-                            if (variant.availableProjectors.isNotEmpty()) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text("Vision / Multimodal Projector:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-
-                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    // Option: None
-                                    val isNoneSelected = selectedProjector == null
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .defaultMinSize(minHeight = 48.dp)
-                                            .background(
-                                                color = if (isNoneSelected) MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f) else Color.Transparent,
-                                                shape = RoundedCornerShape(8.dp)
-                                            )
-                                            .border(
-                                                width = if (isNoneSelected) 1.5.dp else 0.5.dp,
-                                                color = if (isNoneSelected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outlineVariant,
-                                                shape = RoundedCornerShape(8.dp)
-                                            )
-                                            .clickable { mainViewModel.selectHfProjector(null) }
-                                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text("None (Text-only inference)", style = MaterialTheme.typography.bodyMedium)
-                                        if (isNoneSelected) {
-                                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(18.dp))
-                                        }
-                                    }
-
-                                    variant.availableProjectors.forEach { proj ->
-                                        val isProjSelected = selectedProjector?.path == proj.path
-                                        val projMb = proj.sizeBytes / (1024 * 1024)
-                                        val projSizeStr = if (projMb > 1024) String.format(Locale.US, "%.1f GB", projMb / 1024f) else "$projMb MB"
-
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .defaultMinSize(minHeight = 48.dp)
-                                                .background(
-                                                    color = if (isProjSelected) MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f) else Color.Transparent,
-                                                    shape = RoundedCornerShape(8.dp)
-                                                )
-                                                .border(
-                                                    width = if (isProjSelected) 1.5.dp else 0.5.dp,
-                                                    color = if (isProjSelected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outlineVariant,
-                                                    shape = RoundedCornerShape(8.dp)
-                                                )
-                                                .clickable { mainViewModel.selectHfProjector(proj) }
-                                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(proj.fileName, style = MaterialTheme.typography.bodyMedium)
-                                                Text(projSizeStr, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                            }
-                                            if (isProjSelected) {
-                                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(18.dp))
-                                            }
-                                        }
-                                    }
-                                }
+                        if (filtered.isEmpty()) Text("No files match this filter.", style = MaterialTheme.typography.bodySmall)
+                        val automaticFiles = plan.downloadFiles.filter { it.path in plan.automaticPaths }
+                        if (automaticFiles.isNotEmpty()) {
+                            Text("Automatic bundle files (${automaticFiles.size})", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 140.dp)) {
+                                items(automaticFiles, key = { it.path }) { Text("• ${it.path} (${repositoryFileSize(it.sizeBytes)})", style = MaterialTheme.typography.labelSmall) }
                             }
                         }
-
-                        // Complete artifact list preview
-                        selectedVariant?.let { variant ->
-                            val artifactsToDownload = mutableListOf<Pair<String, Long>>()
-                            variant.downloadFiles.forEach { file ->
-                                artifactsToDownload.add(file.path to file.sizeBytes)
-                            }
-                            selectedProjector?.let { proj ->
-                                artifactsToDownload.add(proj.fileName to proj.sizeBytes)
-                            }
-
-                            val totalBytes = artifactsToDownload.sumOf { it.second }
-                            val totalMb = totalBytes / (1024 * 1024)
-                            val totalStr = if (totalMb > 1024) String.format(Locale.US, "%.1f GB", totalMb / 1024f) else "$totalMb MB"
-
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text("Artifacts to download ($totalStr total):", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                            artifactsToDownload.forEach { (name, size) ->
-                                val sMb = size / (1024 * 1024)
-                                val sStr = if (size in 1..1048575) "${(size + 1023) / 1024} KB" else if (size <= 0) "size unknown" else if (sMb > 1024) String.format(Locale.US, "%.1f GB", sMb / 1024f) else "$sMb MB"
-                                Text("• $name ($sStr)", style = MaterialTheme.typography.labelSmall)
-                            }
-
-                            val displayError = variantSubmissionError ?: actionError
-                            if (displayError != null) {
-                                Text(displayError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            LiquidGlassButton(
-                                onClick = {
-                                    actionError = null
-                                    mainViewModel.downloadSelectedHuggingFaceVariant(sheetSessionId)
-                                },
-                                hazeState = hazeState,
-                                enabled = !isSubmittingVariant,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp),
-                                shape = RoundedCornerShape(14.dp),
-                                tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-                            ) {
-                                if (isSubmittingVariant) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(18.dp),
-                                        strokeWidth = 2.dp,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Starting download...")
-                                } else {
-                                    Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Download $totalStr Bundle")
-                                }
-                            }
+                        if (plan.models.isNotEmpty()) Text("${plan.models.size} model bundle(s); ${plan.extraFiles.size} other file(s). Additional export-declared assets are fetched when needed.", style = MaterialTheme.typography.bodySmall)
+                        if (plan.extraFiles.isNotEmpty()) Text("Other files are saved in Solus repository storage. Reopen this repository to view or open completed downloads.", style = MaterialTheme.typography.bodySmall)
+                        submissionSummary?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+                        (variantSubmissionError ?: actionError)?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                        LiquidGlassButton(onClick = { actionError = null; mainViewModel.downloadSelectedHuggingFaceFiles(sheetSessionId) },
+                            enabled = selectedPaths.isNotEmpty() && !isSubmittingVariant, hazeState = hazeState,
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp),
+                            tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)) {
+                            if (isSubmittingVariant) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            else Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (isSubmittingVariant) "Checking and queuing files…"
+                                else "Download ${plan.downloadFiles.size} files • ${repositoryFileSize(plan.downloadFiles.sumOf { it.sizeBytes })}")
                         }
-                        if (selectedVariant == null) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp)
-                                    .glassEffect(
-                                        hazeState = hazeState,
-                                        shape = RoundedCornerShape(14.dp),
-                                        tintColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.35f),
-                                        borderAlpha = 0.25f
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.Center,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        Icons.Default.CloudDownload,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        "Select a model variant to download",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                                    )
-                                }
+                        if (plan.models.isNotEmpty()) {
+                            OutlinedButton(onClick = { actionError = null; mainViewModel.downloadSelectedHuggingFaceFiles(sheetSessionId, filesOnly = true) },
+                                enabled = selectedPaths.isNotEmpty() && !isSubmittingVariant, modifier = Modifier.fillMaxWidth()) {
+                                Text("Save files only (no model import)")
                             }
                         }
                     }
@@ -876,6 +729,22 @@ private fun HuggingFaceImportSection(
             }
         }
     }
+}
+
+@Composable
+private fun CircularFileSelector(selected: Boolean) {
+    val color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+    Box(Modifier.size(24.dp).border(2.dp, color, CircleShape), contentAlignment = Alignment.Center) {
+        if (selected) Box(Modifier.size(12.dp).background(color, CircleShape))
+    }
+}
+
+private fun repositoryFileSize(bytes: Long): String = when {
+    bytes <= 0 -> "size unknown"
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "${(bytes + 1023) / 1024} KB"
+    bytes < 1024L * 1024 * 1024 -> String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024))
+    else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024 * 1024))
 }
 
 @Composable
