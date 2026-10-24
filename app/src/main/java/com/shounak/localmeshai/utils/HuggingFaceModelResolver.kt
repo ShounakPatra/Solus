@@ -202,11 +202,6 @@ object HuggingFaceModelResolver {
     ): Result<ResolvedRepoInfo> = withContext(Dispatchers.IO) {
         val parsed = parseInput(input)
         val repoId = parsed.repoId
-        if (parsed.kind == HfInputKind.FILE) {
-            PortableCompanionFiles.unsupported(parsed.path.orEmpty())?.let {
-                return@withContext Result.failure(IllegalArgumentException(it))
-            }
-        }
         if (repoId.isBlank() || !repoId.contains('/')) {
             return@withContext Result.failure(IllegalArgumentException("Invalid Hugging Face repository identifier: '$input'"))
         }
@@ -515,9 +510,14 @@ object HuggingFaceModelResolver {
                 val paired = if (first.fileName == "decoder_model.onnx") "encoder_model.onnx" else "decoder_model.onnx"
                 files.firstOrNull { it.directory == first.directory && it.fileName == paired }?.let(companions::add)
             }
-            if (first.format == ModelFormat.Onnx) companions.addAll(files.filter {
-                it.directory == first.directory && (it.fileName.endsWith(".onnx_data") || it.fileName.endsWith(".data"))
-            })
+            if (first.format == ModelFormat.Onnx) {
+                // Include conventional external data for these graphs only. Other locations are
+                // read from each ONNX graph by the downloader, not guessed from unrelated variants.
+                val graphNames = (main + companions.filter { it.format == ModelFormat.Onnx }).map { it.fileName }
+                val dataNames = graphNames.flatMap { graph -> listOf("${graph}_data", "$graph.data",
+                    "${graph.removeSuffix(".onnx")}.data", "${graph.removeSuffix(".onnx")}.onnx_data") }.toSet()
+                companions.addAll(files.filter { it.directory == first.directory && it.fileName in dataNames })
+            }
             ModelVariant(name = first.fileName.substringBeforeLast('.') + " (${first.format!!.name})", mainFiles = main,
                 companionFiles = companions.distinctBy { it.path }, totalSizeBytes = (main + companions).distinctBy { it.path }.sumOf { it.sizeBytes })
         }
