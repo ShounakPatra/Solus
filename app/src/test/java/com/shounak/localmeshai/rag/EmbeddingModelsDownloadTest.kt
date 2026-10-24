@@ -93,4 +93,42 @@ class EmbeddingModelsDownloadTest {
         assertTrue(urls[0].startsWith("https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/"))
         assertEquals("https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/bge-small-en-v1.5-int8.onnx", urls[1])
     }
+
+    @Test
+    fun corruptSameLengthCachedFileIsReplaced() = runBlocking {
+        val model = ByteArray(1000) { 7 }
+        val vocab = "[UNK]\n".toByteArray()
+        val s = spec(model, vocab)
+        val dir = temp.newFolder("cached")
+        dir.resolve(s.model.localName).writeBytes(ByteArray(model.size) { 0 })
+        dir.resolve(s.vocab.localName).writeBytes(vocab)
+        val server = MockWebServer().apply { start() }
+        try {
+            server.enqueue(MockResponse().setBody(okio.Buffer().write(model)))
+            EmbeddingModels.download(dir, s, OkHttpClient(), { _, _ -> }) {
+                listOf(server.url("/" + it.remotePath).toString())
+            }
+            assertEquals(sha(model), sha(dir.resolve(s.model.localName).readBytes()))
+            assertEquals(1, server.requestCount)
+        } finally { server.shutdown() }
+    }
+
+    @Test
+    fun cancelledDownloadRemovesPartialFile() = runBlocking {
+        val model = ByteArray(200_000) { 7 }
+        val vocab = "[UNK]\n".toByteArray()
+        val s = spec(model, vocab)
+        val dir = temp.newFolder("cancel")
+        val server = MockWebServer().apply { start() }
+        try {
+            server.enqueue(MockResponse().setBody(okio.Buffer().write(model)))
+            val result = runCatching {
+                EmbeddingModels.download(dir, s, OkHttpClient(), { _, _ ->
+                    throw kotlinx.coroutines.CancellationException("stop")
+                }) { listOf(server.url("/" + it.remotePath).toString()) }
+            }
+            assertTrue(result.exceptionOrNull() is kotlinx.coroutines.CancellationException)
+            assertTrue(dir.listFiles()!!.isEmpty())
+        } finally { server.shutdown() }
+    }
 }

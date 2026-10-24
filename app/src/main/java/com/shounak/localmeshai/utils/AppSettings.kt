@@ -109,6 +109,15 @@ class AppSettings internal constructor(
         _settings.value = updated
     }
 
+    /** Called off the UI thread before retiring the previous persisted RAG index. */
+    @Suppress("UseKtx") // A checked, synchronous commit is required at this migration boundary.
+    @Synchronized internal fun commitEmbeddingModel(modelId: String) {
+        check(prefs.edit().putString(KEY_RAG_EMBEDDING_MODEL, modelId).commit()) {
+            "Could not save document search model selection"
+        }
+        _settings.value = _settings.value.copy(ragEmbeddingModel = modelId)
+    }
+
     companion object {
         private const val KEY_DARK_MODE = "enable_dark_mode"
         private const val KEY_DYNAMIC_THEMES = "enable_dynamic_themes"

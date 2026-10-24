@@ -10,7 +10,8 @@ data class StorageSnapshot(val models: Long, val attachments: Long, val knowledg
 object StorageDashboard {
     fun inspect(context: Context): StorageSnapshot {
         val modelRoot = (context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir.resolve("downloads")).resolve("models")
-        val knowledge = context.filesDir.listFiles().orEmpty().filter { it.name.startsWith("rag_vector_store.json") }.sumOf { size(it) }
+        val knowledge = context.filesDir.listFiles().orEmpty().filter { it.name.startsWith("rag_vector_store") }.sumOf { size(it) } +
+            size(context.filesDir.resolve("embeddings"))
         return StorageSnapshot(size(modelRoot), size(context.filesDir.resolve("chat_attachments")) + size(context.filesDir.resolve("vision_sessions")),
             knowledge, size(context.cacheDir) + (context.externalCacheDir?.let(::size) ?: 0L), StatFs(context.filesDir.path).availableBytes)
     }

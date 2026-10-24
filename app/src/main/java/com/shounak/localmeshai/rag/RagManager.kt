@@ -14,6 +14,7 @@ import com.shounak.localmeshai.rag.store.RagSearchResult
 import com.shounak.localmeshai.rag.store.VectorStore
 import com.shounak.localmeshai.utils.DocumentTextExtractor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -73,19 +74,36 @@ class RagManager(
     private val _embeddingStatus = kotlinx.coroutines.flow.MutableStateFlow<EmbeddingModelStatus>(EmbeddingModelStatus.Idle)
     val embeddingStatus: kotlinx.coroutines.flow.StateFlow<EmbeddingModelStatus> = _embeddingStatus
 
-    val loadState: kotlinx.coroutines.flow.StateFlow<com.shounak.localmeshai.data.StoreLoadState>
-        get() = vectorStore.loadState
+    private val _loadState = kotlinx.coroutines.flow.MutableStateFlow(vectorStore.loadState.value)
+    val loadState: kotlinx.coroutines.flow.StateFlow<com.shounak.localmeshai.data.StoreLoadState> = _loadState
 
-    suspend fun loadAsync(): com.shounak.localmeshai.data.StoreLoadState {
-        val state = vectorStore.loadAsync()
-        recoverOrphanedStore()
+    suspend fun loadAsync(): com.shounak.localmeshai.data.StoreLoadState = ingestionMutex.withLock {
+        val state = withContext(Dispatchers.IO) {
+            val loaded = if (vectorStore.loadState.value is com.shounak.localmeshai.data.StoreLoadState.Loading) {
+                vectorStore.loadAsync()
+            } else vectorStore.loadState.value
+            if (loaded is com.shounak.localmeshai.data.StoreLoadState.Ready) {
+                try {
+                    recoverOrphanedStore()
+                    loaded
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    _embeddingStatus.value = EmbeddingModelStatus.Failed(error.message ?: "Search index recovery failed")
+                    com.shounak.localmeshai.data.StoreLoadState.Error(error)
+                }
+            } else loaded
+        }
+        _loadState.value = state
         context?.let { ctx ->
             com.shounak.localmeshai.data.StartupCoordinator.getInstance(ctx).updateRagStoreState(state)
         }
-        return state
+        state
     }
 
     private val ingestionMutex = Mutex()
+    private val mutationLock = Any()
+    private var deletionVersion = 0L
 
     val totalIndexedChunks: Int
         get() = vectorStore.getTotalChunkCount()
@@ -419,7 +437,7 @@ class RagManager(
         minScore: Float = 0.35f,
         preferredDocumentId: String? = null,
         allowGlobalSearch: Boolean = true
-    ): RagRetrievalResult = withContext(Dispatchers.Default) {
+    ): RagRetrievalResult = withContext(Dispatchers.Default) { ingestionMutex.withLock {
         val trimmedQuery = query.trim()
         if (vectorStore.getTotalChunkCount() == 0 || (!allowGlobalSearch && preferredDocumentId == null)) {
             return@withContext RagRetrievalResult(
@@ -523,7 +541,7 @@ class RagManager(
             matches = filteredMatches,
             hasContext = filteredMatches.isNotEmpty()
         )
-    }
+    } }
 
     private fun calibratedSearch(
         engine: SemanticEmbeddingEngine,
@@ -545,21 +563,44 @@ class RagManager(
     suspend fun switchEmbeddingEngine(
         newEngine: SemanticEmbeddingEngine,
         newStore: VectorStore,
-        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
+        beforeActivation: () -> Unit = {}
     ): Result<Int> = ingestionMutex.withLock {
-        withContext(Dispatchers.Default) {
+        withContext(Dispatchers.IO) {
             runCatching {
                 require(newStore.dimension == newEngine.dimension) {
                     "Store dimension ${newStore.dimension} does not match engine dimension ${newEngine.dimension}"
                 }
-                newStore.loadAsync()
+                check(newStore.loadAsync() is com.shounak.localmeshai.data.StoreLoadState.Ready) {
+                    "Destination search index requires recovery"
+                }
                 val oldEngine = embeddingEngine
                 val oldStore = vectorStore
+                if (oldStore.loadState.value is com.shounak.localmeshai.data.StoreLoadState.Loading) oldStore.loadAsync()
+                check(oldStore.loadState.value is com.shounak.localmeshai.data.StoreLoadState.Ready) {
+                    "Current search index requires recovery"
+                }
+                val version = synchronized(mutationLock) { deletionVersion }
+                require(oldStore !== newStore || oldEngine.algorithmId == newEngine.algorithmId) {
+                    "Different embedding engines require separate indexes"
+                }
+                // Validate native initialization even when there are no documents to migrate.
+                val probe = newEngine.embedQuery("Document search")
+                check(probe.size == newEngine.dimension && probe.all { it.isFinite() }) { "Invalid search embedding output" }
                 // Leftovers from an interrupted earlier switch would otherwise resurrect deleted documents.
                 if (oldStore !== newStore && newStore.getTotalChunkCount() > 0) newStore.clearAll()
+                check(oldStore === newStore || newStore.getTotalChunkCount() == 0) { "Could not reset destination search index" }
                 val migrated = if (oldStore === newStore) 0 else migrateChunks(oldStore, newEngine, newStore, onProgress)
-                active = ActiveIndex(newEngine, newStore)
-                if (oldStore !== newStore) oldStore.clearAll()
+                ensureActive()
+                synchronized(mutationLock) {
+                    check(deletionVersion == version) { "Documents changed during re-indexing. Retry to use the updated knowledge base." }
+                    // Save the selector durably before clearing the old index. A killed process can
+                    // always find a complete store, rather than a partially migrated destination.
+                    beforeActivation()
+                    active = ActiveIndex(newEngine, newStore)
+                    _loadState.value = newStore.loadState.value
+                    if (oldStore !== newStore) oldStore.clearAll()
+                }
                 if (oldEngine !== newEngine) oldEngine.release()
                 migrated
             }.onFailure {
@@ -580,6 +621,7 @@ class RagManager(
         var done = 0
         onProgress(0, total)
         for (doc in documents) {
+            kotlin.coroutines.coroutineContext.ensureActive()
             val chunks = from.getChunksForDocument(doc.documentId, Int.MAX_VALUE).sortedBy { it.chunkIndex }
             if (chunks.isEmpty()) continue
             val prefix = doc.documentName.substringBeforeLast('.').replace('_', ' ').replace('-', ' ').trim()
@@ -601,15 +643,16 @@ class RagManager(
     /** Moves documents out of a store whose embedding model was removed, re-embedding with the active engine. */
     private suspend fun recoverOrphanedStore() {
         val orphan = orphanedStore ?: return
-        orphanedStore = null
-        ingestionMutex.withLock {
-            runCatching {
-                orphan.loadAsync()
-                if (orphan.getTotalChunkCount() > 0) {
-                    migrateChunks(orphan, embeddingEngine, vectorStore) { _, _ -> }
-                    orphan.clearAll()
-                }
-            }
+        withContext(Dispatchers.IO) {
+            check(orphan.loadAsync() is com.shounak.localmeshai.data.StoreLoadState.Ready) { "Previous search index requires recovery" }
+            // The selected neural index is authoritative, including an empty index after
+            // deleting all documents. Never resurrect leftovers from an earlier switch.
+            vectorStore.clearAll()
+            check(vectorStore.getTotalChunkCount() == 0) { "Could not reset fallback search index" }
+            migrateChunks(orphan, embeddingEngine, vectorStore) { _, _ -> }
+            context?.let { com.shounak.localmeshai.utils.AppSettings.getInstance(it).commitEmbeddingModel(embeddingEngine.algorithmId) }
+            orphan.clearAll()
+            orphanedStore = null
         }
     }
 
@@ -618,28 +661,26 @@ class RagManager(
      * built-in lexical engine ([EmbeddingModels.LEXICAL_ID]), downloading and re-indexing as needed.
      * Progress is published on [embeddingStatus]; the chosen model is saved in AppSettings on success.
      */
-    suspend fun setEmbeddingModel(modelId: String): Result<Unit> {
-        val ctx = context ?: return Result.failure(IllegalStateException("Android Context is required"))
-        if (modelId == embeddingEngine.algorithmId) return Result.success(Unit)
+    suspend fun setEmbeddingModel(modelId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val ctx = context ?: return@withContext Result.failure(IllegalStateException("Android Context is required"))
+        if (modelId == embeddingEngine.algorithmId) return@withContext Result.success(Unit)
         val result = runCatching {
             val engine: SemanticEmbeddingEngine
             if (modelId == EmbeddingModels.LEXICAL_ID) {
                 engine = UniversalSemanticEmbeddingEngine()
             } else {
                 val spec = requireNotNull(EmbeddingModels.find(modelId)) { "Unknown embedding model $modelId" }
-                if (!EmbeddingModels.isInstalled(ctx, spec)) {
-                    _embeddingStatus.value = EmbeddingModelStatus.Downloading(0L, spec.downloadBytes)
-                    EmbeddingModels.download(ctx, spec) { done, total ->
-                        _embeddingStatus.value = EmbeddingModelStatus.Downloading(done, total)
-                    }
+                _embeddingStatus.value = EmbeddingModelStatus.Downloading(0L, spec.downloadBytes)
+                EmbeddingModels.download(ctx, spec) { done, total ->
+                    _embeddingStatus.value = EmbeddingModelStatus.Downloading(done, total)
                 }
                 engine = EmbeddingModels.createEngine(ctx, spec)
             }
             _embeddingStatus.value = EmbeddingModelStatus.Reindexing(0, totalIndexedChunks)
-            switchEmbeddingEngine(engine, storeFor(ctx, engine)) { done, total ->
-                _embeddingStatus.value = EmbeddingModelStatus.Reindexing(done, total)
-            }.getOrThrow()
-            com.shounak.localmeshai.utils.AppSettings.getInstance(ctx).updateSettings { it.copy(ragEmbeddingModel = modelId) }
+            switchEmbeddingEngine(engine, storeFor(ctx, engine),
+                onProgress = { done, total -> _embeddingStatus.value = EmbeddingModelStatus.Reindexing(done, total) },
+                beforeActivation = { com.shounak.localmeshai.utils.AppSettings.getInstance(ctx).commitEmbeddingModel(modelId) }
+            ).getOrThrow()
             if (modelId == EmbeddingModels.LEXICAL_ID) EmbeddingModels.all.forEach { EmbeddingModels.delete(ctx, it) }
         }
         val error = result.exceptionOrNull()
@@ -648,7 +689,7 @@ class RagManager(
             else -> EmbeddingModelStatus.Failed(error.message ?: error.javaClass.simpleName)
         }
         if (error is kotlinx.coroutines.CancellationException) throw error
-        return result
+        result
     }
 
     private val modelSwitchScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
@@ -698,14 +739,20 @@ class RagManager(
      * Removes all chunks belonging to [documentId].
      */
     fun removeDocument(documentId: String): Boolean {
-        return vectorStore.removeDocument(documentId)
+        return synchronized(mutationLock) {
+            deletionVersion++
+            vectorStore.removeDocument(documentId)
+        }
     }
 
     /**
      * Wipes all indexed documents and vector embeddings.
      */
     fun clearKnowledgeBase() {
-        vectorStore.clearAll()
+        synchronized(mutationLock) {
+            deletionVersion++
+            vectorStore.clearAll()
+        }
     }
 
     companion object {
@@ -729,8 +776,6 @@ class RagManager(
             // The neural model was selected but its files are gone: keep the documents by
             // re-embedding them lexically on first load, and fall back in settings.
             val orphan = spec?.let {
-                com.shounak.localmeshai.utils.AppSettings.getInstance(context)
-                    .updateSettings { s -> s.copy(ragEmbeddingModel = EmbeddingModels.LEXICAL_ID) }
                 InMemoryRagVectorStore(
                     context,
                     storageFileName = storeFileName(it.id),

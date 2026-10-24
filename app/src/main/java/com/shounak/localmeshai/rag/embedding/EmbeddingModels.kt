@@ -9,6 +9,9 @@ import okhttp3.Request
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.nio.file.AtomicMoveNotSupportedException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 
@@ -54,8 +57,8 @@ object EmbeddingModels {
 
     /**
      * BAAI bge-small-en-v1.5, int8 ONNX export (Xenova). 33M parameters, 384 dimensions.
-     * Calibration measured on held-out pairs: unrelated passages score ~0.30-0.47 raw cosine,
-     * relevant ones ~0.51-0.78, so 0.35..0.80 maps onto the app's 0..1 relevance scale.
+     * Heuristic calibration maps 0.35..0.80 raw cosine onto the app's 0..1 relevance scale.
+     * Scores remain relevance estimates, not probabilities.
      */
     val BGE_SMALL_EN_V15 = Spec(
         id = "bge-small-en-v1.5-int8",
@@ -132,31 +135,54 @@ object EmbeddingModels {
         val total = spec.downloadBytes
         var done = 0L
         for (file in spec.files) {
+            coroutineContext.ensureActive()
             val target = File(dir, file.localName)
-            if (target.isFile && target.length() == file.sizeBytes) {
+            if (target.isFile && target.length() == file.sizeBytes && sha256(target) == file.sha256) {
                 done += file.sizeBytes
                 onProgress(done, total)
                 continue
             }
             val partial = File(dir, file.localName + ".part")
-            var lastError: IOException? = null
-            for (url in urlsFor(file)) {
-                try {
-                    fetchVerified(client, url, file, partial) { written -> onProgress(done + written, total) }
-                    lastError = null
-                    break
-                } catch (e: IOException) {
-                    partial.delete()
-                    lastError = e
+            try {
+                var lastError: IOException? = null
+                require(urlsFor(file).isNotEmpty()) { "No download sources" }
+                for (url in urlsFor(file)) {
+                    coroutineContext.ensureActive()
+                    try {
+                        fetchVerified(client, url, file, partial) { written -> onProgress(done + written, total) }
+                        lastError = null
+                        break
+                    } catch (e: IOException) {
+                        partial.delete()
+                        lastError = e
+                    }
                 }
-            }
-            lastError?.let { throw it }
-            if (!partial.renameTo(target)) {
+                lastError?.let { throw it }
+                try {
+                    Files.move(partial.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+                } catch (_: AtomicMoveNotSupportedException) {
+                    Files.move(partial.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                }
+                done += file.sizeBytes
+                onProgress(done, total)
+            } finally {
                 partial.delete()
-                throw IOException("Cannot finalise ${file.localName}")
             }
-            done += file.sizeBytes
         }
+    }
+
+    private suspend fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                coroutineContext.ensureActive()
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private suspend fun fetchVerified(
@@ -196,6 +222,7 @@ object EmbeddingModels {
         OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
+            .callTimeout(5, TimeUnit.MINUTES)
             .build()
     }
 }

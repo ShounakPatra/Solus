@@ -39,7 +39,7 @@ import com.shounak.localmeshai.utils.glassEffect
 import dev.chrisbanes.haze.HazeState
 
 /**
- * Model Manager card for the document-search embedder. It is listed as a required component
+ * Model Manager card for the optional document-search embedder. It is listed as a component
  * after install, but the user may choose "Later"; the card then shrinks to a one-line reminder
  * and the model can still be fetched here or from Settings > RAG.
  */
@@ -74,7 +74,7 @@ fun DocumentSearchModelCard(hazeState: HazeState, modifier: Modifier = Modifier)
                 Spacer(modifier = Modifier.width(14.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        if (installed || compact) "Document search model" else "Required: Document search model",
+                        "Document search model",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -118,7 +118,7 @@ fun DocumentSearchModelCard(hazeState: HazeState, modifier: Modifier = Modifier)
                     )
                 }
                 is EmbeddingModelStatus.Failed -> Text(
-                    "Download failed: ${s.message}",
+                    "Document search setup failed: ${s.message}",
                     style = MaterialTheme.typography.labelSmall,
                     color = colors.error
                 )

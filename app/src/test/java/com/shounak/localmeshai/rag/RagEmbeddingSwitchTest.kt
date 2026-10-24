@@ -95,4 +95,70 @@ class RagEmbeddingSwitchTest {
         val result = manager.switchEmbeddingEngine(FakeEngine(), InMemoryRagVectorStore(null, expectedDimension = 384, algorithmId = "fake-8"))
         assertTrue(result.isFailure)
     }
+
+    @Test
+    fun failedActivationKeepsSourceDocumentsAndEngine() = runBlocking {
+        val manager = lexicalManager()
+        manager.ingestText("cars.txt", "The battery powers the car.")
+        val source = manager.vectorStore
+        val result = manager.switchEmbeddingEngine(FakeEngine(),
+            InMemoryRagVectorStore(null, expectedDimension = 8, algorithmId = "fake-8"),
+            beforeActivation = { error("disk full") })
+        assertTrue(result.isFailure)
+        assertSame(source, manager.vectorStore)
+        assertEquals(1, source.getDocuments().size)
+    }
+
+    @Test
+    fun deletionDuringMigrationCannotResurrectDocuments() = runBlocking {
+        val manager = lexicalManager()
+        val doc = manager.ingestText("cars.txt", "The battery powers the car.")
+        val source = manager.vectorStore
+        val result = manager.switchEmbeddingEngine(FakeEngine(),
+            InMemoryRagVectorStore(null, expectedDimension = 8, algorithmId = "fake-8"),
+            onProgress = { done, _ -> if (done > 0) manager.removeDocument(doc.documentId) })
+        assertTrue(result.isFailure)
+        assertSame(source, manager.vectorStore)
+        assertEquals(0, manager.totalIndexedChunks)
+    }
+
+    @Test
+    fun cancelledMigrationKeepsSourceAndDoesNotActivate() = runBlocking {
+        val manager = lexicalManager()
+        manager.ingestText("cars.txt", "The battery powers the car.")
+        val source = manager.vectorStore
+        var activated = false
+        val result = manager.switchEmbeddingEngine(FakeEngine(),
+            InMemoryRagVectorStore(null, expectedDimension = 8, algorithmId = "fake-8"),
+            onProgress = { done, _ -> if (done > 0) throw kotlinx.coroutines.CancellationException("stop") },
+            beforeActivation = { activated = true })
+        assertTrue(result.exceptionOrNull() is kotlinx.coroutines.CancellationException)
+        assertTrue(!activated)
+        assertSame(source, manager.vectorStore)
+        assertEquals(1, source.getDocuments().size)
+    }
+
+    @Test
+    fun missingModelRecoveryKeepsDocumentsAcrossRepeatedLoads() = runBlocking {
+        val sourceEngine = FakeEngine()
+        val source = InMemoryRagVectorStore(null, expectedDimension = 8, algorithmId = "fake-8")
+        RagManager(null, sourceEngine, source).ingestText("cars.txt", "The battery powers the car.")
+        val fallback = lexicalManager()
+        fallback.ingestText("stale.txt", "A document removed from the authoritative index.")
+        val manager = RagManager(null, UniversalSemanticEmbeddingEngine(), fallback.vectorStore, orphanedStore = source)
+        manager.loadAsync()
+        manager.loadAsync()
+        assertEquals(listOf("cars.txt"), manager.indexedDocuments.map { it.documentName })
+        assertEquals(0, source.getTotalChunkCount())
+    }
+
+    @Test
+    fun emptyOrphanIndexDoesNotResurrectDeletedDocuments() = runBlocking {
+        val fallback = lexicalManager()
+        fallback.ingestText("stale.txt", "A document removed from the authoritative index.")
+        val source = InMemoryRagVectorStore(null, expectedDimension = 8, algorithmId = "fake-8")
+        val manager = RagManager(null, UniversalSemanticEmbeddingEngine(), fallback.vectorStore, orphanedStore = source)
+        manager.loadAsync()
+        assertEquals(0, manager.totalIndexedChunks)
+    }
 }

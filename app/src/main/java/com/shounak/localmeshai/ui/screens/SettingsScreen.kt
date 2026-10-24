@@ -725,7 +725,7 @@ fun SettingsDialog(
                                 else -> if (neuralOn) {
                                     "On: ${neuralSpec.displayName}, fully offline. Finds passages by meaning, not just matching words"
                                 } else {
-                                    "Downloads a ${neuralSpec.downloadBytes / 1_000_000} MB on-device model (about 90 MB RAM only while searching). Finds passages by meaning, not just matching words"
+                                    "Downloads a ${neuralSpec.downloadBytes / 1_000_000} MB English search model. Uses extra RAM while indexing and searching; unloads after a minute idle."
                                 }
                             }
                             SettingsSwitchRow(
