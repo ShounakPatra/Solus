@@ -25,7 +25,12 @@ internal object OnnxExportInspector {
         }
     }
 
-    fun inspect(length: Long, read: (Long, Int) -> ByteArray): Export {
+    fun inspect(length: Long, read: (Long, Int) -> ByteArray): Export = inspect(length, read, true)
+
+    /** Read signatures without opening initializer messages; full external-data validation follows download. */
+    fun inspectSignatures(length: Long, read: (Long, Int) -> ByteArray): Export = inspect(length, read, false)
+
+    private fun inspect(length: Long, read: (Long, Int) -> ByteArray, includeExternal: Boolean): Export {
         val reader = Reader(length, read)
         val inputs = mutableListOf<Tensor>(); val outputs = mutableListOf<Tensor>(); val external = linkedSetOf<String>()
         var graphFound = false; var version = 0L
@@ -63,7 +68,7 @@ internal object OnnxExportInspector {
                         val value = tensor(reader.end(length))
                         (if (graph == 11) inputs else outputs).add(value); true
                     }
-                    graph == 5 && graphWire == 2 -> {
+                    graph == 5 && graphWire == 2 && includeExternal -> {
                         reader.fields(reader.end(length)) { weight, weightWire ->
                             if (weight == 13 && weightWire == 2) {
                                 var key = ""; var value = ""

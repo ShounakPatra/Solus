@@ -24,7 +24,7 @@ internal object ModelImportPreflight {
             .callTimeout(20, TimeUnit.SECONDS)) { token }.build()
         val format = spec.effectiveFormat
         val primary = spec.artifacts.firstOrNull() ?: error("No model artifact selected")
-        val remote = RemoteModelMetadata(client, primary.downloadUrl)
+        val remote = RemoteModelMetadata(client, primary.downloadUrl, if (format == ModelFormat.Onnx) 4096L else 65536L)
         if (!format.isPortable) {
             val header = remote.read(0, 8)
             val valid = when (format) {
@@ -44,8 +44,7 @@ internal object ModelImportPreflight {
         val onnx = if (format == ModelFormat.Onnx) {
             remote.read(0, 8)
             require(remote.length > 8) { "The source must report an ONNX graph size for metadata inspection" }
-            try { OnnxExportInspector.inspect(remote.length, remote::read) }
-            catch (_: MetadataProbeLimitException) { null }
+            OnnxExportInspector.inspectSignatures(remote.length, remote::read)
         } else null
         if (format == ModelFormat.Safetensors) {
             val header = java.nio.ByteBuffer.wrap(remote.read(0, 8)).order(java.nio.ByteOrder.LITTLE_ENDIAN).long

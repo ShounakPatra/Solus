@@ -24,8 +24,11 @@ class ModelImportPreflightTest {
                 val path = request.requestUrl!!.encodedPath.removePrefix("/")
                 if (path == "model.${when(format) { ModelFormat.Safetensors -> "safetensors"; ModelFormat.TensorFlowLite -> "tflite"; ModelFormat.Onnx -> "onnx"; ModelFormat.GGUF -> "gguf"; ModelFormat.LiteRtLm -> "litertlm"; else -> "task" }}") {
                     assertNotNull("Weights must only be probed using Range", request.getHeader("Range"))
-                    return MockResponse().setResponseCode(206).setHeader("Content-Range", "bytes 0-${model.size-1}/${model.size}")
-                        .setBody(Buffer().write(model))
+                    val bounds = request.getHeader("Range")!!.removePrefix("bytes=").split("-")
+                    val start = bounds[0].toInt()
+                    val end = minOf(bounds[1].toInt(), model.lastIndex)
+                    return MockResponse().setResponseCode(206).setHeader("Content-Range", "bytes $start-$end/${model.size}")
+                        .setBody(Buffer().write(model.copyOfRange(start, end + 1)))
                 }
                 if (denyHead && request.method == "HEAD") return MockResponse().setResponseCode(405)
                 return files[path]?.let { MockResponse().setBody(if (request.method == "HEAD") "" else it) }
@@ -50,6 +53,11 @@ class ModelImportPreflightTest {
         } finally { server.shutdown() }
     }
 
+    @Test fun embeddedOnnxWeightsCannotHideFixedSequence() = check(ModelFormat.Onnx,
+        OnnxAdmissionFixture.model(128), mapOf("config.json" to """{"model_type":"gpt2","eos_token_id":2}""", "tokenizer.json" to "{}"),
+        expectedError = "padding/cache")
+    @Test fun dynamicEmbeddedOnnxCanBeAdmittedUsingBoundedRanges() = check(ModelFormat.Onnx,
+        OnnxAdmissionFixture.model(-1), mapOf("config.json" to """{"model_type":"gpt2","eos_token_id":2}""", "tokenizer.json" to "{}"))
     @Test fun embeddedClassifierNeedsNoConfigOrTokenizer() = check(ModelFormat.TensorFlowLite, TfliteFixture.classifier())
     @Test fun tfliteCustomKernelReportsItsRealRequirement() = check(ModelFormat.TensorFlowLite,
         TfliteFixture.text(custom = true), expectedError = "custom operators")

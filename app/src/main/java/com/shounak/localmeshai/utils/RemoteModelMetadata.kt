@@ -5,7 +5,10 @@ import okhttp3.Request
 import java.io.IOException
 
 /** At most 2 MiB of metadata, even if the server ignores Range. No weight download. */
-internal class RemoteModelMetadata(private val client: OkHttpClient, private val url: String) {
+internal class RemoteModelMetadata(private val client: OkHttpClient, private val url: String, private val pageSize: Long = 65536L,
+    timeoutMillis: Long = 20_000L) {
+    init { require(pageSize in 256..65536 && timeoutMillis > 0) }
+    private val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
     private val pages = mutableMapOf<Long, ByteArray>()
     var length: Long = -1
         private set
@@ -16,7 +19,7 @@ internal class RemoteModelMetadata(private val client: OkHttpClient, private val
         var copied = 0
         while (copied < count) {
             val position = offset + copied
-            val start = position / PAGE * PAGE
+            val start = position / pageSize * pageSize
             val page = pages.getOrPut(start) { fetch(start) }
             val from = (position - start).toInt()
             val size = minOf(count - copied, page.size - from)
@@ -28,11 +31,14 @@ internal class RemoteModelMetadata(private val client: OkHttpClient, private val
     }
 
     private fun fetch(start: Long): ByteArray {
-        if (pages.size >= 32) throw MetadataProbeLimitException()
-        val stop = if (length >= 0) minOf(length - 1, start + PAGE - 1) else start + PAGE - 1
+        if (pages.size >= 2_097_152L / pageSize) throw MetadataProbeLimitException()
+        val remaining = deadline - System.nanoTime()
+        if (remaining <= 0) throw IOException("Model metadata inspection timed out; compatibility has not been checked")
+        val stop = if (length >= 0) minOf(length - 1, start + pageSize - 1) else start + pageSize - 1
         require(stop >= start) { "Truncated model metadata" }
         val call = client.newCall(Request.Builder().url(url).header("Range", "bytes=$start-$stop")
             .header("Accept-Encoding", "identity").build())
+        call.timeout().timeout(remaining, java.util.concurrent.TimeUnit.NANOSECONDS)
         call.execute().use { response ->
             if (!response.isSuccessful) throw IOException("Cannot inspect model source (HTTP ${response.code})")
             if (response.code == 206) {
@@ -52,10 +58,9 @@ internal class RemoteModelMetadata(private val client: OkHttpClient, private val
         }
     }
 
-    companion object { private const val PAGE = 65536L }
 }
 
-internal class MetadataProbeLimitException : IllegalArgumentException("Export metadata exceeds the bounded preflight limit; remaining graph checks require the downloaded model")
+internal class MetadataProbeLimitException : IllegalArgumentException("Export metadata exceeds the bounded preflight limit. Compatibility could not be checked; import a complete local bundle instead")
 
 internal fun java.io.InputStream.readMetadataBytes(limit: Int): ByteArray {
     val result = java.io.ByteArrayOutputStream()
