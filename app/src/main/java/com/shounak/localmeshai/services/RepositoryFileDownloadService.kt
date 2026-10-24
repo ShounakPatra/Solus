@@ -23,6 +23,14 @@ import okhttp3.OkHttpClient
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
+internal class RepositoryDownloadNotificationLifecycle {
+    private var preserveCompletion = false
+
+    fun foregroundStarted() { preserveCompletion = false }
+    fun completionPosted() { preserveCompletion = true }
+    fun shouldRemoveOnDestroy(): Boolean = !preserveCompletion
+}
+
 /** Durable files-only queue; it never registers these downloads as runnable models. */
 class RepositoryFileDownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -33,6 +41,7 @@ class RepositoryFileDownloadService : Service() {
     @Volatile private var notificationAllowed = false
     @Volatile private var activeCall: Call? = null
     private lateinit var notifications: NotificationManager
+    private val notificationLifecycle = RepositoryDownloadNotificationLifecycle()
     private var failures = 0
     private var completed = 0
     private var lastNotificationAt = 0L
@@ -60,6 +69,7 @@ class RepositoryFileDownloadService : Service() {
             synchronized(notificationLock) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
                 else startForeground(NOTIFICATION_ID, notification)
+                notificationLifecycle.foregroundStarted()
                 notificationAllowed = true
             }
         } catch (failure: Exception) {
@@ -152,7 +162,10 @@ class RepositoryFileDownloadService : Service() {
                     else {
                         synchronized(notificationLock) {
                             stopForeground(STOP_FOREGROUND_REMOVE)
-                            if (scope.isActive && notificationAllowed) notifications.notify(NOTIFICATION_ID, notification("$completed files downloaded; $failures failed", null, finished = true))
+                            if (scope.isActive && notificationAllowed) {
+                                notifications.notify(NOTIFICATION_ID, notification("$completed files downloaded; $failures failed", null, finished = true))
+                                notificationLifecycle.completionPosted()
+                            }
                             notificationAllowed = false
                         }
                         stopSelfResult(latestStartId)
@@ -174,7 +187,13 @@ class RepositoryFileDownloadService : Service() {
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) { activeCall?.cancel(); scope.cancel(); RepositoryFileDownloads.interruptPending(); removeNotification(); stopSelfResult(latestStartId) }
-    override fun onDestroy() { activeCall?.cancel(); scope.cancel(); RepositoryFileDownloads.interruptPending(); removeNotification(); super.onDestroy() }
+    override fun onDestroy() {
+        activeCall?.cancel()
+        scope.cancel()
+        RepositoryFileDownloads.interruptPending()
+        if (notificationLifecycle.shouldRemoveOnDestroy()) removeNotification()
+        super.onDestroy()
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
