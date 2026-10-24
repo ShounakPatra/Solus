@@ -9,7 +9,10 @@ internal class BoundedSkillTool(private val delegate: ChatTool, private val canc
     override fun getToolDescriptionJsonString() = delegate.getToolDescriptionJsonString()
     override fun execute(paramsJsonString: String): String {
         if (cancelled()) return "Error: cancelled"
-        val task = FutureTask { if (cancelled()) "Error: cancelled" else delegate.execute(paramsJsonString) }
+        // A checked durable commit cannot be rolled back by interrupting its thread.
+        if (name == "mood_tracker") return delegate.execute(paramsJsonString)
+        val cancellation = SkillCancellation()
+        val task = FutureTask { cancellation.run { if (cancelled()) "Error: cancelled" else delegate.execute(paramsJsonString) } }
         return try {
             executor.execute(task)
             val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
@@ -25,7 +28,7 @@ internal class BoundedSkillTool(private val delegate: ChatTool, private val canc
         catch (_: CancellationException) { "Error: cancelled" }
         catch (_: RejectedExecutionException) { "Error: Skills are busy; try again" }
         catch (_: Exception) { "Error: Skill unavailable" }
-        finally { task.cancel(true); executor.remove(task) }
+        finally { cancellation.cancel(); task.cancel(true); executor.remove(task) }
     }
     companion object {
         private val executor = ThreadPoolExecutor(2, 2, 30, TimeUnit.SECONDS, ArrayBlockingQueue<Runnable>(2),

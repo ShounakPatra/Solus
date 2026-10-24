@@ -53,4 +53,42 @@ class SkillNetworkAndCancellationTest {
             assertEquals("Error: cancelled", BoundedSkillTool(delegate, { true }).execute("{}"))
         } finally { worker.shutdownNow() }
     }
+    @Test fun decodedExcerptNeverEndsWithHalfAnEmoji() {
+        val text = "x".repeat(1199) + "🌍"
+        assertEquals("x".repeat(1199), WikipediaLookup.boundedText(text, 1200))
+        assertEquals(text, WikipediaLookup.boundedText(text, 1201))
+    }
+    @Test fun stoppingNetworkToolCancelsItsActualCallAndReleasesWorker() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE))
+            val client = OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS).build()
+            val stop = AtomicBoolean(false)
+            val finished = CountDownLatch(1)
+            val delegate = object : ChatTool {
+                override val name = "query_wikipedia"
+                override fun getToolDescriptionJsonString() = "{}"
+                override fun execute(paramsJsonString: String): String = try {
+                    WikipediaLookup.lookup("Earth", client, server.url("/search").toString())
+                } finally { finished.countDown() }
+            }
+            val worker = Executors.newSingleThreadExecutor()
+            try {
+                val result = worker.submit<String> { BoundedSkillTool(delegate, stop::get).execute("{}") }
+                assertNotNull(server.takeRequest(3, TimeUnit.SECONDS))
+                stop.set(true)
+                assertEquals("Error: cancelled", result.get(3, TimeUnit.SECONDS))
+                assertTrue("Network worker should not wait for its 20 second call timeout", finished.await(3, TimeUnit.SECONDS))
+            } finally { worker.shutdownNow() }
+        }
+    }
+    @Test fun durableMoodWriteReturnsItsCommittedResultEvenWhenStopArrivesDuringCommit() {
+        val stop = AtomicBoolean(false)
+        val delegate = object : ChatTool {
+            override val name = "mood_tracker"
+            override fun getToolDescriptionJsonString() = "{}"
+            override fun execute(paramsJsonString: String): String { stop.set(true); return "saved" }
+        }
+        assertEquals("saved", BoundedSkillTool(delegate, stop::get).execute("{}"))
+    }
+
 }
