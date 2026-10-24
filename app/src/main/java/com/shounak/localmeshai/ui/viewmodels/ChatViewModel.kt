@@ -1218,7 +1218,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         query = userText,
                         topK = ragSettings.ragTopK,
                         minScore = ragSettings.ragMinSimilarity,
-                        preferredDocumentId = targetDocId
+                        preferredDocumentId = targetDocId,
+                        allowGlobalSearch = ragSettings.enableRag
                     ) } ?: throw IllegalStateException("Document search timed out. Retry or turn off Document search for this chat.")
                     if (retrieval.hasContext) {
                         effectivePromptText = ragManager.buildAugmentedPrompt(userText, retrieval)
@@ -1352,6 +1353,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     documentForIndex?.let { document ->
                         viewModelScope.launch(Dispatchers.Default) {
                             val indexed = ragManager.ingestText(document.name, document.extractedText.orEmpty())
+                            if (indexed.success) document.durableFile?.let { original ->
+                                try { ragManager.retainOriginalDocument(indexed.documentId, document.name, original) }
+                                catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                                catch (failure: Exception) { android.util.Log.w("RagPreview", "Could not retain original upload", failure) }
+                            }
                             if (indexed.success && activeRequestId == requestId && _currentSessionId.value == targetSessionId) {
                                 currentSessionDocumentId = indexed.documentId
                                 refreshRagDocuments()

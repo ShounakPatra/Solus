@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import com.shounak.localmeshai.rag.RagManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 @Composable
 fun TemporaryChatToggle(temporary: Boolean, busy: Boolean, hazeState: HazeState, onTemporaryChange: (Boolean) -> Unit) {
@@ -190,7 +191,11 @@ fun SourcePassagesButton(passages: List<RagPassage>, hazeState: HazeState) {
     var show by remember { mutableStateOf(false) }
     var selectedDocument by remember { mutableStateOf<String?>(null) }
     var fullText by remember { mutableStateOf<String?>(null) }
-    val manager = RagManager.getInstance(LocalContext.current)
+    val context = LocalContext.current
+    val manager = RagManager.getInstance(context)
+    val scope = rememberCoroutineScope()
+    var openingDocument by remember { mutableStateOf(false) }
+    var previewError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(selectedDocument) {
         fullText = null
         selectedDocument?.let { id ->
@@ -203,7 +208,7 @@ fun SourcePassagesButton(passages: List<RagPassage>, hazeState: HazeState) {
             catch (error: Exception) { "Could not open the indexed document: ${error.message}" }
         }
     }
-    GlassActionButton(hazeState = hazeState, onClick = { selectedDocument = null; show = true }) { Text("Sources (${passages.map { it.documentId }.distinct().size})") }
+    GlassActionButton(hazeState = hazeState, onClick = { selectedDocument = null; previewError = null; show = true }) { Text("Sources (${passages.map { it.documentId }.distinct().size})") }
     if (show) GlassContentDialog(hazeState = hazeState, onDismissRequest = { show = false },
         title = { Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(if (selectedDocument == null) "Answer sources" else "Indexed document")
@@ -212,6 +217,7 @@ fun SourcePassagesButton(passages: List<RagPassage>, hazeState: HazeState) {
         } },
         text = { key(selectedDocument) { Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Retrieved passages provide context; they do not verify every claim in the answer.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            previewError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             if (selectedDocument != null) {
                 fullText?.let { SelectionContainer { Text(it) } } ?: CircularProgressIndicator()
             } else passages.forEach { passage ->
@@ -221,7 +227,31 @@ fun SourcePassagesButton(passages: List<RagPassage>, hazeState: HazeState) {
                 Text(passage.documentName, style = MaterialTheme.typography.titleSmall)
                 Text("Passage ${passage.chunkIndex + 1}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                 SelectionContainer { Text(passage.text, style = MaterialTheme.typography.bodyMedium) }
-                GlassActionButton(hazeState = hazeState, onClick = { selectedDocument = passage.documentId }) { Text("Preview document") }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    GlassActionButton(hazeState = hazeState, enabled = !openingDocument, onClick = {
+                        openingDocument = true
+                        previewError = null
+                        scope.launch {
+                            try {
+                                val original = withContext(Dispatchers.IO) {
+                                    manager.originalDocumentFile(passage.documentId) ?: run {
+                                        val repository = com.shounak.localmeshai.data.ChatSessionRepository.getInstance(context)
+                                        val text = repository.loadChatSessions().filter { it.documentId == passage.documentId }
+                                            .flatMap { it.messages }.firstOrNull { it.isUser && it.documentName == passage.documentName && it.documentPath?.let { path -> java.io.File(path).isFile } == true }?.documentPath
+                                        val vision = if (text == null) repository.loadVisionSessions().filter { it.documentId == passage.documentId }
+                                            .flatMap { it.messages }.firstOrNull { it.isUser && it.documentName == passage.documentName && it.documentPath?.let { path -> java.io.File(path).isFile } == true }?.documentPath else null
+                                        (text ?: vision)?.let { java.io.File(it) }
+                                    }
+                                }
+                                if (original != null) com.shounak.localmeshai.utils.AttachmentViewerUtils.openFileInExternalViewer(context, original)
+                                else previewError = "The original upload was not retained for this older index. Upload it again to open the file, or read its indexed text below."
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                            catch (_: Exception) { previewError = "Could not open the original file. You can still read its indexed text." }
+                            finally { openingDocument = false }
+                        }
+                    }) { Text(if (openingDocument) "Opening…" else "Preview document") }
+                    GlassActionButton(hazeState = hazeState, onClick = { selectedDocument = passage.documentId }) { Text("Read indexed text") }
+                }
                 }
             }
         } } }, confirmButton = { GlassActionButton(hazeState = hazeState, onClick = { show = false }) { Text("Close") } },

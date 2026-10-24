@@ -1576,6 +1576,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         documentForIndex?.let { document ->
                             viewModelScope.launch(Dispatchers.Default) {
                                 val indexed = ragManager.ingestText(document.name, document.extractedText.orEmpty())
+                                if (indexed.success) document.durableFile?.let { original ->
+                                    try { ragManager.retainOriginalDocument(indexed.documentId, document.name, original) }
+                                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                                    catch (failure: Exception) { android.util.Log.w("RagPreview", "Could not retain original upload", failure) }
+                                }
                                 if (indexed.success && activeRequestId == requestId && _currentSessionId.value == activeSessionId) {
                                     currentSessionDocumentId = indexed.documentId
                                 }

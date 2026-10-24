@@ -9,6 +9,26 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RagManagerTest {
+    @Test fun greetingsAndAssistantIdentityNeverAttachSourcesEvenWithAPreferredDocument() = runBlocking {
+        val manager = RagManager(null, UniversalSemanticEmbeddingEngine(), InMemoryRagVectorStore(null))
+        val document = manager.ingestText("cover_page.docx", "Name: Class: XII Stream: Subject: Session 2026-2027")
+        for (query in listOf("hi", "Hello!", "who are you", "What is your name?", "Thanks!")) {
+            assertFalse("New chat must not retrieve for $query", manager.retrieve(query, minScore = 0f).hasContext)
+            assertFalse("An associated document must not force sources for $query",
+                manager.retrieve(query, preferredDocumentId = document.documentId, minScore = 0f).hasContext)
+        }
+        assertTrue(manager.retrieve("Summarize this document", preferredDocumentId = document.documentId).hasContext)
+    }
+
+    @Test fun hashSimilarityAloneDoesNotGroundAnUnrelatedQuestion() = runBlocking {
+        val manager = RagManager(null, UniversalSemanticEmbeddingEngine(), InMemoryRagVectorStore(null))
+        val document = manager.ingestText("cover_page.docx", "Name: Class: XII Stream: Subject: Session 2026-2027")
+        assertFalse(manager.retrieve("How do volcanoes erupt?", preferredDocumentId = document.documentId, minScore = -1f).hasContext)
+        assertFalse(manager.retrieve("How do volcanoes erupt?", minScore = -1f).hasContext)
+        assertFalse(manager.retrieve("Summarize the French revolution", minScore = 0f).hasContext)
+        assertFalse(manager.retrieve("Summarize the French revolution", preferredDocumentId = document.documentId, minScore = 0f).hasContext)
+    }
+
     @Test
     fun deletionWhileReindexingCannotRecreateTheDocument() = runBlocking {
         lateinit var manager: RagManager

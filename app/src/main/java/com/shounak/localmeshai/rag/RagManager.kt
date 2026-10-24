@@ -102,6 +102,20 @@ class RagManager(
     }
 
     private val ingestionMutex = Mutex()
+    private val originals = context?.let { RagOriginalStore(java.io.File(it.filesDir, "rag_originals")) }
+
+    fun originalDocumentFile(documentId: String): java.io.File? = originals?.find(documentId)
+
+    private fun saveOriginal(documentId: String, name: String, input: java.io.InputStream, checkActive: () -> Unit): java.io.File? =
+        synchronized(mutationLock) {
+            if (vectorStore.getDocuments().none { it.documentId == documentId }) null
+            else originals?.save(documentId, name, input, checkActive)
+        }
+
+    suspend fun retainOriginalDocument(documentId: String, name: String, file: java.io.File) = withContext(Dispatchers.IO) {
+        val job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+        file.inputStream().use { input -> saveOriginal(documentId, name, input) { job?.ensureActive() } }
+    }
     private val mutationLock = Any()
     private var deletionVersion = 0L
 
@@ -168,11 +182,23 @@ class RagManager(
                 )
             }
 
-            ingestTextInternal(
+            val indexed = ingestTextInternal(
                 documentName = fileName,
                 content = extractedText,
                 targetDocumentId = targetDocumentId
             )
+            if (indexed.success) {
+                try {
+                    val job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+                    ctx.contentResolver.openInputStream(uri)?.use { input ->
+                        saveOriginal(indexed.documentId, fileName, input) { job?.ensureActive() }
+                    } ?: error("Could not retain the original upload")
+                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (failure: Exception) {
+                    return@withContext indexed.copy(message = indexed.message + "; original-file preview unavailable: ${failure.message}")
+                }
+            }
+            indexed
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (e: Exception) {
@@ -351,7 +377,11 @@ class RagManager(
             "tell me about this", "tell me about the document",
             "key points", "main points", "key takeaways", "brief me", "describe this document", "analyze this document"
         )
-        return summaryPatterns.any { lower.contains(it) }
+        val overviewIntent = summaryPatterns.any { lower.contains(it) }
+        val unqualifiedReference = lower in setOf("what is this", "what is it about", "what does it say",
+            "explain everything", "explain all", "explain this", "tell me about this", "brief me") ||
+            RetrievalRelevance.isUnqualifiedOverview(lower)
+        return overviewIntent && (isExplicitDocumentQuery(lower) || unqualifiedReference || findMatchingDocumentForQuery(lower) != null)
     }
 
     /**
@@ -362,7 +392,7 @@ class RagManager(
         val explicitPatterns = listOf(
             "this document", "the document", "this file", "the file", "attached document",
             "attached file", "this pdf", "the pdf", "what does this say", "what does the doc say",
-            "what did i upload", "uploaded file", "uploaded doc", "uploaded document", "the uploaded file",
+            "what did i upload", "what i uploaded", "uploaded file", "uploaded doc", "uploaded document", "the uploaded file",
             "the uploaded document", "in the file", "in the doc", "in the pdf", "from the file",
             "from the doc", "from the pdf", "from the document", "according to the doc",
             "according to the file", "according to the pdf"
@@ -413,7 +443,7 @@ class RagManager(
         }
 
         // 3. Fallback: If only 1 document is indexed and query is explicit or summary
-        if (docs.size == 1 && (isExplicitDocumentQuery(lower) || isOverviewOrSummaryQuery(lower))) {
+        if (docs.size == 1 && (isExplicitDocumentQuery(lower) || RetrievalRelevance.isUnqualifiedOverview(lower))) {
             return docs.first()
         }
 
@@ -450,6 +480,9 @@ class RagManager(
         preferredDocumentId: String? = null,
         allowGlobalSearch: Boolean = true
     ): RagRetrievalResult = withContext(Dispatchers.Default) {
+        if (RetrievalRelevance.isConversationOnly(query) || query.isBlank()) {
+            return@withContext RagRetrievalResult(query.trim(), emptyList(), false)
+        }
         // Indexing can take minutes. Never queue an interactive answer behind it.
         check(ingestionMutex.tryLock()) {
             "Document search is busy indexing. Wait for indexing to finish and retry, or turn off Document search for this chat."
@@ -486,7 +519,7 @@ class RagManager(
                     hasContext = true
                 )
             }
-        } else if (effectiveDocId == null && (isExplicitDocumentQuery(trimmedQuery) || isOverviewOrSummaryQuery(trimmedQuery))) {
+        } else if (effectiveDocId == null && (isExplicitDocumentQuery(trimmedQuery) || RetrievalRelevance.isUnqualifiedOverview(trimmedQuery))) {
             val overviewChunks = vectorStore.getRecentChunks(topK)
             if (overviewChunks.isNotEmpty()) {
                 val matches = overviewChunks.mapIndexed { i, chunk ->
@@ -529,7 +562,7 @@ class RagManager(
 
         // If a specific document is attached or resolved from query, prioritize with adaptive tolerance
         val filteredMatches = if (effectiveDocId != null) {
-            val directDocThreshold = maxOf(0.20f, minScore * 0.60f)
+            val directDocThreshold = minScore
             val directDocMatches = store.getChunksForDocument(effectiveDocId, Int.MAX_VALUE)
                 .map { chunk ->
                     val sim1 = VectorEmbedding.cosineSimilarity(queryEmb, chunk.embedding)
@@ -553,10 +586,14 @@ class RagManager(
             calibratedSearch(engine, store, queryEmb, topK, minScore)
         }
 
+        val relevantMatches = if (engine is UniversalSemanticEmbeddingEngine &&
+            !isExplicitDocumentQuery(trimmedQuery) && !isOverviewOrSummaryQuery(trimmedQuery)) {
+            filteredMatches.filter { RetrievalRelevance.hasLexicalEvidence(trimmedQuery, it.chunk.text) }
+        } else filteredMatches
         RagRetrievalResult(
             query = trimmedQuery,
-            matches = filteredMatches,
-            hasContext = filteredMatches.isNotEmpty()
+            matches = relevantMatches,
+            hasContext = relevantMatches.isNotEmpty()
         )
         } finally {
             ingestionMutex.unlock()
@@ -761,7 +798,7 @@ class RagManager(
     fun removeDocument(documentId: String): Boolean {
         return synchronized(mutationLock) {
             deletionVersion++
-            vectorStore.removeDocument(documentId)
+            vectorStore.removeDocument(documentId).also { if (it) originals?.remove(documentId) }
         }
     }
 
@@ -771,7 +808,9 @@ class RagManager(
     fun clearKnowledgeBase() {
         synchronized(mutationLock) {
             deletionVersion++
+            val ids = vectorStore.getDocuments().map { it.documentId }
             vectorStore.clearAll()
+            ids.forEach { originals?.remove(it) }
         }
     }
 
