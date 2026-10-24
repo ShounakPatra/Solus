@@ -8,6 +8,19 @@ import java.io.File
 import java.nio.file.Files
 
 class AppUpdateManagerTest {
+    @Test fun updateAssetSelectionPrefersSignedReleaseRegardlessOfAssetOrder() {
+        val assets = org.json.JSONArray()
+        for (name in listOf("Solus-v6-debug-123.apk", "app-release-unsigned.apk", "Solus.apk", "Solus-v6-signed-release-123.apk")) {
+            assets.put(org.json.JSONObject().put("name", name).put("browser_download_url", "https://example.com/$name"))
+        }
+        assertEquals("https://example.com/Solus-v6-signed-release-123.apk", AppUpdateManager.selectUpdateApk(assets))
+        val bad = org.json.JSONArray()
+            .put(org.json.JSONObject().put("name", "app-debug.apk").put("browser_download_url", "https://example.com/debug.apk"))
+            .put(org.json.JSONObject().put("name", "app-release-unsigned.apk").put("browser_download_url", "https://example.com/unsigned.apk"))
+        org.junit.Assert.assertNull(AppUpdateManager.selectUpdateApk(bad))
+        assertEquals("https://example.com/Solus.apk", AppUpdateManager.selectUpdateApk(org.json.JSONArray()
+            .put(org.json.JSONObject().put("name", "Solus.apk").put("browser_download_url", "https://example.com/Solus.apk"))))
+    }
 
     @Test
     fun versionComparisonRecognizesNewerReleases() {

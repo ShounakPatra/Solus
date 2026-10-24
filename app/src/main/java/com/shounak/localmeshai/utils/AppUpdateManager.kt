@@ -53,6 +53,19 @@ object AppUpdateManager {
         data class Error(val message: String) : UpdateCheckResult()
     }
 
+    /** Release asset order is unspecified; do not offer a debug/unsigned APK as an app update. */
+    internal fun selectUpdateApk(assets: org.json.JSONArray?): String? {
+        val excluded = Regex("(^|[-_.])(debug|unsigned)([-_.]|$)", RegexOption.IGNORE_CASE)
+        return (0 until (assets?.length() ?: 0)).mapNotNull { index -> assets?.optJSONObject(index) }
+            .filter { it.optString("name").endsWith(".apk", ignoreCase = true) && !excluded.containsMatchIn(it.optString("name")) }
+            .filter { it.optString("browser_download_url").startsWith("https://") }
+            .sortedWith(compareBy<JSONObject> {
+                val name = it.optString("name").lowercase(java.util.Locale.ROOT)
+                when { "signed-release" in name -> 0; "release" in name -> 1; else -> 2 }
+            }.thenBy { it.optString("name") })
+            .firstOrNull()?.getString("browser_download_url")
+    }
+
     suspend fun checkForUpdates(currentVersionName: String, context: Context? = null): UpdateCheckResult = withContext(Dispatchers.IO) {
         if (context != null && !NetworkUtils.isConnected(context)) {
             return@withContext UpdateCheckResult.Error("No internet connection. Please connect to Wi-Fi or mobile data to check for updates.")
@@ -84,18 +97,7 @@ object AppUpdateManager {
                 val releaseNotes = json.optString("body", "No release notes provided.")
                 val htmlUrl = json.optString("html_url", GITHUB_REPO_URL)
 
-                var apkDownloadUrl: String? = null
-                val assets = json.optJSONArray("assets")
-                if (assets != null) {
-                    for (i in 0 until assets.length()) {
-                        val asset = assets.getJSONObject(i)
-                        val name = asset.optString("name", "")
-                        if (name.endsWith(".apk", ignoreCase = true)) {
-                            apkDownloadUrl = asset.optString("browser_download_url").ifBlank { null }
-                            break
-                        }
-                    }
-                }
+                val apkDownloadUrl = selectUpdateApk(json.optJSONArray("assets"))
 
                 if (isVersionNewer(latestVersion, currentVersionName)) {
                     UpdateCheckResult.UpdateAvailable(
@@ -110,6 +112,8 @@ object AppUpdateManager {
                     UpdateCheckResult.UpToDate(currentVersionName)
                 }
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             val message = if (NetworkUtils.isOfflineException(e) || (context != null && !NetworkUtils.isConnected(context))) {
                 "No internet connection. Please connect to Wi-Fi or mobile data to check for updates."
