@@ -1178,7 +1178,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 timing.startPreparation()
                 imageInput?.let { pending ->
-                    persistentImageFile = pending.await().persistInto(
+                    persistentImageFile = (withTimeoutOrNull(60_000L) { pending.await() }
+                        ?: throw IllegalStateException("Reading the image timed out. Retry with a smaller image.")).persistInto(
                         attachmentStore = attachmentStoreForChat,
                         chatKind = com.shounak.localmeshai.data.ChatKind.Vision,
                         sessionId = activeSessionId
@@ -1221,7 +1222,10 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 }
 
                 // The same extraction supplies inference and optional later indexing.
-                val prepared = preparedAttachment ?: preparation?.await()
+                val prepared = preparedAttachment ?: preparation?.let {
+                    withTimeoutOrNull(60_000L) { it.await() }
+                        ?: throw IllegalStateException("Reading the attached input timed out. Retry with a smaller attachment.")
+                }
                 preparedInput = prepared
                 if (prepared != null) {
                     val durable = prepared.persistInto(
@@ -1358,13 +1362,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 )
                 if (shouldQueryRag) {
                     val ragSettings = appSettings.settings.value
-                    val retrieval = ragManager.retrieve(
+                    val retrieval = withTimeoutOrNull(10_000L) { ragManager.retrieve(
                         query = basePrompt,
                         topK = ragSettings.ragTopK,
                         minScore = ragSettings.ragMinSimilarity,
                         preferredDocumentId = effectiveDocId,
                         allowGlobalSearch = appSettings.settings.value.enableRag
-                    )
+                    ) } ?: throw IllegalStateException("Document search timed out. Retry or turn off Document search for this chat.")
                     if (retrieval.hasContext) {
                         currentRagPassages = retrieval.matches.map { com.shounak.localmeshai.features.RagPassage(it.chunk.documentId, it.chunk.documentName, it.chunk.chunkIndex, it.chunk.text) }
                         currentRagSources = retrieval.sourceNames
@@ -1561,6 +1565,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                     val finalReasoningText = execResult.reasoningText
                         ?: snap?.reasoningText?.trim()?.takeIf { it.isNotBlank() }
+                    if (execResult.status != RequestTerminalStatus.Completed) resetRuntimeConversationBeforeNextAsk = true
                     val isError = execResult.status == RequestTerminalStatus.Failed || !execResult.error.isNullOrBlank()
                     val textToDisplay = partialOrFinalText
                     val errorMessageToDisplay = if (isError) {
@@ -1613,7 +1618,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                     if (entry != null) {
                                         refreshMemories()
                                         _memoryFeedbackEvent.tryEmit("Remembered: ${candidate.first}")
-                                        resetRuntimeConversationBeforeNextAsk = true
+                                        // The remembered fact is already in the active conversation.
                                     }
                                 }
                             }

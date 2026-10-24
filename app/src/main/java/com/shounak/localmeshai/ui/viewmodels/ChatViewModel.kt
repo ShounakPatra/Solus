@@ -1115,7 +1115,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 var resolvedDocPath = documentPath
                 var attachedContext = ""
                 if (preparation != null) {
-                    val prepared = preparation.await()
+                    val prepared = withTimeoutOrNull(60_000L) { preparation.await() }
+                        ?: throw IllegalStateException("Reading the attached document timed out. Retry or attach a smaller document.")
                     preparedInput = prepared
                     val durable = withContext(Dispatchers.IO) {
                         prepared.persistInto(
@@ -1213,12 +1214,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 if (shouldQueryRag) {
                     val ragSettings = appSettings.settings.value
-                    val retrieval = ragManager.retrieve(
+                    val retrieval = withTimeoutOrNull(10_000L) { ragManager.retrieve(
                         query = userText,
                         topK = ragSettings.ragTopK,
                         minScore = ragSettings.ragMinSimilarity,
                         preferredDocumentId = targetDocId
-                    )
+                    ) } ?: throw IllegalStateException("Document search timed out. Retry or turn off Document search for this chat.")
                     if (retrieval.hasContext) {
                         effectivePromptText = ragManager.buildAugmentedPrompt(userText, retrieval)
                         ragPassages = retrieval.matches.map { com.shounak.localmeshai.features.RagPassage(it.chunk.documentId, it.chunk.documentName, it.chunk.chunkIndex, it.chunk.text) }
@@ -1331,6 +1332,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 }
+                if (execResult.status != RequestTerminalStatus.Completed) resetRuntimeConversationBeforeNextSend = true
                 capturedMetrics = execResult.metrics
                 liveUpdates.close()
                 liveUpdateJob.join()
@@ -1416,7 +1418,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                         if (added != null) {
                                             refreshMemories()
                                             _memoryFeedbackEvent.tryEmit("Remembered: ${candidate.first}")
-                                            resetRuntimeConversationBeforeNextSend = true
+                                            // The fact is already in this turn; keep native history warm.
+                                            // New conversations seed all saved memories.
                                         }
                                     }
                                 }
@@ -1454,7 +1457,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } catch (t: Throwable) {
-                if (inferenceManager.isStopRequested) {
+                if (_isStopping.value) {
                     Log.i("ChatViewModel", "Inference error ignored because stop was requested", t)
                     resetRuntimeConversationBeforeNextSend = true
                 } else {
