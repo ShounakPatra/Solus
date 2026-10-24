@@ -8,6 +8,14 @@ import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 
 class AppSettingsAutoUnloadRegressionTest {
+    @Test fun warmupDefaultsOnAndTheOffPreferenceSurvivesReload() {
+        val prefs = createFakePrefs()
+        val settings = AppSettings(prefs)
+        assertEquals(true, settings.settings.value.warmupAfterLoading)
+        settings.updateSettings { it.copy(warmupAfterLoading = false) }
+        assertEquals(false, AppSettings(prefs).settings.value.warmupAfterLoading)
+        assertEquals(5, AppSettings(prefs).settings.value.autoUnloadMinutes)
+    }
 
     private fun createFakePrefs(initialValues: Map<String, Any?> = emptyMap()): SharedPreferences {
         val map = initialValues.toMutableMap()

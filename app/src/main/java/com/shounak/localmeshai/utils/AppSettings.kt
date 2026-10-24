@@ -21,6 +21,7 @@ data class AppSettingsData(
     val autoCheckUpdates: Boolean = true,
     val llamaBackendPreference: String = "AUTO",
     val enableToolCalling: Boolean = false,
+    val warmupAfterLoading: Boolean = true,
     val enabledToolSkills: Set<String> = setOf("calculator", "get_current_datetime", "search_documents"),
     val customToolSkills: String = "[]",
     val enableRag: Boolean = false,
@@ -61,6 +62,7 @@ class AppSettings internal constructor(
                 if (it.uppercase() in listOf("AUTO", "CPU", "VULKAN")) it.uppercase() else "AUTO"
             } ?: "AUTO",
             enableToolCalling = prefs.getBoolean(KEY_ENABLE_TOOL_CALLING, false),
+            warmupAfterLoading = prefs.getBoolean("warmup_after_loading", true),
             enabledToolSkills = prefs.getStringSet(KEY_TOOL_SKILLS, setOf("calculator", "get_current_datetime", "search_documents"))?.toSet().orEmpty(),
             customToolSkills = prefs.getString(KEY_CUSTOM_SKILLS, "[]")?.takeIf {
                 runCatching { com.shounak.localmeshai.ai.tools.CustomSkillCodec.decode(it) }.isSuccess
@@ -96,6 +98,7 @@ class AppSettings internal constructor(
             .putBoolean(KEY_AUTO_CHECK_UPDATES, updated.autoCheckUpdates)
             .putString(KEY_LLAMA_BACKEND_PREF, updated.llamaBackendPreference)
             .putBoolean(KEY_ENABLE_TOOL_CALLING, updated.enableToolCalling)
+            .putBoolean("warmup_after_loading", updated.warmupAfterLoading)
             .putStringSet(KEY_TOOL_SKILLS, updated.enabledToolSkills.toSet())
             .putString(KEY_CUSTOM_SKILLS, updated.customToolSkills)
             .putBoolean(KEY_ENABLE_RAG, updated.enableRag)

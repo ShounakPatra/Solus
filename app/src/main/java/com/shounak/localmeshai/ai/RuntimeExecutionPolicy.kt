@@ -16,8 +16,8 @@ data class RuntimeExecutionPolicy(
 ) {
     companion object {
         const val MIN_CPU_THREADS = 1
-        const val MAX_CPU_THREADS = 4
-        const val LOW_RAM_THRESHOLD_GB = 6.0
+        const val MAX_CPU_THREADS = 6
+        const val LOW_RAM_THRESHOLD_GB = 4.0
 
         /**
          * Pure function resolving thread budget given processors, RAM, and power-save status.
@@ -25,9 +25,14 @@ data class RuntimeExecutionPolicy(
         fun resolve(
             availableProcessors: Int,
             totalRamGb: Double,
-            isPowerSaveMode: Boolean
+            isPowerSaveMode: Boolean,
+            coreFrequenciesKhz: List<Long> = emptyList(),
+            tunedThreads: Int? = null
         ): RuntimeExecutionPolicy {
-            val baseThreads = (availableProcessors - 2).coerceIn(MIN_CPU_THREADS, MAX_CPU_THREADS)
+            val available = availableProcessors.coerceAtLeast(1)
+            val topologyThreads = performanceCoreCount(coreFrequenciesKhz)
+            val baseThreads = (tunedThreads?.takeIf { it in 1..MAX_CPU_THREADS }
+                ?: topologyThreads ?: minOf(available, 4)).coerceIn(1, minOf(available, MAX_CPU_THREADS))
             val isLowRam = totalRamGb < LOW_RAM_THRESHOLD_GB
             val effectiveThreads = if (isPowerSaveMode || isLowRam) {
                 minOf(2, baseThreads)
@@ -49,11 +54,28 @@ data class RuntimeExecutionPolicy(
             val isPowerSave = powerManager?.isPowerSaveMode == true
             val totalRamGb = DeviceUtils.getTotalRamGB(context)
             val cores = Runtime.getRuntime().availableProcessors()
+            val frequencies = java.io.File("/sys/devices/system/cpu").listFiles().orEmpty()
+                .filter { it.name.matches(Regex("cpu[0-9]+")) }.mapNotNull { cpu ->
+                    runCatching { java.io.File(cpu, "cpufreq/cpuinfo_max_freq").readText().trim().toLong() }.getOrNull()
+                }
+            val speedPrefs = context.getSharedPreferences("runtime_speed", Context.MODE_PRIVATE)
+            val tuned = speedPrefs.getInt("threads_${android.os.Build.FINGERPRINT}", 0).takeIf { it > 0 }
             return resolve(
                 availableProcessors = cores,
                 totalRamGb = totalRamGb,
-                isPowerSaveMode = isPowerSave
+                isPowerSaveMode = isPowerSave,
+                coreFrequenciesKhz = frequencies.takeIf { it.size >= cores }.orEmpty(),
+                tunedThreads = tuned
             )
+        }
+
+        internal fun performanceCoreCount(frequencies: List<Long>): Int? {
+            if (frequencies.isEmpty() || frequencies.any { it <= 0 }) return null
+            val levels = frequencies.distinct().sorted()
+            if (levels.size == 1) return frequencies.size
+            val split = levels.zipWithNext().maxByOrNull { (low, high) -> high.toDouble() / low } ?: return null
+            if (split.second.toDouble() / split.first < 1.10) return frequencies.size
+            return frequencies.count { it >= split.second }
         }
     }
 }

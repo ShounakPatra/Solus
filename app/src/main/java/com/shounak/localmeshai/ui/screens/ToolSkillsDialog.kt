@@ -77,7 +77,7 @@ internal fun ToolSkillsDialog(hazeState: HazeState, onDismiss: () -> Unit) {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("Tool calling", Modifier.weight(1f), fontWeight = FontWeight.Bold)
-                                SkillGlassSwitch(settings.enableToolCalling, hazeState, onCheckedChange = { enabled -> app.updateSettings { it.copy(enableToolCalling = enabled) } })
+                                SettingsSwitch(settings.enableToolCalling, onCheckedChange = { enabled -> app.updateSettings { it.copy(enableToolCalling = enabled) } })
                             }
                             Text("Changes apply to the next message in your current chat. Enable only the skills you need; each uses model context.", style = MaterialTheme.typography.bodySmall)
                             OutlinedTextField(query, onValueChange = { query = it }, label = { Text("Search skills") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -106,7 +106,7 @@ internal fun ToolSkillsDialog(hazeState: HazeState, onDismiss: () -> Unit) {
                             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(entry.title, Modifier.weight(1f), fontWeight = FontWeight.Bold)
-                                    SkillGlassSwitch(entry.id in settings.enabledToolSkills, hazeState, onCheckedChange = { enabled ->
+                                    SettingsSwitch(entry.id in settings.enabledToolSkills, onCheckedChange = { enabled ->
                                         if (enabled && entry.id == "read_calendar_events" && ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) != PackageManager.PERMISSION_GRANTED) {
                                             permissionForAll = false; calendarPermission.launch(Manifest.permission.READ_CALENDAR)
                                         } else updateEnabled(if (enabled) settings.enabledToolSkills + entry.id else settings.enabledToolSkills - entry.id)
@@ -213,19 +213,4 @@ internal fun ToolSkillsDialog(hazeState: HazeState, onDismiss: () -> Unit) {
                 } catch (failure: Exception) { error = failure.message ?: "Invalid skill" }
             }) { Text("Save & enable") } }, dismissButton = { GlassActionButton(hazeState = hazeState, onClick = { creating = false }) { Text("Cancel") } })
     }
-}
-
-@Composable
-private fun SkillGlassSwitch(checked: Boolean, hazeState: HazeState, onCheckedChange: (Boolean) -> Unit) {
-    Switch(checked, onCheckedChange,
-        modifier = Modifier.glassEffect(hazeState, RoundedCornerShape(50),
-            tintColor = MaterialTheme.colorScheme.primary.copy(alpha = if (checked) 0.16f else 0.04f), borderAlpha = 0.3f),
-        colors = SwitchDefaults.colors(
-            checkedThumbColor = MaterialTheme.colorScheme.primary,
-            checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-            checkedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
-            uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.2f),
-            uncheckedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
-        ))
 }

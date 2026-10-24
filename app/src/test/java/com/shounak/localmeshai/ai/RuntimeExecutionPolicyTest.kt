@@ -23,29 +23,29 @@ class RuntimeExecutionPolicyTest {
         )
         assertEquals(4, sixCore.cpuThreads)
 
-        // 4 core count: (4 - 2) = 2
+        // Missing frequency information falls back to the available cores, up to four.
         val quadCore = RuntimeExecutionPolicy.resolve(
             availableProcessors = 4,
             totalRamGb = 8.0,
             isPowerSaveMode = false
         )
-        assertEquals(2, quadCore.cpuThreads)
+        assertEquals(4, quadCore.cpuThreads)
 
-        // 3 core count: (3 - 2) = 1
+        // Do not subtract two cores on smaller CPUs.
         val triCore = RuntimeExecutionPolicy.resolve(
             availableProcessors = 3,
             totalRamGb = 8.0,
             isPowerSaveMode = false
         )
-        assertEquals(1, triCore.cpuThreads)
+        assertEquals(3, triCore.cpuThreads)
 
-        // Single or dual core fallback to minimum 1
+        // Single and dual core devices stay within the available core count.
         val dualCore = RuntimeExecutionPolicy.resolve(
             availableProcessors = 2,
             totalRamGb = 8.0,
             isPowerSaveMode = false
         )
-        assertEquals(1, dualCore.cpuThreads)
+        assertEquals(2, dualCore.cpuThreads)
 
         val singleCore = RuntimeExecutionPolicy.resolve(
             availableProcessors = 1,
@@ -57,26 +57,26 @@ class RuntimeExecutionPolicyTest {
 
     @Test
     fun testCapsThreadsWhenRamIsLow() {
-        // 8 cores but only 4GB RAM -> capped to 2
+        // Devices below 4 GiB retain a two-thread memory budget.
         val lowRamPolicy = RuntimeExecutionPolicy.resolve(
             availableProcessors = 8,
-            totalRamGb = 4.0,
+            totalRamGb = 3.0,
             isPowerSaveMode = false
         )
         assertEquals(2, lowRamPolicy.cpuThreads)
 
-        // 8 cores with 5.9GB RAM -> capped to 2
+        // Just below the low-RAM boundary.
         val edgeRamPolicy = RuntimeExecutionPolicy.resolve(
             availableProcessors = 8,
-            totalRamGb = 5.9,
+            totalRamGb = 3.9,
             isPowerSaveMode = false
         )
         assertEquals(2, edgeRamPolicy.cpuThreads)
 
-        // 8 cores with 6.0GB RAM -> allows up to 4
+        // At the low-RAM boundary the regular budget applies.
         val sufficientRamPolicy = RuntimeExecutionPolicy.resolve(
             availableProcessors = 8,
-            totalRamGb = 6.0,
+            totalRamGb = 4.0,
             isPowerSaveMode = false
         )
         assertEquals(4, sufficientRamPolicy.cpuThreads)
@@ -97,11 +97,19 @@ class RuntimeExecutionPolicyTest {
     fun testFlagsPopulatedCorrectly() {
         val lowRamPolicy = RuntimeExecutionPolicy.resolve(
             availableProcessors = 8,
-            totalRamGb = 4.0,
+            totalRamGb = 3.0,
             isPowerSaveMode = true
         )
         assertEquals(2, lowRamPolicy.cpuThreads)
         org.junit.Assert.assertTrue(lowRamPolicy.isLowRam)
         org.junit.Assert.assertTrue(lowRamPolicy.isPowerSaveMode)
+    }
+
+    @Test fun frequencyClustersAndMeasuredOverridesDriveThreadChoice() {
+        val frequencies = listOf(1800000L, 1800000L, 1800000L, 1800000L, 2400000L, 2400000L, 2400000L, 3000000L)
+        assertEquals(4, RuntimeExecutionPolicy.resolve(8, 8.0, false, frequencies).cpuThreads)
+        assertEquals(6, RuntimeExecutionPolicy.resolve(8, 8.0, false, frequencies, 6).cpuThreads)
+        assertEquals(2, RuntimeExecutionPolicy.resolve(8, 8.0, true, frequencies, 6).cpuThreads)
+        assertEquals(2, RuntimeExecutionPolicy.resolve(8, 3.0, false, frequencies, 6).cpuThreads)
     }
 }

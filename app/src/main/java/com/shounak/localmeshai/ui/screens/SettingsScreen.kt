@@ -69,6 +69,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.shounak.localmeshai.ui.viewmodels.MainViewModel
 import com.shounak.localmeshai.utils.LiquidGlassButton
 import com.shounak.localmeshai.utils.glassEffect
+import kotlinx.coroutines.launch
 import dev.chrisbanes.haze.HazeState
 import kotlinx.coroutines.delay
 import androidx.compose.ui.layout.LayoutCoordinates
@@ -97,6 +98,9 @@ fun SettingsDialog(
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
     var showToolSkills by remember { mutableStateOf(false) }
+    val speedScope = rememberCoroutineScope()
+    var tuningSpeed by remember { mutableStateOf(false) }
+    var speedStatus by remember { mutableStateOf<String?>(null) }
     if (showToolSkills) ToolSkillsDialog(hazeState = hazeState, onDismiss = { showToolSkills = false })
 
     val scrollState = rememberScrollState()
@@ -257,6 +261,13 @@ fun SettingsDialog(
                     // Category 3: Chat UX
                     SettingsCategory(title = "💬 Chat & Starter UX", hazeState = hazeState) {
                         SettingsSwitchRow(
+                            title = "Warm up after loading",
+                            subtitle = "Prepare prefill and one decode token before Ready. Skipped on low-RAM devices; takes extra loading time.",
+                            checked = settingsData.warmupAfterLoading,
+                            onCheckedChange = { enabled -> appSettings.updateSettings { it.copy(warmupAfterLoading = enabled) } }
+                        )
+                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.35f))
+                        SettingsSwitchRow(
                             title = "Quick Suggestion Pills",
                             subtitle = "Show empty chat prompt suggestion chips",
                             checked = settingsData.enableSuggestionPills,
@@ -411,6 +422,31 @@ fun SettingsDialog(
                                 )
                             }
                         }
+                        val selectedVisionPath by mainViewModel.selectedVisionModelPath.collectAsState()
+                        val tuningPath = selectedTextPath ?: selectedVisionPath
+                        val tuningModel = mainViewModel.availableModels.firstOrNull { it.localPath == tuningPath || it.id == tuningPath }
+                        val canTuneSpeed = com.shounak.localmeshai.ai.RuntimeSpeedTuner.supports(tuningModel)
+                        LiquidGlassButton(hazeState = hazeState, enabled = !tuningSpeed && canTuneSpeed,
+                            modifier = Modifier.fillMaxWidth(), onClick = {
+                                val model = tuningModel ?: return@LiquidGlassButton
+                                tuningSpeed = true
+                                speedStatus = "Starting speed measurements…"
+                                speedScope.launch {
+                                    try {
+                                        speedStatus = com.shounak.localmeshai.ai.RuntimeSpeedTuner.run(context, model) { message ->
+                                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) { speedStatus = message }
+                                        } + " Reload the model to apply."
+                                    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                                    catch (_: OutOfMemoryError) { speedStatus = "Not enough memory to tune this model. Lower its context size or close other apps and try again." }
+                                    catch (failure: Exception) { speedStatus = failure.message ?: "Speed tuning failed" }
+                                    finally { tuningSpeed = false }
+                                }
+                            }) { Text(if (tuningSpeed) "Tuning…" else "Tune speed") }
+                        Text("Temporarily releases the active runtime. Tests 2, 4 and 6 CPU threads when memory and core count allow. LiteRT GPU must pass matching-output probes and beat CPU before Auto uses it.",
+                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                        if (!canTuneSpeed) Text(tuningModel?.loadRestriction?.reason ?: "Select a downloaded GGUF or LiteRT-LM model to tune speed. Linked imports can use the model's bundle benchmark.",
+                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                        speedStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = colors.primary) }
                         SettingsSwitchRow(
                             title = "Tool calling (experimental)",
                             subtitle = "Calculator, local date/time and enabled document search for compatible LiteRT-LM and GGUF models. Changes apply to your next message, including in the current chat.",
@@ -1811,7 +1847,14 @@ internal fun SettingsSwitchRow(
             Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = colors.onSurface)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant.copy(alpha = 0.82f))
         }
-        Switch(
+        SettingsSwitch(checked, onCheckedChange, enabled)
+    }
+}
+
+@Composable
+internal fun SettingsSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit, enabled: Boolean = true) {
+    val colors = MaterialTheme.colorScheme
+    Switch(
             checked = checked,
             enabled = enabled,
             onCheckedChange = onCheckedChange,
@@ -1824,7 +1867,6 @@ internal fun SettingsSwitchRow(
                 uncheckedBorderColor = colors.outlineVariant.copy(alpha = 0.50f)
             )
         )
-    }
 }
 
 private class LastCharPasswordVisualTransformation(
