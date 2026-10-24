@@ -97,7 +97,7 @@ fun SettingsDialog(
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
     var showToolSkills by remember { mutableStateOf(false) }
-    if (showToolSkills) ToolSkillsDialog(onDismiss = { showToolSkills = false })
+    if (showToolSkills) ToolSkillsDialog(hazeState = hazeState, onDismiss = { showToolSkills = false })
 
     val scrollState = rememberScrollState()
     var scrollContainerCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
