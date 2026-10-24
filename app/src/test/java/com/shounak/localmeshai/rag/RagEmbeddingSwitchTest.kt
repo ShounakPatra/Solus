@@ -3,6 +3,7 @@ package com.shounak.localmeshai.rag
 import com.shounak.localmeshai.rag.embedding.SemanticEmbeddingEngine
 import com.shounak.localmeshai.rag.embedding.UniversalSemanticEmbeddingEngine
 import com.shounak.localmeshai.rag.store.InMemoryRagVectorStore
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
@@ -161,4 +162,37 @@ class RagEmbeddingSwitchTest {
         manager.loadAsync()
         assertEquals(0, manager.totalIndexedChunks)
     }
+    @Test
+    fun interactiveSearchDoesNotWaitForIndexingAndRecoversAfterwards() = runBlocking {
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val finish = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val lexical = UniversalSemanticEmbeddingEngine()
+        val engine = object : SemanticEmbeddingEngine by lexical {
+            override suspend fun embedBatch(texts: List<String>): List<FloatArray> {
+                entered.complete(Unit)
+                finish.await()
+                return lexical.embedBatch(texts)
+            }
+        }
+        val manager = RagManager(null, engine, InMemoryRagVectorStore(null, expectedDimension = engine.dimension))
+        val indexing = kotlinx.coroutines.CoroutineScope(coroutineContext).async {
+            manager.ingestText("cars.txt", "The battery powers the vehicle.")
+        }
+        entered.await()
+        try {
+            kotlinx.coroutines.withTimeout(1_000) {
+                try {
+                    manager.retrieve("vehicle battery")
+                    org.junit.Assert.fail("Search queued behind indexing")
+                } catch (busy: IllegalStateException) {
+                    assertTrue(busy.message!!.contains("indexing"))
+                }
+            }
+        } finally {
+            finish.complete(Unit)
+        }
+        assertTrue(indexing.await().success)
+        assertTrue(manager.retrieve("vehicle battery", minScore = 0f).hasContext)
+    }
+
 }

@@ -449,7 +449,12 @@ class RagManager(
         minScore: Float = 0.35f,
         preferredDocumentId: String? = null,
         allowGlobalSearch: Boolean = true
-    ): RagRetrievalResult = withContext(Dispatchers.Default) { ingestionMutex.withLock {
+    ): RagRetrievalResult = withContext(Dispatchers.Default) {
+        // Indexing can take minutes. Never queue an interactive answer behind it.
+        check(ingestionMutex.tryLock()) {
+            "Document search is busy indexing. Wait for indexing to finish and retry, or turn off Document search for this chat."
+        }
+        try {
         val trimmedQuery = query.trim()
         if (vectorStore.getTotalChunkCount() == 0 || (!allowGlobalSearch && preferredDocumentId == null)) {
             return@withContext RagRetrievalResult(
@@ -553,7 +558,10 @@ class RagManager(
             matches = filteredMatches,
             hasContext = filteredMatches.isNotEmpty()
         )
-    } }
+        } finally {
+            ingestionMutex.unlock()
+        }
+    }
 
     private fun calibratedSearch(
         engine: SemanticEmbeddingEngine,
