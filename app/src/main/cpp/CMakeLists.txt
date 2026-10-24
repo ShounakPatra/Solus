@@ -7,8 +7,8 @@ if(ANDROID_ABI STREQUAL "armeabi-v7a" OR ANDROID_ABI STREQUAL "armeabi")
     message(FATAL_ERROR "armeabi-v7a (32-bit ARM) is not supported in Solus. On-device LLM inference strictly requires 64-bit architectures (arm64-v8a or x86_64).")
 endif()
 
-# Restrict native compile concurrency to two jobs and linking to one using Ninja job pools
-set_property(GLOBAL PROPERTY JOB_POOLS compile_pool=2 link_pool=1)
+# Four native compile jobs, with linking serialized to bound peak memory.
+set_property(GLOBAL PROPERTY JOB_POOLS compile_pool=4 link_pool=1)
 set(CMAKE_JOB_POOL_COMPILE compile_pool)
 set(CMAKE_JOB_POOL_LINK link_pool)
 

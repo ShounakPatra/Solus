@@ -882,6 +882,9 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         @JvmStatic external fun nativeGetMetadata(handle: Long): String?
         @JvmStatic external fun nativeResetAfterValidation(handle: Long)
         @JvmStatic external fun nativeClearProbeReferences()
+        @JvmStatic external fun nativeAllocateTensorBuffer(bytes: Long): java.nio.ByteBuffer
+        @JvmStatic external fun nativeFreeTensorBuffer(buffer: java.nio.ByteBuffer)
+        @JvmStatic external fun nativeWarmup(handle: Long): Boolean
         @JvmStatic external fun nativeFree(handle: Long)
         @JvmStatic external fun nativeGetLastFailureCategory(): String?
         @JvmStatic external fun nativeGetLastFailureCode(): Int
@@ -1386,6 +1389,17 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         nativeOperations.lock()
         try { nativeBridge.resetAfterValidation(handle) }
         finally {
+            nativeOperations.unlock()
+            synchronized(lifecycleLock) { releaseOperationLeaseUnlocked() }
+        }
+    }
+
+    fun warmUp(): Boolean {
+        if (nativeBridge !== DefaultLlamaNativeBridge) return false
+        val handle = synchronized(lifecycleLock) { acquireOperationLeaseUnlocked() }
+        check(handle != 0L) { "Engine is not loaded" }
+        nativeOperations.lock()
+        return try { nativeWarmup(handle) } finally {
             nativeOperations.unlock()
             synchronized(lifecycleLock) { releaseOperationLeaseUnlocked() }
         }

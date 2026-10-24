@@ -29,7 +29,7 @@ class OnnxTextExecutionTest {
     private fun attr(name: String, value: Int) = text(1,name)+int(3,value.toLong())+int(20,2)
     private fun node(op: String, inputs: List<String>, output: String, attributes: ByteArray = byteArrayOf()): ByteArray =
         inputs.fold(byteArrayOf()) { a,name -> a+text(1,name) } + text(2,output)+text(4,op)+attributes
-    private fun graph(cached: Boolean, half: Boolean = false): ByteArray {
+    private fun graph(cached: Boolean, half: Boolean = false, lastOnly: Boolean = false): ByteArray {
         var graph = text(2,"decoder")
         graph += bytes(11,value("input_ids",6,1,if(cached) 1 else -1))
         graph += bytes(5,tensor("axes",7,longArrayOf(1),ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(2).array()))
@@ -38,7 +38,12 @@ class OnnxTextExecutionTest {
         graph += bytes(1,node("Cast",listOf("input_ids"),"ids_float",bytes(5,attr("to",1))))
         graph += bytes(1,node("Unsqueeze",listOf("ids_float","axes"),"ids_3d"))
         graph += bytes(1,node("Add",listOf("ids_3d","offsets"),"float_logits"))
-        graph += bytes(1,node(if(half) "Cast" else "Identity",listOf("float_logits"),"logits",if(half) bytes(5,attr("to",10)) else byteArrayOf()))
+        if (lastOnly) {
+            for ((name, index) in listOf("slice_start" to -1L, "slice_end" to Long.MAX_VALUE, "slice_axis" to 1L, "slice_step" to 1L)) {
+                graph += bytes(5, tensor(name, 7, longArrayOf(1), ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(index).array()))
+            }
+            graph += bytes(1,node("Slice", listOf("float_logits", "slice_start", "slice_end", "slice_axis", "slice_step"), "logits"))
+        } else graph += bytes(1,node(if(half) "Cast" else "Identity",listOf("float_logits"),"logits",if(half) bytes(5,attr("to",10)) else byteArrayOf()))
         graph += bytes(12,value("logits",if(half)10 else 1,1,if(cached)1 else -1,4))
         if(cached) {
             for (kind in listOf("key","value")) {
@@ -63,6 +68,23 @@ class OnnxTextExecutionTest {
     @Test fun int32DynamicFullPrefixGraphExecutes() = execute(false,false) { decoder ->
         assertArrayEquals(floatArrayOf(3f,4f,5f,6f),decoder.logits(listOf(1,2,3)),0f)
         assertArrayEquals(floatArrayOf(4f,5f,6f,7f),decoder.logits(listOf(1,2,3,4)),0f)
+    }
+    @Test fun manyLogitRowsReturnOnlyTheLastVocabularyAndSurviveReset() = execute(false, false) { decoder ->
+        val prefix = (1..4096).toList()
+        assertArrayEquals(floatArrayOf(4096f,4097f,4098f,4099f), decoder.logits(prefix), 0f)
+        decoder.reset()
+        assertArrayEquals(floatArrayOf(2f,3f,4f,5f), decoder.logits(listOf(2)), 0f)
+    }
+    @Test fun dynamicLastTokenOnlyExportKeepsWorkingWithLongerFollowUpPrompts() {
+        OrtSession.SessionOptions().use { options ->
+            options.setIntraOpNumThreads(1)
+            OrtEnvironment.getEnvironment().createSession(graph(false, lastOnly = true), options).use { session ->
+                OnnxTextSession(session, JSONObject()).use { decoder ->
+                    assertArrayEquals(floatArrayOf(3f,4f,5f,6f), decoder.logits(listOf(1,2,3)), 0f)
+                    assertArrayEquals(floatArrayOf(5f,6f,7f,8f), decoder.logits(listOf(1,2,3,4,5)), 0f)
+                }
+            }
+        }
     }
     @Test fun fixedTokenCachePrefillDecodeAndResetExecute() = execute(true,false) { decoder ->
         assertArrayEquals(floatArrayOf(3f,4f,5f,6f),decoder.logits(listOf(1,2,3)),0f)

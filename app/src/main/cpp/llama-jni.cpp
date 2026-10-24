@@ -11,6 +11,7 @@
 #include <sstream>
 #include <iomanip>
 #include <map>
+#include <cstdlib>
 #include <android/log.h>
 
 #include "llama.h"
@@ -2453,6 +2454,51 @@ JNIEXPORT void JNICALL
 Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeClearProbeReferences(JNIEnv *, jclass) {
     std::lock_guard<std::mutex> lock(g_probe_mutex);
     g_probe_reference_runs.clear();
+}
+
+JNIEXPORT jobject JNICALL
+Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeAllocateTensorBuffer(JNIEnv * env, jclass, jlong bytes) {
+    if (bytes <= 0 || bytes > 512LL * 1024 * 1024) {
+        env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"), "Invalid tensor buffer size");
+        return nullptr;
+    }
+    void * memory = std::malloc(static_cast<size_t>(bytes));
+    if (!memory) {
+        env->ThrowNew(env->FindClass("java/lang/OutOfMemoryError"), "Not enough native memory for ONNX logits; shorten the conversation");
+        return nullptr;
+    }
+    jobject buffer = env->NewDirectByteBuffer(memory, bytes);
+    if (!buffer) std::free(memory);
+    return buffer;
+}
+
+JNIEXPORT void JNICALL
+Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeFreeTensorBuffer(JNIEnv * env, jclass, jobject buffer) {
+    std::free(env->GetDirectBufferAddress(buffer));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeWarmup(JNIEnv *, jclass, jlong handle) {
+    auto * holder = reinterpret_cast<LlamaContextHolder *>(handle);
+    if (!holder || !holder->ctx || llama_jni_abort_callback(holder)) return JNI_FALSE;
+    clear_prompt_cache(holder);
+    llama_token token = llama_vocab_bos(holder->vocab);
+    if (token == LLAMA_TOKEN_NULL) {
+        auto tokens = common_tokenize(holder->vocab, "Hi", false, false);
+        if (tokens.empty()) return JNI_FALSE;
+        token = tokens.front();
+    }
+    int status = llama_decode(holder->ctx, llama_batch_get_one(&token, 1));
+    if (status == 0 && !llama_jni_abort_callback(holder)) {
+        const float * logits = llama_get_logits_ith(holder->ctx, -1);
+        if (logits) {
+            token = static_cast<llama_token>(std::max_element(logits, logits + llama_vocab_n_tokens(holder->vocab)) - logits);
+            status = llama_decode(holder->ctx, llama_batch_get_one(&token, 1));
+        } else status = -1;
+    }
+    clear_prompt_cache(holder);
+    llama_perf_context_reset(holder->ctx);
+    return status == 0 && !llama_jni_abort_callback(holder) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

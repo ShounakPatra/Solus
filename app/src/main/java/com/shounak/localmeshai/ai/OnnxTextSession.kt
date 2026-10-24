@@ -17,6 +17,10 @@ internal class OnnxTextSession(private val session: OrtSession, private val conf
     private var retained: OrtSession.Result? = null
     private var pastLength = 0
     private val singleTokenInput: Boolean
+    private val logitsInfo = session.outputInfo.getValue("logits").info as TensorInfo
+    private val logitsBuffer = OnnxLogitsBuffer()
+    private var outputIsSingleRow: Boolean? = null
+    private var learnedVocabulary: Long? = null
 
     init {
         require("input_ids" in inputs && "logits" in session.outputNames) { "This graph is not a causal text decoder: input_ids and logits are required" }
@@ -33,7 +37,7 @@ internal class OnnxTextSession(private val session: OrtSession, private val conf
         }
     }
 
-    fun reset() { retained?.close(); retained = null; pastLength = 0 }
+    fun reset() { retained?.close(); retained = null; pastLength = 0; logitsBuffer.close() }
 
     fun logits(tokens: List<Int>): FloatArray {
         require(tokens.isNotEmpty())
@@ -41,13 +45,14 @@ internal class OnnxTextSession(private val session: OrtSession, private val conf
         require(tokens.size > pastLength) { "ONNX cache position is ahead of input" }
         if (singleTokenInput) {
             var result = FloatArray(0)
-            while (pastLength < tokens.size) result = run(listOf(tokens[pastLength]), pastLength + 1)
+            while (pastLength < tokens.size) result = run(listOf(tokens[pastLength]), pastLength + 1,
+                copyLogits = pastLength == tokens.lastIndex)
             return result
         }
         return run(tokens.subList(pastLength, tokens.size), tokens.size)
     }
 
-    private fun run(tokens: List<Int>, total: Int): FloatArray {
+    private fun run(tokens: List<Int>, total: Int, copyLogits: Boolean = true): FloatArray {
         val owned = mutableListOf<OnnxTensor>()
         val feed = mutableMapOf<String, OnnxTensor>()
         var result: OrtSession.Result? = null
@@ -83,14 +88,37 @@ internal class OnnxTextSession(private val session: OrtSession, private val conf
                 owned.add(tensor)
                 feed[name] = tensor
             }
-            result = session.run(feed, (outputs.values + "logits").toSet())
+            var smallProbeValues: FloatArray? = null
+            // Dynamic output metadata can mean full-sequence OR last-token-only logits. Learn it
+            // without copying a full tensor. Warm-up usually resolves this on a tiny prompt.
+            if ((logitsInfo.shape.size == 3 && logitsInfo.shape[1] < 0 && outputIsSingleRow == null) ||
+                (logitsInfo.shape.last() < 1 && learnedVocabulary == null)) {
+                result = session.run(feed, (outputs.values + "logits").toSet())
+                val probe = result.get("logits").orElse(null) as? OnnxTensor ?: error("Missing logits tensor")
+                val probeShape = validatedLogitsShape(probe, tokens.size)
+                learnedVocabulary = probeShape.last()
+                if ((tokens.size > 1 || singleTokenInput) && probeShape.size == 3) outputIsSingleRow = probeShape[1] == 1L
+                if (probeShape.size == 2 || probeShape[1] == 1L) {
+                    val buffer = requireNotNull(probe.floatBuffer)
+                    smallProbeValues = FloatArray(probeShape.last().toInt()).also(buffer::get)
+                } else {
+                    result.close()
+                    result = null
+                }
+            }
+            if (result == null) {
+                val outputShape = logitsInfo.shape.copyOf()
+                require(outputShape.size in 2..3 && outputShape[0] in longArrayOf(-1, 1)) { "Unsupported ONNX logits layout" }
+                outputShape[0] = 1
+                if (outputShape.size == 3 && outputShape[1] < 0) outputShape[1] = if (outputIsSingleRow == true) 1 else tokens.size.toLong()
+                if (outputShape.last() < 0) outputShape[outputShape.lastIndex] = learnedVocabulary ?: config.optInt("vocab_size").toLong()
+                require(outputShape.last() in 1..1_000_000) { "Cannot determine ONNX logits vocabulary size" }
+                val pinnedLogits = logitsBuffer.tensor(environment, outputShape, logitsInfo.type).also(owned::add)
+                result = session.run(feed, outputs.values.toSet(), mapOf("logits" to pinnedLogits))
+            }
             val logits = result.get("logits").orElse(null) as? OnnxTensor ?: error("Missing logits tensor")
-            val shape = logits.info.shape
-            require(logits.info.type in floatTypes && ((shape.size == 3 && shape[0] == 1L && shape[1] in longArrayOf(1, tokens.size.toLong())) || (shape.size == 2 && shape[0] == 1L))) { "Expected floating logits [1, sequence, vocabulary] or [1, vocabulary]" }
-            require(shape.last() in 1..1_000_000)
-            val buffer = requireNotNull(logits.floatBuffer) { "ONNX Runtime cannot convert this logits dtype to float32" }
-            buffer.position(buffer.limit() - shape.last().toInt())
-            val values = FloatArray(shape.last().toInt()).also(buffer::get)
+            val shape = validatedLogitsShape(logits, tokens.size)
+            val values = if (copyLogits) smallProbeValues ?: logitsBuffer.lastRow(shape, logits.info.type) else FloatArray(0)
             if (caches.isNotEmpty()) {
                 outputs.values.forEach { require(result.get(it).orElse(null) is OnnxTensor) { "Missing cache tensor $it" } }
                 retained?.close()
@@ -100,6 +128,12 @@ internal class OnnxTextSession(private val session: OrtSession, private val conf
             }
             return values
         } finally { result?.close(); owned.forEach { it.close() } }
+    }
+
+    private fun validatedLogitsShape(logits: OnnxTensor, sequence: Int): LongArray = logits.info.shape.also { shape ->
+        require(logits.info.type in floatTypes && ((shape.size == 3 && shape[0] == 1L && shape[1] in longArrayOf(1, sequence.toLong())) ||
+            (shape.size == 2 && shape[0] == 1L))) { "Expected floating logits [1, sequence, vocabulary] or [1, vocabulary]" }
+        require(shape.last() in 1..1_000_000) { "Unsupported logits vocabulary" }
     }
 
     private fun integerTensor(type: OnnxJavaType, values: LongArray, shape: LongArray): OnnxTensor = when (type) {
