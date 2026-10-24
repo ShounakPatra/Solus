@@ -96,6 +96,8 @@ fun SettingsDialog(
     var showLastChar by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
+    var showToolSkills by remember { mutableStateOf(false) }
+    if (showToolSkills) ToolSkillsDialog(onDismiss = { showToolSkills = false })
 
     val scrollState = rememberScrollState()
     var scrollContainerCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
@@ -415,6 +417,7 @@ fun SettingsDialog(
                             checked = settingsData.enableToolCalling,
                             onCheckedChange = { enabled -> appSettings.updateSettings { it.copy(enableToolCalling = enabled) } }
                         )
+                        OutlinedButton(onClick = { showToolSkills = true }, modifier = Modifier.fillMaxWidth()) { Text("Manage tool skills") }
                         if (isGgufActive) {
                             Text(
                                 text = "GGUF models support Auto (prefers validated GPU with automatic CPU fallback), explicit Vulkan GPU, and explicit CPU mode.",

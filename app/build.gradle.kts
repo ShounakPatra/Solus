@@ -371,6 +371,7 @@ dependencies {
     implementation(libs.haze)
     implementation(libs.haze.materials)
     implementation(libs.okhttp)
+    implementation("com.google.zxing:core:3.5.4")
 
     testRuntimeOnly("com.microsoft.onnxruntime:onnxruntime:1.22.0")
     testImplementation(libs.junit)

@@ -4651,6 +4651,7 @@ internal fun ToolUseChip(uses: List<com.shounak.localmeshai.ai.tools.ToolUse>, m
                 val arguments = runCatching { org.json.JSONObject(use.arguments).optString("expression", use.arguments) }.getOrDefault(use.arguments)
                 Text("${use.name}: $arguments = ${use.result}", style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                ToolSkillResultContent(use)
             }
         }
     }
