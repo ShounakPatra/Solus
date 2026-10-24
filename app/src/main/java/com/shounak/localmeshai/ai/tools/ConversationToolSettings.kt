@@ -8,10 +8,15 @@ internal data class ConversationToolSettings(val enabled: Boolean, val documentS
     fun requiresRefresh(current: ConversationToolSettings): Boolean = this != current
 
     companion object {
-        fun from(settings: AppSettingsData) = ConversationToolSettings(
-            enabled = settings.enableToolCalling,
-            documentSearch = settings.enableRag,
-            skills = settings.enabledToolSkills.toSet(), customSkills = settings.customToolSkills
-        )
+        fun from(settings: AppSettingsData): ConversationToolSettings {
+            if (!settings.enableToolCalling) return ConversationToolSettings(false, false, emptySet(), "[]")
+            val custom = CustomSkillCodec.decode(settings.customToolSkills).filter { it.id in settings.enabledToolSkills }.sortedBy { it.id }
+            val available = SkillCatalog.defaults + SkillCatalog.builtins.map { it.id } + custom.map { it.id }
+            val effective = settings.enabledToolSkills.intersect(available).let {
+                if (settings.enableRag) it else it - "search_documents"
+            }
+            return ConversationToolSettings(effective.isNotEmpty(), "search_documents" in effective, effective,
+                if (custom.isEmpty()) "[]" else CustomSkillCodec.encode(custom))
+        }
     }
 }

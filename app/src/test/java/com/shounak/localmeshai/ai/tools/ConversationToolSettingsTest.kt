@@ -10,8 +10,8 @@ class ConversationToolSettingsTest {
         for (before in listOf(false, true)) {
             val tools = ConversationToolSettings.from(defaults.copy(enableToolCalling = before))
             assertTrue(tools.requiresRefresh(ConversationToolSettings.from(defaults.copy(enableToolCalling = !before))))
-            val rag = ConversationToolSettings.from(defaults.copy(enableRag = before))
-            assertTrue(rag.requiresRefresh(ConversationToolSettings.from(defaults.copy(enableRag = !before))))
+            val rag = ConversationToolSettings.from(defaults.copy(enableToolCalling = true, enableRag = before))
+            assertTrue(rag.requiresRefresh(ConversationToolSettings.from(defaults.copy(enableToolCalling = true, enableRag = !before))))
         }
     }
 
@@ -42,4 +42,19 @@ class ConversationToolSettingsTest {
         settings = settings.copy(enableToolCalling = true)
         assertFalse(creating.requiresRefresh(ConversationToolSettings.from(settings)))
     }
+    @Test fun disabledAndUnselectedToolsDoNotDiscardHistoryOrChangeAvailableSchemas() {
+        val disabled = AppSettingsData(enableToolCalling = false)
+        val before = ConversationToolSettings.from(disabled)
+        val after = ConversationToolSettings.from(disabled.copy(enableRag = true, enabledToolSkills = setOf("qr_code")))
+        assertFalse(before.requiresRefresh(after))
+        val context = android.content.ContextWrapper(null)
+        assertTrue(LocalTools.forConversation(context, before) { false }.isEmpty())
+        assertTrue(LocalTools.forConversation(context, after) { false }.isEmpty())
+        val calculator = disabled.copy(enableToolCalling = true, enabledToolSkills = setOf("calculator"))
+        val first = ConversationToolSettings.from(calculator)
+        val second = ConversationToolSettings.from(calculator.copy(enableRag = true))
+        assertFalse(first.requiresRefresh(second))
+        assertEquals(listOf("calculator"), LocalTools.forConversation(context, second) { false }.map { it.name })
+    }
+
 }
