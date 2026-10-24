@@ -173,7 +173,9 @@ class RagManager(
                 content = extractedText,
                 targetDocumentId = targetDocumentId
             )
-        } catch (e: Throwable) {
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
             RagIngestionResult(
                 success = false,
                 documentId = targetDocumentId ?: "",
@@ -201,6 +203,7 @@ class RagManager(
         content: String,
         targetDocumentId: String? = null
     ): RagIngestionResult = ingestionMutex.withLock {
+        val version = synchronized(mutationLock) { deletionVersion }
         val trimmed = content.trim()
         if (trimmed.isEmpty()) {
             return RagIngestionResult(
@@ -248,7 +251,9 @@ class RagManager(
         }
         val embeddings = try {
             embeddingEngine.embedBatch(textsToEmbed)
-        } catch (e: Throwable) {
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
             return RagIngestionResult(
                 success = false,
                 documentId = docId,
@@ -297,10 +302,17 @@ class RagManager(
             )
         }
 
-        val persisted = if (targetDocumentId != null) {
-            vectorStore.replaceDocument(targetDocumentId, records)
-        } else {
-            vectorStore.addChunks(records)
+        kotlin.coroutines.coroutineContext.ensureActive()
+        val persisted = synchronized(mutationLock) {
+            if (version != deletionVersion) {
+                return@withLock RagIngestionResult(false, docId, documentName, 0, 0,
+                    "Documents changed during indexing. Retry if you still want to add this document.")
+            }
+            if (targetDocumentId != null) {
+                vectorStore.replaceDocument(targetDocumentId, records)
+            } else {
+                vectorStore.addChunks(records)
+            }
         }
 
         if (!persisted) {

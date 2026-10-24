@@ -51,7 +51,7 @@ internal object RepositoryFileDownloads {
             pending.writeText(json.toString())
             check(pending.renameTo(manifest)) { "Could not queue repository files" }
         }
-        files.forEach { update(RepositoryFileTransfer.key(repo.repoId, repo.commitSha, it.path), RepositoryFileDownloadState("Queued")) }
+        if (newlyQueued) files.forEach { update(RepositoryFileTransfer.key(repo.repoId, repo.commitSha, it.path), RepositoryFileDownloadState("Queued")) }
         try { ContextCompat.startForegroundService(context, Intent(context, RepositoryFileDownloadService::class.java)) }
         catch (failure: Exception) {
             if (newlyQueued) manifest.delete()

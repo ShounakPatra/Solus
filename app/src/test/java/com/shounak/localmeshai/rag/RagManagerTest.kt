@@ -9,6 +9,41 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RagManagerTest {
+    @Test
+    fun deletionWhileReindexingCannotRecreateTheDocument() = runBlocking {
+        lateinit var manager: RagManager
+        var deleteDuringEmbedding: String? = null
+        val lexical = UniversalSemanticEmbeddingEngine()
+        val engine = object : com.shounak.localmeshai.rag.embedding.SemanticEmbeddingEngine {
+            override val dimension = 384
+            override suspend fun embed(text: String) = lexical.embed(text)
+            override suspend fun embedBatch(texts: List<String>): List<FloatArray> {
+                deleteDuringEmbedding?.let(manager::removeDocument)
+                return lexical.embedBatch(texts)
+            }
+        }
+        manager = RagManager(null, engine, InMemoryRagVectorStore(null))
+        val first = manager.ingestText("document.txt", "The original indexed document.")
+        deleteDuringEmbedding = first.documentId
+        val result = manager.ingestText("document.txt", "Updated document content.", first.documentId)
+        assertFalse(result.success)
+        assertEquals(0, manager.totalIndexedChunks)
+    }
+    @Test
+    fun cancelledEmbeddingIsPropagatedWithoutPublishingDocument() = runBlocking {
+        val engine = object : com.shounak.localmeshai.rag.embedding.SemanticEmbeddingEngine {
+            override val dimension = 384
+            override suspend fun embed(text: String): FloatArray = throw kotlinx.coroutines.CancellationException("Stop")
+            override suspend fun embedBatch(texts: List<String>): List<FloatArray> = throw kotlinx.coroutines.CancellationException("Stop")
+        }
+        val manager = RagManager(null, engine, InMemoryRagVectorStore(null))
+        try {
+            manager.ingestText("cancelled.txt", "The document must not be published after cancellation.")
+            org.junit.Assert.fail("Cancellation was swallowed")
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            assertEquals(0, manager.totalIndexedChunks)
+        }
+    }
 
     @Test
     fun testIngestTextAndRetrieve_EndToEnd() = runBlocking {

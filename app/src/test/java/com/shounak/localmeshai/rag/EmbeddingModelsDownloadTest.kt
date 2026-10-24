@@ -2,6 +2,7 @@ package com.shounak.localmeshai.rag
 
 import com.shounak.localmeshai.rag.embedding.EmbeddingModels
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.OkHttpClient
@@ -14,6 +15,30 @@ import org.junit.rules.TemporaryFolder
 import java.security.MessageDigest
 
 class EmbeddingModelsDownloadTest {
+    @Test
+    fun cancellingAStalledHttpRequestAbortsTransport() = runBlocking {
+        val server = MockWebServer().apply {
+            enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE))
+            start()
+        }
+        val dir = temp.newFolder("stalled")
+        val s = spec(byteArrayOf(1), byteArrayOf(2))
+        val job = launch(kotlinx.coroutines.Dispatchers.Default) {
+            EmbeddingModels.download(dir, s, OkHttpClient(), { _, _ -> }) {
+                listOf(server.url("/stalled").toString())
+            }
+        }
+        try {
+            assertTrue(server.takeRequest(3, java.util.concurrent.TimeUnit.SECONDS) != null)
+            job.cancel()
+            kotlinx.coroutines.withTimeout(2_000) { job.join() }
+            assertTrue(dir.listFiles()!!.isEmpty())
+        } finally {
+            job.cancel()
+            server.shutdown()
+        }
+    }
+
     @get:Rule val temp = TemporaryFolder()
 
     private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

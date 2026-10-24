@@ -14,6 +14,8 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.AtomicMoveNotSupportedException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.Job
+import com.shounak.localmeshai.utils.abortTransportOnCancellation
 
 /**
  * Catalog of optional on-device embedding models for RAG.
@@ -193,29 +195,36 @@ object EmbeddingModels {
         onBytes: (Long) -> Unit
     ) {
         partial.delete()
-        client.newCall(Request.Builder().url(url).build()).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("Download failed (HTTP ${response.code}) for ${file.remotePath}")
-            val digest = MessageDigest.getInstance("SHA-256")
-            var written = 0L
-            response.body.byteStream().use { input ->
-                partial.outputStream().use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        written += read
-                        if (written > file.sizeBytes) throw IOException("${file.remotePath} is larger than expected")
-                        digest.update(buffer, 0, read)
-                        output.write(buffer, 0, read)
-                        onBytes(written)
+        val call = client.newCall(Request.Builder().url(url).build())
+        val cancellation = coroutineContext[Job]?.abortTransportOnCancellation { call.cancel() }
+        try {
+            call.execute().use { response ->
+                if (!response.isSuccessful) throw IOException("Download failed (HTTP ${response.code}) for ${file.remotePath}")
+                val digest = MessageDigest.getInstance("SHA-256")
+                var written = 0L
+                response.body.byteStream().use { input ->
+                    partial.outputStream().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            written += read
+                            if (written > file.sizeBytes) throw IOException("${file.remotePath} is larger than expected")
+                            digest.update(buffer, 0, read)
+                            output.write(buffer, 0, read)
+                            onBytes(written)
+                        }
+                        output.fd.sync()
                     }
-                    output.fd.sync()
                 }
+                val hash = digest.digest().joinToString("") { "%02x".format(it) }
+                if (written != file.sizeBytes || hash != file.sha256) throw IOException("Checksum mismatch for ${file.remotePath}")
             }
-            val hash = digest.digest().joinToString("") { "%02x".format(it) }
-            if (written != file.sizeBytes || hash != file.sha256) throw IOException("Checksum mismatch for ${file.remotePath}")
-        }
+        } catch (error: IOException) {
+            coroutineContext.ensureActive()
+            throw error
+        } finally { cancellation?.dispose() }
     }
 
     private val defaultClient: OkHttpClient by lazy {
