@@ -630,11 +630,13 @@ class RagManager(
     /** Called under ingestionMutex. Filter before ranking, including overview shortcuts. */
     private suspend fun retrieveScoped(query: String, ids: Set<String>, preferredId: String?, topK: Int, minScore: Float): RagRetrievalResult {
         val current = active
-        val chunks = ids.flatMap { current.store.getChunksForDocument(it, Int.MAX_VALUE) }
+        val scopedChunks = ids.flatMap { current.store.getChunksForDocument(it, Int.MAX_VALUE) }
+        val named = ChatDocumentScope.referencedNames(query, scopedChunks.map { it.documentName }.distinct())
+        val chunks = if (named.isEmpty()) scopedChunks else scopedChunks.filter { it.documentName in named }
         if (chunks.isEmpty()) return RagRetrievalResult(query, emptyList(), false)
         val explicit = ChatDocumentScope.isDocumentQuestion(query, chunks.map { it.documentName }.distinct())
         val matches = if (explicit && isOverviewOrSummaryQuery(query)) {
-            val overview = chunks.filter { preferredId == null || preferredId !in ids || it.documentId == preferredId }
+            val overview = chunks.filter { named.isNotEmpty() || preferredId == null || preferredId !in ids || it.documentId == preferredId }
             overview.take(topK).map { RagSearchResult(it, 0.85f) }
         } else {
             val vector = current.engine.embedQuery(query)

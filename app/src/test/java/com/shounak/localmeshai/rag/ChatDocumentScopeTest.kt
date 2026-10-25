@@ -9,6 +9,27 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ChatDocumentScopeTest {
+    @Test fun namedUploadOverridesTheLastUploadForSummariesAndSearch() = runBlocking {
+        val rag = manager()
+        rag.ingestText("batteries.pdf", "Battery replacement information.", "battery")
+        rag.ingestText("plants.pdf", "Photosynthesis information.", "plants")
+        for (query in listOf("Summarize batteries.pdf", "What does batteries.pdf say about replacement?")) {
+            val result = rag.retrieveForChat(query, preferredDocumentId = "plants", allowedDocumentIds = setOf("battery", "plants"))
+            assertTrue(result.hasContext)
+            assertEquals(setOf("battery"), result.matches.map { it.chunk.documentId }.toSet())
+        }
+    }
+
+    @Test fun genericFileQuestionsBlankNamesAndStemSubstringsDoNotImplyAttachmentIntent() = runBlocking {
+        val rag = manager()
+        rag.ingestText("report.pdf", "Vehicle battery maintenance.", "current")
+        for (query in listOf("How do I read a file in Python?", "What is a PDF?", "How do reporting tools work?")) {
+            assertFalse(query, ChatDocumentScope.isDocumentQuestion(query, listOf("report.pdf", "")))
+            assertFalse(query, rag.retrieveForChat(query, allowedDocumentIds = setOf("current")).hasContext)
+        }
+        assertTrue(ChatDocumentScope.isDocumentQuestion("Summarize the document"))
+        assertTrue(ChatDocumentScope.isDocumentQuestion("Read report.pdf" , listOf("report.pdf")))
+    }
     // Deliberately overconfident semantic engine: unrelated text must still be rejected.
     private class Engine : SemanticEmbeddingEngine {
         override val dimension = 8
