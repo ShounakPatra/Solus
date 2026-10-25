@@ -39,6 +39,7 @@ class CurrentDateTimeTool(private val clock: Clock? = null) : ChatTool {
 
 /** SDK callbacks can execute on worker threads. Snapshot copies never expose mutable state. */
 class ToolUseRecorder {
+    @Volatile var onProgress: (() -> Unit)? = null
     private val uses = mutableListOf<ToolUse>()
     @Synchronized fun add(use: ToolUse) { if (uses.size < 128) uses.add(use.copy(arguments = use.arguments.take(32768), result = use.result.take(32768))) }
     @Synchronized fun clear() { uses.clear() }
@@ -46,9 +47,12 @@ class ToolUseRecorder {
     fun recording(delegate: ChatTool): OpenApiTool = object : OpenApiTool {
         override fun getToolDescriptionJsonString(): String = delegate.getToolDescriptionJsonString()
         override fun execute(paramsJsonString: String): String {
-            val result = delegate.execute(paramsJsonString)
-            add(ToolUse(delegate.name, paramsJsonString, result))
-            return result
+            onProgress?.invoke()
+            try {
+                val result = delegate.execute(paramsJsonString)
+                add(ToolUse(delegate.name, paramsJsonString, result))
+                return result
+            } finally { onProgress?.invoke() }
         }
     }
 }

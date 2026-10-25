@@ -8,6 +8,24 @@ import java.time.Instant
 import java.time.ZoneId
 
 class ChatToolsTest {
+    @Test fun toolExecutionReportsProgressAtEntryAndExitIncludingFailure() {
+        val recorder = ToolUseRecorder()
+        var progress = 0
+        recorder.onProgress = { progress++ }
+        recorder.recording(CalculatorTool()).execute("""{"expression":"2+2"}""")
+        assertEquals(2, progress)
+        val failing = object : ChatTool {
+            override val name = "failing"
+            override fun getToolDescriptionJsonString() = "{}"
+            override fun execute(paramsJsonString: String): String = error("failed")
+        }
+        assertThrows(IllegalStateException::class.java) { recorder.recording(failing).execute("{}") }
+        assertEquals(4, progress)
+        assertEquals(1, recorder.snapshot().size)
+        recorder.onProgress = null
+        recorder.recording(CalculatorTool()).execute("""{"expression":"2+2"}""")
+        assertEquals(4, progress)
+    }
     @Test fun precedenceAndAssociativity() {
         mapOf("17.5 × 23" to "402.5", "2+3*4" to "14", "(2+3)*4" to "20",
             "2^3^2" to "512", "-2^2" to "-4", "(-2)^2" to "4", "2^-2" to "0.25",

@@ -78,6 +78,7 @@ class ChatInferenceManager(context: Context) {
     private var lastToolsRequestId = ""
     fun toolsUsedForRequest(requestId: String): List<ToolUse> = if (requestId == lastToolsRequestId) lastToolsUsed else emptyList()
     private var liteRtToolsDisabledForLoad = false
+    private var retryToolsNextTurn = false
     private var liteRtConversationHasTools = false
     private var liteRtCompletedTurns = 0
     private var liteRtCacheDir: File? = null
@@ -103,7 +104,7 @@ class ChatInferenceManager(context: Context) {
     @Volatile private var supportsTextNoThinkingSwitch = false
     @Volatile private var conversationToolSettings: ConversationToolSettings? = null
     val needsToolSettingsRefresh: Boolean
-        get() = (runtime == RuntimeKind.LiteRtLm || runtime == RuntimeKind.LlamaCpp) && conversationToolSettings?.requiresRefresh(
+        get() = retryToolsNextTurn || (runtime == RuntimeKind.LiteRtLm || runtime == RuntimeKind.LlamaCpp) && conversationToolSettings?.requiresRefresh(
             ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
         ) == true
 
@@ -634,6 +635,7 @@ class ChatInferenceManager(context: Context) {
             }
 
             liteRtToolsDisabledForLoad = false
+            retryToolsNextTurn = false
             liteRtEngine = engine
             // The UI defaults to Think off. Start default-thinking models with the
             // same hard template context so the very first request cannot inherit
@@ -787,7 +789,8 @@ class ChatInferenceManager(context: Context) {
         onProgress?.invoke(RequestProgress.ProcessingPrompt)
         var lastLlamaMetrics: LlamaGenerationMetrics? = null
         var lastNonLlamaTokenCount: Int? = null
-        val promptDeadline = PromptDeadline()
+        val promptDeadline = PromptDeadline.forPrompt(inferencePrompt.length + memoryContext.length +
+            structuredMessages.orEmpty().sumOf { it.first.length + it.second.length })
         val reportProgress: (RequestProgress) -> Unit = {
             promptDeadline.onProgress(it)
             if (it == RequestProgress.RecoveringOnCpu) {
@@ -800,6 +803,9 @@ class ChatInferenceManager(context: Context) {
             }
             onProgress?.invoke(it)
         }
+
+        liteRtToolRecorder.onProgress = { reportProgress(RequestProgress.UsingTools) }
+        if (runtime == RuntimeKind.LiteRtLm && liteRtToolsDisabledForLoad) reportProgress(RequestProgress.RetryingWithoutTools)
 
         fun currentMetrics() = timing?.buildMetrics(
             requestId = requestId, sessionId = sessionId, attempt = attempt,
@@ -948,7 +954,7 @@ class ChatInferenceManager(context: Context) {
             val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
             publisher.finishExplicit(finalFormatted)
             finalized.toExecutionResult(currentMetrics())
-        }
+        } finally { liteRtToolRecorder.onProgress = null }
     }
 
     @OptIn(ExperimentalApi::class)
@@ -975,6 +981,7 @@ class ChatInferenceManager(context: Context) {
             if (!liteRtConversationHasTools || liteRtCompletedTurns != 0 || textSeen.get() ||
                 stopRequested || isBeingClosed || liteRtToolRecorder.snapshot().isNotEmpty()) throw failure
             Log.w(TAG, "First LiteRT tool turn failed before text; retrying without tools", failure)
+            onProgress?.invoke(RequestProgress.RetryingWithoutTools)
             liteRtToolsDisabledForLoad = true
             val toolsAlreadyUsed = liteRtToolRecorder.snapshot()
             onAttemptChanged?.invoke(2)
@@ -982,6 +989,7 @@ class ChatInferenceManager(context: Context) {
             publisher?.beginAttempt(2)
             runCatching { liteRtConversation?.close() }
             liteRtConversation = createLiteRtConversation(liteRtConversationMode)
+            retryToolsNextTurn = true
             toolsAlreadyUsed.forEach(liteRtToolRecorder::add)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
@@ -1251,17 +1259,21 @@ class ChatInferenceManager(context: Context) {
                         messages = history,
                         tools = ggufConversationTools,
                         record = ggufToolRecorder::add,
-                        checkActive = { if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled") }
+                        checkActive = {
+                            if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
+                            onProgress?.invoke(RequestProgress.UsingTools)
+                        }
                     ) { request ->
                         var parsed: String? = null
                         val status = engine.generateMultimodalStream(
                             prompt = prompt, messages = messages, enableThinking = !noThinking,
                             samplingParams = profileSampling(), onMetrics = onMetrics,
                             toolRequestJson = request, onToolResponse = { parsed = it },
+                            onFirstToken = { onProgress?.invoke(RequestProgress.UsingTools) },
                             onStructuredToken = { answer, reasoning, thinking ->
                                 if (!stopRequested && !isBeingClosed) toolStream.update(answer, reasoning, thinking)
                             },
-                            onToken = {}
+                            onToken = { onProgress?.invoke(RequestProgress.UsingTools) }
                         )
                         if (status == LlamaGenerationResult.Stopped) throw CancellationException("Generation cancelled")
                         org.json.JSONObject(checkNotNull(parsed) { "Missing tool response" }).also(toolStream::complete)
@@ -1466,6 +1478,7 @@ class ChatInferenceManager(context: Context) {
     }
 
     fun resetConversation(noThinking: Boolean = false) {
+        if (retryToolsNextTurn) { retryToolsNextTurn = false; liteRtToolsDisabledForLoad = false }
         if (runtime == RuntimeKind.LlamaCpp) {
             llamaCppEngine?.resetAfterValidation()
             conversationToolSettings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
@@ -1518,7 +1531,8 @@ class ChatInferenceManager(context: Context) {
             } catch (failure: Exception) {
                 if (failure is CancellationException || stopRequested || isBeingClosed) throw failure
                 liteRtToolsDisabledForLoad = true
-                Log.w(TAG, "LiteRT tool conversation unavailable; using ordinary chat for this load", failure)
+                retryToolsNextTurn = true
+                Log.w(TAG, "LiteRT tool conversation unavailable; using ordinary chat for this turn", failure)
             }
         }
         return when (mode) {

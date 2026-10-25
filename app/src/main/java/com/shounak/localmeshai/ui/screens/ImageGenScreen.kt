@@ -2559,6 +2559,8 @@ fun VisionChatBubble(
                                 is RequestProgress.ValidatingBackend -> "Validating backend…"
                                 is RequestProgress.RecoveringOnCpu -> "GPU failed; retrying on CPU…"
                                 is RequestProgress.ProcessingPrompt -> "Processing prompt…"
+                                is RequestProgress.UsingTools -> "Working with tools…"
+                                is RequestProgress.RetryingWithoutTools -> "Retrying this answer without tools; tools will retry next turn…"
                                 is RequestProgress.StoppingAfterTimeout -> "Input timed out; stopping model…"
                                 is RequestProgress.Generating -> "Generating…"
                             },

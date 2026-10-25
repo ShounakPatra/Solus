@@ -16,6 +16,8 @@ sealed interface RequestProgress {
     object ValidatingBackend : RequestProgress
     object RecoveringOnCpu : RequestProgress
     object ProcessingPrompt : RequestProgress
+    object UsingTools : RequestProgress
+    object RetryingWithoutTools : RequestProgress
     object StoppingAfterTimeout : RequestProgress
     object Generating : RequestProgress
 }

@@ -10,6 +10,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PromptDeadlineTest {
+    @Test fun inputBudgetScalesAndIsBounded() {
+        assertEquals(120_000L, PromptDeadline.budgetMillis(0))
+        assertTrue(PromptDeadline.budgetMillis(8_000) > PromptDeadline.budgetMillis(1_000))
+        assertEquals(1_800_000L, PromptDeadline.budgetMillis(Int.MAX_VALUE))
+    }
+
+    @Test fun healthyToolRoundsRenewTheIdleDeadline() = runBlocking {
+        val deadline = PromptDeadline(200)
+        val result = deadline.run({ fail("Healthy progress must renew the deadline") }) {
+            repeat(4) {
+                delay(75)
+                deadline.onProgress(RequestProgress.UsingTools)
+            }
+            deadline.onProgress(RequestProgress.Generating)
+            delay(250)
+            "answer"
+        }
+        assertEquals("answer", result)
+    }
     @Test fun stalledPrefillCancelsNativeAndReportsRetryableFailure() = runBlocking {
         val nativeStopped = CompletableDeferred<Unit>()
         var cancelCount = 0

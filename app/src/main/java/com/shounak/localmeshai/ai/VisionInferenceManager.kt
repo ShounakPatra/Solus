@@ -72,6 +72,7 @@ class VisionInferenceManager(context: Context) {
     private var liteRtConversation: Conversation? = null
     private val toolRecorder = com.shounak.localmeshai.ai.tools.ToolUseRecorder()
     private var toolsDisabledForLoad = false
+    private var retryToolsNextTurn = false
     private var requestsSinceLoad = 0
     private var warmupMs = 0L
     private var runtimeThreads = 0
@@ -117,7 +118,7 @@ class VisionInferenceManager(context: Context) {
     }
     @Volatile private var conversationToolSettings: ConversationToolSettings? = null
     val needsToolSettingsRefresh: Boolean
-        get() = (runtime == RuntimeKind.LiteRtLm) && conversationToolSettings?.requiresRefresh(
+        get() = retryToolsNextTurn || (runtime == RuntimeKind.LiteRtLm) && conversationToolSettings?.requiresRefresh(
             ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
         ) == true
 
@@ -524,18 +525,23 @@ class VisionInferenceManager(context: Context) {
         val effectiveBitmap = bitmap ?: decodedBitmap
 
         var lastGeneratedTokens: Int? = null
-        val promptDeadline = PromptDeadline()
+        val promptDeadline = PromptDeadline.forPrompt(prompt.length)
         val reportProgress: (RequestProgress) -> Unit = {
             promptDeadline.onProgress(it)
             onProgress?.invoke(it)
         }
+        toolRecorder.onProgress = { reportProgress(RequestProgress.UsingTools) }
+        if (runtime == RuntimeKind.LiteRtLm && toolsDisabledForLoad) reportProgress(RequestProgress.RetryingWithoutTools)
         try {
             val rawResponse = promptDeadline.run(::cancelGeneration,
                 onTimeout = { onProgress?.invoke(RequestProgress.StoppingAfterTimeout) }
             ) { when (runtime) {
                 RuntimeKind.PortableMedia -> {
+                    // This runtime exposes only a completed answer, not a prefill boundary.
+                    reportProgress(RequestProgress.Generating)
                     val answer = requireNotNull(portableMediaEngine).generate(effectiveBitmap, audioFile, prompt, thinkingMode)
                     if (stopRequested) throw CancellationException("Generation cancelled")
+                    if (answer.isNotEmpty()) { timing?.recordFirstToken(); timing?.recordChunk(answer) }
                     effectiveOnUpdate(answer)
                     answer
                 }
@@ -678,6 +684,7 @@ class VisionInferenceManager(context: Context) {
             )
             finalized.toExecutionResult(metrics)
         } finally {
+            toolRecorder.onProgress = null
             if (decodedBitmap != null && decodedBitmap != bitmap) {
                 runCatching { decodedBitmap.recycle() }
             }
@@ -827,6 +834,7 @@ class VisionInferenceManager(context: Context) {
         thinkingMode: Boolean = false,
         initialMessages: List<Message>? = null
     ) {
+        if (retryToolsNextTurn) { retryToolsNextTurn = false; toolsDisabledForLoad = false }
         if (runtime != RuntimeKind.LiteRtLm) return
         val engine = liteRtEngine ?: return
         stopRequested = false
@@ -869,6 +877,7 @@ class VisionInferenceManager(context: Context) {
             } catch (failure: Exception) {
                 if (failure is CancellationException || stopRequested || isBeingClosed) throw failure
                 toolsDisabledForLoad = true
+                retryToolsNextTurn = true
                 Log.w(TAG, "Vision tools unavailable; using ordinary conversation", failure)
             }
         }
@@ -1017,6 +1026,7 @@ class VisionInferenceManager(context: Context) {
                 )
             } else null
             toolsDisabledForLoad = false
+            retryToolsNextTurn = false
             liteRtConversation = createLiteRtConversation(initialConfig)
             runtime = RuntimeKind.LiteRtLm
             if (stopRequested || isBeingClosed) throw CancellationException("Model initialization cancelled")
@@ -1111,6 +1121,7 @@ class VisionInferenceManager(context: Context) {
             if (!conversationHasTools || completedLiteRtTurns != 0 || textSeen.get() ||
                 stopRequested || isBeingClosed || toolRecorder.snapshot().isNotEmpty()) throw failure
             Log.w(TAG, "First vision tool turn failed before text; retrying without tools", failure)
+            onProgress?.invoke(RequestProgress.RetryingWithoutTools)
             toolsDisabledForLoad = true
             val used = toolRecorder.snapshot()
             onAttemptChanged?.invoke(2)
@@ -1118,6 +1129,7 @@ class VisionInferenceManager(context: Context) {
             publisher?.beginAttempt(2)
             runCatching { liteRtConversation?.close() }
             liteRtConversation = createLiteRtConversation(conversationBaseConfig)
+            retryToolsNextTurn = true
             used.forEach(toolRecorder::add)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
