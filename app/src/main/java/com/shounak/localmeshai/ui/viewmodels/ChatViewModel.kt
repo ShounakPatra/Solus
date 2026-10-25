@@ -1214,13 +1214,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 if (shouldQueryRag) {
                     val ragSettings = appSettings.settings.value
-                    val retrieval = withTimeoutOrNull(10_000L) { ragManager.retrieve(
+                    val retrieval = ragManager.retrieveForChat(
                         query = userText,
                         topK = ragSettings.ragTopK,
                         minScore = ragSettings.ragMinSimilarity,
                         preferredDocumentId = targetDocId,
                         allowGlobalSearch = ragSettings.enableRag
-                    ) } ?: throw IllegalStateException("Document search timed out. Retry or turn off Document search for this chat.")
+                    )
+                    effectivePromptText = ragManager.buildAugmentedPrompt(userText, retrieval)
                     if (retrieval.hasContext) {
                         effectivePromptText = ragManager.buildAugmentedPrompt(userText, retrieval)
                         ragPassages = retrieval.matches.map { com.shounak.localmeshai.features.RagPassage(it.chunk.documentId, it.chunk.documentName, it.chunk.chunkIndex, it.chunk.text) }

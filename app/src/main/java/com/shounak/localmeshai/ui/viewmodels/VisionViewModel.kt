@@ -1363,13 +1363,14 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 )
                 if (shouldQueryRag) {
                     val ragSettings = appSettings.settings.value
-                    val retrieval = withTimeoutOrNull(10_000L) { ragManager.retrieve(
+                    val retrieval = ragManager.retrieveForChat(
                         query = basePrompt,
                         topK = ragSettings.ragTopK,
                         minScore = ragSettings.ragMinSimilarity,
                         preferredDocumentId = effectiveDocId,
                         allowGlobalSearch = appSettings.settings.value.enableRag
-                    ) } ?: throw IllegalStateException("Document search timed out. Retry or turn off Document search for this chat.")
+                    )
+                    if (retrieval.unavailableReason != null) ragAugmentedContext = ragManager.buildAugmentedPrompt(basePrompt, retrieval)
                     if (retrieval.hasContext) {
                         currentRagPassages = retrieval.matches.map { com.shounak.localmeshai.features.RagPassage(it.chunk.documentId, it.chunk.documentName, it.chunk.chunkIndex, it.chunk.text) }
                         currentRagSources = retrieval.sourceNames

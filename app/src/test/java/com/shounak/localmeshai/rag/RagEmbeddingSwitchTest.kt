@@ -6,11 +6,39 @@ import com.shounak.localmeshai.rag.store.InMemoryRagVectorStore
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RagEmbeddingSwitchTest {
+    @Test fun timeoutReturnsWhileNonInterruptibleEmbeddingRetainsIndexOwnership() = runBlocking {
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = java.util.concurrent.CountDownLatch(1)
+        val lexical = UniversalSemanticEmbeddingEngine()
+        val engine = object : SemanticEmbeddingEngine by lexical {
+            override suspend fun embedQuery(text: String): FloatArray {
+                entered.complete(Unit)
+                check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                return lexical.embed(text)
+            }
+        }
+        val manager = RagManager(null, engine, InMemoryRagVectorStore(null, expectedDimension = engine.dimension))
+        manager.ingestText("cars.txt", "The battery powers the vehicle.")
+        try {
+            val result = async { manager.retrieveForChat("vehicle battery", timeoutMillis = 100) }
+            kotlinx.coroutines.withTimeout(2_000) { entered.await() }
+            val timedOut = kotlinx.coroutines.withTimeout(2_000) { result.await() }
+            assertTrue(timedOut.unavailableReason!!.contains("timed out"))
+            assertFalse(timedOut.hasContext)
+            val stillOwned = manager.retrieveForChat("vehicle battery")
+            assertTrue(stillOwned.unavailableReason!!.contains("indexed"))
+        } finally { release.countDown() }
+        kotlinx.coroutines.withTimeout(2_000) {
+            while (manager.retrieveForChat("vehicle battery", minScore = 0f).unavailableReason != null) kotlinx.coroutines.delay(10)
+        }
+        assertTrue(manager.retrieveForChat("vehicle battery", minScore = 0f).hasContext)
+    }
 
     /** Deterministic 8-dim engine with a calibration so threshold mapping is exercised. */
     private class FakeEngine(private val fail: Boolean = false) : SemanticEmbeddingEngine {
@@ -181,12 +209,10 @@ class RagEmbeddingSwitchTest {
         entered.await()
         try {
             kotlinx.coroutines.withTimeout(1_000) {
-                try {
-                    manager.retrieve("vehicle battery")
-                    org.junit.Assert.fail("Search queued behind indexing")
-                } catch (busy: IllegalStateException) {
-                    assertTrue(busy.message!!.contains("indexing"))
-                }
+                val result = manager.retrieveForChat("vehicle battery")
+                assertFalse(result.hasContext)
+                assertTrue(result.unavailableReason!!.contains("indexed"))
+                assertTrue(manager.buildAugmentedPrompt("vehicle battery", result).contains("temporarily unavailable"))
             }
         } finally {
             finish.complete(Unit)

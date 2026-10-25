@@ -60,6 +60,7 @@ class OnnxBertEmbeddingEngine(
             sessionMutex.withLock {
                 try {
                     val (ortSession, tk) = openLocked()
+                    ensureActive() // Cold session creation can outlive the interactive caller's deadline.
                     val encoded = texts.map { if (it.isBlank()) null else tk.encode(it) }
                     val results = arrayOfNulls<FloatArray>(texts.size)
                     // Sort by length so each batch pads as little as possible.

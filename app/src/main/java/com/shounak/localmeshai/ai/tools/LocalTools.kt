@@ -23,10 +23,12 @@ internal object LocalTools {
             add(DocumentSearchTool(isCancelled = isCancelled) { query ->
                 runBlocking(Dispatchers.IO) {
                     val settings = AppSettings.getInstance(context).settings.value
-                    val matches = RagManager.getInstance(context).retrieve(query,
-                        topK = settings.ragTopK.coerceIn(1, 5), minScore = settings.ragMinSimilarity).matches
-                    JSONObject().put("matches", JSONArray().apply {
-                        matches.forEach { match -> put(JSONObject()
+                    val retrieval = RagManager.getInstance(context).retrieveForChat(query,
+                        topK = settings.ragTopK.coerceIn(1, 5), minScore = settings.ragMinSimilarity, timeoutMillis = 4_000L)
+                    JSONObject().put("status", if (retrieval.unavailableReason == null) "ready" else "temporarily_unavailable")
+                        .put("note", retrieval.unavailableReason ?: "Search completed")
+                        .put("matches", JSONArray().apply {
+                        retrieval.matches.forEach { match -> put(JSONObject()
                             .put("document", match.chunk.documentName).put("chunk", match.chunk.chunkIndex)
                             .put("text", match.chunk.text.take(2000))) }
                     }).toString()

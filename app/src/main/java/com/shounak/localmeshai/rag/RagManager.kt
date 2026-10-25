@@ -14,6 +14,7 @@ import com.shounak.localmeshai.rag.store.RagSearchResult
 import com.shounak.localmeshai.rag.store.VectorStore
 import com.shounak.localmeshai.utils.DocumentTextExtractor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -35,7 +36,8 @@ data class RagIngestionResult(
 data class RagRetrievalResult(
     val query: String,
     val matches: List<RagSearchResult>,
-    val hasContext: Boolean
+    val hasContext: Boolean,
+    val unavailableReason: String? = null
 ) {
     val topMatchScore: Float
         get() = matches.firstOrNull()?.similarity ?: 0f
@@ -58,6 +60,23 @@ class RagManager(
     /** A store left behind by an embedding model that is no longer installed; migrated on [loadAsync]. */
     private var orphanedStore: VectorStore? = null
 ) {
+    // Independent ownership is intentional: JNI may ignore cancellation. The caller may
+    // stop waiting, but the worker retains the index lock until native work unwinds.
+    private val retrievalScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+
+    suspend fun retrieveForChat(
+        query: String, topK: Int = 3, minScore: Float = 0.35f,
+        preferredDocumentId: String? = null, allowGlobalSearch: Boolean = true,
+        timeoutMillis: Long = 10_000L
+    ): RagRetrievalResult {
+        val task = retrievalScope.async {
+            retrieve(query, topK, minScore, preferredDocumentId, allowGlobalSearch)
+        }
+        return try {
+            kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) { task.await() }
+                ?: RagRetrievalResult(query, emptyList(), false, "Document search timed out; document contents are temporarily unavailable. Do not infer that no documents exist.")
+        } finally { task.cancel() }
+    }
 
     /** An embedder and the store holding its vectors. Swapped as one unit so readers never mix them. */
     private class ActiveIndex(val engine: SemanticEmbeddingEngine, val store: VectorStore)
@@ -484,8 +503,9 @@ class RagManager(
             return@withContext RagRetrievalResult(query.trim(), emptyList(), false)
         }
         // Indexing can take minutes. Never queue an interactive answer behind it.
-        check(ingestionMutex.tryLock()) {
-            "Document search is busy indexing. Wait for indexing to finish and retry, or turn off Document search for this chat."
+        if (!ingestionMutex.tryLock()) {
+            return@withContext RagRetrievalResult(query.trim(), emptyList(), false,
+                "Documents are still being indexed; their contents are temporarily unavailable. Do not infer that no documents exist.")
         }
         try {
         val trimmedQuery = query.trim()
@@ -773,6 +793,7 @@ class RagManager(
         rawUserQuery: String,
         retrieval: RagRetrievalResult
     ): String {
+        retrieval.unavailableReason?.let { return "[Document search status: $it]\n\n$rawUserQuery" }
         if (!retrieval.hasContext || retrieval.matches.isEmpty()) {
             return rawUserQuery
         }
