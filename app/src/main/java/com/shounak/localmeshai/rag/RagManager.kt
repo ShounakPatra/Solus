@@ -76,6 +76,10 @@ class RagManager(
         return try {
             kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) { task.await() }
                 ?: RagRetrievalResult(query, emptyList(), false, "Document search timed out; document contents are temporarily unavailable. Do not infer that no documents exist.")
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            RagRetrievalResult(query, emptyList(), false, "Document search is temporarily unavailable. Do not infer that no documents exist or invent their contents.")
         } finally { task.cancel() }
     }
 
@@ -641,7 +645,7 @@ class RagManager(
         } else {
             val vector = current.engine.embedQuery(query)
             if (vector.isEmpty()) return RagRetrievalResult(query, emptyList(), false)
-            chunks.asSequence().filter { explicit || RetrievalRelevance.hasLexicalEvidence(query, it.text) }
+            chunks.asSequence().filter { current.engine !is UniversalSemanticEmbeddingEngine || explicit || RetrievalRelevance.hasLexicalEvidence(query, it.text) }
                 .map { RagSearchResult(it, current.engine.calibrate(VectorEmbedding.cosineSimilarity(vector, it.embedding))) }
                 .filter { it.similarity >= minScore }.sortedByDescending { it.similarity }.take(topK).toList()
         }

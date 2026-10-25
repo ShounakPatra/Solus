@@ -21,7 +21,7 @@ class ChatDocumentScopeTest {
     }
 
     @Test fun genericFileQuestionsBlankNamesAndStemSubstringsDoNotImplyAttachmentIntent() = runBlocking {
-        val rag = manager()
+        val rag = RagManager(null, vectorStore = InMemoryRagVectorStore(null))
         rag.ingestText("report.pdf", "Vehicle battery maintenance.", "current")
         for (query in listOf("How do I read a file in Python?", "What is a PDF?", "How do reporting tools work?")) {
             assertFalse(query, ChatDocumentScope.isDocumentQuestion(query, listOf("report.pdf", "")))
@@ -63,13 +63,19 @@ class ChatDocumentScopeTest {
         assertFalse(result.matches.any { it.chunk.text.contains("secret") })
     }
 
-    @Test fun unrelatedQuestionsAndGreetingsDoNotGetSourcesDespitePerfectSemanticScores() = runBlocking {
-        val rag = manager()
+    @Test fun unrelatedQuestionsAndGreetingsDoNotGetLexicalSources() = runBlocking {
+        val rag = RagManager(null, vectorStore = InMemoryRagVectorStore(null))
         val current = rag.ingestText("report.pdf", "Vehicle battery replacement requires a specialist.")
         for (query in listOf("hi", "who are you", "what is my name", "Explain ocean tides", "Summarize quantum physics")) {
             assertFalse(query, rag.retrieveForChat(query, allowedDocumentIds = setOf(current.documentId)).hasContext)
         }
-        assertTrue(rag.retrieveForChat("How is battery replacement handled?", allowedDocumentIds = setOf(current.documentId)).hasContext)
+        assertTrue(rag.retrieveForChat("How is battery replacement handled?", minScore = 0f, allowedDocumentIds = setOf(current.documentId)).hasContext)
+    }
+
+    @Test fun neuralParaphrasesDoNotRequireLiteralWordsFromTheDocument() = runBlocking {
+        val rag = manager()
+        val uploaded = rag.ingestText("notes.txt", "The battery needs replacement.")
+        assertTrue(rag.retrieveForChat("Why won't my automobile start?", allowedDocumentIds = setOf(uploaded.documentId)).hasContext)
     }
 
     @Test fun multipleCurrentUploadsAreSearchedWithoutOtherChats() = runBlocking {
