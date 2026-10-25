@@ -59,22 +59,39 @@ internal object RepositoryFileDownloads {
         require(files.isNotEmpty())
         val transfer = RepositoryFileTransfer(root(context), okhttp3.OkHttpClient())
         files.forEach { transfer.target(repo.repoId, repo.commitSha, it) }
+        val queuedFiles = queue(context).listFiles().orEmpty().filter { it.extension == "json" }.flatMap { manifest ->
+            runCatching {
+                val batch = JSONObject(manifest.readText())
+                if (batch.optString("repo") != repo.repoId || batch.optString("revision") != repo.commitSha) emptyList()
+                else {
+                    val entries = batch.getJSONArray("files")
+                    (0 until entries.length()).map(entries::getJSONObject)
+                }
+            }.getOrDefault(emptyList())
+        }
+        val selected = files.distinctBy { it.path }.filter { file ->
+            val state = mutableStates.value[RepositoryFileTransfer.key(repo.repoId, repo.commitSha, file.path)]
+            val pending = state == null || state.description == "Queued" || state.description.startsWith("Downloading")
+            !pending || queuedFiles.none { it.optString("path") == file.path &&
+                it.optLong("size") == file.sizeBytes && it.optString("sha256") == (file.sha256 ?: "") }
+        }
+        if (selected.isEmpty()) {
+            resumePending(context)
+            return
+        }
         val id = java.util.UUID.randomUUID().toString()
         val manifest = File(queue(context), "$id.json")
         val json = JSONObject().put("repo", repo.repoId).put("revision", repo.commitSha).put("files", JSONArray().apply {
-            files.distinctBy { it.path }.forEach { put(JSONObject().put("path", it.path).put("size", it.sizeBytes).put("sha256", it.sha256)) }
+            selected.forEach { put(JSONObject().put("path", it.path).put("size", it.sizeBytes).put("sha256", it.sha256)) }
         })
         // Never replace a manifest that the foreground service is already processing.
-        val newlyQueued = !manifest.exists()
-        if (newlyQueued) {
-            val pending = File(manifest.parentFile, "$id.tmp")
-            pending.writeText(json.toString())
-            check(pending.renameTo(manifest)) { "Could not queue repository files" }
-        }
-        if (newlyQueued) files.forEach { update(RepositoryFileTransfer.key(repo.repoId, repo.commitSha, it.path), RepositoryFileDownloadState("Queued")) }
+        val pending = File(manifest.parentFile, "$id.tmp")
+        pending.writeText(json.toString())
+        check(pending.renameTo(manifest)) { "Could not queue repository files" }
+        selected.forEach { update(RepositoryFileTransfer.key(repo.repoId, repo.commitSha, it.path), RepositoryFileDownloadState("Queued")) }
         try { ContextCompat.startForegroundService(context, Intent(context, RepositoryFileDownloadService::class.java)) }
         catch (failure: Exception) {
-            files.forEach { update(RepositoryFileTransfer.key(repo.repoId, repo.commitSha, it.path), RepositoryFileDownloadState("Could not start download")) }
+            selected.forEach { update(RepositoryFileTransfer.key(repo.repoId, repo.commitSha, it.path), RepositoryFileDownloadState("Could not start download")) }
             throw failure
         }
     }
