@@ -2327,16 +2327,17 @@ fun VisionChatBubble(
     val context = LocalContext.current
     var showFullImagePreview by remember { mutableStateOf(false) }
 
-    val resolvedBitmap = remember(bitmap, imagePath) {
-        if (bitmap != null && !bitmap.isRecycled) {
-            bitmap
-        } else if (!imagePath.isNullOrBlank()) {
-            runCatching {
-                val f = File(imagePath)
-                if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
-            }.getOrNull()
-        } else null
+    val previewBitmap = androidx.compose.runtime.produceState<Bitmap?>(
+        initialValue = bitmap?.takeUnless { it.isRecycled }, bitmap, imagePath
+    ) {
+        value = bitmap?.takeUnless { it.isRecycled }
+            ?: imagePath?.takeIf { it.isNotBlank() }?.let { path ->
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    com.shounak.localmeshai.utils.ImagePreviewDecoder.decode(File(path))
+                }
+            }
     }
+    val resolvedBitmap = previewBitmap.value
 
     val reduceMotion = com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion
     val entryProgress = remember { Animatable(if (entryDelayMs > 0) 0f else 1f) }

@@ -3,7 +3,6 @@ package com.shounak.localmeshai.ui.viewmodels
 import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
@@ -172,6 +171,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
     private val inferenceManager = VisionInferenceManager(application)
     val sessionRepository = ChatSessionRepository.getInstance(application)
+    private val sessionPersistenceScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
     private val sessionPersistenceChannel = kotlinx.coroutines.channels.Channel<List<VisionChatSession>>(kotlinx.coroutines.channels.Channel.CONFLATED)
     private val appSettings = AppSettings.getInstance(application)
     private val ragManager = RagManager.getInstance(application)
@@ -507,7 +507,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
         }
-        viewModelScope.launch(Dispatchers.IO) {
+        sessionPersistenceScope.launch {
             for (snapshot in sessionPersistenceChannel) {
                 writeSessionsToStorage(snapshot)
             }
@@ -659,6 +659,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             )
         } else if (isGguf) {
             val profile = GgufExecutionProfile.resolve(
+                modelId = modelId,
                 context = getApplication(),
                 modelNameOrId = modelName.ifBlank { modelId.ifBlank { file.nameWithoutExtension } },
                 modelSize = modelSize,
@@ -704,6 +705,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         currentAllowUnsafeOverride = allowUnsafeOverride
         currentRequestedIdentity = identity
 
+        if (_isAnalyzing.value) stopAnalyzing()
         currentModelEpoch++
         activeRequestId = null
         val opId = java.util.UUID.randomUUID().toString()
@@ -1078,6 +1080,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             currentSessionId = activeSessionId
         )
         if (resolved.media is ResolvedVisionMedia.AttachmentError) {
+            documentPreparation.release(preparation)
+            imagePreparation.release(imageInput)
             _error.value = resolved.media.message
             return false
         }
@@ -1274,7 +1278,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     throw IllegalArgumentException(fileText.take(240).ifBlank { "Could not read the attached document" })
                 }
                 promptFileText = withContext(Dispatchers.Default) {
-                    if (com.shounak.localmeshai.rag.ChatDocumentScope.shouldIncludeText(basePrompt, inputName, fileText))
+                    if (fileUri != null || preparedAttachment != null || com.shounak.localmeshai.rag.ChatDocumentScope.shouldIncludeText(basePrompt, inputName, fileText))
                         AttachedDocumentContext.select(fileText, basePrompt, documentBudget.maxPromptChars) else ""
                 }
                 if (myGen != analysisGeneration || reqModelEpoch != currentModelEpoch) {
@@ -1339,7 +1343,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     thinkingMode = thinkingModeForRequest
                 )
                 promptFileText = withContext(Dispatchers.Default) {
-                    if (com.shounak.localmeshai.rag.ChatDocumentScope.shouldIncludeText(basePrompt, inputName, fileText))
+                    if (fileUri != null || preparedAttachment != null || com.shounak.localmeshai.rag.ChatDocumentScope.shouldIncludeText(basePrompt, inputName, fileText))
                         AttachedDocumentContext.select(fileText, basePrompt, documentBudget.maxPromptChars) else ""
                 }
 
@@ -1464,9 +1468,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             historySnapshot.any { it.audioPath != null }
                         if (inferenceManager.needsMediaEncoders(needsVision, needsAudio)) {
                             timing.startLoading()
-                            inferenceManager.prepareMediaEncoders(needsVision, needsAudio)
-                            timing.endLoading()
-                            resetRuntimeConversationBeforeNextAsk = true
+                            try { inferenceManager.prepareMediaEncoders(needsVision, needsAudio) }
+                            finally {
+                                timing.endLoading()
+                                resetRuntimeConversationBeforeNextAsk = true
+                                withContext(Dispatchers.Main.immediate) { publishRuntimeCapabilities() }
+                            }
                         }
                         if (resetRuntimeConversationBeforeNextAsk || inferenceManager.needsToolSettingsRefresh) {
                             val previousMessages = historySnapshot.filter { it.id != userMessageId && it.id != assistantMessageId }
@@ -1756,6 +1763,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             } catch (failure: Throwable) {
                 withContext(NonCancellable + Dispatchers.Main.immediate) {
                     if (!isCurrentRequest()) return@withContext
+                    if (!inferenceManager.isReady) _isModelReady.value = false
                     if (activeRequestId == requestId && myGen == analysisGeneration && assistantIndex < messages.size) {
                         val stopped = failure is CancellationException
                         val partial = messages[assistantIndex].text.takeUnless { it in PLACEHOLDER_ANSWERS }.orEmpty()
@@ -1904,18 +1912,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun loadSessionBitmap(sessionId: String): Bitmap? {
-        val file = getSessionBitmapFile(sessionId).takeIf { it.exists() }
-            ?: getLegacySessionBitmapFile(sessionId)
-        if (!file.exists()) return null
-        return try {
-            android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-        } catch (e: Throwable) {
-            Log.w("VisionViewModel", "Failed to decode session bitmap: ${e.message}")
-            null
-        }
-    }
-
     fun selectChatSession(sessionId: String): VisionChatSession? {
         val session = imageChatSessions.firstOrNull { it.id == sessionId } ?: return null
         if (analysisJob?.isActive == true || _isAnalyzing.value || _isStopping.value) {
@@ -1937,7 +1933,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         _error.value = null
         messages.clear()
 
-        val defaultSessionBitmap = loadSessionBitmap(session.id)
+        val defaultSessionImagePath = getSessionBitmapFile(session.id).takeIf { it.exists() }?.absolutePath
+            ?: getLegacySessionBitmapFile(session.id).takeIf { it.exists() }?.absolutePath
 
         if (session.messages.isNotEmpty()) {
             session.messages.forEachIndexed { index, msg ->
@@ -1954,29 +1951,17 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         ?: (if (index == 0 && !session.audioPath.isNullOrBlank() && File(session.audioPath).exists()) session.audioPath else null)
                 }
 
-                val resolvedImagePath = if (!msg.imagePath.isNullOrBlank() && File(msg.imagePath).exists()) {
+                val resolvedImagePath = if (!msg.isUser) null else if (!msg.imagePath.isNullOrBlank() && File(msg.imagePath).exists()) {
                     msg.imagePath
                 } else if (index == 0 && !session.imagePath.isNullOrBlank() && File(session.imagePath).exists()) {
                     session.imagePath
                 } else {
-                    getSessionBitmapFile(session.id).takeIf { it.exists() }?.absolutePath
+                    defaultSessionImagePath
                 }
-
-                val decodedBmp = if (msg.isUser) {
-                    if (resolvedImagePath != null && File(resolvedImagePath).exists()) {
-                        try {
-                            BitmapFactory.decodeFile(resolvedImagePath)
-                        } catch (_: Throwable) {
-                            null
-                        }
-                    } else if (index == 0) {
-                        defaultSessionBitmap
-                    } else null
-                } else null
 
                 messages.add(
                     msg.copy(
-                        bitmap = decodedBmp,
+                        bitmap = null,
                         imagePath = resolvedImagePath,
                         audioPath = resolvedAudioPath,
                         documentPath = resolvedDocPath
@@ -1985,15 +1970,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             }
         } else {
             // Legacy session fallback (single question/answer)
-            val initialBmp = if (session.imagePath != null && File(session.imagePath).exists()) {
-                try {
-                    BitmapFactory.decodeFile(session.imagePath)
-                } catch (_: Throwable) {
-                    defaultSessionBitmap
-                }
-            } else {
-                defaultSessionBitmap
-            }
             val legacyAudioPath = if (!session.audioPath.isNullOrBlank() && File(session.audioPath).exists()) {
                 session.audioPath
             } else {
@@ -2004,8 +1980,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 VisionChatMessage(
                     text = session.question,
                     isUser = true,
-                    bitmap = initialBmp,
-                    imagePath = session.imagePath,
+                    bitmap = null,
+                    imagePath = session.imagePath?.takeIf { File(it).exists() } ?: defaultSessionImagePath,
                     audioPath = legacyAudioPath,
                     audioName = session.audioName,
                     audioDurationMs = session.audioDurationMs,
@@ -2029,8 +2005,14 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         deleteSessions(imageChatSessions.map { it.id })
     }
 
-    private fun deleteSessions(sessionIds: List<String>) {
+    private val pendingHistoryDeletions = linkedSetOf<String>()
+
+    private fun deleteSessions(requestedIds: List<String>) {
+        pendingHistoryDeletions.addAll(requestedIds)
         if (_isDeletingHistory.value) return
+        val sessionIds = pendingHistoryDeletions.toList()
+        pendingHistoryDeletions.clear()
+        if (sessionIds.isEmpty()) return
         _isDeletingHistory.value = true
         val running = analysisJob.takeIf { _currentSessionId.value in sessionIds }
         if (running != null) stopAnalyzing()
@@ -2063,6 +2045,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 _error.value = "Couldn't finish deleting history: ${error.message}"
             } finally {
                 _isDeletingHistory.value = false
+                if (pendingHistoryDeletions.isNotEmpty()) deleteSessions(emptyList())
             }
         }
     }
@@ -2241,8 +2224,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         val coordinator = com.shounak.localmeshai.data.StartupCoordinator.getInstance(getApplication())
         when (val res = sessionRepository.loadVisionSessionsAsync()) {
             is com.shounak.localmeshai.utils.AtomicReadResult.Success -> {
-                val sorted = res.data.sortedByDescending { it.updatedAt }
                 withContext(Dispatchers.Main.immediate) {
+                    val sorted = com.shounak.localmeshai.data.mergeSessionSnapshots(
+                        res.data, imageChatSessions.toList(), { it.id }, { it.updatedAt },
+                        { sessionRepository.isTombstoned(com.shounak.localmeshai.data.ChatKind.Vision, it) }
+                    )
                     imageChatSessions.clear()
                     imageChatSessions.addAll(sorted)
                 }
@@ -2696,10 +2682,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         autoUnloadJob?.cancel()
         autoUnloadJob = null
         val jobToCancel = analysisJob
+        if (_isAnalyzing.value) stopAnalyzing()
         analysisJob = null
         jobToCancel?.cancel()
         inferenceManager.cancelGeneration()
         initGeneration++
+        val releaseGeneration = initGeneration
         analysisGeneration++
         initJob?.cancel()
         initJob = null
@@ -2717,6 +2705,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
             }
+            if (initGeneration != releaseGeneration) return@launch
             currentModelEpoch++
             withContext(Dispatchers.Main.immediate) {
                 activeRequestId = null
@@ -2737,6 +2726,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             if (clearCoordinator) ModelRuntimeCoordinator.clear(ModelRuntimeOwner.Vision)
             activeLoadOperationId = null
             withContext(Dispatchers.Main.immediate) {
+                if (initGeneration != releaseGeneration) return@withContext
                 currentRequestedIdentity = null
                 currentLoadedIdentity = null
                 currentResolvedThinkingCapability = ThinkingCapability.Unknown

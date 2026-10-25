@@ -368,6 +368,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val userMsgId = failedAssistant.userMessageId ?: messages.takeWhile { it.id != failedAssistant.id }.lastOrNull { it.isUser }?.id ?: return
         retryMessage(sId, userMsgId)
     }
+    val composerAttachments = com.shounak.localmeshai.ui.models.ComposerAttachments()
     private val ioMutex = Mutex()
     private var releaseJob: Job? = null
     private val documentPreparation = DocumentPreparation(application, viewModelScope)
@@ -744,6 +745,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
         } else if (isGguf) {
             val profile = GgufExecutionProfile.resolve(
+                modelId = modelId,
                 context = getApplication(),
                 modelNameOrId = modelName.ifBlank { modelId.ifBlank { file.nameWithoutExtension } },
                 modelSize = modelSize,
@@ -787,6 +789,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentAllowUnsafeOverride = allowUnsafeOverride
         currentRequestedIdentity = identity
 
+        if (_isGenerating.value) stopGenerating()
         currentModelEpoch++
         activeRequestId = null
         val myGen = ++initGeneration
@@ -908,6 +911,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
         } else if (isGguf) {
             val profile = GgufExecutionProfile.resolve(
+                modelId = currentModelId,
                 context = getApplication(),
                 modelNameOrId = currentModelName.ifBlank { currentModelId.ifBlank { file.nameWithoutExtension } },
                 modelSize = currentModelSize,
@@ -1145,7 +1149,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         prepared.extractedText?.take(240) ?: "Could not extract the attached document"
                     }
                     attachedContext = withContext(Dispatchers.Default) {
-                        if (com.shounak.localmeshai.rag.ChatDocumentScope.shouldIncludeText(userText, durable.name, durable.extractedText.orEmpty()))
+                        if (documentUri != null || !documentPath.isNullOrBlank() || com.shounak.localmeshai.rag.ChatDocumentScope.shouldIncludeText(userText, durable.name, durable.extractedText.orEmpty()))
                             AttachedDocumentContext.select(durable.extractedText.orEmpty(), userText, 12_000) else ""
                     }
                 }
@@ -1478,6 +1482,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     Log.e("ChatViewModel", "Inference error", t)
                     resetRuntimeConversationBeforeNextSend = true
+                    if (!inferenceManager.isReady) {
+                        _isModelReady.value = false
+                        modelLoadController.clearReadiness(t.message ?: "Runtime conversation unavailable")
+                    }
                     val mId = currentModelId.ifBlank { "unknown_model" }
                     val mName = currentModelName.ifBlank { "Unknown Model" }
                     val backendPref = appSettings.settings.value.llamaBackendPreference
@@ -1704,8 +1712,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         deleteSessions(chatSessions.map { it.id })
     }
 
-    private fun deleteSessions(sessionIds: List<String>) {
+    private val pendingHistoryDeletions = linkedSetOf<String>()
+
+    private fun deleteSessions(requestedIds: List<String>) {
+        pendingHistoryDeletions.addAll(requestedIds)
         if (_isDeletingHistory.value) return
+        val sessionIds = pendingHistoryDeletions.toList()
+        pendingHistoryDeletions.clear()
+        if (sessionIds.isEmpty()) return
         _isDeletingHistory.value = true
         val running = generationJob.takeIf { _currentSessionId.value in sessionIds }
         if (running != null) stopGenerating()
@@ -1742,11 +1756,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 _error.value = "Couldn't finish deleting history: ${error.message}"
             } finally {
                 _isDeletingHistory.value = false
+                if (pendingHistoryDeletions.isNotEmpty()) deleteSessions(emptyList())
             }
         }
     }
 
     private fun ensureCurrentSession(firstUserText: String, documentName: String? = null) {
+        _pendingSessionId.value?.let { pending ->
+            if (_currentSessionId.value == null && chatSessions.any { it.id == pending }) {
+                _currentSessionId.value = pending
+                _pendingSessionId.value = null
+            }
+        }
         if (_temporaryChat.value) {
             if (_currentSessionId.value == null) _currentSessionId.value = UUID.randomUUID().toString()
             com.shounak.localmeshai.features.TemporaryChatFiles.retain(temporaryAttachments.getSessionAttachmentsDir(com.shounak.localmeshai.data.ChatKind.Text, _currentSessionId.value!!))
@@ -1840,8 +1861,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val coordinator = com.shounak.localmeshai.data.StartupCoordinator.getInstance(getApplication())
         when (val res = sessionRepository.loadChatSessionsAsync()) {
             is com.shounak.localmeshai.utils.AtomicReadResult.Success -> {
-                val sorted = res.data.sortedByDescending { it.updatedAt }
                 withContext(Dispatchers.Main.immediate) {
+                    val sorted = com.shounak.localmeshai.data.mergeSessionSnapshots(
+                        res.data, chatSessions.toList(), { it.id }, { it.updatedAt },
+                        { sessionRepository.isTombstoned(com.shounak.localmeshai.data.ChatKind.Text, it) }
+                    )
                     chatSessions.clear()
                     chatSessions.addAll(sorted)
                 }
@@ -2039,10 +2063,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         autoUnloadJob?.cancel()
         autoUnloadJob = null
         val jobToCancel = generationJob
+        if (_isGenerating.value) stopGenerating()
         generationJob = null
         jobToCancel?.cancel()
         inferenceManager.cancelGeneration()
         initGeneration++
+        val releaseGeneration = initGeneration
+        val releasedOperationId = modelLoadController.activeOperationId
         initJob?.cancel()
         initJob = null
         if (jobToCancel != null && jobToCancel.isActive) {
@@ -2059,6 +2086,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
+            if (initGeneration != releaseGeneration) return@launch
             currentModelEpoch++
             withContext(Dispatchers.Main.immediate) {
                 activeRequestId = null
@@ -2073,6 +2101,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 if (clearCoordinator) ModelRuntimeCoordinator.clear(ModelRuntimeOwner.Chat)
             }
             withContext(Dispatchers.Main.immediate) {
+                if (initGeneration != releaseGeneration) return@withContext
                 if (closeResult.isSuccess) {
                     currentRequestedIdentity = null
                     currentLoadedIdentity = null
@@ -2090,7 +2119,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _isStopping.value = false
                     _runtimeCapabilities.value = null
                     _isModelReady.value = false
-                    modelLoadController.resetToUnloaded()
+                    releasedOperationId?.let { modelLoadController.resetToUnloaded(targetOperationId = it) }
                 } else {
                     _isInitializing.value = false
                     _isStopping.value = false

@@ -63,6 +63,9 @@ class ChatScrollController(
                 activeScrollJob?.cancel()
                 activeScrollJob = null
                 followLatest = false
+            } else if (interaction is DragInteraction.Stop || interaction is DragInteraction.Cancel) {
+                // A drag that finishes at the bottom may not change the observed bottom boolean.
+                if (!listState.canScrollForward) followLatest = true
             }
         }
     }
@@ -131,6 +134,10 @@ class ChatScrollController(
                 }
             }
         }
+    }
+
+    fun onUserMessageSent() {
+        followLatest = true
     }
 
     suspend fun followStreaming(isStreaming: Boolean, getAnchorIndex: () -> Int) {

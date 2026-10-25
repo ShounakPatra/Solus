@@ -395,12 +395,12 @@ fun ChatScreen(
     bottomContentInset: androidx.compose.ui.unit.Dp = 0.dp,
     retainedScrollController: com.shounak.localmeshai.ui.models.ChatScrollController? = null
 ) {
-    var selectedBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var selectedFileUri by remember { mutableStateOf<Uri?>(null) }
-    var selectedFileName by remember { mutableStateOf<String?>(null) }
-    var selectedAudioUri by remember { mutableStateOf<Uri?>(null) }
-    var selectedAudioName by remember { mutableStateOf<String?>(null) }
-    var selectedAudioBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var selectedBitmap by chatViewModel.composerAttachments.bitmap
+    var selectedFileUri by chatViewModel.composerAttachments.fileUri
+    var selectedFileName by chatViewModel.composerAttachments.fileName
+    var selectedAudioUri by chatViewModel.composerAttachments.audioUri
+    var selectedAudioName by chatViewModel.composerAttachments.audioName
+    var selectedAudioBytes by chatViewModel.composerAttachments.audioBytes
     var isRecordingAudio by remember { mutableStateOf(false) }
     var isRecordingPaused by remember { mutableStateOf(false) }
     var recordingJob by remember { mutableStateOf<Job?>(null) }
@@ -486,7 +486,11 @@ fun ChatScreen(
         mainViewModel.unsafeInitOverrideIds.contains(modelId) || InitCrashGuard.hasSuccessfulRetry(context, modelId)
     } == true
     val selectedRetryRevision = selectedModel?.id?.let { mainViewModel.modelRetryRevisions[it] } ?: 0
-    val selectedSupportsAttachments = selectedVisionModelPath != null || selectedModel?.isMultimodal == true
+    val selectedSupportsAttachments = when (activeHistoryChatType) {
+        HistorySessionType.Text -> false
+        HistorySessionType.Vision -> true
+        else -> selectedVisionModelPath != null || selectedModel?.isMultimodal == true
+    }
     val selectedVisionModelSupportsFiles = selectedVisionModelPath?.let { path ->
         path.endsWith(".task", ignoreCase = true) || path.endsWith(".litertlm", ignoreCase = true) || path.endsWith(".gguf", ignoreCase = true)
     } ?: false
@@ -771,11 +775,13 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(selectedTextModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision) {
-        if (selectedTextModelPath == null) {
+    val visibleTextModelPath = selectedModelPath.takeUnless { effectiveSupportsAttachments }
+    val visibleVisionModelPath = selectedModelPath.takeIf { effectiveSupportsAttachments }
+    LaunchedEffect(visibleTextModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision) {
+        if (visibleTextModelPath == null) {
             chatViewModel.uninitializeModel()
         } else {
-            selectedTextModelPath?.let { path ->
+            visibleTextModelPath.let { path ->
                 chatViewModel.initModel(
                     path = path,
                     modelId = selectedModel?.id ?: "",
@@ -790,11 +796,11 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(selectedVisionModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision) {
-        if (selectedVisionModelPath == null) {
+    LaunchedEffect(visibleVisionModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision) {
+        if (visibleVisionModelPath == null) {
             visionViewModel.uninitializeModel()
         } else {
-            selectedVisionModelPath?.let { path ->
+            visibleVisionModelPath.let { path ->
                 visionViewModel.initModel(
                     path = path,
                     modelId = selectedModel?.id ?: "",
@@ -837,7 +843,7 @@ fun ChatScreen(
     }
 
     // Only auto-scroll when a new message is added if auto-follow is active
-    LaunchedEffect(activeMessageCount, effectiveSupportsAttachments) {
+    LaunchedEffect(activeMessageCount, effectiveSupportsAttachments, effectiveSessionId) {
         if (activeMessageCount > 0) {
             scrollController.onNewMessageAdded(activeMessageCount)
         }
@@ -909,6 +915,7 @@ fun ChatScreen(
                 showHistory = false
             },
             onNewChat = {
+                cancelMicRecording()
                 attachmentMenuExpanded = false
                 activeHistoryChatType = null
                 visionViewModel.startNewChat()
@@ -1055,6 +1062,7 @@ fun ChatScreen(
                     mainViewModel.tryModelAnyway(model.id)
                 },
                 onNewChat = {
+                    cancelMicRecording()
                     attachmentMenuExpanded = false
                     activeHistoryChatType = null
                     visionViewModel.startNewChat()
@@ -1915,7 +1923,7 @@ fun ChatScreen(
                                     !isCurrentModelResponding &&
                                     !isDecodingAudioFile &&
                                     (hasVisionAttachment || textState.isNotBlank()),
-                                isGenerating = if (selectedSupportsAttachments) isVisionAnalyzing else (isGenerating || isInitializing),
+                                isGenerating = if (effectiveSupportsAttachments) isVisionAnalyzing else (isGenerating || isInitializing),
                                 canThink = isCurrentModelReady && runtimeSnapshot != null && selectedSupportsThinking && !isCurrentModelResponding,
                                 supportsAttachments = selectedModelPath != null,
                                 hasAttachment = hasVisionAttachment,
@@ -1963,7 +1971,7 @@ fun ChatScreen(
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     val documentUri = selectedFileUri
                                     val documentName = selectedFileName ?: "document"
-                                    val accepted = if (selectedSupportsAttachments) {
+                                    val accepted = if (effectiveSupportsAttachments) {
                                         val reqThinking = ThinkingModeConfig.resolveRequestThinking(selectedThinkingCapability, thinkingMode)
                                         visionViewModel.ask(
                                             bitmap = selectedBitmap,
@@ -1980,6 +1988,7 @@ fun ChatScreen(
                                             documentName = if (documentUri != null) documentName else null)
                                     }
                                     if (accepted) {
+                                        scrollController.onUserMessageSent()
                                         selectedBitmap = null
                                         selectedFileUri = null
                                         selectedFileName = null
@@ -1991,7 +2000,7 @@ fun ChatScreen(
                                 },
                                 onStop = {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    if (selectedSupportsAttachments) {
+                                    if (effectiveSupportsAttachments) {
                                         visionViewModel.stopAnalyzing()
                                     } else {
                                         chatViewModel.stopGenerating()
