@@ -373,6 +373,7 @@ class ChatInferenceManager(context: Context) {
                         )
                     }
                 }
+                if (RuntimeWarmup.enabled(context)) onModelProgress?.invoke(ModelLoadStage.WarmingUp, null, null)
                 warmupMs = RuntimeWarmup.gguf(context, engine)
             } catch (t: Throwable) {
                 if (t is CancellationException) { engine.close(); throw t }
@@ -413,6 +414,7 @@ class ChatInferenceManager(context: Context) {
                                 )
                             }
                         }
+                        if (RuntimeWarmup.enabled(context)) onModelProgress?.invoke(ModelLoadStage.WarmingUp, null, null)
                         warmupMs = RuntimeWarmup.gguf(context, cpuRetryEngine)
                         engine = cpuRetryEngine
                         selectedBackend = LlamaBackend.CPU
@@ -491,7 +493,10 @@ class ChatInferenceManager(context: Context) {
             }
             portableTextEngine = engine
             try {
-                if (RuntimeWarmup.enabled(context)) warmupMs = RuntimeWarmup.portable(engine)
+                if (RuntimeWarmup.enabled(context)) {
+                    onModelProgress?.invoke(ModelLoadStage.WarmingUp, null, null)
+                    warmupMs = RuntimeWarmup.portable(engine)
+                }
             } catch (failure: Throwable) {
                 InitCrashGuard.markInitFailed(context, effectiveId)
                 throw failure
@@ -546,7 +551,9 @@ class ChatInferenceManager(context: Context) {
             }
             var loadedBackend = inferenceBackend
             try {
-                initLiteRtLm(resolvedModelPath, effectiveId, loadedBackend, configuredContextWindow)
+                initLiteRtLm(resolvedModelPath, effectiveId, loadedBackend, configuredContextWindow) {
+                    onModelProgress?.invoke(ModelLoadStage.WarmingUp, null, null)
+                }
             } catch (failure: Exception) {
                 if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
                     pref != "AUTO" || inferenceBackend != InferenceBackend.LITERT_GPU) throw failure
@@ -556,7 +563,9 @@ class ChatInferenceManager(context: Context) {
                 loadedBackend = InferenceBackend.LITERT_CPU
                 warmupMs = 0
                 Log.w(TAG, "Measured GPU failed; retrying LiteRT initialization on CPU", failure)
-                initLiteRtLm(resolvedModelPath, effectiveId, loadedBackend, configuredContextWindow)
+                initLiteRtLm(resolvedModelPath, effectiveId, loadedBackend, configuredContextWindow) {
+                    onModelProgress?.invoke(ModelLoadStage.WarmingUp, null, null)
+                }
             }
             activeBackendDisplayName = if (loadedBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
         } else {
@@ -586,7 +595,8 @@ class ChatInferenceManager(context: Context) {
         modelPath: String,
         modelId: String,
         inferenceBackend: InferenceBackend,
-        contextWindowTokens: Int? = null
+        contextWindowTokens: Int? = null,
+        onWarmupStart: () -> Unit = {}
     ) {
         // Mark that we're about to attempt a potentially fatal native init
         InitCrashGuard.markInitStarted(context, modelId)
@@ -635,6 +645,7 @@ class ChatInferenceManager(context: Context) {
             }
 
             if (RuntimeWarmup.enabled(context)) {
+                onWarmupStart()
                 warmupMs = RuntimeWarmup.liteRt(requireNotNull(engine)) { liteRtConversation = it }.coerceAtLeast(1)
             }
 

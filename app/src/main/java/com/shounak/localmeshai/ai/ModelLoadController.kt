@@ -317,6 +317,8 @@ class ModelLoadController internal constructor(
                     val stageChanged: Boolean
                     val unitsChanged: Boolean
                     synchronized(progressLock) {
+                        // Native load snapshots remain on their last phase during Kotlin warm-up.
+                        if (fromNative && currentStage == ModelLoadStage.WarmingUp) return
                         stageChanged = (stage != currentStage)
                         unitsChanged = (completed != null && completed != lastCompletedUnits) || (total != null && total != lastTotalUnits)
                         if (stageChanged || unitsChanged) {

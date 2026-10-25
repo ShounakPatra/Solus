@@ -1266,6 +1266,7 @@ fun ChatScreen(
                                         ModelLoadStage.WaitingForRuntime -> "Waiting for runtime"
                                         ModelLoadStage.VerifyingFile -> "Verifying model file"
                                         ModelLoadStage.General -> "Initialising model"
+                                        ModelLoadStage.WarmingUp -> "Preparing first response"
                                         ModelLoadStage.CpuLoading -> "Loading CPU model"
                                         ModelLoadStage.GpuLoading -> "Loading GPU model"
                                         is ModelLoadStage.CpuReference -> "Probing CPU reference (${st.promptIndex + 1}/3, pos ${st.position}/8)"

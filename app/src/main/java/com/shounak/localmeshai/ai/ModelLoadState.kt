@@ -10,6 +10,9 @@ sealed interface ModelLoadStage {
     object General : ModelLoadStage {
         override fun toString(): String = "Initialising model"
     }
+    object WarmingUp : ModelLoadStage {
+        override fun toString(): String = "Preparing first response"
+    }
     object CpuLoading : ModelLoadStage {
         override fun toString(): String = "Loading CPU model"
     }

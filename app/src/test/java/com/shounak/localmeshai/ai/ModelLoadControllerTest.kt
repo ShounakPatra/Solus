@@ -20,6 +20,33 @@ import java.util.concurrent.atomic.AtomicInteger
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ModelLoadControllerTest {
+    @Test fun warmupStartsItsOwnStallDeadlineAfterALongLoad() = runBlocking {
+        val time = java.util.concurrent.atomic.AtomicLong(100L)
+        val controller = ModelLoadController(clock = { time.get() })
+        val entered = CompletableDeferred<Unit>()
+        val finish = CompletableDeferred<Unit>()
+        val loading = async(Dispatchers.IO) {
+            controller.loadOrAttach(ModelLoadIdentity("slow-load"), this) { _, progress ->
+                time.set(119_000L)
+                progress(ModelLoadStage.WarmingUp, null, null)
+                entered.complete(Unit)
+                finish.await()
+                ModelActualConfiguration("Gguf", "CPU")
+            }
+        }
+        try {
+            entered.await()
+            time.set(121_000L)
+            delay(650L)
+            val state = controller.loadState.value as ModelLoadState.Loading
+            assertEquals(ModelLoadStage.WarmingUp, state.stage)
+            assertTrue(state.idleMs < 120_000L)
+            finish.complete(Unit)
+            loading.await()
+            assertTrue(controller.isReady)
+        } finally { finish.complete(Unit); loading.cancel() }
+    }
+
     @Test fun staleUnloadCannotResetANewerReadyModel() = runBlocking {
         val controller = ModelLoadController()
         val first = ModelLoadIdentity(modelPath = "/first.gguf", runtimeKind = "Gguf")
