@@ -12,6 +12,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RagEmbeddingSwitchTest {
+    @Test fun removingNeuralEngineKeepsDocumentsSearchableWithKeywordFallback() = runBlocking {
+        val neural = FakeEngine()
+        val manager = RagManager(null, neural, InMemoryRagVectorStore(null, expectedDimension = 8, algorithmId = neural.algorithmId))
+        val document = manager.ingestText("cars.txt", "The battery powers the vehicle.")
+        val chunks = manager.vectorStore.getChunksForDocument(document.documentId).map { it.id to it.text }
+        val lexical = UniversalSemanticEmbeddingEngine()
+        manager.switchEmbeddingEngine(lexical, InMemoryRagVectorStore(null, expectedDimension = lexical.dimension)).getOrThrow()
+        assertTrue(neural.released)
+        assertSame(lexical, manager.embeddingEngine)
+        assertEquals(chunks, manager.vectorStore.getChunksForDocument(document.documentId).map { it.id to it.text })
+        assertTrue(manager.retrieveForChat("vehicle battery", minScore = 0f).hasContext)
+    }
     @Test fun timeoutReturnsWhileNonInterruptibleEmbeddingRetainsIndexOwnership() = runBlocking {
         val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
         val release = java.util.concurrent.CountDownLatch(1)

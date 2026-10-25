@@ -15,6 +15,34 @@ import org.junit.rules.TemporaryFolder
 import java.security.MessageDigest
 
 class EmbeddingModelsDownloadTest {
+    @Test fun deletingInactiveSearchModelCleansPartialDownloadsWithoutRemovingDocuments() = runBlocking {
+        val context = object : android.content.ContextWrapper(null) {
+            override fun getFilesDir() = temp.root
+        }
+        val modelDir = EmbeddingModels.directory(context, EmbeddingModels.BGE_SMALL_EN_V15).apply { mkdirs() }
+        java.io.File(modelDir, "model.onnx.part").writeText("partial")
+        val manager = RagManager(context, vectorStore = com.shounak.localmeshai.rag.store.InMemoryRagVectorStore(null))
+        val document = manager.ingestText("cars.txt", "The battery powers the vehicle.")
+        manager.setEmbeddingModel(EmbeddingModels.LEXICAL_ID).getOrThrow()
+        assertEquals(1, manager.embeddingFilesRevision.value)
+        assertFalse(modelDir.exists())
+        assertEquals(document.documentId, manager.indexedDocuments.single().documentId)
+        assertTrue(manager.retrieveForChat("vehicle battery", minScore = 0f).hasContext)
+    }
+    @Test fun deletionRemovesModelAndCompanionsButKeepsDocumentStorage() {
+        val context = object : android.content.ContextWrapper(null) {
+            override fun getFilesDir() = temp.root
+        }
+        val spec = EmbeddingModels.BGE_SMALL_EN_V15
+        val modelDir = EmbeddingModels.directory(context, spec).apply { mkdirs() }
+        spec.files.forEach { java.io.File(modelDir, it.localName).writeText("model companion") }
+        java.io.File(modelDir, "model.onnx.part").writeText("interrupted download")
+        val document = java.io.File(temp.root, "rag_originals/document.pdf").apply { parentFile!!.mkdirs(); writeText("original document") }
+        EmbeddingModels.delete(context, spec)
+        assertFalse(modelDir.exists())
+        assertEquals("original document", document.readText())
+        EmbeddingModels.delete(context, spec) // Already absent is a successful deletion too.
+    }
     @Test
     fun cancellingAStalledHttpRequestAbortsTransport() = runBlocking {
         val server = MockWebServer().apply {

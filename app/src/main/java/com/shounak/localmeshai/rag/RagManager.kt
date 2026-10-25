@@ -92,6 +92,8 @@ class RagManager(
 
     private val _embeddingStatus = kotlinx.coroutines.flow.MutableStateFlow<EmbeddingModelStatus>(EmbeddingModelStatus.Idle)
     val embeddingStatus: kotlinx.coroutines.flow.StateFlow<EmbeddingModelStatus> = _embeddingStatus
+    private val _embeddingFilesRevision = kotlinx.coroutines.flow.MutableStateFlow(0)
+    val embeddingFilesRevision: kotlinx.coroutines.flow.StateFlow<Int> = _embeddingFilesRevision
 
     private val _loadState = kotlinx.coroutines.flow.MutableStateFlow(vectorStore.loadState.value)
     val loadState: kotlinx.coroutines.flow.StateFlow<com.shounak.localmeshai.data.StoreLoadState> = _loadState
@@ -740,8 +742,14 @@ class RagManager(
      */
     suspend fun setEmbeddingModel(modelId: String): Result<Unit> = withContext(Dispatchers.IO) {
         val ctx = context ?: return@withContext Result.failure(IllegalStateException("Android Context is required"))
-        if (modelId == embeddingEngine.algorithmId) return@withContext Result.success(Unit)
+        if (modelId == embeddingEngine.algorithmId && modelId != EmbeddingModels.LEXICAL_ID) return@withContext Result.success(Unit)
         val result = runCatching {
+            if (modelId == embeddingEngine.algorithmId) {
+                // Also remove partial downloads, or retry file cleanup after a completed switch.
+                _embeddingStatus.value = EmbeddingModelStatus.Reindexing(0, 0)
+                EmbeddingModels.all.forEach { EmbeddingModels.delete(ctx, it) }
+                return@runCatching
+            }
             val engine: SemanticEmbeddingEngine
             if (modelId == EmbeddingModels.LEXICAL_ID) {
                 engine = UniversalSemanticEmbeddingEngine()
@@ -761,6 +769,8 @@ class RagManager(
             if (modelId == EmbeddingModels.LEXICAL_ID) EmbeddingModels.all.forEach { EmbeddingModels.delete(ctx, it) }
         }
         val error = result.exceptionOrNull()
+        // Even fast cleanup of an inactive download must invalidate the card's file state.
+        _embeddingFilesRevision.value += 1
         _embeddingStatus.value = when (error) {
             null, is kotlinx.coroutines.CancellationException -> EmbeddingModelStatus.Idle
             else -> EmbeddingModelStatus.Failed(error.message ?: error.javaClass.simpleName)

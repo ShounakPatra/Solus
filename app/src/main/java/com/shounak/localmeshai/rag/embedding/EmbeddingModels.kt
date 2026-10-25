@@ -112,7 +112,8 @@ object EmbeddingModels {
     )
 
     fun delete(context: Context, spec: Spec) {
-        directory(context, spec).deleteRecursively()
+        val dir = directory(context, spec)
+        check(!dir.exists() || dir.deleteRecursively()) { "Could not remove ${spec.displayName} files. Retry deleting the search model." }
     }
 
     /**

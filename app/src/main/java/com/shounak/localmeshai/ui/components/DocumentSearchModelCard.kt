@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -24,6 +25,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -50,12 +53,33 @@ fun DocumentSearchModelCard(hazeState: HazeState, modifier: Modifier = Modifier)
     val appSettings = remember { AppSettings.getInstance(context) }
     val settings by appSettings.settings.collectAsState()
     val status by ragManager.embeddingStatus.collectAsState()
+    val filesRevision by ragManager.embeddingFilesRevision.collectAsState()
     val spec = EmbeddingModels.BGE_SMALL_EN_V15
     val installed = ragManager.embeddingEngine.algorithmId == spec.id
+    val hasDownloadedFiles = remember(filesRevision, status) { EmbeddingModels.directory(context, spec).exists() }
     val sizeMb = spec.downloadBytes / 1_000_000
     val colors = MaterialTheme.colorScheme
     val busy = status is EmbeddingModelStatus.Downloading || status is EmbeddingModelStatus.Reindexing
     val compact = installed || (settings.embeddingModelPromptSkipped && !busy && status !is EmbeddingModelStatus.Failed)
+    var confirmDelete by remember { mutableStateOf(false) }
+
+    if (confirmDelete) {
+        com.shounak.localmeshai.features.GlassActionDialog(
+            hazeState = hazeState,
+            onDismiss = { confirmDelete = false },
+            title = "Delete document search model?",
+            confirmLabel = "Delete model",
+            destructive = true,
+            confirmEnabled = !busy,
+            onConfirm = {
+                confirmDelete = false
+                appSettings.updateSettings { it.copy(embeddingModelPromptSkipped = true) }
+                ragManager.requestEmbeddingModel(EmbeddingModels.LEXICAL_ID)
+            }
+        ) {
+            Text("This removes the downloaded search model ($sizeMb MB). Your documents stay in the knowledge base and switch to built-in keyword search. You can download the model again later.")
+        }
+    }
 
     Card(
         modifier = modifier
@@ -123,6 +147,21 @@ fun DocumentSearchModelCard(hazeState: HazeState, modifier: Modifier = Modifier)
                     color = colors.error
                 )
                 else -> Unit
+            }
+
+            if (installed || hasDownloadedFiles) {
+                LiquidGlassButton(
+                    onClick = { confirmDelete = true },
+                    enabled = !busy,
+                    hazeState = hazeState,
+                    shape = RoundedCornerShape(12.dp),
+                    tintColor = colors.error.copy(alpha = 0.14f),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp), tint = colors.error)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Delete model", style = MaterialTheme.typography.labelMedium, color = colors.error)
+                }
             }
 
             if (!compact && !busy) {
