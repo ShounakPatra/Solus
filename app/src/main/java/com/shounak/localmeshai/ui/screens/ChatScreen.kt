@@ -1820,21 +1820,34 @@ fun ChatScreen(
                         }
 
                         if ((selectedAudioUri != null || selectedAudioBytes?.isNotEmpty() == true) && !isRecordingAudio) {
-                            val audioPreviewPath = remember(selectedAudioUri, selectedAudioBytes) {
-                                val uriPath = selectedAudioUri?.path
-                                if (!uriPath.isNullOrBlank() && File(uriPath).exists()) {
-                                    uriPath
-                                } else if (selectedAudioBytes != null && selectedAudioBytes!!.isNotEmpty()) {
-                                    try {
-                                        val cacheDir = File(context.cacheDir, "multimodal_inputs").apply { mkdirs() }
-                                        val tempFile = File(cacheDir, "preview_audio_${System.currentTimeMillis()}.wav")
-                                        tempFile.writeBytes(selectedAudioBytes!!)
-                                        tempFile.absolutePath
-                                    } catch (_: Exception) {
-                                        null
+                            val audioPreviewState = produceState<String?>(null, selectedAudioUri, selectedAudioBytes) {
+                                val previewUri = selectedAudioUri
+                                val previewBytes = selectedAudioBytes
+                                var createdPreview: File? = null
+                                try {
+                                    value = try {
+                                        withContext(Dispatchers.IO) {
+                                            val uriPath = previewUri?.path
+                                            if (!uriPath.isNullOrBlank() && File(uriPath).isFile) uriPath
+                                            else if (previewBytes != null && previewBytes.isNotEmpty()) {
+                                                val directory = File(context.cacheDir, "multimodal_inputs").apply { mkdirs() }
+                                                File(directory, "preview_audio_${java.util.UUID.randomUUID()}.wav").also {
+                                                    createdPreview = it
+                                                    it.writeBytes(previewBytes)
+                                                }.absolutePath
+                                            } else null
+                                        }
+                                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                        throw cancelled
+                                    } catch (_: Exception) { null }
+                                    kotlinx.coroutines.awaitCancellation()
+                                } finally {
+                                    withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                                        createdPreview?.let { runCatching { it.delete() } }
                                     }
-                                } else null
+                                }
                             }
+                            val audioPreviewPath = audioPreviewState.value
 
                             Box(
                                 modifier = Modifier
