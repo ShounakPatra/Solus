@@ -211,7 +211,7 @@ class ChatInferenceManager(context: Context) {
         val shutdownResult = close()
         requestsSinceLoad = 0
         warmupMs = 0
-        runtimeThreads = RuntimeExecutionPolicy.resolve(context).cpuThreads
+        runtimeThreads = RuntimeExecutionPolicy.resolve(context, effectiveId).cpuThreads
         if (shutdownResult is ShutdownResult.Failed) {
             throw IllegalStateException("Cannot initialize model: previous engine failed to shut down cleanly (${shutdownResult.error.message})", shutdownResult.error)
         }
@@ -277,6 +277,7 @@ class ChatInferenceManager(context: Context) {
         val isGguf = detectedFormat == ModelFormat.GGUF
         if (isGguf) {
             val profile = GgufExecutionProfile.resolve(
+                modelId = effectiveId,
                 context = context,
                 modelNameOrId = effectiveName.ifBlank { effectiveId },
                 modelSize = modelSize,
@@ -372,6 +373,7 @@ class ChatInferenceManager(context: Context) {
                         )
                     }
                 }
+                warmupMs = RuntimeWarmup.gguf(context, engine)
             } catch (t: Throwable) {
                 if (t is CancellationException) { engine.close(); throw t }
                 if (selectedBackend == LlamaBackend.VULKAN) {
@@ -411,6 +413,7 @@ class ChatInferenceManager(context: Context) {
                                 )
                             }
                         }
+                        warmupMs = RuntimeWarmup.gguf(context, cpuRetryEngine)
                         engine = cpuRetryEngine
                         selectedBackend = LlamaBackend.CPU
                     } catch (cpuError: Throwable) {
@@ -458,7 +461,6 @@ class ChatInferenceManager(context: Context) {
                 "GGUF CPU"
             }
             runtimeThreads = dynamicThreads
-            warmupMs = RuntimeWarmup.gguf(context, engine)
             Log.i(TAG, "LlamaCpp GGUF engine initialized for: $effectiveName on $activeBackendDisplayName (ctx: $dynamicContext, threads: $dynamicThreads, prefillThreads: $prefillThreads, batch: $nBatch/$nUbatch, warmupMs=$warmupMs)")
             activeModelLease = modelLease
             return
@@ -514,7 +516,8 @@ class ChatInferenceManager(context: Context) {
             val inferenceBackend = when (pref) {
                 "CPU" -> InferenceBackend.LITERT_CPU
                 "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
-                else -> RuntimeSpeedTuner.liteRtBackend(context, effectiveId, effectiveFile.absolutePath, configuredContextWindow)
+                else -> if (InitCrashGuard.isModelBlocked(context, effectiveId)) InferenceBackend.LITERT_CPU
+                    else RuntimeSpeedTuner.liteRtBackend(context, effectiveId, effectiveFile.absolutePath, configuredContextWindow)
             }
             val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                 context = context,
@@ -594,7 +597,7 @@ class ChatInferenceManager(context: Context) {
         val effectiveMaxTokens = (contextWindowTokens ?: 4096).coerceIn(2048, 8192)
         var engine: Engine? = null
         try {
-            val executionPolicy = RuntimeExecutionPolicy.resolve(context)
+            val executionPolicy = RuntimeExecutionPolicy.resolve(context, modelId)
             val backend = when (inferenceBackend) {
                 InferenceBackend.LITERT_GPU -> Backend.GPU()
                 InferenceBackend.LITERT_CPU,
@@ -655,6 +658,8 @@ class ChatInferenceManager(context: Context) {
         } catch (t: Throwable) {
             InitCrashGuard.markInitFailed(context, modelId)
             try {
+                liteRtConversation?.close()
+                liteRtConversation = null
                 engine?.closeIfInitialized()
                 liteRtEngine = null
                 liteRtConversation = null
@@ -1495,7 +1500,9 @@ class ChatInferenceManager(context: Context) {
         } else {
             LiteRtConversationMode.Default
         }
-        runCatching { liteRtConversation?.close() }.onFailure { t ->
+        val previousConversation = liteRtConversation
+        liteRtConversation = null
+        runCatching { previousConversation?.close() }.onFailure { t ->
             Log.w(TAG, "LiteRT-LM conversation close during reset failed", t)
         }
         stopRequested = false

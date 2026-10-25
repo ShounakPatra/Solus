@@ -4,6 +4,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RuntimeSpeedTunerTest {
+    @Test fun tuningUsesTheLoadersContextAndKeepsThreadSelectionsPerModel() {
+        assertEquals(8192, RuntimeSpeedTuner.liteRtContextTokens(null, 32768))
+        assertEquals(2048, RuntimeSpeedTuner.liteRtContextTokens(2048, 32768))
+        assertEquals(4096, RuntimeSpeedTuner.liteRtContextTokens(null, null))
+        assertNotEquals(RuntimeExecutionPolicy.threadPreferenceKey("a"), RuntimeExecutionPolicy.threadPreferenceKey("b"))
+    }
     @Test fun unsupportedTuningDoesNotStopOrEvictTheActiveChatRuntime() = kotlinx.coroutines.runBlocking {
         val stops = java.util.concurrent.atomic.AtomicInteger()
         val releases = java.util.concurrent.atomic.AtomicInteger()

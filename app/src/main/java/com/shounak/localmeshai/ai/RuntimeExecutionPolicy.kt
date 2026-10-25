@@ -49,7 +49,9 @@ data class RuntimeExecutionPolicy(
         /**
          * Resolves execution policy from Android Context.
          */
-        fun resolve(context: Context): RuntimeExecutionPolicy {
+        fun threadPreferenceKey(modelId: String): String = "threads_${android.os.Build.FINGERPRINT}_${modelId}"
+
+        fun resolve(context: Context, modelId: String? = null): RuntimeExecutionPolicy {
             val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
             val isPowerSave = powerManager?.isPowerSaveMode == true
             val totalRamGb = DeviceUtils.getTotalRamGB(context)
@@ -59,7 +61,7 @@ data class RuntimeExecutionPolicy(
                     runCatching { java.io.File(cpu, "cpufreq/cpuinfo_max_freq").readText().trim().toLong() }.getOrNull()
                 }
             val speedPrefs = context.getSharedPreferences("runtime_speed", Context.MODE_PRIVATE)
-            val tuned = speedPrefs.getInt("threads_${android.os.Build.FINGERPRINT}", 0).takeIf { it > 0 }
+            val tuned = modelId?.takeIf { it.isNotBlank() }?.let { speedPrefs.getInt(threadPreferenceKey(it), 0).takeIf { count -> count > 0 } }
             return resolve(
                 availableProcessors = cores,
                 totalRamGb = totalRamGb,

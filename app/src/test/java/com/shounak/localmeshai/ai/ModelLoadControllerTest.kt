@@ -20,6 +20,17 @@ import java.util.concurrent.atomic.AtomicInteger
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ModelLoadControllerTest {
+    @Test fun staleUnloadCannotResetANewerReadyModel() = runBlocking {
+        val controller = ModelLoadController()
+        val first = ModelLoadIdentity(modelPath = "/first.gguf", runtimeKind = "Gguf")
+        controller.loadOrAttach(first, this) { _, _ -> ModelActualConfiguration("Gguf", "CPU", 2, 1024, 128, 64, 0) }
+        val oldOperation = controller.activeOperationId
+        val second = first.copy(modelPath = "/second.gguf")
+        controller.loadOrAttach(second, this) { _, _ -> ModelActualConfiguration("Gguf", "CPU", 4, 2048, 128, 64, 0) }
+        controller.resetToUnloaded(targetOperationId = oldOperation).join()
+        assertTrue(controller.isReady)
+        assertEquals(second, controller.currentIdentity)
+    }
 
     @Test fun elapsedTimeAdvancesWhileWaitingWithoutProgressAndStopsAtReady() = runBlocking {
         val time = java.util.concurrent.atomic.AtomicLong(100L)
@@ -201,7 +212,7 @@ class ModelLoadControllerTest {
         }
         assertTrue(controller.isReady)
 
-        controller.resetToUnloaded()
+        controller.resetToUnloaded().join()
         assertEquals(ModelLoadState.Unloaded, controller.loadState.value)
         assertFalse(controller.isReady)
     }

@@ -667,13 +667,13 @@ class ModelLoadController internal constructor(
         targetOperationId: String? = null,
         unloadAction: (suspend () -> Unit)? = null
     ): Job {
-        val (opId, job, cancelAction, nativeToken, myEpoch, shouldLaunch) = synchronized(this) {
+        val requestedOperation = targetOperationId ?: currentOperationId
+        return controllerScope.launch {
+        val (opId, job, cancelAction, nativeToken, myEpoch, shouldLaunch) = mutex.withLock {
             val op = currentOperationId ?: UUID.randomUUID().toString()
-            if (targetOperationId != null && currentOperationId != null && targetOperationId != currentOperationId) {
+            if (requestedOperation != currentOperationId) {
                 safeLogI("Ignoring resetToUnloaded for mismatched operation: target=$targetOperationId, current=$currentOperationId")
-                val completedJob = Job()
-                completedJob.complete()
-                return completedJob
+                return@launch
             }
             val epoch = ++currentEpoch
             val j = inFlightJob
@@ -703,12 +703,9 @@ class ModelLoadController internal constructor(
         }
 
         if (!shouldLaunch) {
-            val completedJob = Job()
-            completedJob.complete()
-            return completedJob
+            return@launch
         }
 
-        return controllerScope.launch {
             val traceCookie = opId.hashCode()
             AppTrace.beginAsyncSection("model_reset_unload", traceCookie)
             try {

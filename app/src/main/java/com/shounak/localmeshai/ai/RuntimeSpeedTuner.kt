@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /** Explicit, sequential measurements; Auto consumes only a receipt for this artifact/device/config. */
 internal object RuntimeSpeedTuner {
+    internal fun liteRtContextTokens(customTokens: Int?, modelTokens: Int?): Int = (customTokens ?: modelTokens ?: 4096).coerceIn(2048, 8192)
     private val prompts = listOf("Say hello.", "What is 2 + 2?", "Name a color.")
     private data class Sample(val threads: Int, val medianMs: Double, val answers: List<String>)
 
@@ -37,14 +38,14 @@ internal object RuntimeSpeedTuner {
     }
 
     fun liteRtBackend(context: Context, id: String, path: String, tokens: Int?): InferenceBackend {
-        val receipt = key(id, File(path), (tokens ?: 4096).coerceIn(2048, 8192), RuntimeExecutionPolicy.resolve(context).cpuThreads)
+        val receipt = key(id, File(path), liteRtContextTokens(tokens, null), RuntimeExecutionPolicy.resolve(context, id).cpuThreads)
         val prefs = context.getSharedPreferences("runtime_speed", Context.MODE_PRIVATE)
         return if (prefs.getString("litert_$receipt", null) == "GPU" &&
             !InitCrashGuard.isModelBlocked(context, "$id:speed:gpu:$receipt")) InferenceBackend.LITERT_GPU else InferenceBackend.LITERT_CPU
     }
 
     fun recordGpuFailure(context: Context, id: String, path: String, tokens: Int?) {
-        val receipt = key(id, File(path), (tokens ?: 4096).coerceIn(2048, 8192), RuntimeExecutionPolicy.resolve(context).cpuThreads)
+        val receipt = key(id, File(path), liteRtContextTokens(tokens, null), RuntimeExecutionPolicy.resolve(context, id).cpuThreads)
         context.getSharedPreferences("runtime_speed", Context.MODE_PRIVATE).edit().putString("litert_$receipt", "CPU").commit()
     }
 
@@ -55,12 +56,12 @@ internal object RuntimeSpeedTuner {
                 ?: error("Tune speed needs an app-managed model file. Use the model's bundle benchmark for linked storage imports.")
             val format = ModelFormat.fromFileName(file.name)
             require(format == ModelFormat.GGUF || format == ModelFormat.LiteRtLm) { "Tune speed currently supports GGUF and LiteRT-LM models." }
-            val policy = RuntimeExecutionPolicy.resolve(context)
+            val policy = RuntimeExecutionPolicy.resolve(context, model.id)
             check(!policy.isPowerSaveMode) { "Turn off power saving before tuning speed." }
             val maximum = if (policy.isLowRam) 2 else minOf(Runtime.getRuntime().availableProcessors(), 6)
             val candidates = listOf(2, 4, 6).filter { it <= maximum }.ifEmpty { listOf(1) }
             val requestedContext = com.shounak.localmeshai.features.WorkspacePreferences.get(context).profile(model.id).contextTokens
-            val tokens = if (format == ModelFormat.LiteRtLm) (requestedContext ?: 4096).coerceIn(2048, 8192)
+            val tokens = if (format == ModelFormat.LiteRtLm) liteRtContextTokens(requestedContext, model.effectiveContextWindowTokens)
                 else GgufExecutionProfile.resolve(context, model.name, model.size, requestedContext, "CPU").contextTokens
         BenchmarkAdmission.run(model.id) {
             val samples = candidates.map { threads ->
@@ -92,7 +93,7 @@ internal object RuntimeSpeedTuner {
             }
             ensureActive()
             val prefs = context.getSharedPreferences("runtime_speed", Context.MODE_PRIVATE)
-            val editor = prefs.edit().putInt("threads_${Build.FINGERPRINT}", best.threads)
+            val editor = prefs.edit().putInt(RuntimeExecutionPolicy.threadPreferenceKey(model.id), best.threads)
             if (format == ModelFormat.LiteRtLm) editor.putString("litert_$receipt", backend)
             check(editor.commit()) { "Could not save speed measurements" }
             "CPU: ${best.threads} threads (${best.medianMs.toLong()} ms median first token). " +

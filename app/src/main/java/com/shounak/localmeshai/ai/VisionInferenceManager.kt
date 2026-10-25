@@ -85,11 +85,14 @@ class VisionInferenceManager(context: Context) {
     private var seededMemoryPrefix: String? = null
 
     fun needsMediaEncoders(vision: Boolean, audio: Boolean): Boolean = runtime == RuntimeKind.LiteRtLm &&
-        ((vision && !visionEncoderLoaded) || (audio && !audioEncoderLoaded))
+        ((vision && !visionEncoderLoaded) || (audio && modelSupportsAudioInput && !audioEncoderLoaded))
 
     /** Called under the same runtime/IO gate as inference; the caller restores saved history afterward. */
     fun prepareMediaEncoders(vision: Boolean, audio: Boolean) {
+        require(!audio || modelSupportsAudioInput) { "This runtime could not initialize the model's audio encoder." }
         if (!needsMediaEncoders(vision, audio)) return
+        check(!isBeingClosed) { "The model is being closed" }
+        stopRequested = false // A previous stopped turn must not cancel this new initialization.
         val spec = checkNotNull(liteRtLoadSpec)
         val enableVision = vision || visionEncoderLoaded
         val enableAudio = audio || audioEncoderLoaded
@@ -265,7 +268,7 @@ class VisionInferenceManager(context: Context) {
         isBeingClosed = false   // Reset after close() so initialize() starts clean
         requestsSinceLoad = 0
         warmupMs = 0
-        runtimeThreads = RuntimeExecutionPolicy.resolve(context).cpuThreads
+        runtimeThreads = RuntimeExecutionPolicy.resolve(context, effectiveId).cpuThreads
 
         val detectedFormat = bundle?.format ?: file?.let { NonGgufBundleInspector.detectFormat(it) }
         val isGguf = detectedFormat == ModelFormat.GGUF
@@ -283,6 +286,7 @@ class VisionInferenceManager(context: Context) {
                 val appSettings = AppSettings.getInstance(context)
                 val pref = appSettings.settings.value.llamaBackendPreference.uppercase()
                 val profile = GgufExecutionProfile.resolve(
+                    modelId = effectiveId,
                     context = context,
                     modelNameOrId = effectiveName.ifBlank { effectiveId },
                     modelSize = modelSize,
@@ -322,8 +326,10 @@ class VisionInferenceManager(context: Context) {
                     requestedBackend = requestedBackend,
                     companionSummary = companionSummary
                 )
-                val engine = LlamaCppEngine(context)
-                initializeGgufEngine(engine) {
+                var engine = LlamaCppEngine(context)
+                var selectedBackend = decision.selectedBackend
+                fun initializeCandidate() {
+                  initializeGgufEngine(engine) {
                     if (bundle != null) {
                         engine.initializeBundle(
                             context = context,
@@ -333,8 +339,8 @@ class VisionInferenceManager(context: Context) {
                             contextWindow = profile.contextTokens,
                             nBatch = profile.batchTokens,
                             nUbatch = profile.microBatchTokens,
-                            backend = decision.selectedBackend,
-                            nGpuLayers = if (decision.selectedBackend == LlamaBackend.VULKAN) 99 else 0
+                            backend = selectedBackend,
+                            nGpuLayers = if (selectedBackend == LlamaBackend.VULKAN) 99 else 0
                         )
                     } else {
                         engine.initialize(
@@ -344,17 +350,26 @@ class VisionInferenceManager(context: Context) {
                             contextWindow = profile.contextTokens,
                             nBatch = profile.batchTokens,
                             nUbatch = profile.microBatchTokens,
-                            backend = decision.selectedBackend,
-                            nGpuLayers = if (decision.selectedBackend == LlamaBackend.VULKAN) 99 else 0
+                            backend = selectedBackend,
+                            nGpuLayers = if (selectedBackend == LlamaBackend.VULKAN) 99 else 0
                         )
                     }
+                  }
+                  warmupMs = RuntimeWarmup.gguf(context, engine)
+                }
+                try { initializeCandidate() }
+                catch (failure: Throwable) {
+                    engine.close()
+                    if (failure is CancellationException || stopRequested || selectedBackend != LlamaBackend.VULKAN) throw failure
+                    selectedBackend = LlamaBackend.CPU
+                    engine = LlamaCppEngine(context)
+                    try { initializeCandidate() } catch (cpuFailure: Throwable) { engine.close(); throw cpuFailure }
                 }
                 llamaCppEngine = engine
                 currentGgufBundle = bundle
                 currentGgufModelPath = bundle?.mainArtifacts?.firstOrNull()?.source?.location ?: file?.absolutePath.orEmpty()
                 currentGgufThreads = profile.decodeThreads
                 runtimeThreads = profile.decodeThreads
-                warmupMs = RuntimeWarmup.gguf(context, engine)
                 Log.i(TAG, "GGUF vision engine ready warmupMs=$warmupMs threads=$runtimeThreads")
                 currentGgufPrefillThreads = profile.prefillThreads
                 currentGgufContext = engine.actualConfiguration?.contextWindow?.takeIf { it > 0 } ?: profile.contextTokens
@@ -375,7 +390,8 @@ class VisionInferenceManager(context: Context) {
                 val inferenceBackend = when (pref) {
                     "CPU" -> InferenceBackend.LITERT_CPU
                     "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
-                    else -> RuntimeSpeedTuner.liteRtBackend(context, modelIdForLiteRt, resolvedModelPath, configuredContextWindow)
+                    else -> if (InitCrashGuard.isModelBlocked(context, modelIdForLiteRt)) InferenceBackend.LITERT_CPU
+                        else RuntimeSpeedTuner.liteRtBackend(context, modelIdForLiteRt, resolvedModelPath, configuredContextWindow)
                 }
                 val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                     context = context,
@@ -842,7 +858,9 @@ class VisionInferenceManager(context: Context) {
         if (runtime != RuntimeKind.LiteRtLm) return
         val engine = liteRtEngine ?: return
         stopRequested = false
-        runCatching { liteRtConversation?.close() }.onFailure { t ->
+        val previousConversation = liteRtConversation
+        liteRtConversation = null
+        runCatching { previousConversation?.close() }.onFailure { t ->
             Log.w(TAG, "LiteRT-LM vision conversation close during reset failed", t)
         }
         val extraCtx = ThinkingModeConfig.liteRtExtraContext(
@@ -900,7 +918,7 @@ class VisionInferenceManager(context: Context) {
         InitCrashGuard.markInitStarted(context, modelId)
         var engine: Engine? = null
         try {
-            val executionPolicy = RuntimeExecutionPolicy.resolve(context)
+            val executionPolicy = RuntimeExecutionPolicy.resolve(context, modelId)
             val backend = when (inferenceBackend) {
                 InferenceBackend.LITERT_GPU -> Backend.GPU()
                 InferenceBackend.LITERT_CPU,
@@ -1039,6 +1057,8 @@ class VisionInferenceManager(context: Context) {
         } catch (t: Throwable) {
             InitCrashGuard.markInitFailed(context, modelId)
             try {
+                liteRtConversation?.close()
+                liteRtConversation = null
                 engine?.closeIfInitialized()
                 liteRtEngine = null
                 liteRtConversation = null

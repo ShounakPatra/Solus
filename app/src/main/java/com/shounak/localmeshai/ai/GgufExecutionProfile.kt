@@ -67,7 +67,8 @@ data class GgufExecutionProfile(
             modelNameOrId: String = "",
             modelSize: String = "",
             customContextTokens: Int? = null,
-            backendPreference: String = "AUTO"
+            backendPreference: String = "AUTO",
+            modelId: String? = null
         ): GgufExecutionProfile {
             val paramsB = DeviceUtils.estimateModelParametersB(modelNameOrId, modelSize)
             val maxDeviceContext = DeviceUtils.recommendedContextWindow(context, paramsB)
@@ -76,7 +77,7 @@ data class GgufExecutionProfile(
             } else {
                 maxDeviceContext
             }
-            val threads = RuntimeExecutionPolicy.resolve(context).cpuThreads
+            val threads = RuntimeExecutionPolicy.resolve(context, modelId).cpuThreads
             val (batch, ubatch) = DeviceUtils.recommendedBatchSize(context)
             val isGpu = backendPreference.equals("VULKAN", ignoreCase = true) ||
                 backendPreference.equals("GPU", ignoreCase = true) ||
