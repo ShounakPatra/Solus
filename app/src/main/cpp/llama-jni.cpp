@@ -19,6 +19,7 @@
 #include "chat.h"
 #include "prompt-cache.h"
 #include "prompt-budget.h"
+#include "runtime-warmup.h"
 #include "llama-arch.h"
 #include "native-operation-control.h"
 #include "ggml.h"
@@ -49,6 +50,14 @@ struct ScopedTrace {
     explicit ScopedTrace(const char * name) { TRACE_BEGIN(name); }
     ~ScopedTrace() { TRACE_END(); }
 };
+
+// Model templates are untrusted metadata. Never let parser exceptions cross JNI.
+static common_chat_templates_ptr safe_chat_templates(const llama_model * model) {
+    try { return common_chat_templates_init(model, ""); }
+    catch (const std::exception & e) { __android_log_print(ANDROID_LOG_WARN, "SolusLlamaJNI", "Unsupported chat template: %s", e.what()); }
+    catch (...) { __android_log_print(ANDROID_LOG_WARN, "SolusLlamaJNI", "Unsupported chat template"); }
+    return nullptr;
+}
 
 enum SolusBackend {
     SOLUS_BACKEND_CPU = 0,
@@ -474,6 +483,7 @@ struct NativeLeaseGuard {
     llama_sampler * smpl = nullptr;
     llama_batch batch{};
     bool batch_initialized = false;
+    bool owns_generation = false;
 
     explicit NativeLeaseGuard(LlamaContextHolder * h) : holder(h) {}
     ~NativeLeaseGuard() {
@@ -486,8 +496,11 @@ struct NativeLeaseGuard {
             batch_initialized = false;
         }
         if (holder) {
-            holder->is_generating.store(false, std::memory_order_release);
-            holder->active_leases.fetch_sub(1, std::memory_order_acq_rel);
+            {
+                std::lock_guard<std::mutex> lock(holder->state_mutex);
+                if (owns_generation) holder->is_generating.store(false, std::memory_order_release);
+                holder->active_leases.fetch_sub(1, std::memory_order_acq_rel);
+            }
             holder->gen_cv.notify_all();
         }
     }
@@ -516,7 +529,7 @@ static bool format_and_tokenize_prompt(
     if (!holder->tool_request_json.empty()) {
         try {
             const auto request = common_json::parse(holder->tool_request_json);
-            auto tmpls = common_chat_templates_init(holder->model, "");
+            auto tmpls = safe_chat_templates(holder->model);
             if (!tmpls) throw std::runtime_error("No chat template");
             common_chat_templates_inputs inputs;
             inputs.messages = common_chat_msgs_parse_oaicompat(request.at("messages"));
@@ -526,7 +539,7 @@ static bool format_and_tokenize_prompt(
             inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
             inputs.chat_template_kwargs["enable_thinking"] = enable_thinking ? "true" : "false";
             auto params = common_chat_templates_apply(tmpls.get(), inputs);
-            out_tokens = common_tokenize(holder->ctx, params.prompt.str(), false, true);
+            out_tokens = common_tokenize(holder->ctx, params.prompt.str(), true, true);
             const auto reserve = output_token_reserve(holder->n_ctx, requested_output_tokens);
             while (out_tokens.size() + reserve >= static_cast<size_t>(holder->n_ctx)) {
                 // Drop complete old user turns, preserving all calls/results in the current turn.
@@ -539,7 +552,7 @@ static bool format_and_tokenize_prompt(
                 while (end < last_user && inputs.messages[end].role != "user") ++end;
                 inputs.messages.erase(inputs.messages.begin() + first, inputs.messages.begin() + end);
                 params = common_chat_templates_apply(tmpls.get(), inputs);
-                out_tokens = common_tokenize(holder->ctx, params.prompt.str(), false, true);
+                out_tokens = common_tokenize(holder->ctx, params.prompt.str(), true, true);
             }
             if (out_tokens.empty() || out_tokens.size() + reserve >= static_cast<size_t>(holder->n_ctx)) {
                 out_error = "Tool conversation exceeds context capacity";
@@ -623,7 +636,7 @@ static bool format_and_tokenize_prompt(
     bool applied_chat_template = false;
 
     if (!roles_storage.empty()) {
-        common_chat_templates_ptr tmpls = common_chat_templates_init(holder->model, "");
+        common_chat_templates_ptr tmpls = safe_chat_templates(holder->model);
         if (tmpls) {
             common_chat_templates_inputs inputs;
             for (size_t i = 0; i < roles_storage.size(); ++i) {
@@ -663,7 +676,7 @@ static bool format_and_tokenize_prompt(
         return false;
     }
 
-    out_tokens = common_tokenize(holder->ctx, formatted_prompt, false, true);
+    out_tokens = common_tokenize(holder->ctx, formatted_prompt, true, true);
 
     if (out_tokens.empty()) {
         out_error = "Prompt produced 0 tokens";
@@ -684,7 +697,7 @@ static bool format_and_tokenize_prompt(
             roles_storage.erase(roles_storage.begin() + first);
             contents_storage.erase(contents_storage.begin() + first);
         }
-        common_chat_templates_ptr loop_tmpls = common_chat_templates_init(holder->model, "");
+        common_chat_templates_ptr loop_tmpls = safe_chat_templates(holder->model);
         if (loop_tmpls) {
             common_chat_templates_inputs loop_inputs;
             for (size_t i = 0; i < roles_storage.size(); ++i) {
@@ -701,7 +714,7 @@ static bool format_and_tokenize_prompt(
             try {
                 common_chat_params chat_params = common_chat_templates_apply(loop_tmpls.get(), loop_inputs);
                 formatted_prompt = chat_params.prompt.str();
-                out_tokens = common_tokenize(holder->ctx, formatted_prompt, false, true);
+                out_tokens = common_tokenize(holder->ctx, formatted_prompt, true, true);
             } catch (...) {
                 break;
             }
@@ -720,7 +733,7 @@ static bool format_and_tokenize_prompt(
     }
 
     if (out_session && applied_chat_template && !roles_storage.empty()) {
-        common_chat_templates_ptr final_tmpls = common_chat_templates_init(holder->model, "");
+        common_chat_templates_ptr final_tmpls = safe_chat_templates(holder->model);
         if (final_tmpls) {
             common_chat_templates_inputs final_inputs;
             for (size_t i = 0; i < roles_storage.size(); ++i) {
@@ -785,7 +798,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeSupportsTools(JNIEnv *, jcl
     auto * holder = reinterpret_cast<LlamaContextHolder *>(handle);
     if (!holder || !holder->model) return false;
     try {
-        auto tmpls = common_chat_templates_init(holder->model, "");
+        auto tmpls = safe_chat_templates(holder->model);
         if (!tmpls) return false;
         auto caps = common_chat_templates_get_caps(tmpls.get());
         return caps["supports_tools"] && caps["supports_tool_calls"];
@@ -1025,7 +1038,11 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeInspectModel(
 
     std::string template_str = has_chat_template ? get_str_val(tmpl_idx) : "";
     std::string thinking_capability = "Unknown";
-    if (!is_projector && has_chat_template && !template_str.empty()) {
+    const auto tokenizer_tokens = gguf_find_key(ctx, "tokenizer.ggml.tokens");
+    const bool valid_tokens = tokenizer_tokens < 0 || (gguf_get_kv_type(ctx, tokenizer_tokens) == GGUF_TYPE_ARRAY &&
+        gguf_get_arr_type(ctx, tokenizer_tokens) == GGUF_TYPE_STRING);
+    if (!valid_tokens) { is_supported = false; error_msg = "Tokenizer tokens must be an array of strings"; }
+    if (valid_tokens && !is_projector && has_chat_template && !template_str.empty()) {
         try {
             std::string bos_token = "";
             std::string eos_token = "";
@@ -1033,7 +1050,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeInspectModel(
             if (tokens_idx >= 0 && gguf_get_kv_type(ctx, tokens_idx) == GGUF_TYPE_ARRAY) {
                 int64_t bos_idx = gguf_find_key(ctx, "tokenizer.ggml.bos_token_id");
                 if (bos_idx >= 0) {
-                    uint32_t id = gguf_get_val_u32(ctx, bos_idx);
+                    uint32_t id = get_u32_val(bos_idx);
                     size_t n_tokens = gguf_get_arr_n(ctx, tokens_idx);
                     if (id < n_tokens) {
                         const char * s = gguf_get_arr_str(ctx, tokens_idx, id);
@@ -1042,7 +1059,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeInspectModel(
                 }
                 int64_t eos_idx = gguf_find_key(ctx, "tokenizer.ggml.eos_token_id");
                 if (eos_idx >= 0) {
-                    uint32_t id = gguf_get_val_u32(ctx, eos_idx);
+                    uint32_t id = get_u32_val(eos_idx);
                     size_t n_tokens = gguf_get_arr_n(ctx, tokens_idx);
                     if (id < n_tokens) {
                         const char * s = gguf_get_arr_str(ctx, tokens_idx, id);
@@ -1231,7 +1248,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGetOperationControlProgress
         jlong control_id) {
     auto op = NativeOperationControlRegistry::instance().get(static_cast<uint64_t>(control_id));
     if (!op) return -1;
-    return op->get_progress();
+    return op->is_cancelled() ? -2 : op->get_progress();
 }
 
 JNIEXPORT jstring JNICALL
@@ -1587,7 +1604,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateMultimodalStream(
         jint max_tokens,
         jint seed,
         jboolean enable_thinking,
-        jobject callback_obj) {
+        jobject callback_obj) try {
 
     if (handle == 0 || callback_obj == nullptr) {
         LOGE("SolusLlamaJNI: nativeGenerateMultimodalStream called with invalid arguments");
@@ -1608,6 +1625,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateMultimodalStream(
         LOGW("SolusLlamaJNI: Generation already in progress");
         return -1;
     }
+    lease_guard.owns_generation = true;
 
     uint64_t gid = static_cast<uint64_t>(generation_id);
     holder->active_generation_id.store(gid, std::memory_order_release);
@@ -1630,27 +1648,53 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateMultimodalStream(
 
     if (!on_token_method) return -1;
 
-    if (gid != 0 && holder->cancelled_generation_id.load(std::memory_order_acquire) >= gid) {
+    bool already_cancelled;
+    {
+        std::lock_guard<std::mutex> lock(holder->state_mutex);
+        holder->stop_requested.store(false, std::memory_order_release);
+        holder->op_control.reset(); // The initialization token must not own later turns.
+        already_cancelled = gid != 0 && holder->cancelled_generation_id.load(std::memory_order_acquire) >= gid;
+    }
+    if (already_cancelled) {
         if (on_stop_method) call_jni_void_method_checked(env, callback_obj, on_stop_method);
         return 1;
     }
 
-    holder->stop_requested.store(false, std::memory_order_release);
     solus_clear_numerical_anomaly();
     g_last_failure_category.store(SOLUS_FAILURE_NONE, std::memory_order_release);
     g_last_failure_code.store(0, std::memory_order_release);
 
     // Extract media parts if present
     std::vector<MultimodalMediaPart> media_parts;
+    if ((media_types_array || image_widths_array || image_heights_array || image_bytes_array || audio_floats_array) &&
+        !(media_types_array && image_widths_array && image_heights_array)) {
+        if (on_error_method) call_jni_string_method_checked(env, callback_obj, on_error_method, "Media metadata is incomplete");
+        return -1;
+    }
     if (media_types_array && image_widths_array && image_heights_array) {
         jsize n_media = env->GetArrayLength(media_types_array);
+        if (env->GetArrayLength(image_widths_array) != n_media || env->GetArrayLength(image_heights_array) != n_media ||
+            (media_message_indices_array && env->GetArrayLength(media_message_indices_array) != n_media) ||
+            (image_bytes_array && env->GetArrayLength(image_bytes_array) != n_media) ||
+            (audio_floats_array && env->GetArrayLength(audio_floats_array) != n_media)) {
+            if (on_error_method) call_jni_string_method_checked(env, callback_obj, on_error_method, "Media array lengths do not match");
+            return -1;
+        }
         if (n_media > 0) {
-            jint * types = env->GetIntArrayElements(media_types_array, nullptr);
-            jint * widths = env->GetIntArrayElements(image_widths_array, nullptr);
-            jint * heights = env->GetIntArrayElements(image_heights_array, nullptr);
-            jint * msg_indices = media_message_indices_array ? env->GetIntArrayElements(media_message_indices_array, nullptr) : nullptr;
-
+            std::vector<jint> type_values(n_media), width_values(n_media), height_values(n_media), index_values(n_media);
+            env->GetIntArrayRegion(media_types_array, 0, n_media, type_values.data());
+            env->GetIntArrayRegion(image_widths_array, 0, n_media, width_values.data());
+            env->GetIntArrayRegion(image_heights_array, 0, n_media, height_values.data());
+            if (media_message_indices_array) env->GetIntArrayRegion(media_message_indices_array, 0, n_media, index_values.data());
+            if (env->ExceptionCheck()) return -1;
+            const jint * types = type_values.data();
+            const jint * widths = width_values.data();
+            const jint * heights = height_values.data();
+            const jint * msg_indices = media_message_indices_array ? index_values.data() : nullptr;
+            std::string media_error;
+            if (!types || !widths || !heights || (media_message_indices_array && !msg_indices)) media_error = "Could not read media arrays";
             for (jsize i = 0; i < n_media; ++i) {
+                if (!media_error.empty()) break;
                 MultimodalMediaPart part;
                 part.message_index = msg_indices ? msg_indices[i] : -1;
                 if (types[i] == 0) { // Image
@@ -1661,12 +1705,19 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateMultimodalStream(
                         auto b_arr = (jbyteArray)env->GetObjectArrayElement(image_bytes_array, i);
                         if (b_arr) {
                             jsize b_len = env->GetArrayLength(b_arr);
+                            if (widths[i] <= 0 || heights[i] <= 0 ||
+                                static_cast<uint64_t>(widths[i]) * static_cast<uint64_t>(heights[i]) * 3 != static_cast<uint64_t>(b_len)) {
+                                env->DeleteLocalRef(b_arr);
+                                media_error = "Image RGB byte length does not match its dimensions";
+                                break;
+                            }
                             part.rgb_data.resize(b_len);
                             env->GetByteArrayRegion(b_arr, 0, b_len, reinterpret_cast<jbyte *>(part.rgb_data.data()));
                             env->DeleteLocalRef(b_arr);
                         }
                     }
-                } else { // Audio
+                    if (part.rgb_data.empty()) { media_error = "Image data is missing"; break; }
+                } else if (types[i] == 1) { // Audio
                     part.type = MultimodalMediaPart::AUDIO;
                     if (audio_floats_array) {
                         auto f_arr = (jfloatArray)env->GetObjectArrayElement(audio_floats_array, i);
@@ -1677,15 +1728,17 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateMultimodalStream(
                             env->DeleteLocalRef(f_arr);
                         }
                     }
+                    if (part.audio_pcm.empty()) { media_error = "Audio data is missing"; break; }
+                } else {
+                    media_error = "Unsupported media type";
+                    break;
                 }
                 media_parts.push_back(std::move(part));
             }
 
-            env->ReleaseIntArrayElements(media_types_array, types, JNI_ABORT);
-            env->ReleaseIntArrayElements(image_widths_array, widths, JNI_ABORT);
-            env->ReleaseIntArrayElements(image_heights_array, heights, JNI_ABORT);
-            if (msg_indices) {
-                env->ReleaseIntArrayElements(media_message_indices_array, msg_indices, JNI_ABORT);
+            if (!media_error.empty()) {
+                if (on_error_method) call_jni_string_method_checked(env, callback_obj, on_error_method, media_error.c_str());
+                return -1;
             }
         }
     }
@@ -1783,7 +1836,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateMultimodalStream(
             }
         }
 
-        common_chat_templates_ptr tmpls = common_chat_templates_init(holder->model, "");
+        common_chat_templates_ptr tmpls = safe_chat_templates(holder->model);
         std::string formatted_prompt;
         bool applied_template = false;
 
@@ -2352,6 +2405,15 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateMultimodalStream(
     }
     if (on_complete_method) call_jni_void_method_checked(env, callback_obj, on_complete_method);
     return 0;
+} catch (const std::bad_alloc &) {
+    if (!env->ExceptionCheck()) env->ThrowNew(env->FindClass("java/lang/OutOfMemoryError"), "Native generation ran out of memory");
+    return -1;
+} catch (const std::exception & error) {
+    if (!env->ExceptionCheck()) env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), error.what());
+    return -1;
+} catch (...) {
+    if (!env->ExceptionCheck()) env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), "Native generation failed");
+    return -1;
 }
 
 JNIEXPORT jint JNICALL
@@ -2387,9 +2449,11 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeStop(
     if (handle == 0) return;
     auto *holder = reinterpret_cast<LlamaContextHolder *>(handle);
     uint64_t gid = static_cast<uint64_t>(generation_id);
-    if (gid == 0 || gid >= holder->cancelled_generation_id.load(std::memory_order_relaxed)) {
-        holder->cancelled_generation_id.store(gid, std::memory_order_release);
-    }
+    std::lock_guard<std::mutex> lock(holder->state_mutex);
+    const auto active = holder->active_generation_id.load(std::memory_order_acquire);
+    if (gid != 0 && active != 0 && gid < active) return;
+    if (gid == 0) gid = active;
+    if (gid > holder->cancelled_generation_id.load(std::memory_order_relaxed)) holder->cancelled_generation_id.store(gid, std::memory_order_release);
     holder->stop_requested.store(true, std::memory_order_release);
 }
 
@@ -2488,7 +2552,12 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeWarmup(JNIEnv *, jclass, jl
         if (tokens.empty()) return JNI_FALSE;
         token = tokens.front();
     }
-    int status = llama_decode(holder->ctx, llama_batch_get_one(&token, 1));
+    int status = warmup_prefill(llama_model_has_encoder(holder->model), [&]() {
+        const int encoded = llama_encode(holder->ctx, llama_batch_get_one(&token, 1));
+        token = llama_model_decoder_start_token(holder->model);
+        if (token == LLAMA_TOKEN_NULL) token = llama_vocab_bos(holder->vocab);
+        return token == LLAMA_TOKEN_NULL ? -1 : encoded;
+    }, [&]() { return llama_decode(holder->ctx, llama_batch_get_one(&token, 1)); });
     if (status == 0 && !llama_jni_abort_callback(holder)) {
         const float * logits = llama_get_logits_ith(holder->ctx, -1);
         if (logits) {
@@ -2694,6 +2763,10 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeProbeCompare(
         }
         ref_records = it->second;
     }
+    const auto current_vocab = llama_vocab_n_tokens(holder->vocab);
+    if (ref_records.empty() || std::any_of(ref_records.begin(), ref_records.end(), [current_vocab](const ProbePositionRecord & record) {
+            return record.probs.size() != static_cast<size_t>(current_vocab) || record.token < 0 || record.token >= current_vocab;
+        })) return safe_new_string(env, "{\"success\":false,\"error\":\"Reference vocabulary does not match this model\"}");
 
     std::shared_ptr<NativeOperationControl> op_control =
         NativeOperationControlRegistry::instance().get(static_cast<uint64_t>(operation_control_id));

@@ -1469,7 +1469,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                     progressPermille = obj.optInt("progress_permille", 0),
                     completedUnits = obj.optLong("completed_units", 0L),
                     totalUnits = obj.optLong("total_units", 0L),
-                    isCancelled = obj.optBoolean("is_cancelled", false)
+                    isCancelled = obj.optBoolean("cancelled", obj.optBoolean("is_cancelled", false))
                 )
             } catch (_: Throwable) {
                 null

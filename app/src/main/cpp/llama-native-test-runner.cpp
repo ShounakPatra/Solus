@@ -526,9 +526,16 @@ static int run_real_model_inference(const std::string & model_path,
             break;
         }
 
-        char piece_buf[64] = {0};
-        llama_token_to_piece(vocab, best_token, piece_buf, sizeof(piece_buf), 0, true);
-        std::cout << piece_buf << std::flush;
+        char piece_buf[64];
+        const int piece_size = llama_token_to_piece(vocab, best_token, piece_buf, sizeof(piece_buf), 0, true);
+        if (piece_size >= 0) {
+            std::cout.write(piece_buf, piece_size);
+        } else {
+            std::vector<char> large_piece(static_cast<size_t>(-piece_size));
+            const int written = llama_token_to_piece(vocab, best_token, large_piece.data(), large_piece.size(), 0, true);
+            if (written > 0) std::cout.write(large_piece.data(), written);
+        }
+        std::cout << std::flush;
         n_generated++;
 
         // Prepare next token batch

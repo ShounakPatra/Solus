@@ -16,3 +16,7 @@ target_include_directories(utf_conversion_test
 )
 
 add_test(NAME utf_conversion_test COMMAND utf_conversion_test)
+
+add_executable(runtime_warmup_test runtime-warmup-test.cpp)
+target_include_directories(runtime_warmup_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../main/cpp")
+add_test(NAME runtime_warmup_test COMMAND runtime_warmup_test)
