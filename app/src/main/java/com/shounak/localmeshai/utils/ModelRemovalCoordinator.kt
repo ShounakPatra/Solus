@@ -100,6 +100,14 @@ object ModelRemovalCoordinator {
         return inMemoryRecords[modelId]
     }
 
+    /** Only an explicit new download may retire a completed tombstone. Stale workers remain blocked. */
+    fun prepareExplicitDownload(context: Context, modelId: String): Boolean = synchronized(lock) {
+        init(context)
+        if (isRecoveryRequired || isReserved(modelId) || inMemoryRecords[modelId]?.isPending == true) false
+        else if (inMemoryRecords.containsKey(modelId)) clearDeletionRecord(context, modelId)
+        else true
+    }
+
     private fun getStorageFile(context: Context): File {
         return File(context.filesDir, DELETIONS_FILE_NAME)
     }

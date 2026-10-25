@@ -13,6 +13,35 @@ import java.io.File
 import java.io.IOException
 
 class ModelArtifactStorageTest {
+    @Test fun pausedSingleFilePublicationRestoresTheCompleteStagedDownload() {
+        for (cancelAt in listOf(2, 3)) {
+            val id = "pause_single_$cancelAt"
+            val stage = storage.getStagingFile(id, "model.gguf").apply { writeBytes(ByteArray(128 * 1024) { 7 }) }
+            var checks = 0
+            assertThrows(kotlinx.coroutines.CancellationException::class.java) {
+                storage.publishArtifact(id, stage, "model.gguf", "source", isCancelled = { ++checks >= cancelAt })
+            }
+            assertTrue(stage.isFile)
+            assertEquals(128L * 1024, stage.length())
+            assertTrue(stage.readBytes().all { it == 7.toByte() })
+            assertNull(storage.getPublishedArtifact(id))
+        }
+    }
+
+    @Test fun pausedBundleVerificationRestoresAlreadyMovedComponents() {
+        val id = "pause_bundle"
+        val staging = storage.getStagingDir(id).apply { mkdirs() }
+        val weights = File(staging, "weights.download").apply { writeText("weights") }
+        val tokenizer = File(staging, "tokenizer.download").apply { writeText("tokenizer") }
+        var checks = 0
+        assertThrows(kotlinx.coroutines.CancellationException::class.java) {
+            storage.publishArtifactBundle(id, listOf(StagedArtifactItem(weights, "model.onnx", expectedSha256 = "a".repeat(64), isPrimary = true),
+                StagedArtifactItem(tokenizer, "tokenizer.json")), "model.onnx", "source", isCancelled = { ++checks >= 3 })
+        }
+        assertEquals("weights", weights.readText())
+        assertEquals("tokenizer", tokenizer.readText())
+        assertNull(storage.getPublishedArtifact(id))
+    }
     @Test fun deletingPortableBundlesRemovesWeightsCompanionsAndPartialDownloadsOnlyForThatModel() {
         for (extension in listOf("onnx", "safetensors")) {
             val id = "portable_$extension"

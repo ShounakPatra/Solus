@@ -1478,7 +1478,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun startDownload(modelId: String): Result<Unit> {
         val model = availableModels.firstOrNull { it.id == modelId }
             ?: return Result.failure(IllegalArgumentException("Model not found: $modelId"))
-        if (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(modelId) || com.shounak.localmeshai.utils.ModelRemovalCoordinator.isModelDeletionPendingOrCompleted(modelId)) {
+        if (com.shounak.localmeshai.utils.ModelRemovalCoordinator.isReserved(modelId) || com.shounak.localmeshai.utils.ModelRemovalCoordinator.getDeletionRecord(modelId)?.isPending == true) {
             val msg = "Model is pending deletion or has been removed."
             updateModel(modelId) {
                 it.copy(
@@ -1531,6 +1531,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return Result.failure(java.io.IOException(msg))
         }
 
+        if (!com.shounak.localmeshai.utils.ModelRemovalCoordinator.prepareExplicitDownload(getApplication(), modelId)) {
+            return Result.failure(IllegalStateException("Could not clear the completed deletion record. Retry after deletion finishes."))
+        }
         updateModel(modelId) {
             it.copy(
                 status = ModelStatus.Downloading,

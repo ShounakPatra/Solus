@@ -377,9 +377,9 @@ class ModelArtifactStorage(val rootDir: File) {
         }
 
         var committed = false
+        val genTarget = File(genDir, safeName)
+        verifyContainment(genDir, genTarget)
         try {
-            val genTarget = File(genDir, safeName)
-            verifyContainment(genDir, genTarget)
 
             if (stagedSource.isDirectory) {
                 val moved = stagedSource.renameTo(genTarget)
@@ -455,6 +455,7 @@ class ModelArtifactStorage(val rootDir: File) {
             return returnedArtifact
         } catch (e: Throwable) {
             if (!committed) {
+                if (e is kotlinx.coroutines.CancellationException) restoreStagedInputs(listOf(stagedSource to genTarget))
                 genDir.deleteRecursively()
             }
             throw e
@@ -598,6 +599,7 @@ class ModelArtifactStorage(val rootDir: File) {
         }
 
         val journalFile = File(modelDir, "publication_journal.json")
+        val movedInputs = mutableListOf<Pair<File, File>>()
         try {
             val journalJson = JSONObject().apply {
                 put("state", "PREPARED")
@@ -624,6 +626,7 @@ class ModelArtifactStorage(val rootDir: File) {
                 val genTarget = File(genDir, safeName)
                 verifyContainment(genDir, genTarget)
                 genTarget.parentFile?.let { check(it.isDirectory || it.mkdirs()) { "Cannot create pipeline component directory" } }
+                movedInputs.add(item.stagedFile to genTarget)
 
                 val moved = item.stagedFile.renameTo(genTarget)
                 if (!moved) {
@@ -706,10 +709,23 @@ class ModelArtifactStorage(val rootDir: File) {
                 storage = this
             )
         } catch (e: Throwable) {
+            if (e is kotlinx.coroutines.CancellationException) restoreStagedInputs(movedInputs)
             genDir.deleteRecursively()
             journalFile.delete()
             bakManifestFile?.delete()
             throw e
+        }
+    }
+
+    /** Rename back on Pause; do not erase completed downloads while verifying publication. */
+    private fun restoreStagedInputs(inputs: List<Pair<File, File>>) {
+        for ((staged, published) in inputs) {
+            verifyContainment(rootDir, staged)
+            verifyContainment(rootDir, published)
+            if (!staged.exists() && published.exists()) {
+                staged.parentFile?.mkdirs()
+                check(published.renameTo(staged)) { "Could not restore paused download; data retained at ${published.absolutePath}" }
+            }
         }
     }
 
