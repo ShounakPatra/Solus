@@ -516,6 +516,12 @@ fun ChatScreen(
     val canEditDraft = !isVisionStopping
     val textMessages = chatViewModel.messages
     val visionMessages = visionViewModel.messages
+    val textSourceIds by remember(textMessages) { derivedStateOf {
+        com.shounak.localmeshai.rag.ChatDocumentScope.ids(textMessages.map { it.isUser to it.ragDocumentId })
+    } }
+    val visionSourceIds by remember(visionMessages) { derivedStateOf {
+        com.shounak.localmeshai.rag.ChatDocumentScope.ids(visionMessages.map { it.isUser to it.ragDocumentId })
+    } }
     val effectiveSupportsAttachments = when {
         activeHistoryChatType == HistorySessionType.Vision -> true
         activeHistoryChatType == HistorySessionType.Text -> false
@@ -1326,6 +1332,7 @@ fun ChatScreen(
                                         }
                                     ) { index, message ->
                                         val isStreaming = !message.isUser && activeVisionReqId != null && message.requestId == activeVisionReqId && message.terminalStatus == null
+                                        val scopedPassages = message.ragPassages.filter { it.documentId in visionSourceIds }
                                         VisionChatBubble(
                                             text = message.text,
                                             isUser = message.isUser,
@@ -1349,7 +1356,7 @@ fun ChatScreen(
                                             responseFormatVersion = message.responseFormatVersion,
                                             terminalStatus = message.terminalStatus,
                                             entryDelayMs = if (index == visionMessages.lastIndex) 25 else 0,
-                                            ragPassages = message.ragPassages,
+                                            ragPassages = scopedPassages,
                                             onEditPrompt = if (message.isUser && selectedModel != null && !isGenerating && !isVisionAnalyzing && !isInitializing && !isVisionInitializing && !isChatStopping && !isVisionStopping) {
                                                 { updated -> visionViewModel.editAndRegenerate(message.id, updated) }
                                             } else null,
@@ -1357,7 +1364,7 @@ fun ChatScreen(
                                                 val promptId = message.userMessageId ?: visionMessages.take(index).lastOrNull { it.isUser }?.id
                                                 promptId?.let { id -> { visionViewModel.editAndRegenerate(id) } }
                                             } else null,
-                                            ragSources = message.ragSources,
+                                            ragSources = scopedPassages.map { it.documentName }.distinct(),
                                             ragChunkCount = message.ragChunkCount,
                                             ragTopMatchPct = message.ragTopMatchPct,
                                             errorMessage = message.errorMessage,
@@ -1384,6 +1391,7 @@ fun ChatScreen(
                                         }
                                     ) { index, message ->
                                         val isStreaming = !message.isUser && activeChatReqId != null && message.requestId == activeChatReqId && message.terminalStatus == null
+                                        val scopedPassages = message.ragPassages.filter { it.documentId in textSourceIds }
                                         ChatBubble(
                                             text = message.text,
                                             isUser = message.isUser,
@@ -1400,7 +1408,7 @@ fun ChatScreen(
                                             responseFormatVersion = message.responseFormatVersion,
                                             terminalStatus = message.terminalStatus,
                                             entryDelayMs = if (index == textMessages.lastIndex) 25 else 0,
-                                            ragPassages = message.ragPassages,
+                                            ragPassages = scopedPassages,
                                             onEditPrompt = if (message.isUser && selectedModel != null && !isGenerating && !isVisionAnalyzing && !isInitializing && !isVisionInitializing && !isChatStopping && !isVisionStopping) {
                                                 { updated -> chatViewModel.editAndRegenerate(message.id, updated) }
                                             } else null,
@@ -1408,7 +1416,7 @@ fun ChatScreen(
                                                 val promptId = message.userMessageId ?: textMessages.take(index).lastOrNull { it.isUser }?.id
                                                 promptId?.let { id -> { chatViewModel.editAndRegenerate(id) } }
                                             } else null,
-                                            ragSources = message.ragSources,
+                                            ragSources = scopedPassages.map { it.documentName }.distinct(),
                                             ragChunkCount = message.ragChunkCount,
                                             ragTopMatchPct = message.ragTopMatchPct,
                                             documentName = message.documentName,

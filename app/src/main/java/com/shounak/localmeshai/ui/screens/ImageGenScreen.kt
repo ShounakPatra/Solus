@@ -710,7 +710,13 @@ fun ImageGenScreen(
             if (fullscreenMessageIndex != null) {
                 val index = fullscreenMessageIndex!!
                 VisionFullscreenAnswerPanel(
-                    messageProvider = { messages.getOrNull(index) },
+                    messageProvider = {
+                        val ids = com.shounak.localmeshai.rag.ChatDocumentScope.ids(messages.take(index).map { it.isUser to it.ragDocumentId })
+                        messages.getOrNull(index)?.let { message ->
+                            val passages = message.ragPassages.filter { it.documentId in ids }
+                            message.copy(ragPassages = passages, ragSources = passages.map { it.documentName }.distinct())
+                        }
+                    },
                     onClose = { fullscreenMessageIndex = null },
                     hazeState = hazeState
                 )
