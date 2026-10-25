@@ -538,7 +538,7 @@ open class ModelDownloader(
 
         var existingBytes = if (stagingFile.exists()) stagingFile.length() else 0L
         val savedMeta = DownloadResumeMetadata.loadFor(stagingFile)
-        var effectiveValidator: String? = eTag
+        var effectiveValidator: String? = eTag?.takeUnless { it.isBlank() || it.trimStart().startsWith("W/", ignoreCase = true) }
 
         if (existingBytes > 0L) {
             if (savedMeta != null) {
@@ -552,9 +552,16 @@ open class ModelDownloader(
                     existingBytes = 0L
                     effectiveValidator = null
                 } else if (effectiveValidator.isNullOrBlank()) {
-                    effectiveValidator = savedMeta.validator
+                    effectiveValidator = savedMeta.validator?.takeUnless { it.isBlank() || it.trimStart().startsWith("W/", ignoreCase = true) }
                 }
             }
+        }
+
+        // An offset alone does not prove that the remote representation is unchanged.
+        if (existingBytes > 0L && effectiveValidator == null && expectedSha256.isNullOrBlank()) {
+            stagingFile.delete()
+            DownloadResumeMetadata.deleteFor(stagingFile)
+            existingBytes = 0L
         }
 
         var restartAllowed = true
@@ -611,7 +618,10 @@ open class ModelDownloader(
 
                 val isMetaMatch = savedMeta == null || (savedMeta.normalizedUrl == normalizedUrl && savedMeta.packageType == packageType)
 
-                if (existingBytes > 0L && isMetaMatch && (matchesExpectedTotal || matchesChecksum)) {
+                val responseValidator = response.header("ETag")?.takeUnless { it.trimStart().startsWith("W/", ignoreCase = true) }
+                    ?: response.header("Last-Modified")
+                val sameRepresentation = !effectiveValidator.isNullOrBlank() && effectiveValidator == responseValidator
+                if (existingBytes > 0L && isMetaMatch && (matchesChecksum || matchesExpectedTotal && sameRepresentation)) {
                     onProgress(DownloadProgress(1f, existingBytes, existingBytes, 0L))
                     return handleDownloadSuccess(
                         stagingFile = stagingFile,
@@ -688,7 +698,8 @@ open class ModelDownloader(
                 existingBytes = 0L
             }
 
-            val validator = response.header("ETag") ?: response.header("Last-Modified") ?: effectiveValidator
+            val validator = response.header("ETag")?.takeUnless { it.trimStart().startsWith("W/", ignoreCase = true) }
+                ?: response.header("Last-Modified") ?: effectiveValidator
             val append = existingBytes > 0L && responseCode == 206
             val contentLength = body.contentLength()
             val totalBytes = if (append) {

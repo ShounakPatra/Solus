@@ -56,6 +56,30 @@ class ModelDownloaderResumeTest {
     }
 
     @Test
+    fun unvalidatedOrWeaklyValidatedPartialsRestartWithoutSplicing() = runBlocking {
+        for ((index, validator) in listOf(null, "W/\"weak\"").withIndex()) {
+            val modelId = "unsafe_partial_$index"
+            val fileName = "weights.bin"
+            val url = server.url("/unsafe/$index").toString()
+            val staged = artifactStorage.getStagingFile(modelId, fileName).apply {
+                parentFile?.mkdirs()
+                writeBytes(ByteArray(500) { 0x11 })
+            }
+            DownloadResumeMetadata.saveFor(staged, DownloadResumeMetadata(
+                normalizedUrl = ModelDownloadUrlPolicy.normalizeUrl(url), packageType = ModelPackage.SingleFile,
+                validator = validator, lastDownloadedBytes = 500
+            ))
+            val replacement = ByteArray(1000) { 0x42 }
+            server.enqueue(MockResponse().setResponseCode(200).setBody(Buffer().write(replacement)))
+            val result = downloader.downloadModel(url, modelId, fileName, ModelPackage.SingleFile, bearerToken = null) {}
+            val request = server.takeRequest()
+            assertNull(request.getHeader("Range"))
+            assertNull(request.getHeader("If-Range"))
+            assertArrayEquals(replacement, File(result.localPath).readBytes())
+        }
+    }
+
+    @Test
     fun testResumedDownloadWithValid206RangeAppendsCorrectly() = runBlocking {
         val modelId = "resume_test_model"
         val fileName = "weights.bin"
@@ -82,7 +106,8 @@ class ModelDownloaderResumeTest {
             modelId = modelId,
             fileName = fileName,
             packageType = ModelPackage.SingleFile,
-            bearerToken = null
+            bearerToken = null,
+            eTag = "\"stable\""
         ) {}
 
         val request = server.takeRequest()
@@ -126,7 +151,8 @@ class ModelDownloaderResumeTest {
             modelId = modelId,
             fileName = fileName,
             packageType = ModelPackage.SingleFile,
-            bearerToken = null
+            bearerToken = null,
+            eTag = "\"stable\""
         ) {}
 
         val publishedFile = File(result.localPath)
@@ -191,6 +217,7 @@ class ModelDownloaderResumeTest {
             MockResponse()
                 .setResponseCode(416)
                 .setHeader("Content-Range", "bytes */1000")
+                .setHeader("ETag", "\"stable\"")
         )
 
         val url = server.url("/models/complete.bin").toString()
@@ -199,7 +226,8 @@ class ModelDownloaderResumeTest {
             modelId = modelId,
             fileName = fileName,
             packageType = ModelPackage.SingleFile,
-            bearerToken = null
+            bearerToken = null,
+            eTag = "\"stable\""
         ) {}
 
         val publishedFile = File(result.localPath)
@@ -431,7 +459,8 @@ class ModelDownloaderResumeTest {
                 modelId = modelId,
                 fileName = fileName,
                 packageType = ModelPackage.SingleFile,
-                bearerToken = null
+                bearerToken = null,
+                eTag = "\"stable\""
             ) {}
             org.junit.Assert.fail("Expected failure on repeated malformed responses")
         } catch (e: Exception) {

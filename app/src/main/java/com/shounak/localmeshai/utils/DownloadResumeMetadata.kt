@@ -72,9 +72,7 @@ data class DownloadResumeMetadata(
 
         fun deleteFor(stagingFile: File) {
             val metaFile = metadataFileFor(stagingFile)
-            if (metaFile.exists()) {
-                metaFile.delete()
-            }
+            AtomicJsonFile<DownloadResumeMetadata>(metaFile).delete()
         }
     }
 }
