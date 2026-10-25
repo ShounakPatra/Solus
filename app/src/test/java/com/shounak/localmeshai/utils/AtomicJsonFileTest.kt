@@ -56,6 +56,39 @@ class AtomicJsonFileTest {
     }
 
     @Test
+    fun repeatedCorruptReadsPreserveOnlyOneCopyPerContent() {
+        testFile.writeText("broken-json")
+        val store = AtomicJsonFile<String>(testFile)
+        repeat(3) { assertTrue(store.read { error("Invalid JSON") } is AtomicReadResult.Corrupt) }
+        assertEquals(1, tempFolder.root.listFiles()!!.count { it.name.contains(".corrupt_") })
+        testFile.writeText("different-broken-json")
+        store.read { error("Invalid JSON") }
+        assertEquals(2, tempFolder.root.listFiles()!!.count { it.name.contains(".corrupt_") })
+    }
+
+    @Test
+    fun applicationRecoveryBackupDoesNotOverwritePlatformBackup() {
+        val legacyBackup = File(testFile.parentFile, "${testFile.name}.bak").apply { writeText("platform-owned") }
+        val lastGood = File(testFile.parentFile, "${testFile.name}.lastgood")
+        val transaction = object : StandardAtomicFileTransaction(testFile) {
+            override val recoveryBackupFile = lastGood
+            override fun finishWrite(stream: OutputStream) {
+                stream.close()
+                File(testFile.parentFile, "${testFile.name}.tmp").copyTo(testFile, overwrite = true)
+            }
+        }
+        testFile.writeText("current")
+        val store = AtomicJsonFile<String>(testFile, transaction)
+        assertTrue(store.write("next") { it }.isSuccess)
+        assertEquals("current", lastGood.readText())
+        assertEquals("platform-owned", legacyBackup.readText())
+        testFile.writeText("corrupt")
+        val recovered = store.read { if (it == "corrupt") error("Invalid") else it }
+        assertEquals("current", (recovered as AtomicReadResult.Success).data)
+        assertEquals("current", testFile.readText())
+    }
+
+    @Test
     fun testRead_MissingFile_ReturnsMissing() {
         val atomicFile = AtomicJsonFile<List<String>>(testFile)
         val result = atomicFile.read { text -> listOf(text) }

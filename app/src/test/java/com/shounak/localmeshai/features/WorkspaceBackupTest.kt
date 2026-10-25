@@ -326,4 +326,9 @@ class WorkspaceBackupTest {
             AppSettingsData(huggingFaceToken = "DEST")).huggingFaceToken)
         rejects { PortableSettings.decode(JSONObject(json.toString()).put("ragTopK", 1.2), AppSettingsData()) }
     }
+    @Test fun minimumRelevanceAllowedBySettingsCanBeRestored() {
+        val settings = AppSettingsData(ragMinSimilarity = 0.25f)
+        assertEquals(0.25f, PortableSettings.decode(PortableSettings.encode(settings), AppSettingsData()).ragMinSimilarity, 0f)
+        rejects { PortableSettings.decode(JSONObject().put("ragMinSimilarity", 0.249), AppSettingsData()) }
+    }
 }

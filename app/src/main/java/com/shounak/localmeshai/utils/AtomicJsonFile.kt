@@ -13,6 +13,7 @@ import java.nio.file.StandardCopyOption
  */
 interface AtomicFileTransaction {
     val file: File
+    val recoveryBackupFile: File get() = File(file.parentFile, "${file.name}.bak")
     fun exists(): Boolean
     fun openRead(): InputStream
     fun startWrite(): OutputStream
@@ -25,12 +26,14 @@ interface AtomicFileTransaction {
  * Android framework implementation of [AtomicFileTransaction] delegating to [android.util.AtomicFile].
  */
 class AndroidAtomicFileTransaction(override val file: File) : AtomicFileTransaction {
+    // AtomicFile owns .bak; application recovery must never write to that path.
+    override val recoveryBackupFile: File get() = File(file.parentFile, "${file.name}.lastgood")
     private val delegate = android.util.AtomicFile(file)
     private var activeStream: OutputStream? = null
 
-    override fun exists(): Boolean = file.exists()
+    override fun exists(): Boolean = file.exists() || File(file.parentFile, "${file.name}.bak").exists()
 
-    override fun openRead(): InputStream = delegate.openRead()
+    override fun openRead(): InputStream = if (file.exists()) file.inputStream() else delegate.openRead()
 
     override fun startWrite(): OutputStream {
         val stream = delegate.startWrite()
@@ -213,7 +216,8 @@ class AtomicJsonFile<T>(
     val transaction: AtomicFileTransaction = createAtomicFileTransaction(file)
 ) {
     fun read(parser: (String) -> T): AtomicReadResult<T> {
-        val backupFile = File(file.parentFile ?: File("."), "${file.name}.bak")
+        val backupFile = transaction.recoveryBackupFile.takeIf { it.exists() }
+            ?: File(file.parentFile ?: File("."), "${file.name}.bak")
         if (!transaction.exists() && !backupFile.exists()) {
             return AtomicReadResult.Missing
         }
@@ -221,7 +225,7 @@ class AtomicJsonFile<T>(
         var primaryContent: String? = null
         var primaryCause: Throwable? = null
 
-        if (transaction.exists() && file.exists()) {
+        if (transaction.exists()) {
             try {
                 primaryContent = transaction.openRead().use { stream ->
                     stream.bufferedReader(Charsets.UTF_8).readText()
@@ -298,10 +302,22 @@ class AtomicJsonFile<T>(
 
     private fun preserveCorruptFile(cause: Throwable, backupFile: File? = null): AtomicReadResult.Corrupt {
         val parent = file.parentFile ?: File(".")
-        val corruptCopy = File(parent, "${file.name}.corrupt_${System.currentTimeMillis()}")
+        var corruptCopy: File? = null
         try {
-            if (file.exists() && !corruptCopy.exists()) {
-                file.copyTo(corruptCopy, overwrite = true)
+            val source = file.takeIf { it.exists() } ?: backupFile?.takeIf { it.exists() }
+            if (source != null) {
+                val digest = java.security.MessageDigest.getInstance("SHA-256")
+                source.inputStream().use { input ->
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        digest.update(buffer, 0, count)
+                    }
+                }
+                val hash = digest.digest().joinToString("") { "%02x".format(it) }
+                corruptCopy = File(parent, "${file.name}.corrupt_$hash")
+                if (!corruptCopy.exists()) source.copyTo(corruptCopy)
             }
         } catch (_: Throwable) {
             // Ignore backup copy failure, return corrupt status
@@ -316,7 +332,7 @@ class AtomicJsonFile<T>(
             return Result.failure(e)
         }
 
-        val backup = File(file.parentFile ?: File("."), "${file.name}.bak")
+        val backup = transaction.recoveryBackupFile
         file.parentFile?.mkdirs()
         if (file.exists() && file.length() > 0) {
             try {
@@ -347,6 +363,7 @@ class AtomicJsonFile<T>(
     fun delete(): Boolean {
         val backup = File(file.parentFile ?: File("."), "${file.name}.bak")
         if (backup.exists()) backup.delete()
+        transaction.recoveryBackupFile.takeIf { it.exists() }?.delete()
         return transaction.delete()
     }
 }

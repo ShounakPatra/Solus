@@ -41,7 +41,7 @@ internal object PortableSettings {
         val similarity = json.getDouble("ragMinSimilarity").toFloat()
         if ("autoUnloadMinutes" in present) require(unload in 0..1440 && json.getDouble("autoUnloadMinutes") == unload.toDouble())
         if ("ragTopK" in present) require(topK in 1..20 && json.getDouble("ragTopK") == topK.toDouble())
-        if ("ragMinSimilarity" in present) require(similarity.isFinite() && similarity in 0.3f..1f)
+        if ("ragMinSimilarity" in present) require(similarity.isFinite() && similarity in 0.25f..1f)
         return current.copy(
             enableDarkMode = json.getBoolean("dark"), enableDynamicThemes = json.getBoolean("dynamic"),
             enableTelemetryBar = json.getBoolean("telemetry"), showThermalGuard = json.getBoolean("thermalGuard"),
