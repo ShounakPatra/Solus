@@ -58,6 +58,7 @@ public:
                                 int32_t n_batch,
                                 int32_t max_tokens,
                                 llama_pos & new_n_past,
+                                size_t & prompt_token_cells,
                                 std::string & error_out);
 
 private:

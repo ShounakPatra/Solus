@@ -91,6 +91,7 @@ bool LlamaMultimodalContext::eval_multimodal_prompt(llama_context * lctx,
                                                     int32_t n_batch,
                                                     int32_t max_tokens,
                                                     llama_pos & new_n_past,
+                                                    size_t & prompt_token_cells,
                                                     std::string & error_out) {
     if (!ctx) {
         error_out = "Multimodal context is not initialized";
@@ -169,6 +170,7 @@ bool LlamaMultimodalContext::eval_multimodal_prompt(llama_context * lctx,
     }
 
     size_t n_tokens = mtmd_helper_get_n_tokens(chunks);
+    prompt_token_cells = n_tokens;
     uint32_t n_ctx = llama_n_ctx(lctx);
     const size_t reserve_tokens = output_token_reserve(n_ctx, max_tokens);
     if (static_cast<size_t>(n_past) + n_tokens + reserve_tokens > n_ctx) {

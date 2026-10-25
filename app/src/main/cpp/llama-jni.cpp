@@ -1887,6 +1887,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateMultimodalStream(
                 batch_size,
                 max_tokens,
                 new_n_past,
+                prompt_tokens_count,
                 mm_eval_err
             );
             if (eval_ok) break;
@@ -1989,7 +1990,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateMultimodalStream(
         }
 
         n_cur = static_cast<int>(new_n_past);
-        prompt_tokens_count = static_cast<size_t>(new_n_past);
+        // M-RoPE positions can be smaller than the number of occupied KV cells.
         reused_tokens_count = 0;
     } else {
         // Standard text generation with Jinja chat templates and prefix caching
@@ -2191,7 +2192,9 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGenerateMultimodalStream(
             break;
         }
 
-        if (n_cur >= holder->n_ctx) {
+        const size_t occupied_cells = media_parts.empty() ? static_cast<size_t>(n_cur)
+            : prompt_tokens_count + static_cast<size_t>(n_generated);
+        if (occupied_cells >= static_cast<size_t>(holder->n_ctx)) {
             set_last_failure(SOLUS_FAILURE_CONTEXT_CAPACITY, -7, "Context window limit reached");
             hit_context_limit = true;
             break;
