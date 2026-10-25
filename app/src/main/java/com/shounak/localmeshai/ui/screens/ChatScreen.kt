@@ -4289,7 +4289,7 @@ private fun SessionTypeTag(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ChatHistoryDialog(
+internal fun ChatHistoryDialog(
     textSessions: List<ChatSession>,
     visionSessions: List<VisionChatSession>,
     currentTextSessionId: String?,
@@ -4310,8 +4310,10 @@ private fun ChatHistoryDialog(
     var historyQuery by rememberSaveable { mutableStateOf("") }
     val dialogMaxHeight = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp * 0.82f
     var filterType by rememberSaveable { mutableStateOf(HistoryFilterType.All) }
-    val activeTextSessions = textSessions
-    val activeVisionSessions = visionSessions
+    // SnapshotStateList keeps its identity when a row is removed or updated. Use
+    // immutable values as remember keys so the open dialog rebuilds its rows.
+    val activeTextSessions = textSessions.toList()
+    val activeVisionSessions = visionSessions.toList()
 
     val mergedSessions = remember(activeTextSessions, activeVisionSessions, filterType, historyQuery, metadataRevision) {
         val textItems = activeTextSessions.map { UnifiedChatSessionItem.TextSession(it) }
