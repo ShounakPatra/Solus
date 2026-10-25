@@ -1,6 +1,7 @@
 package com.shounak.localmeshai.ai.tools
 
 import java.math.BigDecimal
+import java.math.MathContext
 import kotlin.math.pow
 
 /** Bounded arithmetic parser. Power binds more tightly than unary signs. */
@@ -9,7 +10,9 @@ object CalculatorEvaluator {
         require(expression.length <= 512) { "Expression exceeds 512 characters" }
         val value = Parser(expression.replace("×", "*").replace("÷", "/")
             .replace("−", "-").replace("**", "^")).parse()
-        BigDecimal.valueOf(value).stripTrailingZeros().toPlainString()
+        value.stripTrailingZeros().toPlainString()
+    } catch (e: ArithmeticException) {
+        "Error: ${e.message}"
     } catch (e: IllegalArgumentException) {
         "Error: ${e.message}"
     }
@@ -17,7 +20,7 @@ object CalculatorEvaluator {
     private class Parser(private val source: String) {
         private var position = 0
         private var depth = 0
-        fun parse(): Double {
+        fun parse(): BigDecimal {
             val result = sum()
             whitespace()
             require(position == source.length) { "Unexpected character at position ${position + 1}" }
@@ -28,11 +31,12 @@ object CalculatorEvaluator {
             whitespace()
             return if (source.getOrNull(position) == c) { position++; true } else false
         }
-        private fun finite(value: Double): Double {
-            require(value.isFinite()) { "Result is not finite" }
+        private fun finite(value: BigDecimal): BigDecimal {
+            require(value.toDouble().isFinite()) { "Result is not finite" }
+            require(value.scale().toLong() in -10_000L..10_000L && value.precision() <= 10_000) { "Result exceeds calculator limits" }
             return value
         }
-        private fun sum(): Double {
+        private fun sum(): BigDecimal {
             var value = product()
             while (true) value = when {
                 take('+') -> finite(value + product())
@@ -40,29 +44,38 @@ object CalculatorEvaluator {
                 else -> return value
             }
         }
-        private fun product(): Double {
+        private fun product(): BigDecimal {
             var value = unary()
             while (true) value = when {
                 take('*') -> finite(value * unary())
-                take('/') -> { val rhs = unary(); require(rhs != 0.0) { "Division by zero" }; finite(value / rhs) }
-                take('%') -> { val rhs = unary(); require(rhs != 0.0) { "Modulo by zero" }; finite(value % rhs) }
+                take('/') -> { val rhs = unary(); require(rhs.signum() != 0) { "Division by zero" }; finite(value.divide(rhs, MathContext.DECIMAL128)) }
+                take('%') -> { val rhs = unary(); require(rhs.signum() != 0) { "Modulo by zero" }; finite(value.remainder(rhs)) }
                 else -> return value
             }
         }
-        private inline fun nested(block: () -> Double): Double {
+        private inline fun nested(block: () -> BigDecimal): BigDecimal {
             require(++depth <= 64) { "Nesting exceeds 64 levels" }
             try { return block() } finally { depth-- }
         }
-        private fun unary(): Double = when {
+        private fun unary(): BigDecimal = when {
             take('+') -> nested { unary() }
             take('-') -> nested { -unary() }
             else -> power()
         }
-        private fun power(): Double {
+        private fun power(): BigDecimal {
             val value = primary()
-            return if (take('^')) finite(value.pow(nested { unary() })) else value
+            if (!take('^')) return value
+            val exponent = nested { unary() }
+            val integer = runCatching { exponent.intValueExact() }.getOrNull()
+            if (integer != null && integer in -4096..4096) {
+                val powered = value.pow(kotlin.math.abs(integer), MathContext.DECIMAL128)
+                return finite(if (integer < 0) BigDecimal.ONE.divide(powered, MathContext.DECIMAL128) else powered)
+            }
+            val approximate = value.toDouble().pow(exponent.toDouble())
+            require(approximate.isFinite()) { "Result is not finite" }
+            return finite(BigDecimal.valueOf(approximate))
         }
-        private fun primary(): Double {
+        private fun primary(): BigDecimal {
             if (take('(')) return nested {
                 val value = sum()
                 require(take(')')) { "Expected closing parenthesis" }
@@ -84,7 +97,7 @@ object CalculatorEvaluator {
                 while (source.getOrNull(position)?.isDigit() == true) position++
                 require(position > exponentStart) { "Expected exponent" }
             }
-            return finite(source.substring(start, position).toDoubleOrNull()
+            return finite(source.substring(start, position).toBigDecimalOrNull()
                 ?: throw IllegalArgumentException("Invalid number"))
         }
     }
