@@ -13,6 +13,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModelSearchAndSortingTest {
+    @Test fun parameterFiltersUseDeclaredCountsInsteadOfDownloadSize() {
+        val unknown = createTestModel("unknown", "Custom model").copy(size = "8.0 GB")
+        assertFalse(unknown.matches("", SizeTier.Large))
+        assertTrue(unknown.matches("", SizeTier.All))
+        assertTrue(createTestModel("tiny", "SmolLM 135M").matches("", SizeTier.Small))
+        assertTrue(createTestModel("mid", "Qwen 6.999B").matches("", SizeTier.Medium))
+        assertFalse(createTestModel("boundary", "Qwen 7B").matches("", SizeTier.Medium))
+        assertTrue(createTestModel("boundary", "Qwen 7B").matches("", SizeTier.Large))
+        assertTrue(createTestModel("large", "Model 70B").matches("", SizeTier.Huge))
+    }
     @Test fun unavailableModelsCannotUseRecencyOrNewDownloadsToJumpAboveAvailableModels() {
         val ready = createTestModel("ready", "Ready", ModelStatus.Available, 10L)
         val failed = createTestModel("failed", "Failed", ModelStatus.Failed, 300L)
@@ -384,10 +394,10 @@ class ModelSearchAndSortingTest {
 
     @Test
     fun testModelSourceFilterCombinesWithSearchAndSizeTier() {
-        // Size: 2.0 GB corresponds to ~1.0B params (Small tier: 0B-2B)
-        val customSmall = createTestModel("custom_small", "Custom Chat Small").copy(size = "1.2 GB")
-        val customLarge = createTestModel("custom_large", "Custom Chat Large").copy(size = "8.0 GB")
-        val catalogSmall = createTestModel("catalog_small", "Catalog Chat Small").copy(size = "1.2 GB")
+        // Parameter filters use the declared count, independently of file size.
+        val customSmall = createTestModel("custom_small", "Custom Chat Small 1B").copy(size = "1.2 GB")
+        val customLarge = createTestModel("custom_large", "Custom Chat Large 8B").copy(size = "8.0 GB")
+        val catalogSmall = createTestModel("catalog_small", "Catalog Chat Small 1B").copy(size = "1.2 GB")
 
         val allModels = listOf(customSmall, customLarge, catalogSmall)
 
@@ -395,12 +405,12 @@ class ModelSearchAndSortingTest {
         val sourceFiltered = allModels.filter { it.isCustom }
         assertEquals(listOf(customSmall, customLarge), sourceFiltered)
 
-        // 2. Combine with search "chat" and SizeTier.Small (Small: 0-2B params)
+        // 2. Combine with search "chat" and SizeTier.Small (<3B params)
         val searchAndTier = sourceFiltered.filter { it.matches("chat", SizeTier.Small) }
         assertEquals(1, searchAndTier.size)
         assertEquals("custom_small", searchAndTier.first().id)
 
-        // 3. SizeTier.Large (Large: 7-10B params)
+        // 3. SizeTier.Large (7B to below 12B params)
         val searchAndTierLarge = sourceFiltered.filter { it.matches("chat", SizeTier.Large) }
         assertEquals(1, searchAndTierLarge.size)
         assertEquals("custom_large", searchAndTierLarge.first().id)

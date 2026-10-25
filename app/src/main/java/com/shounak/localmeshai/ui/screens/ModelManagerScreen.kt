@@ -135,20 +135,21 @@ import kotlin.math.sin
  */
 enum class SizeTier(val display: String) {
     All("All"),
-    Small("0B–2B"),
-    Medium("3B–5B"),
-    Large("7B–10B"),
-    XLarge("12B–15B"),
-    Huge("20B–35B");
+    Small("<3B"),
+    Medium("3B–<7B"),
+    Large("7B–<12B"),
+    XLarge("12B–<20B"),
+    Huge("20B+");
 
     fun contains(paramsB: Float?): Boolean {
         if (this == All) return true
         val p = paramsB ?: return false
+        if (!p.isFinite() || p < 0f) return false
         return when (this) {
             Small -> p < 3f
-            Medium -> p in 3f..6.99f
-            Large -> p in 7f..11.99f
-            XLarge -> p in 12f..19.99f
+            Medium -> p >= 3f && p < 7f
+            Large -> p >= 7f && p < 12f
+            XLarge -> p >= 12f && p < 20f
             Huge -> p >= 20f
             All -> true
         }
@@ -188,20 +189,14 @@ private fun ModelSectionTitle(
 /**
  * Best-effort parameter count in billions. Tries the model name first
  * (e.g. "Qwen 3.5 0.8B", "Gemma 4 E2B", "InternLM3-8B", "Qwen3-30B-A3B"),
- * then falls back to the first GB/MB figure in the size string.
- * Returns null when the model has no size signal (e.g. user-added custom
- * models with no size set) — those are hidden by non-`All` tier filters.
+ * File sizes in GB/MB do not establish a parameter count.
+ * Returns null when the model name has no parameter count.
  */
 private fun ModelInfo.parametersBillions(): Float? {
-    val nameMatch = Regex("""(\d+(?:\.\d+)?)B""").find(name)
+    val nameMatch = Regex("""(\d+(?:\.\d+)?)\s*([BM])(?![\p{L}\p{N}])""", RegexOption.IGNORE_CASE).find(name)
     if (nameMatch != null) {
-        return nameMatch.groupValues[1].toFloatOrNull()
-    }
-    val sizeMatch = Regex("""(\d+(?:\.\d+)?)\s*(GB|MB)""").find(size)
-    if (sizeMatch != null) {
-        val number = sizeMatch.groupValues[1].toFloatOrNull() ?: return null
-        val unit = sizeMatch.groupValues[2]
-        return if (unit == "MB") number / 1024f else number
+        val count = nameMatch.groupValues[1].toFloatOrNull() ?: return null
+        return if (nameMatch.groupValues[2].equals("M", ignoreCase = true)) count / 1000f else count
     }
     return null
 }
@@ -1385,14 +1380,16 @@ private fun NoModelsMatchCard(
 
 @Composable
 private fun StorageSummaryCard(downloadedModels: List<ModelInfo>, hazeState: HazeState) {
-    val totalBytes = remember(downloadedModels) {
-        downloadedModels.sumOf { model ->
-            val path = model.localPath ?: return@sumOf 0L
-            val file = java.io.File(path)
-            when {
-                file.isDirectory -> file.walkTopDown().filter { it.isFile }.sumOf { it.length() }
-                file.isFile -> file.length()
-                else -> 0L
+    val storagePaths = downloadedModels.mapNotNull { it.localPath }.distinct().sorted()
+    val totalBytes by androidx.compose.runtime.produceState(0L, storagePaths) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            storagePaths.sumOf { path ->
+                val file = java.io.File(path)
+                when {
+                    file.isDirectory -> file.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+                    file.isFile -> file.length()
+                    else -> 0L
+                }
             }
         }
     }
