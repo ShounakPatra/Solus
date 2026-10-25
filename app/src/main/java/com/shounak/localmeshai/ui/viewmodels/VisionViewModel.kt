@@ -436,6 +436,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // Serializes vision init and ask so they cannot run at the same time.
+    val automaticModelSelection = com.shounak.localmeshai.ui.models.AutomaticModelSelection()
     private val ioMutex = Mutex()
     private var releaseJob: Job? = null
     private val documentPreparation = DocumentPreparation(application, viewModelScope)

@@ -778,9 +778,11 @@ fun ChatScreen(
     val visibleTextModelPath = selectedModelPath.takeUnless { effectiveSupportsAttachments }
     val visibleVisionModelPath = selectedModelPath.takeIf { effectiveSupportsAttachments }
     LaunchedEffect(visibleTextModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision) {
+        val shouldLoad = chatViewModel.automaticModelSelection.shouldLoad(
+            visibleTextModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision)
         if (visibleTextModelPath == null) {
             chatViewModel.uninitializeModel()
-        } else {
+        } else if (shouldLoad) {
             visibleTextModelPath.let { path ->
                 chatViewModel.initModel(
                     path = path,
@@ -797,9 +799,11 @@ fun ChatScreen(
     }
 
     LaunchedEffect(visibleVisionModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision) {
+        val shouldLoad = visionViewModel.automaticModelSelection.shouldLoad(
+            visibleVisionModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision)
         if (visibleVisionModelPath == null) {
             visionViewModel.uninitializeModel()
-        } else {
+        } else if (shouldLoad) {
             visibleVisionModelPath.let { path ->
                 visionViewModel.initModel(
                     path = path,

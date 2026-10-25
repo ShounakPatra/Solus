@@ -369,6 +369,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         retryMessage(sId, userMsgId)
     }
     val composerAttachments = com.shounak.localmeshai.ui.models.ComposerAttachments()
+    val automaticModelSelection = com.shounak.localmeshai.ui.models.AutomaticModelSelection()
     private val ioMutex = Mutex()
     private var releaseJob: Job? = null
     private val documentPreparation = DocumentPreparation(application, viewModelScope)
