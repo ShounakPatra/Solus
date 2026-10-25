@@ -52,9 +52,10 @@ jobs:
           [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]] || { echo 'Invalid run ID'; exit 1; }
           [[ "$RELEASE_TAG" =~ ^v?[0-9][A-Za-z0-9._-]*$ ]] || { echo 'Invalid release tag'; exit 1; }
           gh run view "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            --json status,conclusion,event,headBranch,workflowName > "$RUNNER_TEMP/source-run.json"
-          python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert (r["status"],r["conclusion"],r["event"],r["headBranch"],r["workflowName"]) == ("completed","success","push","main","Android CI"), "Select a successful Android CI push run from main"' "$RUNNER_TEMP/source-run.json"
+            --json status,conclusion,event,headBranch,workflowName,headSha > "$RUNNER_TEMP/source-run.json"
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null
+          gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq '.sha' > "$RUNNER_TEMP/release-tag-sha.txt"
+          python3 tools/validate_release_source.py --run-json "$RUNNER_TEMP/source-run.json" --tag-sha-file "$RUNNER_TEMP/release-tag-sha.txt"
 
       - name: Download existing CI artifact on the runner
         shell: bash
