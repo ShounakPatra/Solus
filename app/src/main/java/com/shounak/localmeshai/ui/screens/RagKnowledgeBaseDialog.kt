@@ -514,9 +514,19 @@ fun RagKnowledgeBaseDialog(
             confirmButton = {
                 LiquidGlassButton(
                     onClick = {
-                        ragManager.removeDocument(doc.documentId)
-                        refresh()
                         docToDelete = null
+                        scope.launch {
+                            try {
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    ragManager.removeDocument(doc.documentId)
+                                }
+                                refresh()
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                throw cancelled
+                            } catch (error: Exception) {
+                                Toast.makeText(context, "Could not delete document: ${error.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
                     },
                     hazeState = hazeState,
                     modifier = Modifier
@@ -563,8 +573,18 @@ fun RagKnowledgeBaseDialog(
             confirmButton = {
                 LiquidGlassButton(
                     onClick = {
-                        ragManager.clearKnowledgeBase()
-                        refresh()
+                        scope.launch {
+                            try {
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    ragManager.clearKnowledgeBase()
+                                }
+                                refresh()
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                throw cancelled
+                            } catch (error: Exception) {
+                                Toast.makeText(context, "Could not clear documents: ${error.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
                         showClearConfirmation = false
                     },
                     hazeState = hazeState,
