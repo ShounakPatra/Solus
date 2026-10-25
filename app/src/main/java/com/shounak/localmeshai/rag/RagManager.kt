@@ -176,21 +176,21 @@ class RagManager(
         )
 
         try {
+            var extractionError: String? = null
             val extractedText = DocumentTextExtractor.extract(
                 context = ctx,
                 uri = uri,
                 fileName = fileName,
                 mimeType = mimeType,
-                maxExtractedChars = 200_000,
-                limitDescription = "200,000 characters for RAG knowledge base",
-                maxInputBytes = 20L * 1024L * 1024L
+                budget = com.shounak.localmeshai.utils.DocumentExtractionBudget(
+                    maxExtractedChars = 200_000,
+                    limitDescription = "200,000 characters for RAG knowledge base",
+                    maxInputBytes = 20L * 1024L * 1024L
+                ),
+                onFailure = { extractionError = it }
             )
 
-            val isExtractionError = extractedText.isBlank() ||
-                extractedText.startsWith("No readable text could be extracted", ignoreCase = true) ||
-                extractedText.startsWith("Could not ", ignoreCase = true) ||
-                extractedText.startsWith("The attached file is ", ignoreCase = true) ||
-                extractedText.contains("OCR is required", ignoreCase = true)
+            val isExtractionError = extractedText.isBlank() || extractionError != null
 
             if (isExtractionError) {
                 val errorMsg = if (extractedText.isBlank()) {
@@ -270,10 +270,12 @@ class RagManager(
 
         val fingerprint = computeContentFingerprint(trimmed)
 
-        // Check if identical content is already indexed under same or different name
+        // Content equality does not establish ownership across chats or KB imports.
         val existingDocs = vectorStore.getDocuments()
-        val matchingDoc = existingDocs.firstOrNull { it.contentFingerprint == fingerprint }
-        if (matchingDoc != null && (targetDocumentId == null || matchingDoc.documentId == targetDocumentId)) {
+        val matchingDoc = existingDocs.firstOrNull {
+            targetDocumentId != null && it.documentId == targetDocumentId && it.contentFingerprint == fingerprint
+        }
+        if (matchingDoc != null) {
             return RagIngestionResult(
                 success = true,
                 documentId = matchingDoc.documentId,

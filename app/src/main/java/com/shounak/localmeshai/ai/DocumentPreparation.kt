@@ -25,6 +25,7 @@ internal class DocumentPreparation(private val context: Context, private val sco
     private fun identity(file: File) = "${file.canonicalPath}|${file.length()}|${file.lastModified()}"
 
     fun remember(attachment: PreparedAttachment) {
+        if (attachment.extractionError != null) return
         val file = attachment.durableFile ?: return
         val text = attachment.extractedText ?: return
         synchronized(knownDocuments) { knownDocuments[identity(file)] = text }
@@ -74,6 +75,7 @@ internal class DocumentPreparation(private val context: Context, private val sco
 
     private suspend fun prepare(uri: Uri, name: String): PreparedAttachment {
         val currentJob = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+        var extractionError: String? = null
         if (uri.scheme == "file") {
             val file = File(checkNotNull(uri.path))
             require(file.isFile) { "Saved attachment is no longer available" }
@@ -83,9 +85,10 @@ internal class DocumentPreparation(private val context: Context, private val sco
                     uri = uri,
                     fileName = name,
                     budget = com.shounak.localmeshai.utils.DocumentExtractionBudget.ATTACHED_DOCUMENT,
-                    isCancelled = { currentJob?.isActive == false }
+                    isCancelled = { currentJob?.isActive == false },
+                    onFailure = { extractionError = it }
                 )
-            return PreparedAttachment(name = name, fileUri = uri, durableFile = file, extractedText = text)
+            return PreparedAttachment(name = name, fileUri = uri, durableFile = file, extractedText = text, extractionError = extractionError)
                 .also(::remember)
         }
         val directory = context.cacheDir.resolve("multimodal_inputs").apply { mkdirs() }
@@ -116,10 +119,11 @@ internal class DocumentPreparation(private val context: Context, private val sco
                 fileName = name,
                 mimeType = mime,
                 budget = com.shounak.localmeshai.utils.DocumentExtractionBudget.ATTACHED_DOCUMENT,
-                isCancelled = { currentJob?.isActive == false }
+                isCancelled = { currentJob?.isActive == false },
+                onFailure = { extractionError = it }
             )
             return PreparedAttachment(name = name, mimeType = mime, fileUri = Uri.fromFile(file),
-                extractedText = text, ownsResources = true, temporaryFiles = listOf(file), resourceLease = lease)
+                extractedText = text, extractionError = extractionError, ownsResources = true, temporaryFiles = listOf(file), resourceLease = lease)
         } catch (t: Throwable) {
             lease.close()
             ActiveInputFiles.deleteIfUnreferenced(file)

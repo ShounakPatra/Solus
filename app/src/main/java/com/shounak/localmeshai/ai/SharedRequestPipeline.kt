@@ -49,7 +49,8 @@ data class PreparedAttachment(
     val audioSampleRate: Int = 16_000,
     val ownsResources: Boolean = false,
     val temporaryFiles: List<File> = emptyList(),
-    val resourceLease: AutoCloseable? = null
+    val resourceLease: AutoCloseable? = null,
+    val extractionError: String? = null
 ) : AutoCloseable {
     private val closed = AtomicBoolean(false)
     override fun close() {

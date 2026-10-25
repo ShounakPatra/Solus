@@ -10,6 +10,19 @@ import java.util.zip.ZipOutputStream
 class DocumentExtractionSafetyTest {
 
     @Test
+    fun extractionStatusDoesNotInterpretDocumentContentAsAnError() {
+        for (text in listOf("Could not extract a confession from the witness.", "OCR is required for our next project.", "The attached file is an example in this manual.")) {
+            var failure: String? = null
+            val result = DocumentTextExtractor.extractBytes(text.toByteArray(), "notes.txt", onFailure = { failure = it })
+            assertEquals(text, result)
+            assertNull(failure)
+        }
+        var failure: String? = null
+        DocumentTextExtractor.extractBytes(byteArrayOf(), "empty.txt", onFailure = { failure = it })
+        assertNotNull(failure)
+    }
+
+    @Test
     fun officeEntitiesAreDecodedOnceAndPreserveSupplementaryCharacters() {
         val zip = createZip(mapOf("word/document.xml" to
             "<w:document><w:p><w:t>&lt;example&gt; &amp;lt; &#x1F600; &#128512; &#xD800;</w:t></w:p></w:document>".toByteArray()))

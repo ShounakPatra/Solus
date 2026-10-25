@@ -1254,7 +1254,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     inputName.endsWith(".pdf", ignoreCase = true) ||
                     getApplication<Application>().contentResolver.getType(pdfUri)?.contains("pdf", ignoreCase = true) == true
                 )
-                if (bitmap == null && isPdf && (fileText.isBlank() || fileText.isExtractionFailureText())) {
+                if (bitmap == null && isPdf && (fileText.isBlank() || prepared?.extractionError != null)) {
                     renderedPdfBitmap = renderPdfPagesToBitmap(getApplication(), pdfUri)
                     if (renderedPdfBitmap != null) {
                         fileText = ""
@@ -1275,7 +1275,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
                 effectiveBitmap = (if (hasExplicitImage) bitmap else null) ?: renderedPdfBitmap
-                if (inputUri != null && renderedPdfBitmap == null && AttachedDocumentContext.isExtractionFailure(fileText)) {
+                if (inputUri != null && renderedPdfBitmap == null && (fileText.isBlank() || prepared?.extractionError != null)) {
                     throw IllegalArgumentException(fileText.take(240).ifBlank { "Could not read the attached document" })
                 }
                 promptFileText = withContext(Dispatchers.Default) {
@@ -2343,7 +2343,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         budget: DocumentTextBudget
     ): String {
         val clean = fileText.trim()
-        if (clean.isExtractionFailureText()) return clean
         return if (basePrompt.isBlank() || basePrompt.isSummaryLikeRequest()) {
             buildCompactDocumentOverview(
                 fileName = fileName,
@@ -2482,7 +2481,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun String.limitForPrompt(budget: DocumentTextBudget): String {
         val clean = trim()
-        if (clean.isBlank() || clean.isExtractionFailureText() || clean.length <= budget.maxPromptChars) {
+        if (clean.isBlank() || clean.length <= budget.maxPromptChars) {
             return clean
         }
         return buildString {
@@ -2586,18 +2585,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             normalized.equals("No answer generated", ignoreCase = true)
     }
 
-    private fun String.isExtractionFailureText(): Boolean {
-        val normalized = trim().lowercase()
-        return normalized.startsWith("no readable text could be extracted") ||
-            normalized.startsWith("could not extract") ||
-            normalized.startsWith("could not open the attached file stream") ||
-            normalized.startsWith("error extracting") ||
-            normalized.startsWith("error reading") ||
-            normalized.startsWith("the attached file is") ||
-            normalized.startsWith("this file type is not text-extractable") ||
-            normalized.startsWith("decompression limit exceeded") ||
-            normalized.contains("decompression bomb")
-    }
 
     fun flushVisibleConversation() {
         saveVisibleConversationIfComplete()

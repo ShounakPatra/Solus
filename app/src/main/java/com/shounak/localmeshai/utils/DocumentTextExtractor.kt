@@ -21,18 +21,20 @@ object DocumentTextExtractor {
         fileName: String,
         mimeType: String = "",
         budget: DocumentExtractionBudget = DocumentExtractionBudget.DEFAULT,
-        isCancelled: (() -> Boolean)? = null
+        isCancelled: (() -> Boolean)? = null,
+        onFailure: ((String) -> Unit)? = null
     ): String {
+        fun failure(message: String): String = message.also { onFailure?.invoke(it) }
         val safeInputLimit = budget.maxInputBytes.coerceAtLeast(1L)
         val sizeLimitLabel = formatBytes(safeInputLimit)
         val reportedSize = queryFileSize(context, uri)
         if (reportedSize != null && reportedSize > safeInputLimit) {
-            return "The attached file is ${formatBytes(reportedSize)}, but the selected model can read files up to $sizeLimitLabel based on its context window."
+            return failure("The attached file is ${formatBytes(reportedSize)}, but the selected model can read files up to $sizeLimitLabel based on its context window.")
         }
         val readResult = readBytesWithinLimit(context, uri, safeInputLimit, isCancelled)
-            ?: return "Could not open the attached file stream."
+            ?: return failure("Could not open the attached file stream.")
         if (readResult.exceededLimit) {
-            return "The attached file is larger than $sizeLimitLabel, which is the selected model's current context-based file limit."
+            return failure("The attached file is larger than $sizeLimitLabel, which is the selected model's current context-based file limit.")
         }
         return extractBytes(
             bytes = readResult.bytes,
@@ -40,7 +42,8 @@ object DocumentTextExtractor {
             mimeType = mimeType,
             context = context,
             budget = budget,
-            isCancelled = isCancelled
+            isCancelled = isCancelled,
+            onFailure = onFailure
         )
     }
 
@@ -71,8 +74,10 @@ object DocumentTextExtractor {
         context: Context? = null,
         budget: DocumentExtractionBudget = DocumentExtractionBudget.DEFAULT,
         extractionContext: SharedExtractionContext? = null,
-        isCancelled: (() -> Boolean)? = null
+        isCancelled: (() -> Boolean)? = null,
+        onFailure: ((String) -> Unit)? = null
     ): String {
+        fun failure(message: String): String = message.also { onFailure?.invoke(it) }
         val effectiveCancelled = isCancelled ?: extractionContext?.isCancelled
         val effectiveContext = when {
             extractionContext == null ->
@@ -91,13 +96,13 @@ object DocumentTextExtractor {
         val safeInputLimit = budget.maxInputBytes.coerceAtLeast(1L)
         if (bytes.size > safeInputLimit) {
             val sizeLimitLabel = formatBytes(safeInputLimit)
-            return "The attached file is ${formatBytes(bytes.size.toLong())}, but the selected model can read files up to $sizeLimitLabel based on its context window."
+            return failure("The attached file is ${formatBytes(bytes.size.toLong())}, but the selected model can read files up to $sizeLimitLabel based on its context window.")
         }
 
         val extracted = try {
             when {
                 extension == "pdf" || mimeType.contains("pdf", ignoreCase = true) ->
-                    if (context != null) extractPdf(context, bytes) else "PDF extraction requires Context"
+                    if (context != null) extractPdf(context, bytes, onFailure) else failure("PDF extraction requires Context")
                 extension == "docx" ->
                     extractDocx(bytes, effectiveContext)
                 extension == "pptx" ->
@@ -106,6 +111,8 @@ object DocumentTextExtractor {
                     extractOfficeOpenXml(bytes, "xl/", listOf("t", "v"), effectiveContext)
                 extension == "odt" || extension == "ods" || extension == "odp" ->
                     extractZipXmlEntries(bytes, listOf("content.xml"), effectiveContext)
+                ArchiveTextExtractor.isArchive(fileName, mimeType) && extension in setOf("tar", "gz", "tgz", "bz2", "xz", "7z", "rar") ->
+                    failure("Unsupported archive format: .$extension. Extract the files first or attach a ZIP archive.")
                 ArchiveTextExtractor.isArchive(fileName, mimeType) ->
                     ArchiveTextExtractor.extract(
                         context = context,
@@ -122,20 +129,20 @@ object DocumentTextExtractor {
                 isPlainTextExtension(extension) || mimeType.startsWith("text/", ignoreCase = true) ||
                     mimeType.contains("json", ignoreCase = true) || mimeType.contains("xml", ignoreCase = true) ->
                     bytes.decodeText()
-                else -> fallbackExtract(bytes, extension)
+                else -> fallbackExtract(bytes, extension, onFailure)
             }
         } catch (e: DecompressionBombException) {
-            return "Could not extract $fileName: ${e.message}"
+            return failure("Could not extract $fileName: ${e.message}")
         } catch (e: ExtractionTimeoutException) {
-            return "Could not extract $fileName: extraction timed out to stay within safety limits."
+            return failure("Could not extract $fileName: extraction timed out to stay within safety limits.")
         } catch (e: ExtractionLimitExceededException) {
-            return "Could not extract $fileName: ${e.message}"
+            return failure("Could not extract $fileName: ${e.message}")
         } catch (e: NestedArchiveException) {
-            return "Could not extract $fileName: ${e.message}"
+            return failure("Could not extract $fileName: ${e.message}")
         } catch (e: ExtractionCancelledException) {
             throw e
         } catch (e: Exception) {
-            return "Could not extract $fileName: ${e.message ?: e::class.java.simpleName}"
+            return failure("Could not extract $fileName: ${e.message ?: e::class.java.simpleName}")
         }
 
         val normalized = extracted.normalizeDocumentWhitespace()
@@ -147,7 +154,7 @@ object DocumentTextExtractor {
             normalized
         }
         return clipped.ifBlank {
-            "No readable text could be extracted from $fileName. If this is a scanned image-only document, OCR is required before the model can analyze it."
+            failure("No readable text could be extracted from $fileName. If this is a scanned image-only document, OCR is required before the model can analyze it.")
         }
     }
 
@@ -204,7 +211,7 @@ object DocumentTextExtractor {
         }
     }
 
-    private fun extractPdf(context: Context, bytes: ByteArray): String {
+    private fun extractPdf(context: Context, bytes: ByteArray, onFailure: ((String) -> Unit)? = null): String {
         return runCatching {
             PDFBoxResourceLoader.init(context.applicationContext)
             PDDocument.load(ByteArrayInputStream(bytes)).use { document ->
@@ -214,6 +221,7 @@ object DocumentTextExtractor {
             }
         }.getOrElse { error ->
             "Could not extract PDF text: ${error.message ?: error::class.java.simpleName}. If this PDF is scanned or image-only, OCR is required."
+                .also { onFailure?.invoke(it) }
         }
     }
 
@@ -421,14 +429,14 @@ object DocumentTextExtractor {
         return decodeXmlEntities(text.replace(Regex("""<[^>]+>"""), " "))
     }
 
-    private fun fallbackExtract(bytes: ByteArray, extension: String): String {
+    private fun fallbackExtract(bytes: ByteArray, extension: String, onFailure: ((String) -> Unit)? = null): String {
         val text = bytes.decodeText()
         val printableRatio = text.count { it == '\n' || it == '\r' || it == '\t' || !it.isISOControl() }
             .toFloat() / text.length.coerceAtLeast(1)
         return if (printableRatio > 0.82f) {
             if (extension in setOf("xml", "xhtml", "svg")) stripXmlTags(text) else text
         } else {
-            "This file type is not text-extractable by the app yet."
+            "This file type is not text-extractable by the app yet.".also { onFailure?.invoke(it) }
         }
     }
 

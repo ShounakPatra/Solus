@@ -38,7 +38,7 @@ class RagIdentityAndReplacementTest {
     }
 
     @Test
-    fun testIngestDeduplication_ReusesExistingIdAndChunks() = runBlocking {
+    fun testDeduplicationRequiresExplicitDocumentIdentity() = runBlocking {
         val manager = RagManager(
             context = null,
             embeddingEngine = UniversalSemanticEmbeddingEngine(),
@@ -54,9 +54,12 @@ class RagIdentityAndReplacementTest {
         // Ingest identical content under a different filename
         val doc2 = manager.ingestText("manual_copy.txt", content)
         assertTrue(doc2.success)
-        assertEquals(doc1.documentId, doc2.documentId)
-        assertEquals(initialChunks, manager.totalIndexedChunks)
-        assertEquals(1, manager.indexedDocuments.size)
+        assertNotEquals(doc1.documentId, doc2.documentId)
+        assertEquals(initialChunks * 2, manager.totalIndexedChunks)
+        assertEquals(2, manager.indexedDocuments.size)
+        val sameUpload = manager.ingestText("manual.txt", content, targetDocumentId = doc1.documentId)
+        assertEquals(doc1.documentId, sameUpload.documentId)
+        assertEquals(initialChunks * 2, manager.totalIndexedChunks)
     }
 
     @Test

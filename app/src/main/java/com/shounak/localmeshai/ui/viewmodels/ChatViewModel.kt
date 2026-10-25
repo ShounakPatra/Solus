@@ -1146,7 +1146,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 documentPath = if (documentUri != null) resolvedDocPath else messages[userIdx].documentPath)
                         }
                     }
-                    require(!AttachedDocumentContext.isExtractionFailure(prepared.extractedText.orEmpty())) {
+                    require(prepared.extractionError == null && !prepared.extractedText.isNullOrBlank()) {
                         prepared.extractedText?.take(240) ?: "Could not extract the attached document"
                     }
                     attachedContext = withContext(Dispatchers.Default) {
