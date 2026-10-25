@@ -350,7 +350,7 @@ object DocumentTextExtractor {
             val escapedTag = Regex.escape(tag)
             normalized = normalized.replace(
                 Regex("""<${escapedTag}\b[^>]*>(.*?)</${escapedTag}>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
-            ) { match -> decodeXmlEntities(match.groupValues[1]) + " " }
+            ) { match -> match.groupValues[1] + " " }
         }
         return stripXmlTags(normalized)
     }
@@ -364,12 +364,57 @@ object DocumentTextExtractor {
     }
 
     private fun extractRtf(text: String): String {
-        return text
-            .replace(Regex("""\\'[0-9a-fA-F]{2}""")) { match ->
-                match.value.substring(2).toInt(16).toChar().toString()
+        val output = StringBuilder()
+        val groupFallbacks = java.util.ArrayDeque<Int>()
+        var unicodeFallbackLength = 1
+        var fallbackRemaining = 0
+        var index = 0
+        fun appendCharacter(character: Char) {
+            if (fallbackRemaining > 0) fallbackRemaining-- else output.append(character)
+        }
+        while (index < text.length) {
+            when (val character = text[index++]) {
+                '{' -> groupFallbacks.push(unicodeFallbackLength)
+                '}' -> if (groupFallbacks.isNotEmpty()) unicodeFallbackLength = groupFallbacks.pop()
+                '\r', '\n' -> Unit // Source wrapping is not an RTF paragraph.
+                '\\' -> {
+                    if (index >= text.length) break
+                    val symbol = text[index++]
+                    when {
+                        symbol == '\\' || symbol == '{' || symbol == '}' -> appendCharacter(symbol)
+                        symbol == '\'' && index + 2 <= text.length -> {
+                            val byte = text.substring(index, index + 2).toIntOrNull(16)
+                            index += 2
+                            if (byte != null) appendCharacter(byteArrayOf(byte.toByte()).toString(charset("windows-1252"))[0])
+                        }
+                        symbol.isLetter() -> {
+                            val start = index - 1
+                            while (index < text.length && text[index].isLetter()) index++
+                            val word = text.substring(start, index)
+                            val numberStart = index
+                            if (index < text.length && text[index] == '-') index++
+                            while (index < text.length && text[index].isDigit()) index++
+                            val number = text.substring(numberStart, index).toIntOrNull()
+                            if (index < text.length && text[index] == ' ') index++
+                            when (word) {
+                                "uc" -> unicodeFallbackLength = (number ?: 1).coerceAtLeast(0)
+                                "u" -> if (number != null) {
+                                    output.append((number and 0xFFFF).toChar())
+                                    fallbackRemaining = unicodeFallbackLength
+                                }
+                                "par", "line" -> appendCharacter('\n')
+                                "tab" -> appendCharacter('\t')
+                                "bin" -> index += (number ?: 0).coerceIn(0, text.length - index)
+                            }
+                        }
+                        symbol == '~' -> appendCharacter(' ')
+                        symbol == '_' -> appendCharacter('-')
+                    }
+                }
+                else -> appendCharacter(character)
             }
-            .replace(Regex("""\\[a-zA-Z]+\d* ?"""), " ")
-            .replace(Regex("""[{}]"""), " ")
+        }
+        return output.toString()
     }
 
     private fun stripXmlTags(text: String): String {
@@ -405,19 +450,24 @@ object DocumentTextExtractor {
     }
 
     private fun decodeXmlEntities(text: String): String {
-        return text
-            .replace("&nbsp;", " ")
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace(Regex("""&#(\d+);""")) { match ->
-                match.groupValues[1].toIntOrNull()?.toChar()?.toString().orEmpty()
+        // Decode once: &amp;lt; is literal &lt;, not a second markup layer.
+        return Regex("""&(#x[0-9a-fA-F]+|#\d+|nbsp|amp|lt|gt|quot|apos);""").replace(text) { match ->
+            when (val entity = match.groupValues[1]) {
+                "nbsp" -> " "
+                "amp" -> "&"
+                "lt" -> "<"
+                "gt" -> ">"
+                "quot" -> "\""
+                "apos" -> "'"
+                else -> {
+                    val codePoint = if (entity.startsWith("#x")) entity.drop(2).toIntOrNull(16)
+                        else entity.drop(1).toIntOrNull()
+                    if (codePoint != null && Character.isValidCodePoint(codePoint) && codePoint !in 0xD800..0xDFFF) {
+                        String(Character.toChars(codePoint))
+                    } else match.value
+                }
             }
-            .replace(Regex("""&#x([0-9a-fA-F]+);""")) { match ->
-                match.groupValues[1].toIntOrNull(16)?.toChar()?.toString().orEmpty()
-            }
+        }
     }
 
     private fun formatBytes(bytes: Long): String {

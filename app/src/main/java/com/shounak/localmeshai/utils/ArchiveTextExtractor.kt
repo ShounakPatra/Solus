@@ -65,6 +65,10 @@ object ArchiveTextExtractor {
         isCancelled: (() -> Boolean)? = null,
         sharedContext: SharedExtractionContext? = null
     ): String {
+        val extension = archiveName.substringAfterLast('.', "").lowercase(Locale.US)
+        if (extension in ARCHIVE_EXTENSIONS && extension !in setOf("zip", "jar", "war", "apk")) {
+            return "Unsupported archive format: .$extension. Extract the files first or attach a ZIP archive."
+        }
         val extractionContext = sharedContext ?: SharedExtractionContext(
             budget = budget,
             currentDepth = currentDepth,

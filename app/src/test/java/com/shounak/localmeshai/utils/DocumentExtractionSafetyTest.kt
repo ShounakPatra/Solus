@@ -9,6 +9,30 @@ import java.util.zip.ZipOutputStream
 
 class DocumentExtractionSafetyTest {
 
+    @Test
+    fun officeEntitiesAreDecodedOnceAndPreserveSupplementaryCharacters() {
+        val zip = createZip(mapOf("word/document.xml" to
+            "<w:document><w:p><w:t>&lt;example&gt; &amp;lt; &#x1F600; &#128512; &#xD800;</w:t></w:p></w:document>".toByteArray()))
+        val result = DocumentTextExtractor.extractBytes(zip, "entities.docx")
+        assertEquals("<example> &lt; 😀 😀 &#xD800;", result)
+    }
+
+    @Test
+    fun rtfUnicodeEscapesPreserveTextAndSkipFallbackCharacters() {
+        val rtf = """{\rtf1\ansi\uc1 \u2476?\u2494?\u2434?\u2482?\u2494? \u-10179?\u-8704?\par {\uc0\u2344}\u2350?\tab \\ \{literal\}}"""
+        val result = DocumentTextExtractor.extractBytes(rtf.toByteArray(), "unicode.rtf")
+        assertEquals("বাংলা 😀\nनम\t\\ {literal}", result)
+    }
+
+    @Test
+    fun nonZipArchivesReportUnsupportedWithoutOpeningTheStream() {
+        val result = ArchiveTextExtractor.extractFromStream(
+            inputStreamSupplier = { error("Unsupported formats must not reach the ZIP reader") },
+            archiveName = "documents.7z"
+        )
+        assertTrue(result.startsWith("Unsupported archive format: .7z"))
+    }
+
     private fun createZip(entries: Map<String, ByteArray>): ByteArray {
         val baos = ByteArrayOutputStream()
         ZipOutputStream(baos).use { zos ->
