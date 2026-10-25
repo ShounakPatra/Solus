@@ -113,7 +113,8 @@ struct ProbePositionRecord {
 };
 
 static std::mutex g_probe_mutex;
-static std::map<int, std::vector<ProbePositionRecord>> g_probe_reference_runs;
+// CPU and GPU holders intentionally share references for the same artifact only.
+static std::map<std::pair<std::string, int>, std::vector<ProbePositionRecord>> g_probe_reference_runs;
 
 #define LOG_TAG "SolusLlamaJNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -2729,7 +2730,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeProbeReference(
 
     {
         std::lock_guard<std::mutex> lock(g_probe_mutex);
-        g_probe_reference_runs[prompt_index] = records;
+        g_probe_reference_runs[{holder->model_path, prompt_index}] = records;
     }
 
     std::ostringstream json;
@@ -2757,7 +2758,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeProbeCompare(
     std::vector<ProbePositionRecord> ref_records;
     {
         std::lock_guard<std::mutex> lock(g_probe_mutex);
-        auto it = g_probe_reference_runs.find(prompt_index);
+        auto it = g_probe_reference_runs.find({holder->model_path, prompt_index});
         if (it == g_probe_reference_runs.end()) {
             return safe_new_string(env, "{\"success\":false,\"error\":\"No reference run recorded for prompt index\"}");
         }
