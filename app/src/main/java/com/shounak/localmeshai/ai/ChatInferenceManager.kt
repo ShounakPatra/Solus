@@ -79,6 +79,7 @@ class ChatInferenceManager(context: Context) {
     fun toolsUsedForRequest(requestId: String): List<ToolUse> = if (requestId == lastToolsRequestId) lastToolsUsed else emptyList()
     private var liteRtToolsDisabledForLoad = false
     private var retryToolsNextTurn = false
+    @Volatile private var documentSearchDocumentIds: Set<String> = emptySet()
     private var liteRtConversationHasTools = false
     private var liteRtCompletedTurns = 0
     private var liteRtCacheDir: File? = null
@@ -689,6 +690,7 @@ class ChatInferenceManager(context: Context) {
         rawUserText: String,      // Bare user message — used by LiteRT-LM (Conversation owns history)
         memoryContext: String = "", // Persistent memory context block
         structuredMessages: List<Pair<String, String>>? = null, // Structured conversation turns for GGUF
+        documentSearchDocumentIds: Set<String> = emptySet(),
         mediaInputs: List<MultimodalMediaInput> = emptyList(), // Multimodal media attachments for GGUF
         restoreStatefulHistory: Boolean = false,
         thinkingMode: Boolean,
@@ -700,6 +702,7 @@ class ChatInferenceManager(context: Context) {
         onSnapshot: ((StructuredResponseSnapshot) -> Unit)? = null,
         onUpdate: (String) -> Unit
     ): InferenceExecutionResult = withContext(Dispatchers.IO) {
+        this@ChatInferenceManager.documentSearchDocumentIds = documentSearchDocumentIds.toSet()
         stopRequested = false
         lastToolsRequestId = requestId
         liteRtToolRecorder.clear()
@@ -954,7 +957,7 @@ class ChatInferenceManager(context: Context) {
             val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
             publisher.finishExplicit(finalFormatted)
             finalized.toExecutionResult(currentMetrics())
-        } finally { liteRtToolRecorder.onProgress = null }
+        } finally { liteRtToolRecorder.onProgress = null; this@ChatInferenceManager.documentSearchDocumentIds = emptySet() }
     }
 
     @OptIn(ExperimentalApi::class)
@@ -1501,7 +1504,8 @@ class ChatInferenceManager(context: Context) {
     }
 
     private fun toolsForNewConversation(): List<com.shounak.localmeshai.ai.tools.ChatTool> =
-        com.shounak.localmeshai.ai.tools.LocalTools.forConversation(context, settings = requireNotNull(conversationToolSettings)) { stopRequested || isBeingClosed }
+        com.shounak.localmeshai.ai.tools.LocalTools.forConversation(context, settings = requireNotNull(conversationToolSettings),
+            documentIds = { documentSearchDocumentIds }) { stopRequested || isBeingClosed }
 
     private fun createLiteRtConversation(mode: LiteRtConversationMode): Conversation? {
         val engine = liteRtEngine ?: return null

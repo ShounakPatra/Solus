@@ -120,7 +120,8 @@ data class VisionChatMessage(
     val revision: Int = 0,
     val responseFormatVersion: Int = 0,
     val toolUses: List<com.shounak.localmeshai.ai.tools.ToolUse> = emptyList(),
-    val ragPassages: List<com.shounak.localmeshai.features.RagPassage> = emptyList()
+    val ragPassages: List<com.shounak.localmeshai.features.RagPassage> = emptyList(),
+    val ragDocumentId: String? = null
 )
 
 class VisionViewModel(application: Application) : AndroidViewModel(application) {
@@ -1050,6 +1051,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
         autoUnloadJob?.cancel()
         val savedDocument = messages.lastOrNull { it.isUser && !it.documentPath.isNullOrBlank() }
+            ?.takeIf { com.shounak.localmeshai.rag.ChatDocumentScope.isDocumentQuestion(question, listOfNotNull(it.documentName)) }
         val inputUri = fileUri ?: savedDocument?.documentPath?.let { Uri.fromFile(File(it)) }
         val inputName = fileName ?: savedDocument?.documentName ?: "document"
         val preparation = if (preparedAttachment == null) inputUri?.let { documentPreparation.take(it, inputName) } else null
@@ -1109,6 +1111,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     audioName = placeholderAudioName,
                     audioDurationMs = 0L,
                     documentName = fileName,
+                    ragDocumentId = if (fileUri != null) UUID.randomUUID().toString() else null,
                     documentPath = null
                 )
             )
@@ -1271,7 +1274,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     throw IllegalArgumentException(fileText.take(240).ifBlank { "Could not read the attached document" })
                 }
                 promptFileText = withContext(Dispatchers.Default) {
-                    AttachedDocumentContext.select(fileText, basePrompt, documentBudget.maxPromptChars)
+                    if (com.shounak.localmeshai.rag.ChatDocumentScope.shouldIncludeText(basePrompt, inputName, fileText))
+                        AttachedDocumentContext.select(fileText, basePrompt, documentBudget.maxPromptChars) else ""
                 }
                 if (myGen != analysisGeneration || reqModelEpoch != currentModelEpoch) {
                     throw CancellationException("Request configuration changed")
@@ -1335,7 +1339,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     thinkingMode = thinkingModeForRequest
                 )
                 promptFileText = withContext(Dispatchers.Default) {
-                    AttachedDocumentContext.select(fileText, basePrompt, documentBudget.maxPromptChars)
+                    if (com.shounak.localmeshai.rag.ChatDocumentScope.shouldIncludeText(basePrompt, inputName, fileText))
+                        AttachedDocumentContext.select(fileText, basePrompt, documentBudget.maxPromptChars) else ""
                 }
 
                 // Check if RAG is active and query context if applicable
@@ -1345,22 +1350,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 var currentRagTopMatchPct = 0
                 var ragAugmentedContext: String? = null
 
-                var effectiveDocId = targetDocId ?: currentSessionDocumentId
-                if (effectiveDocId == null) {
-                    val activeSession = sessionSnapshot
-                    effectiveDocId = activeSession?.documentId
-                        ?: activeSession?.documentName?.let { docName ->
-                            ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
-                        }
-                        ?: historySnapshot.firstNotNullOfOrNull { it.documentName }?.let { docName ->
-                            ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
-                        }
-                        ?: if (appSettings.settings.value.enableRag) ragManager.findMatchingDocumentForQuery(basePrompt)?.documentId else null
-                }
-
-                val shouldQueryRag = promptFileText.isBlank() && basePrompt.isNotBlank() && ChatRuntimePolicy.shouldRetrieveDocuments(
-                    appSettings.settings.value.enableRag, effectiveDocId, ragManager.totalIndexedChunks
-                )
+                val chatDocumentIds = com.shounak.localmeshai.rag.ChatDocumentScope.ids(historySnapshot.map { it.isUser to it.ragDocumentId })
+                val effectiveDocId = (targetDocId ?: currentSessionDocumentId)?.takeIf { it in chatDocumentIds }
+                val shouldQueryRag = appSettings.settings.value.enableRag && promptFileText.isBlank() && basePrompt.isNotBlank() && chatDocumentIds.isNotEmpty()
                 if (shouldQueryRag) {
                     val ragSettings = appSettings.settings.value
                     val retrieval = ragManager.retrieveForChat(
@@ -1368,7 +1360,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         topK = ragSettings.ragTopK,
                         minScore = ragSettings.ragMinSimilarity,
                         preferredDocumentId = effectiveDocId,
-                        allowGlobalSearch = appSettings.settings.value.enableRag
+                        allowGlobalSearch = false,
+                        allowedDocumentIds = chatDocumentIds
                     )
                     if (retrieval.unavailableReason != null) ragAugmentedContext = ragManager.buildAugmentedPrompt(basePrompt, retrieval)
                     if (retrieval.hasContext) {
@@ -1511,6 +1504,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
                         timing.startInference()
                         val mediaResult = inferenceManager.askStreaming(
+                            documentSearchDocumentIds = if (currentRagPassages.isNotEmpty() || promptFileText.isNotBlank() ||
+                                com.shounak.localmeshai.rag.ChatDocumentScope.isDocumentQuestion(basePrompt, historySnapshot.filter { it.isUser }.mapNotNull { it.documentName })) chatDocumentIds else emptySet(),
                             bitmap = bitmapCopy,
                             question = prompt,
                             memoryContext = memoryContext,
@@ -1590,8 +1585,10 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
                     if (execResult.status == RequestTerminalStatus.Completed && !_temporaryChat.value && appSettings.settings.value.enableRag) {
                         documentForIndex?.let { document ->
+                            val uploadId = historySnapshot.firstOrNull { it.id == userMessageId }?.ragDocumentId
                             viewModelScope.launch(Dispatchers.Default) {
-                                val indexed = ragManager.ingestText(document.name, document.extractedText.orEmpty())
+                                if (uploadId == null) return@launch
+                                val indexed = ragManager.ingestText(document.name, document.extractedText.orEmpty(), targetDocumentId = uploadId)
                                 if (indexed.success) document.durableFile?.let { original ->
                                     try { ragManager.retainOriginalDocument(indexed.documentId, document.name, original) }
                                     catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
@@ -1947,7 +1944,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 val resolvedDocPath = if (!msg.documentPath.isNullOrBlank() && File(msg.documentPath).exists()) {
                     msg.documentPath
                 } else {
-                    msg.documentName?.let { com.shounak.localmeshai.utils.AttachmentViewerUtils.findAttachmentFile(getApplication(), it)?.absolutePath }
+                    null
                 }
 
                 val resolvedAudioPath = if (!msg.audioPath.isNullOrBlank() && File(msg.audioPath).exists()) {
@@ -2002,7 +1999,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             } else {
                 session.audioName?.let { com.shounak.localmeshai.utils.AttachmentViewerUtils.findAttachmentFile(getApplication(), it)?.absolutePath }
             }
-            val legacyDocPath = session.documentName?.let { com.shounak.localmeshai.utils.AttachmentViewerUtils.findAttachmentFile(getApplication(), it)?.absolutePath }
+            val legacyDocPath: String? = null // A filename cannot establish which chat owns a file.
             messages.add(
                 VisionChatMessage(
                     text = session.question,

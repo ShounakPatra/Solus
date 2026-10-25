@@ -100,7 +100,8 @@ data class ChatMessage(
     val revision: Int = 0,
     val responseFormatVersion: Int = 0,
     val toolUses: List<com.shounak.localmeshai.ai.tools.ToolUse> = emptyList(),
-    val ragPassages: List<com.shounak.localmeshai.features.RagPassage> = emptyList()
+    val ragPassages: List<com.shounak.localmeshai.features.RagPassage> = emptyList(),
+    val ragDocumentId: String? = null
 )
 
 @Immutable
@@ -1014,7 +1015,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         ensureCurrentSession(userText, documentName)
 
         val userMsgId = UUID.randomUUID().toString()
-        val userMessage = ChatMessage(userText, true, id = userMsgId, documentName = documentName, documentPath = documentPath)
+        val userMessage = ChatMessage(userText, true, id = userMsgId, documentName = documentName, documentPath = documentPath,
+            ragDocumentId = if (documentUri != null) UUID.randomUUID().toString() else pendingRagDocumentId)
         messages.add(userMessage)
 
         val assistantIndex = messages.size
@@ -1065,6 +1067,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _isGenerating.value = true
         autoUnloadJob?.cancel()
         val savedDocument = messages.lastOrNull { it.isUser && !it.documentPath.isNullOrBlank() }
+            ?.takeIf { com.shounak.localmeshai.rag.ChatDocumentScope.isDocumentQuestion(userText, listOfNotNull(it.documentName)) }
         val inputUri = documentUri ?: documentPath?.let { Uri.fromFile(File(it)) } ?: savedDocument?.documentPath?.let { Uri.fromFile(File(it)) }
         val inputName = documentName ?: savedDocument?.documentName ?: "document"
         val preparation = inputUri?.let { documentPreparation.take(it, inputName) }
@@ -1142,7 +1145,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         prepared.extractedText?.take(240) ?: "Could not extract the attached document"
                     }
                     attachedContext = withContext(Dispatchers.Default) {
-                        AttachedDocumentContext.select(durable.extractedText.orEmpty(), userText, 12_000)
+                        if (com.shounak.localmeshai.rag.ChatDocumentScope.shouldIncludeText(userText, durable.name, durable.extractedText.orEmpty()))
+                            AttachedDocumentContext.select(durable.extractedText.orEmpty(), userText, 12_000) else ""
                     }
                 }
                 if (activeRequestId != requestId || currentModelEpoch != reqModelEpoch) {
@@ -1192,26 +1196,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 var ragChunkCount = 0
                 var ragTopMatchPct = 0
 
-                var targetDocId = pendingRagDocumentId ?: currentSessionDocumentId
+                val chatDocumentIds = com.shounak.localmeshai.rag.ChatDocumentScope.ids(messages.map { it.isUser to it.ragDocumentId })
+                val targetDocId = (pendingRagDocumentId ?: currentSessionDocumentId)?.takeIf { it in chatDocumentIds }
                 pendingRagDocumentId = null
-
-                if (targetDocId == null) {
-                    val activeSession = _currentSessionId.value?.let { id ->
-                        chatSessions.firstOrNull { it.id == id }
-                    }
-                    targetDocId = activeSession?.documentId
-                        ?: activeSession?.messages?.firstNotNullOfOrNull { it.documentName }?.let { docName ->
-                            ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
-                        }
-                        ?: messages.firstNotNullOfOrNull { it.documentName }?.let { docName ->
-                            ragManager.indexedDocuments.firstOrNull { it.documentName.equals(docName, ignoreCase = true) }?.documentId
-                        }
-                        ?: if (_isRagActive.value) ragManager.findMatchingDocumentForQuery(userText)?.documentId else null
-                }
-
-                val shouldQueryRag = attachedContext.isBlank() && ChatRuntimePolicy.shouldRetrieveDocuments(
-                    _isRagActive.value, targetDocId, ragManager.totalIndexedChunks
-                )
+                val shouldQueryRag = _isRagActive.value && attachedContext.isBlank() && chatDocumentIds.isNotEmpty()
                 if (shouldQueryRag) {
                     val ragSettings = appSettings.settings.value
                     val retrieval = ragManager.retrieveForChat(
@@ -1219,7 +1207,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         topK = ragSettings.ragTopK,
                         minScore = ragSettings.ragMinSimilarity,
                         preferredDocumentId = targetDocId,
-                        allowGlobalSearch = ragSettings.enableRag
+                        allowGlobalSearch = false,
+                        allowedDocumentIds = chatDocumentIds
                     )
                     effectivePromptText = ragManager.buildAugmentedPrompt(userText, retrieval)
                     if (retrieval.hasContext) {
@@ -1320,6 +1309,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         rawUserText = effectivePromptText,
                         memoryContext = memoryContext,
                         structuredMessages = lockedMessages,
+                        documentSearchDocumentIds = if (ragPassages.isNotEmpty() || attachedContext.isNotBlank() ||
+                            com.shounak.localmeshai.rag.ChatDocumentScope.isDocumentQuestion(userText, messages.filter { it.isUser }.mapNotNull { it.documentName })) chatDocumentIds else emptySet(),
                         restoreStatefulHistory = resetForRequest,
                         thinkingMode = thinkingModeForRequest,
                         requestId = requestId,
@@ -1355,8 +1346,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 liveUpdateJob.join()
                 if (execResult.status == RequestTerminalStatus.Completed && !_temporaryChat.value && appSettings.settings.value.enableRag) {
                     documentForIndex?.let { document ->
+                        val uploadId = messages.firstOrNull { it.id == userMsgId }?.ragDocumentId
                         viewModelScope.launch(Dispatchers.Default) {
-                            val indexed = ragManager.ingestText(document.name, document.extractedText.orEmpty())
+                            if (uploadId == null) return@launch
+                            val indexed = ragManager.ingestText(document.name, document.extractedText.orEmpty(), targetDocumentId = uploadId)
                             if (indexed.success) document.durableFile?.let { original ->
                                 try { ragManager.retainOriginalDocument(indexed.documentId, document.name, original) }
                                 catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
@@ -1640,8 +1633,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         messages.addAll(session.messages.map { msg ->
             val resolvedDocPath = if (!msg.documentPath.isNullOrBlank() && File(msg.documentPath).exists()) {
                 msg.documentPath
-            } else if (!msg.documentName.isNullOrBlank()) {
-                com.shounak.localmeshai.utils.AttachmentViewerUtils.findAttachmentFile(getApplication(), msg.documentName)?.absolutePath
             } else {
                 null
             }
@@ -1688,8 +1679,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         messages.addAll(pendingSession.messages.map { msg ->
             val resolvedDocPath = if (!msg.documentPath.isNullOrBlank() && File(msg.documentPath).exists()) {
                 msg.documentPath
-            } else if (!msg.documentName.isNullOrBlank()) {
-                com.shounak.localmeshai.utils.AttachmentViewerUtils.findAttachmentFile(getApplication(), msg.documentName)?.absolutePath
             } else {
                 null
             }

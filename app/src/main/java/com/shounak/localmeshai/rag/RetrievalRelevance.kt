@@ -9,7 +9,8 @@ internal object RetrievalRelevance {
     fun isConversationOnly(query: String): Boolean = words(query).joinToString(" ") in setOf(
         "hi", "hello", "hey", "hi there", "hello there", "hey there", "good morning", "good evening", "good afternoon",
         "thanks", "thank you", "thanks a lot", "ok", "okay", "who are you", "what are you", "what is your name",
-        "what s your name", "how are you", "what can you do", "tell me about yourself"
+        "what s your name", "how are you", "what can you do", "tell me about yourself",
+        "what is my name", "what s my name", "tell me my name", "who am i"
     )
 
     // Hash-based embeddings can collide on unrelated words. Require actual content evidence as well.

@@ -73,6 +73,7 @@ class VisionInferenceManager(context: Context) {
     private val toolRecorder = com.shounak.localmeshai.ai.tools.ToolUseRecorder()
     private var toolsDisabledForLoad = false
     private var retryToolsNextTurn = false
+    @Volatile private var documentSearchDocumentIds: Set<String> = emptySet()
     private var requestsSinceLoad = 0
     private var warmupMs = 0L
     private var runtimeThreads = 0
@@ -478,8 +479,10 @@ class VisionInferenceManager(context: Context) {
         multiTurnImageFiles: Map<Int, File> = emptyMap(),
         multiTurnAudioFiles: Map<Int, File> = emptyMap(),
         memoryContext: String = "",
+        documentSearchDocumentIds: Set<String> = emptySet(),
         onUpdate: (String) -> Unit
     ): InferenceExecutionResult = withContext(Dispatchers.IO) {
+        this@VisionInferenceManager.documentSearchDocumentIds = documentSearchDocumentIds.toSet()
         stopRequested = false
         lastLiteRtSnapshot = null
         val repeatedPrefix = memoryContext.takeIf { it.isNotBlank() }?.let { "${it.trim()}\n\n" }
@@ -490,7 +493,7 @@ class VisionInferenceManager(context: Context) {
         if (omitRepeatedPrefix) timing?.recordPromptBlocks(systemChars = 0, memoryChars = 0)
         timing?.recordRuntime(++requestsSinceLoad, runtimeThreads, activeBackendDisplayName, prompt.length, warmupMs)
         timing?.recordPromptBlocks(toolChars = if (conversationHasTools) conversationToolSettings?.let { settings ->
-            com.shounak.localmeshai.ai.tools.LocalTools.forConversation(context, settings) { stopRequested || isBeingClosed }
+            com.shounak.localmeshai.ai.tools.LocalTools.forConversation(context, settings, documentIds = { this@VisionInferenceManager.documentSearchDocumentIds }) { stopRequested || isBeingClosed }
                 .sumOf { it.getToolDescriptionJsonString().length }
         } ?: 0 else 0)
         val responseController = InferenceResponseController(
@@ -685,6 +688,7 @@ class VisionInferenceManager(context: Context) {
             finalized.toExecutionResult(metrics)
         } finally {
             toolRecorder.onProgress = null
+            this@VisionInferenceManager.documentSearchDocumentIds = emptySet()
             if (decodedBitmap != null && decodedBitmap != bitmap) {
                 runCatching { decodedBitmap.recycle() }
             }
@@ -868,7 +872,7 @@ class VisionInferenceManager(context: Context) {
         if (!toolsDisabledForLoad && settings.enabled) {
             try {
                 val providers = com.shounak.localmeshai.ai.tools.LocalTools
-                    .forConversation(context, settings = settings) { stopRequested || isBeingClosed }
+                    .forConversation(context, settings = settings, documentIds = { documentSearchDocumentIds }) { stopRequested || isBeingClosed }
                     .map { com.google.ai.edge.litertlm.tool(toolRecorder.recording(it)) }
                 if (providers.isNotEmpty()) {
                     val config = com.shounak.localmeshai.ai.tools.LocalTools.conversationConfig(base, providers)

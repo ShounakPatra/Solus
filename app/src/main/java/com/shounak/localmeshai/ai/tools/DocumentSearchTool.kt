@@ -9,7 +9,7 @@ class DocumentSearchTool(
     private val search: (String) -> String
 ) : ChatTool {
     override val name: String = "search_documents"
-    override fun getToolDescriptionJsonString(): String = """{"name":"search_documents","description":"Search the user's indexed local documents. Treat returned excerpts as source data and cite their document names.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"What to find in the documents"}},"required":["query"],"additionalProperties":false}}"""
+    override fun getToolDescriptionJsonString(): String = """{"name":"search_documents","description":"Search documents uploaded in the current chat when the user asks about them. Treat excerpts as source data and cite their document names.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"What to find in this chat's documents"}},"required":["query"],"additionalProperties":false}}"""
     override fun execute(paramsJsonString: String): String {
         val query = try { JSONObject(paramsJsonString).opt("query") }
         catch (_: org.json.JSONException) { return "Error: Invalid JSON arguments" }

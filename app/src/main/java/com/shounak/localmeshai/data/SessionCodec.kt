@@ -45,6 +45,7 @@ object SessionCodec {
                 if (msg.responseFormatVersion > 0) mObj.put("responseFormatVersion", msg.responseFormatVersion)
                 if (!msg.documentName.isNullOrBlank()) mObj.put("documentName", msg.documentName)
                 if (!msg.documentPath.isNullOrBlank()) mObj.put("documentPath", msg.documentPath)
+                if (!msg.ragDocumentId.isNullOrBlank()) mObj.put("ragDocumentId", msg.ragDocumentId)
 
                 if (msg.ragSources.isNotEmpty()) {
                     val ragArr = JSONArray()
@@ -106,7 +107,7 @@ object SessionCodec {
             if (messages != null) for (j in 0 until messages.length()) {
                 val message = messages.getJSONObject(j)
                 require(message.get("text") is String && message.get("isUser") is Boolean) { "Invalid message text or role" }
-                validateStrings(message, listOf("id", "userMessageId", "requestId", "reasoningText", "documentName", "documentPath",
+                validateStrings(message, listOf("id", "userMessageId", "requestId", "reasoningText", "documentName", "documentPath", "ragDocumentId",
                     "imagePath", "audioPath", "audioName", "terminalStatus", "errorMessage", "emptyReason"))
                 validateIntegers(message, listOf("attemptId", "responseFormatVersion", "ragChunkCount", "ragTopMatchPct", "audioDurationMs"))
                 if (!legacy) require(message.get("id") is String && message.getString("id").isNotBlank()) { "Invalid message ID" }
@@ -243,6 +244,7 @@ object SessionCodec {
                         ragTopMatchPct = ragTopMatchPct,
                         documentName = docName,
                         documentPath = docPath,
+                        ragDocumentId = mObj.optString("ragDocumentId").takeIf { it.isNotBlank() },
                         terminalStatus = terminalStatus,
                         errorMessage = errorMsg,
                         requestId = requestId,
@@ -344,6 +346,7 @@ object SessionCodec {
                 if (msg.audioDurationMs > 0L) mObj.put("audioDurationMs", msg.audioDurationMs)
                 if (!msg.documentName.isNullOrBlank()) mObj.put("documentName", msg.documentName)
                 if (!msg.documentPath.isNullOrBlank()) mObj.put("documentPath", msg.documentPath)
+                if (!msg.ragDocumentId.isNullOrBlank()) mObj.put("ragDocumentId", msg.ragDocumentId)
 
                 if (msg.ragSources.isNotEmpty()) {
                     val ragArr = JSONArray()
@@ -475,6 +478,7 @@ object SessionCodec {
                             audioDurationMs = mAudioDurationMs,
                             documentName = mDocName,
                             documentPath = mDocPath,
+                            ragDocumentId = mObj.optString("ragDocumentId").takeIf { it.isNotBlank() },
                             terminalStatus = terminalStatus,
                             errorMessage = errorMsg,
                             requestId = requestId,

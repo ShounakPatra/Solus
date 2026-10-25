@@ -67,10 +67,11 @@ class RagManager(
     suspend fun retrieveForChat(
         query: String, topK: Int = 3, minScore: Float = 0.35f,
         preferredDocumentId: String? = null, allowGlobalSearch: Boolean = true,
-        timeoutMillis: Long = 10_000L
+        timeoutMillis: Long = 10_000L,
+        allowedDocumentIds: Set<String>? = null
     ): RagRetrievalResult {
         val task = retrievalScope.async {
-            retrieve(query, topK, minScore, preferredDocumentId, allowGlobalSearch)
+            retrieve(query, topK, minScore, preferredDocumentId, allowGlobalSearch, allowedDocumentIds)
         }
         return try {
             kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) { task.await() }
@@ -499,9 +500,10 @@ class RagManager(
         topK: Int = 3,
         minScore: Float = 0.35f,
         preferredDocumentId: String? = null,
-        allowGlobalSearch: Boolean = true
+        allowGlobalSearch: Boolean = true,
+        allowedDocumentIds: Set<String>? = null
     ): RagRetrievalResult = withContext(Dispatchers.Default) {
-        if (RetrievalRelevance.isConversationOnly(query) || query.isBlank()) {
+        if (RetrievalRelevance.isConversationOnly(query) || query.isBlank() || allowedDocumentIds?.isEmpty() == true) {
             return@withContext RagRetrievalResult(query.trim(), emptyList(), false)
         }
         // Indexing can take minutes. Never queue an interactive answer behind it.
@@ -510,6 +512,9 @@ class RagManager(
                 "Documents are still being indexed; their contents are temporarily unavailable. Do not infer that no documents exist.")
         }
         try {
+        if (allowedDocumentIds != null) {
+            return@withContext retrieveScoped(query.trim(), allowedDocumentIds, preferredDocumentId, topK, minScore)
+        }
         val trimmedQuery = query.trim()
         if (vectorStore.getTotalChunkCount() == 0 || (!allowGlobalSearch && preferredDocumentId == null)) {
             return@withContext RagRetrievalResult(
@@ -620,6 +625,25 @@ class RagManager(
         } finally {
             ingestionMutex.unlock()
         }
+    }
+
+    /** Called under ingestionMutex. Filter before ranking, including overview shortcuts. */
+    private suspend fun retrieveScoped(query: String, ids: Set<String>, preferredId: String?, topK: Int, minScore: Float): RagRetrievalResult {
+        val current = active
+        val chunks = ids.flatMap { current.store.getChunksForDocument(it, Int.MAX_VALUE) }
+        if (chunks.isEmpty()) return RagRetrievalResult(query, emptyList(), false)
+        val explicit = ChatDocumentScope.isDocumentQuestion(query, chunks.map { it.documentName }.distinct())
+        val matches = if (explicit && isOverviewOrSummaryQuery(query)) {
+            val overview = chunks.filter { preferredId == null || preferredId !in ids || it.documentId == preferredId }
+            overview.take(topK).map { RagSearchResult(it, 0.85f) }
+        } else {
+            val vector = current.engine.embedQuery(query)
+            if (vector.isEmpty()) return RagRetrievalResult(query, emptyList(), false)
+            chunks.asSequence().filter { explicit || RetrievalRelevance.hasLexicalEvidence(query, it.text) }
+                .map { RagSearchResult(it, current.engine.calibrate(VectorEmbedding.cosineSimilarity(vector, it.embedding))) }
+                .filter { it.similarity >= minScore }.sortedByDescending { it.similarity }.take(topK).toList()
+        }
+        return RagRetrievalResult(query, matches, matches.isNotEmpty())
     }
 
     private fun calibratedSearch(
