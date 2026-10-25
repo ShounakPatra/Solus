@@ -329,7 +329,6 @@ class ModelDownloadService : Service() {
             .putExtra(EXTRA_URL, request.url)
             .putExtra(EXTRA_FILE_NAME, request.fileName)
             .putExtra(EXTRA_PACKAGE_TYPE, request.packageType.name)
-            .putExtra(EXTRA_TOKEN, request.bearerToken)
             .putExtra(EXTRA_SHA256, request.sha256)
         request.downloadSpec?.let { spec ->
             intent.putExtra(EXTRA_DOWNLOAD_SPEC, spec.toJson().toString())

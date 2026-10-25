@@ -495,6 +495,7 @@ fun LiquidGlassButton(
             )
             .clickable(
                 enabled = enabled,
+                role = androidx.compose.ui.semantics.Role.Button,
                 interactionSource = interactionSource,
                 indication = null
             ) {

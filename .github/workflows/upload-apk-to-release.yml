@@ -29,6 +29,7 @@ concurrency:
 
 jobs:
   upload:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -44,6 +45,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Validate source run and destination release
         shell: bash
