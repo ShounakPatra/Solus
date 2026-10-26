@@ -24,7 +24,7 @@ internal object LocalTools {
             add(DocumentSearchTool(isCancelled = isCancelled) search@ { query ->
                 val scope = documentIds().toSet()
                 if (scope.isEmpty()) return@search JSONObject().put("status", "no_context_for_question")
-                    .put("note", "No eligible document context is available for this question. This does not establish whether the document library contains uploads. Ask the user to attach or select the intended document in this chat.")
+                    .put("note", "No document was matched to this question, so nothing was searched. This does not establish whether this chat or the document library contains documents; do not claim that none exist. If the user means a document, ask which one, by name or by referring to it (for example \"in the contract\"), or to attach it if it is not in this chat.")
                     .put("matches", JSONArray()).toString()
                 runBlocking(Dispatchers.IO) {
                     val settings = AppSettings.getInstance(context).settings.value

@@ -50,6 +50,69 @@ class ModelDownloaderResumeTest {
         assertNull(DownloadResumeMetadata.loadFor(staged))
     }
 
+    private fun zipOf(vararg entries: Pair<String, ByteArray>): ByteArray {
+        val bytes = ByteArrayOutputStream()
+        ZipOutputStream(bytes).use { zip ->
+            for ((name, data) in entries) {
+                zip.putNextEntry(ZipEntry(name))
+                zip.write(data)
+                zip.closeEntry()
+            }
+        }
+        return bytes.toByteArray()
+    }
+
+    @Test fun damagedCompletedZipIsDiscardedSoTheNextAttemptDownloadsAgain() = runBlocking {
+        val modelId = "damaged_zip"
+        val fileName = "bundle.zip"
+        val valid = zipOf("model.task" to ByteArray(4096).also { java.util.Random(42).nextBytes(it) })
+        // Cut inside the deflated entry data: the bytes are complete as served but can never be extracted.
+        val damaged = valid.copyOfRange(0, valid.size / 2)
+        server.enqueue(MockResponse().setBody(Buffer().write(damaged)))
+        val url = server.url("/models/bundle.zip").toString()
+        val staged = artifactStorage.getStagingFile(modelId, fileName)
+        val failure = runCatching {
+            downloader.downloadModel(url, modelId, fileName, ModelPackage.ZipDirectory, bearerToken = null) {}
+        }.exceptionOrNull()
+        assertTrue(failure is java.io.IOException)
+        assertTrue(failure!!.message!!.contains("download the model again"))
+        assertFalse("Unextractable bytes must not be resumed", staged.exists())
+        assertNull(DownloadResumeMetadata.loadFor(staged))
+
+        server.enqueue(MockResponse().setBody(Buffer().write(valid)))
+        val result = downloader.downloadModel(url, modelId, fileName, ModelPackage.ZipDirectory, bearerToken = null) {}
+        assertEquals(2, server.requestCount)
+        assertEquals("model.task", File(result.localPath).name)
+    }
+
+    @Test fun completedFileThatRepeatedlyFailedToPublishIsDownloadedAgain() = runBlocking {
+        val modelId = "unpublishable_completed"
+        val fileName = "model.bin"
+        val url = server.url("/models/model.bin").toString()
+        val stale = ByteArray(700) { 0x13 }
+        val staged = artifactStorage.getStagingFile(modelId, fileName).apply {
+            parentFile?.mkdirs()
+            writeBytes(stale)
+        }
+        DownloadResumeMetadata.saveFor(staged, DownloadResumeMetadata(
+            normalizedUrl = ModelDownloadUrlPolicy.normalizeUrl(url), packageType = ModelPackage.SingleFile,
+            expectedTotalBytes = 700, lastDownloadedBytes = 700, isCompleted = true,
+            publishFailures = ModelDownloader.MAX_PUBLISH_ATTEMPTS
+        ))
+        val fresh = ByteArray(900) { 0x42 }
+        server.enqueue(MockResponse().setBody(Buffer().write(fresh)))
+        val result = downloader.downloadModel(url, modelId, fileName, ModelPackage.SingleFile, bearerToken = null) {}
+        assertEquals(1, server.requestCount)
+        assertNull(server.takeRequest().getHeader("Range"))
+        assertArrayEquals(fresh, File(result.localPath).readBytes())
+    }
+
+    @Test fun publishFailureCountSurvivesMetadataRoundTrip() {
+        val meta = DownloadResumeMetadata(normalizedUrl = "https://example.com/m.bin", packageType = ModelPackage.SingleFile,
+            isCompleted = true, publishFailures = 1)
+        assertEquals(1, DownloadResumeMetadata.fromJson(meta.toJson()).publishFailures)
+        assertEquals(0, DownloadResumeMetadata.fromJson("""{"normalizedUrl":"https://example.com/m.bin"}""").publishFailures)
+    }
 
     @get:Rule
     val tempFolder = TemporaryFolder()

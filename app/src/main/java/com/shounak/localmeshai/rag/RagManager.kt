@@ -33,6 +33,12 @@ data class RagIngestionResult(
     val message: String
 )
 
+/** Outcome of removing knowledge-base documents. [message] explains a refusal; nothing changed then. */
+data class RagRemovalResult(
+    val success: Boolean,
+    val message: String? = null
+)
+
 data class RagRetrievalResult(
     val query: String,
     val matches: List<RagSearchResult>,
@@ -79,7 +85,8 @@ class RagManager(
         return try {
             val result = kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) { task.await() }
                 ?: RagRetrievalResult(query, emptyList(), false, "Document search timed out; document contents are temporarily unavailable. Do not infer that no documents exist.")
-            val removed = deletedDocumentIds()
+            val removed = deletedDocumentIdsOrNull()
+                ?: return RagRetrievalResult(query, emptyList(), false, INDEX_RECOVERY_REASON)
             val visible = result.matches.filterNot { it.chunk.documentId in removed }
             if (visible.size == result.matches.size) result else result.copy(matches = visible, hasContext = visible.isNotEmpty(),
                 unavailableReason = if (visible.isEmpty()) "The linked document was removed. Attach the intended document again." else result.unavailableReason)
@@ -141,18 +148,36 @@ class RagManager(
     fun originalDocumentFile(documentId: String): java.io.File? =
         if (documentId in deletedDocumentIds()) null else originals?.find(documentId)
 
+    /**
+     * Retains [input] as the original of [documentId]. The indexed document must carry the same
+     * [name], so a file from a different upload can never replace another document's original.
+     */
     private fun saveOriginal(documentId: String, name: String, input: java.io.InputStream, checkActive: () -> Unit): java.io.File? =
         synchronized(mutationLock) {
-            if (documentId in deletedDocumentIds() || vectorStore.getDocuments().none { it.documentId == documentId }) null
+            if (documentId in deletedDocumentIds() || vectorStore.getDocuments().none { it.documentId == documentId && it.documentName == name }) null
             else originals?.save(documentId, name, input, checkActive)
         }
 
     suspend fun retainOriginalDocument(documentId: String, name: String, file: java.io.File) = withContext(Dispatchers.IO) {
         val job = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+        // Every follow-up document question re-confirms the same upload. Compare outside the
+        // mutation lock instead of re-copying up to 20 MiB under it.
+        if (deletedDocumentIdsOrNull()?.contains(documentId) == false) {
+            originals?.findIdentical(documentId, name, file) { job?.ensureActive() }?.let { return@withContext it }
+        }
         file.inputStream().use { input -> saveOriginal(documentId, name, input) { job?.ensureActive() } }
     }
     private val mutationLock = Any()
     private var deletionVersion = 0L
+
+    private val _indexNeedsRecovery = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    /**
+     * True while the document deletion records cannot be read. Documents are hidden then, because
+     * listing them could resurrect deleted ones; the UI says the index needs recovery instead of
+     * presenting an empty knowledge base.
+     */
+    val indexNeedsRecovery: kotlinx.coroutines.flow.StateFlow<Boolean> = _indexNeedsRecovery
 
     init {
         if (context != null && deletionJournal != null) retrievalScope.launch {
@@ -164,7 +189,18 @@ class RagManager(
         }
     }
 
-    private fun deletedDocumentIds(): Set<String> = deletionJournal?.deletedRagDocuments().orEmpty()
+    /** Retired document ids, or null while the journal needs recovery and the set may be incomplete. */
+    private fun deletedDocumentIdsOrNull(): Set<String>? {
+        val journal = deletionJournal ?: return emptySet()
+        val ids = journal.deletedRagDocuments()
+        val recovering = journal.hasRecoveryError()
+        _indexNeedsRecovery.value = recovering
+        return if (recovering) null else ids
+    }
+
+    /** Fails closed: an unreadable journal must never be read as "nothing was deleted". */
+    private fun deletedDocumentIds(): Set<String> =
+        deletedDocumentIdsOrNull() ?: throw IllegalStateException(INDEX_RECOVERY_MESSAGE)
 
     suspend fun retainForLibrary(documentId: String): Boolean = withContext(Dispatchers.IO) {
         deletionJournal?.retainRagDocument(documentId) ?: true
@@ -188,7 +224,8 @@ class RagManager(
 
     val indexedDocuments: List<RagDocumentSummary>
         get() {
-            val removed = runCatching { deletedDocumentIds() }.getOrElse { return emptyList() }
+            // Hidden, not empty: [indexNeedsRecovery] tells the UI why nothing is listed.
+            val removed = deletedDocumentIdsOrNull() ?: return emptyList()
             return vectorStore.getDocuments().filterNot { it.documentId in removed }
         }
 
@@ -205,7 +242,8 @@ class RagManager(
         uri: Uri,
         fileName: String,
         mimeType: String = "",
-        targetDocumentId: String? = null
+        targetDocumentId: String? = null,
+        replacesSameUpload: Boolean = false
     ): RagIngestionResult = withContext(Dispatchers.IO) {
         val ctx = context ?: return@withContext RagIngestionResult(
             success = false,
@@ -252,7 +290,8 @@ class RagManager(
             val indexed = ingestTextInternal(
                 documentName = fileName,
                 content = extractedText,
-                targetDocumentId = targetDocumentId
+                targetDocumentId = targetDocumentId,
+                replacesSameUpload = replacesSameUpload
             )
             if (indexed.success) {
                 try {
@@ -282,19 +321,47 @@ class RagManager(
 
     /**
      * Ingests raw text into the RAG vector store under [documentName].
+     *
+     * A [targetDocumentId] that is not indexed yet creates that document. One that is already
+     * indexed is reused when the content is identical; different content replaces it only when
+     * [replacesSameUpload] says the caller is re-indexing that same upload. Without it, the call
+     * is refused, so a stale chat upload can never overwrite a different library document.
      */
     suspend fun ingestText(
         documentName: String,
         content: String,
-        targetDocumentId: String? = null
+        targetDocumentId: String? = null,
+        replacesSameUpload: Boolean = false
     ): RagIngestionResult = withContext(Dispatchers.Default) {
-        ingestTextInternal(documentName, content, targetDocumentId)
+        ingestTextInternal(documentName, content, targetDocumentId, replacesSameUpload)
     }
 
     private suspend fun ingestTextInternal(
         documentName: String,
         content: String,
-        targetDocumentId: String? = null
+        targetDocumentId: String? = null,
+        replacesSameUpload: Boolean = false
+    ): RagIngestionResult = try {
+        ingestTextLocked(documentName, content, targetDocumentId, replacesSameUpload)
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (e: Exception) {
+        // Same contract as ingestDocument: callers launch this fire-and-forget after a turn.
+        RagIngestionResult(
+            success = false,
+            documentId = targetDocumentId ?: "",
+            documentName = documentName,
+            chunkCount = 0,
+            totalCharacters = 0,
+            message = "Ingestion failed: ${e.message}"
+        )
+    }
+
+    private suspend fun ingestTextLocked(
+        documentName: String,
+        content: String,
+        targetDocumentId: String?,
+        replacesSameUpload: Boolean
     ): RagIngestionResult = ingestionMutex.withLock {
         val version = synchronized(mutationLock) { deletionVersion }
         val trimmed = content.trim()
@@ -329,6 +396,10 @@ class RagManager(
 
         val docId = targetDocumentId ?: UUID.randomUUID().toString()
         if (docId in deletedDocumentIds()) return@withLock RagIngestionResult(false, docId, documentName, 0, 0, "This document was removed. Attach it again to create a new upload.")
+        // Refuse before chunking and embedding: a different upload must never replace this one.
+        val conflicting = targetDocumentId?.takeUnless { replacesSameUpload }
+            ?.let { id -> existingDocs.firstOrNull { it.documentId == id } }
+        if (conflicting != null) return refusedReplacement(conflicting.documentId, documentName)
         val textChunks = chunker.chunk(trimmed)
         if (textChunks.isEmpty()) {
             return RagIngestionResult(
@@ -404,6 +475,9 @@ class RagManager(
                 return@withLock RagIngestionResult(false, docId, documentName, 0, 0,
                     "Documents changed during indexing. Retry if you still want to add this document.")
             }
+            if (targetDocumentId != null && !replacesSameUpload && vectorStore.getDocuments().any { it.documentId == targetDocumentId }) {
+                return@withLock refusedReplacement(targetDocumentId, documentName)
+            }
             if (targetDocumentId != null) {
                 vectorStore.replaceDocument(targetDocumentId, records)
             } else {
@@ -432,6 +506,15 @@ class RagManager(
             message = "Successfully indexed ${records.size} chunks from $documentName"
         )
     }
+
+    private fun refusedReplacement(documentId: String, documentName: String) = RagIngestionResult(
+        success = false,
+        documentId = documentId,
+        documentName = documentName,
+        chunkCount = 0,
+        totalCharacters = 0,
+        message = "Another document is already indexed under this identity; $documentName was not indexed over it."
+    )
 
     /**
      * Checks if a user query represents a summary, overview, or general document inquiry.
@@ -560,7 +643,8 @@ class RagManager(
                 "Documents are still being indexed; their contents are temporarily unavailable. Do not infer that no documents exist.")
         }
         try {
-        val removed = deletedDocumentIds()
+        val removed = deletedDocumentIdsOrNull()
+            ?: return@withContext RagRetrievalResult(query.trim(), emptyList(), false, INDEX_RECOVERY_REASON)
         val eligibleIds = allowedDocumentIds?.minus(removed)
             ?: if (removed.isNotEmpty()) indexedDocuments.map { it.documentId }.toSet() else null
         if (eligibleIds != null) {
@@ -910,31 +994,65 @@ class RagManager(
     }
 
     /**
-     * Removes all chunks belonging to [documentId].
+     * Removes all chunks belonging to [documentId]. Blocking disk I/O: call off the main thread.
+     *
+     * The durable retirement record is written first. If it cannot be written, nothing changes
+     * and the result explains why; this never throws for a full disk or a damaged journal.
      */
-    fun removeDocument(documentId: String): Boolean {
-        return synchronized(mutationLock) {
-            check(deletionJournal?.recordRagDeletions(setOf(documentId)) != false) { "Could not record document deletion" }
-            deletionVersion++
-            vectorStore.removeDocument(documentId).also { if (it) originals?.remove(documentId) }
+    fun removeDocument(documentId: String): RagRemovalResult {
+        try {
+            synchronized(mutationLock) {
+                if (deletionJournal?.recordRagDeletions(setOf(documentId)) == false) return deletionNotRecorded()
+                deletionVersion++
+                // Once retired the document stays hidden and is purged on the next load even if this fails.
+                if (vectorStore.removeDocument(documentId)) originals?.remove(documentId)
+                return RagRemovalResult(true)
+            }
+        } catch (failure: Exception) {
+            return RagRemovalResult(false, "Could not delete document: ${failure.message ?: failure.javaClass.simpleName}")
         }
     }
 
     /**
-     * Wipes all indexed documents and vector embeddings.
+     * Wipes all indexed documents and vector embeddings. Blocking disk I/O: call off the main thread.
+     *
+     * Documents still waiting in a store left by a removed embedding model are retired too, even
+     * before the first [loadAsync] has migrated them, so they cannot migrate back afterwards.
      */
-    fun clearKnowledgeBase() {
-        synchronized(mutationLock) {
-            val retired = (vectorStore.getDocuments() + orphanedStore?.getDocuments().orEmpty()).map { it.documentId }.toSet()
-            check(deletionJournal?.recordRagDeletions(retired) != false) { "Could not record document deletion" }
-            deletionVersion++
-            val ids = vectorStore.getDocuments().map { it.documentId }
-            vectorStore.clearAll()
-            ids.forEach { originals?.remove(it) }
+    fun clearKnowledgeBase(): RagRemovalResult {
+        try {
+            synchronized(mutationLock) {
+                val orphan = orphanedStore
+                if (orphan != null && orphan.loadState.value is com.shounak.localmeshai.data.StoreLoadState.Loading) orphan.load()
+                val orphanIds = if (orphan?.loadState?.value is com.shounak.localmeshai.data.StoreLoadState.Ready) {
+                    orphan?.getDocuments().orEmpty().map { it.documentId }
+                } else emptyList()
+                val retired = (vectorStore.getDocuments().map { it.documentId } + orphanIds).toSet()
+                if (deletionJournal?.recordRagDeletions(retired) == false) return deletionNotRecorded()
+                deletionVersion++
+                vectorStore.clearAll()
+                if (orphanIds.isNotEmpty()) orphan?.clearAll()
+                retired.forEach { originals?.remove(it) }
+                return RagRemovalResult(true)
+            }
+        } catch (failure: Exception) {
+            return RagRemovalResult(false, "Could not clear documents: ${failure.message ?: failure.javaClass.simpleName}")
         }
     }
 
+    private fun deletionNotRecorded() = RagRemovalResult(false,
+        if (deletionJournal?.hasRecoveryError() == true) INDEX_RECOVERY_MESSAGE
+        else "Could not record the deletion. Free some storage space and try again.")
+
     companion object {
+        /** Shown to the user when the deletion journal cannot be read. */
+        const val INDEX_RECOVERY_MESSAGE =
+            "The document index needs recovery: its deletion records could not be read, so documents are hidden until they can be."
+
+        /** Told to the model so it neither invents contents nor claims there are no documents. */
+        private const val INDEX_RECOVERY_REASON =
+            "The document index needs recovery, so document contents are unavailable. Do not infer that no documents exist or invent their contents."
+
         @Volatile
         private var instance: RagManager? = null
 

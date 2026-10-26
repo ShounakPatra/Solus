@@ -657,6 +657,20 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
     /** ID of the generation currently holding a lease, or 0 if none. Under lifecycleLock. */
     private var activeGenerationId = 0L
 
+    /**
+     * Generations that hold a lease but are still queued on [nativeOperations] (behind warm-up, a probe
+     * or a tool-support check), so they are not yet [activeGenerationId]. Under lifecycleLock.
+     */
+    private val queuedGenerationIds = LinkedHashSet<Long>()
+
+    /** Queued generations a user [stop] targeted before they reached native code. Under lifecycleLock. */
+    private val stoppedQueuedGenerationIds = HashSet<Long>()
+
+    private fun forgetQueuedGenerationUnlocked(genId: Long): Boolean {
+        queuedGenerationIds.remove(genId)
+        return stoppedQueuedGenerationIds.remove(genId)
+    }
+
     // ── Lifecycle lease primitives ────────────────────────────────────────────────────────────────
 
     /**
@@ -1216,10 +1230,12 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
             if (leaseHandle == 0L) {
                 return@withContext LlamaGenerationResult.Failed
             }
+            queuedGenerationIds.add(genId)
         }
 
         if (!nativeBridge.isAvailable()) {
             synchronized(lifecycleLock) {
+                forgetQueuedGenerationUnlocked(genId)
                 if (activeGenerationId == genId) activeGenerationId = 0L
                 releaseOperationLeaseUnlocked()
             }
@@ -1294,7 +1310,10 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         try {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             synchronized(lifecycleLock) {
+                val stoppedWhileQueued = forgetQueuedGenerationUnlocked(genId)
                 if (engineState != EngineState.OPEN || nativeHandle != leaseHandle) return@withContext LlamaGenerationResult.Failed
+                // A Stop that arrived while this turn waited for the native lock had no generation id to target.
+                if (stoppedWhileQueued) return@withContext LlamaGenerationResult.Stopped
                 activeGenerationId = genId
             }
             if (toolRequestJson != null) {
@@ -1342,6 +1361,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
             if (toolRequestJson != null && nativeBridge === DefaultLlamaNativeBridge) nativeSetToolRequest(leaseHandle, null)
             nativeOperations.unlock()
             synchronized(lifecycleLock) {
+                forgetQueuedGenerationUnlocked(genId)
                 if (activeGenerationId == genId) activeGenerationId = 0L
                 releaseOperationLeaseUnlocked()
             }
@@ -1593,6 +1613,8 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
             leaseHandle = acquireOperationLeaseUnlocked()
             if (leaseHandle == 0L) return
             leaseGenId = activeGenerationId
+            // No generation is in native code yet: the user means the turn queued behind another native operation.
+            if (leaseGenId == 0L) stoppedQueuedGenerationIds.addAll(queuedGenerationIds)
         }
         try {
             if (nativeBridge.isAvailable()) nativeBridge.stop(leaseHandle, leaseGenId)

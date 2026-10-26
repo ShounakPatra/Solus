@@ -68,6 +68,56 @@ class ChatDocumentDeletionTest {
         assertEquals(0, manager.vectorStore.getTotalChunkCount())
     }
 
+    private fun breakJournal(root: java.io.File) {
+        root.listFiles()?.filter { it.name.startsWith("chat_deletion_journal.json") }?.forEach { it.delete() }
+        root.resolve("chat_deletion_journal.json").writeText("{broken")
+    }
+
+    @Test fun unreadableDeletionJournalIsReportedAndNeverThrowsFromDeletionOrIndexing() = runBlocking {
+        val root = files.newFolder()
+        val journal = ChatDeletionJournal(root)
+        val manager = RagManager(deletionJournal = journal)
+        assertTrue(manager.ingestText("notes.txt", "Battery replacement schedule.", "kept").success)
+        breakJournal(root)
+        assertFalse(journal.refreshForHistoryAccess())
+
+        assertTrue(manager.indexedDocuments.isEmpty())
+        assertTrue("An empty list must come with a recovery state", manager.indexNeedsRecovery.value)
+        val cleared = manager.clearKnowledgeBase()
+        assertFalse(cleared.success)
+        assertEquals(RagManager.INDEX_RECOVERY_MESSAGE, cleared.message)
+        assertFalse(manager.removeDocument("kept").success)
+        assertEquals("Nothing may change without a durable deletion record", 1, manager.vectorStore.getDocuments().size)
+        val late = manager.ingestText("other.txt", "Indexed while the journal is unreadable.", "other")
+        assertFalse(late.success)
+        assertTrue(late.message.startsWith("Ingestion failed"))
+        val retrieval = manager.retrieveForChat("Summarize notes.txt", allowedDocumentIds = setOf("kept"))
+        assertFalse(retrieval.hasContext)
+        assertTrue(retrieval.unavailableReason!!.contains("needs recovery"))
+
+        root.resolve("chat_deletion_journal.json").writeText(
+            """{"version":3,"pending":[],"tombstones":[],"deletedRagDocuments":[],"retainedRagDocuments":[]}""")
+        assertTrue(journal.refreshForHistoryAccess())
+        assertEquals(listOf("kept"), manager.indexedDocuments.map { it.documentId })
+        assertFalse(manager.indexNeedsRecovery.value)
+        assertTrue(manager.removeDocument("kept").success)
+        assertTrue(manager.indexedDocuments.isEmpty())
+    }
+
+    @Test fun clearingBeforeOrphanRecoveryRetiresTheOrphanedDocumentsToo() = runBlocking {
+        val journal = ChatDeletionJournal(files.newFolder())
+        val orphan = RagManager()
+        orphan.ingestText("old-model.txt", "Indexed by an embedding model that was removed.", "orphan-doc")
+        val manager = RagManager(vectorStore = InMemoryRagVectorStore(null), orphanedStore = orphan.vectorStore, deletionJournal = journal)
+        manager.ingestText("current.txt", "Indexed by the active model.", "current-doc")
+        assertTrue(manager.clearKnowledgeBase().success)
+        assertEquals(setOf("orphan-doc", "current-doc"), journal.deletedRagDocuments())
+        assertEquals(0, orphan.vectorStore.getTotalChunkCount())
+        manager.loadAsync()
+        assertTrue(manager.indexedDocuments.isEmpty())
+        assertEquals(0, manager.vectorStore.getTotalChunkCount())
+    }
+
     @Test fun orphanRecoveryKeepsNewFallbackDocumentsWithoutResurrectingRetiredOnes() = runBlocking {
         val repository = ChatSessionRepository(files.newFolder())
         owner(repository, "retired")

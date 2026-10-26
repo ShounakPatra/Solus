@@ -51,8 +51,8 @@ android {
         applicationId = "com.shounak.localmeshai"
         minSdk = 28
         targetSdk = 37
-        versionCode = 10
-        versionName = "6.0.1"
+        versionCode = 11
+        versionName = "6.0.5"
         buildConfigField("String", "NATIVE_BUILD_ID", "\"$nativeSourceDigest\"")
         buildConfigField("String", "LITERT_RUNTIME_VERSION", "\"${libs.versions.litertLm.get()}\"")
 

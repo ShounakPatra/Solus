@@ -113,6 +113,11 @@ object DocumentTextExtractor {
                     extractZipXmlEntries(bytes, listOf("content.xml"), effectiveContext)
                 ArchiveTextExtractor.isArchive(fileName, mimeType) && extension in setOf("tar", "gz", "tgz", "bz2", "xz", "7z", "rar") ->
                     failure("Unsupported archive format: .$extension. Extract the files first or attach a ZIP archive.")
+                // The extension or MIME type alone ("application/gzip" with no extension) does not
+                // make the bytes a ZIP: ZipInputStream would report a misleading empty archive.
+                ArchiveTextExtractor.isArchive(fileName, mimeType) && archiveSignature(bytes) != "zip" ->
+                    failure(archiveSignature(bytes)?.let { "Unsupported archive format: $it. Extract the files first or attach a ZIP archive." }
+                        ?: "Could not extract $fileName: it is not a readable ZIP archive.")
                 ArchiveTextExtractor.isArchive(fileName, mimeType) ->
                     ArchiveTextExtractor.extract(
                         context = context,
@@ -373,25 +378,89 @@ object DocumentTextExtractor {
             .let(::stripXmlTags)
     }
 
+    /** Archive container named by its leading bytes, or null when no known signature matches. */
+    private fun archiveSignature(bytes: ByteArray): String? {
+        fun startsWith(vararg signature: Int, offset: Int = 0): Boolean =
+            bytes.size >= offset + signature.size && signature.indices.all { bytes[offset + it] == signature[it].toByte() }
+        return when {
+            startsWith(0x50, 0x4B, 0x03, 0x04) || startsWith(0x50, 0x4B, 0x05, 0x06) || startsWith(0x50, 0x4B, 0x07, 0x08) -> "zip"
+            startsWith(0x1F, 0x8B) -> "gzip"
+            startsWith(0x42, 0x5A, 0x68) -> "bzip2"
+            startsWith(0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00) -> "xz"
+            startsWith(0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C) -> "7z"
+            startsWith(0x52, 0x61, 0x72, 0x21, 0x1A, 0x07) -> "rar"
+            startsWith(0x75, 0x73, 0x74, 0x61, 0x72, offset = 257) -> "tar"
+            else -> null
+        }
+    }
+
+    /** Per-group RTF state; a closing brace restores the enclosing group's values. */
+    private data class RtfGroupState(
+        val unicodeFallbackLength: Int,
+        val skipDestination: Boolean,
+        val fallbackRemaining: Int,
+        val inObject: Boolean
+    )
+
+    /** The charset named by `\ansicpgN`; unknown or unavailable code pages fall back to windows-1252. */
+    private fun rtfCharset(codePage: Int?): java.nio.charset.Charset {
+        val candidates = when (codePage) {
+            null, 0, 1252 -> emptyList()
+            65001 -> listOf("UTF-8")
+            932 -> listOf("windows-31j", "Shift_JIS")
+            936 -> listOf("GBK", "GB2312")
+            949 -> listOf("x-windows-949", "EUC-KR")
+            950 -> listOf("x-windows-950", "Big5")
+            874 -> listOf("x-windows-874", "windows-874", "TIS-620")
+            10000 -> listOf("x-MacRoman", "MacRoman")
+            else -> listOf("windows-$codePage", "cp$codePage", "IBM$codePage")
+        }
+        return candidates.firstNotNullOfOrNull { name ->
+            runCatching { java.nio.charset.Charset.forName(name) }.getOrNull()
+        } ?: charset("windows-1252")
+    }
+
     private fun extractRtf(text: String): String {
         val output = StringBuilder()
-        val groupFallbacks = java.util.ArrayDeque<Triple<Int, Boolean, Int>>()
+        val groups = java.util.ArrayDeque<RtfGroupState>()
         var unicodeFallbackLength = 1
         var fallbackRemaining = 0
         var skipDestination = false
+        // Inside \object everything is skipped except its \result, the text Word shows for it.
+        var inObject = false
+        var codePage = rtfCharset(null)
+        // \'hh bytes are decoded together, so a double-byte code page character stays whole.
+        val pendingBytes = java.io.ByteArrayOutputStream()
         var index = 0
+        fun flushBytes() {
+            if (pendingBytes.size() == 0) return
+            output.append(String(pendingBytes.toByteArray(), codePage))
+            pendingBytes.reset()
+        }
         fun appendCharacter(character: Char) {
             if (skipDestination) return
-            if (fallbackRemaining > 0) fallbackRemaining-- else output.append(character)
+            if (fallbackRemaining > 0) fallbackRemaining-- else {
+                flushBytes()
+                output.append(character)
+            }
+        }
+        fun appendByte(byte: Int) {
+            if (skipDestination) return
+            if (fallbackRemaining > 0) fallbackRemaining-- else pendingBytes.write(byte)
         }
         while (index < text.length) {
             when (val character = text[index++]) {
-                '{' -> groupFallbacks.push(Triple(unicodeFallbackLength, skipDestination, fallbackRemaining))
-                '}' -> if (groupFallbacks.isNotEmpty()) {
-                    val previous = groupFallbacks.pop()
-                    unicodeFallbackLength = previous.first
-                    skipDestination = previous.second
-                    fallbackRemaining = previous.third
+                '{' -> {
+                    flushBytes()
+                    groups.push(RtfGroupState(unicodeFallbackLength, skipDestination, fallbackRemaining, inObject))
+                }
+                '}' -> if (groups.isNotEmpty()) {
+                    flushBytes()
+                    val previous = groups.pop()
+                    unicodeFallbackLength = previous.unicodeFallbackLength
+                    skipDestination = previous.skipDestination
+                    fallbackRemaining = previous.fallbackRemaining
+                    inObject = previous.inObject
                 }
                 '\r', '\n' -> Unit // Source wrapping is not an RTF paragraph.
                 '\\' -> {
@@ -402,7 +471,7 @@ object DocumentTextExtractor {
                         symbol == '\'' && index + 2 <= text.length -> {
                             val byte = text.substring(index, index + 2).toIntOrNull(16)
                             index += 2
-                            if (byte != null) appendCharacter(byteArrayOf(byte.toByte()).toString(charset("windows-1252"))[0])
+                            if (byte != null && byte in 0..255) appendByte(byte)
                         }
                         symbol.isLetter() -> {
                             val start = index - 1
@@ -416,13 +485,25 @@ object DocumentTextExtractor {
                             when (word) {
                                 "uc" -> unicodeFallbackLength = (number ?: 1).coerceAtLeast(0)
                                 "u" -> if (number != null) {
-                                    if (!skipDestination) output.append((number and 0xFFFF).toChar())
+                                    if (!skipDestination) {
+                                        flushBytes()
+                                        output.append((number and 0xFFFF).toChar())
+                                    }
                                     fallbackRemaining = unicodeFallbackLength
+                                }
+                                "ansicpg" -> {
+                                    flushBytes()
+                                    codePage = rtfCharset(number)
                                 }
                                 "par", "line" -> appendCharacter('\n')
                                 "tab" -> appendCharacter('\t')
                                 "bin" -> index += (number ?: 0).coerceIn(0, text.length - index)
-                                "fonttbl", "colortbl", "stylesheet", "info", "pict", "object", "themedata",
+                                "object" -> {
+                                    skipDestination = true
+                                    inObject = true
+                                }
+                                "result" -> if (inObject) skipDestination = false
+                                "fonttbl", "colortbl", "stylesheet", "info", "pict", "themedata",
                                 "datastore", "xmlnstbl", "listtable", "listoverridetable", "latentstyles",
                                 "generator", "fldinst" -> skipDestination = true
                             }
@@ -435,6 +516,7 @@ object DocumentTextExtractor {
                 else -> appendCharacter(character)
             }
         }
+        flushBytes()
         return output.toString()
     }
 

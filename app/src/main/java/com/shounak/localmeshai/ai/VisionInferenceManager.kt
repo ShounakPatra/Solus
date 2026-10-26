@@ -112,7 +112,7 @@ class VisionInferenceManager(context: Context) {
         } catch (failure: Exception) {
             if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
                 spec.backend != InferenceBackend.LITERT_GPU || AppSettings.getInstance(context).settings.value.llamaBackendPreference != "AUTO") throw failure
-            RuntimeSpeedTuner.recordGpuFailure(context, spec.id, spec.path, spec.contextTokens)
+            RuntimeSpeedTuner.recordGpuFailure(context, spec.id, spec.path)
             liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
             liteRtCacheDir = null
             initializeLiteRtLm(spec.path, spec.id, InferenceBackend.LITERT_CPU, audioAvailable, spec.contextTokens,
@@ -193,6 +193,11 @@ class VisionInferenceManager(context: Context) {
     @Volatile private var resolvedThinkingCapability: ThinkingCapability = ThinkingCapability.Unknown
     @Volatile private var isDefaultThinkingModel = false
     @Volatile private var supportsThinkingMode = false
+    /**
+     * The `enable_thinking` value the live LiteRT-LM conversation was created with, or null when it
+     * carries no thinking context. Tool retries reuse [conversationBaseConfig], so they keep this value.
+     */
+    @Volatile private var liteRtConversationThinking: Boolean? = null
 
     companion object {
         private const val TAG = "VisionInferenceManager"
@@ -388,11 +393,12 @@ class VisionInferenceManager(context: Context) {
                 val modelIdForLiteRt = modelId.ifBlank { bundle?.id ?: effectiveFile?.nameWithoutExtension.orEmpty() }
                 val appSettings = AppSettings.getInstance(context)
                 val pref = appSettings.settings.value.llamaBackendPreference.uppercase()
+                var blockedAutoLoad = false
                 val inferenceBackend = when (pref) {
                     "CPU" -> InferenceBackend.LITERT_CPU
                     "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
                     else -> if (InitCrashGuard.isModelBlocked(context, modelIdForLiteRt)) {
-                        RuntimeSpeedTuner.recordGpuFailure(context, modelIdForLiteRt, resolvedModelPath, configuredContextWindow)
+                        blockedAutoLoad = true
                         InferenceBackend.LITERT_CPU
                     }
                         else RuntimeSpeedTuner.liteRtBackend(context, modelIdForLiteRt, resolvedModelPath, configuredContextWindow)
@@ -407,6 +413,10 @@ class VisionInferenceManager(context: Context) {
                 )
                 if (InitCrashGuard.isModelBlocked(context, modelIdForLiteRt) && (!allowUnsafeOverride || !InitCrashGuard.isRetryAuthorized(context, modelIdForLiteRt))) {
                     throw IllegalStateException(InitCrashGuard.blockedModelMessage())
+                }
+                // Only an authorised Try Anyway reaches here; keep the GPU tune unless the recorded crash was a GPU attempt.
+                if (blockedAutoLoad && InitCrashGuard.blockedCrashMayHaveUsedGpu(context, modelIdForLiteRt)) {
+                    RuntimeSpeedTuner.recordGpuFailure(context, modelIdForLiteRt, resolvedModelPath)
                 }
                 if (!allowUnsafeOverride && inferenceBackend != InferenceBackend.LITERT_CPU) {
                     val (allowed, reason) = DeviceUtils.canInitializeLiteRtLm(
@@ -430,7 +440,7 @@ class VisionInferenceManager(context: Context) {
                 } catch (failure: Exception) {
                     if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
                         pref != "AUTO" || inferenceBackend != InferenceBackend.LITERT_GPU) throw failure
-                    RuntimeSpeedTuner.recordGpuFailure(context, modelIdForLiteRt, resolvedModelPath, configuredContextWindow)
+                    RuntimeSpeedTuner.recordGpuFailure(context, modelIdForLiteRt, resolvedModelPath)
                     liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
                     liteRtCacheDir = null
                     loadedBackend = InferenceBackend.LITERT_CPU
@@ -830,6 +840,7 @@ class VisionInferenceManager(context: Context) {
         resolvedThinkingCapability = ThinkingCapability.Unknown
         isDefaultThinkingModel = false
         supportsThinkingMode = false
+        liteRtConversationThinking = null
         isBeingClosed = false
         AppCacheCleaner.clearAppCache(context)
 
@@ -878,8 +889,18 @@ class VisionInferenceManager(context: Context) {
                 extraContext = extraCtx
             )
         } else null
+        liteRtConversationThinking = extraCtx[ThinkingModeConfig.ENABLE_THINKING_KEY] as? Boolean
         liteRtConversation = createLiteRtConversation(config)
     }
+
+    /**
+     * True when the live LiteRT-LM conversation was created with a different thinking setting than
+     * [requested] (already resolved through [ThinkingModeConfig.resolveRequestThinking]). Mirrors
+     * ChatInferenceManager.needsResetForThinkingMode: the conversation-level `enable_thinking` decides
+     * the outcome, so a toggle or the first Think-on turn after load must rebuild the conversation.
+     */
+    fun needsResetForThinkingMode(requested: Boolean): Boolean =
+        runtime == RuntimeKind.LiteRtLm && isDefaultThinkingModel && liteRtConversationThinking != requested
 
     private fun createLiteRtConversation(base: ConversationConfig?): Conversation {
         seededMemoryPrefix = null
@@ -919,7 +940,8 @@ class VisionInferenceManager(context: Context) {
         enableVisionEncoder: Boolean = false,
         enableAudioEncoder: Boolean = false
     ) {
-        InitCrashGuard.markInitStarted(context, modelId)
+        InitCrashGuard.markInitStarted(context, modelId,
+            if (inferenceBackend == InferenceBackend.LITERT_GPU) InitCrashGuard.BACKEND_GPU else InitCrashGuard.BACKEND_CPU)
         var engine: Engine? = null
         try {
             val executionPolicy = RuntimeExecutionPolicy.resolve(context, modelId)
@@ -1053,6 +1075,7 @@ class VisionInferenceManager(context: Context) {
             } else null
             toolsDisabledForLoad = false
             retryToolsNextTurn = false
+            liteRtConversationThinking = if (isDefaultThinkingModel) false else null
             liteRtConversation = createLiteRtConversation(initialConfig)
             runtime = RuntimeKind.LiteRtLm
             if (stopRequested || isBeingClosed) throw CancellationException("Model initialization cancelled")
@@ -1158,7 +1181,9 @@ class VisionInferenceManager(context: Context) {
             publisher?.beginAttempt(2)
             val previousConversation = liteRtConversation
             liteRtConversation = null
-            previousConversation?.close()
+            runCatching { previousConversation?.close() }.onFailure { t ->
+                Log.w(TAG, "LiteRT-LM vision conversation close before tool retry failed", t)
+            }
             liteRtConversation = createLiteRtConversation(conversationBaseConfig)
             used.forEach(toolRecorder::add)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
