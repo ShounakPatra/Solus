@@ -9,6 +9,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ChatDocumentScopeTest {
+    @Test fun commonFilenameStemsDoNotNarrowOrdinaryDocumentQuestions() {
+        assertTrue(ChatDocumentScope.isDocumentQuestion("What does section 3 say?"))
+        assertTrue(ChatDocumentScope.referencedNames("Give me a summary", listOf("summary.pdf", "notes.pdf")).isEmpty())
+        assertEquals(setOf("summary.pdf"), ChatDocumentScope.referencedNames("Summarize summary.pdf", listOf("summary.pdf", "notes.pdf")))
+    }
+
     @Test fun namedUploadOverridesTheLastUploadForSummariesAndSearch() = runBlocking {
         val rag = manager()
         rag.ingestText("batteries.pdf", "Battery replacement information.", "battery")

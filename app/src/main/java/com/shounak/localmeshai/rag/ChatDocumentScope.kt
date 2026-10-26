@@ -7,7 +7,8 @@ internal object ChatDocumentScope {
     fun referencedNames(query: String, names: List<String>): Set<String> = names.filter { name ->
         if (name.isBlank()) false else {
             val stem = name.substringBeforeLast('.')
-            listOf(name).plus(if (stem.length >= 4) listOf(stem) else emptyList()).any {
+            val genericStem = stem.lowercase(java.util.Locale.ROOT) in setOf("summary", "report", "notes", "document", "file", "manual", "overview", "outline", "readme", "text")
+            listOf(name).plus(if (stem.length >= 4 && !genericStem) listOf(stem) else emptyList()).any {
                 Regex("(?<![\\p{L}\\p{N}_])${Regex.escape(it)}(?![\\p{L}\\p{N}_])", RegexOption.IGNORE_CASE).containsMatchIn(query)
             }
         }
@@ -20,7 +21,9 @@ internal object ChatDocumentScope {
         val lower = query.lowercase(java.util.Locale.ROOT)
         if (lower.trim().trimEnd('.', '?', '!') in setOf("describe this", "what does this say", "what does it say",
                 "tell me about this", "explain this", "explain it", "summarize it", "summarise it", "summarize this", "summarise this")) return true
-        return documentReference.containsMatchIn(lower) || RetrievalRelevance.isUnqualifiedOverview(query) ||
+        return documentReference.containsMatchIn(lower) ||
+            Regex("\\b(?:section|chapter|page|paragraph|clause|table|figure)\\s+\\d+\\b").containsMatchIn(lower) ||
+            RetrievalRelevance.isUnqualifiedOverview(query) ||
             referencedNames(query, names).isNotEmpty()
     }
 

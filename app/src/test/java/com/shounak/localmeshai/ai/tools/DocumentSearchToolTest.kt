@@ -14,7 +14,8 @@ class DocumentSearchToolTest {
         val settings = ConversationToolSettings(true, true, setOf("search_documents"), "[]")
         val tool = LocalTools.forConversation(context, settings) { false }.single()
         val response = org.json.JSONObject(tool.execute("""{"query":"summarize previous uploaded documents"}"""))
-        assertEquals("no_chat_documents", response.getString("status"))
+        assertEquals("no_context_for_question", response.getString("status"))
+        assertTrue(response.getString("note").contains("does not establish"))
         assertEquals(0, response.getJSONArray("matches").length())
     }
     private val arguments = """{"query":"hello"}"""
