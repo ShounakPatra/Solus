@@ -57,6 +57,7 @@ class LlamaCppEngineTest {
         val initCallCount = AtomicInteger(0)
         val generateCallCount = AtomicInteger(0)
         val stopCallCount = AtomicInteger(0)
+        val lastStoppedGeneration = AtomicLong(-1)
         val metadataCallCount = AtomicInteger(0)
         val freeCallCount = AtomicInteger(0)
 
@@ -211,6 +212,7 @@ class LlamaCppEngineTest {
         }
 
         override fun stop(handle: Long, generationId: Long) {
+            lastStoppedGeneration.set(generationId)
             stopCallCount.incrementAndGet()
             assertHandleValid(handle, "stop")
         }
@@ -276,7 +278,9 @@ class LlamaCppEngineTest {
         val generateStartedLatch = CountDownLatch(1)
         val allowGenerateToFinishLatch = CountDownLatch(1)
 
-        fakeBridge.onGenerateHook = { handle, _, cb ->
+        val admittedGeneration = AtomicLong(0)
+        fakeBridge.onGenerateHook = { handle, generationId, cb ->
+            admittedGeneration.set(generationId)
             generateStartedLatch.countDown()
             cb.onToken("tok1")
             allowGenerateToFinishLatch.await(5, TimeUnit.SECONDS)
@@ -303,6 +307,8 @@ class LlamaCppEngineTest {
         delay(100)
         // Model B initialization MUST NOT have completed yet because Model A's lease is active
         assertFalse("initialize(B) must wait for Model A to close", initBFinished.get())
+        assertTrue(admittedGeneration.get() > 0)
+        assertEquals("Close must stop the admitted generation, even before native decode starts", admittedGeneration.get(), fakeBridge.lastStoppedGeneration.get())
 
         // Allow generation on Model A to complete
         allowGenerateToFinishLatch.countDown()

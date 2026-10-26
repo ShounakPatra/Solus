@@ -1293,7 +1293,10 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
         nativeOperations.lock()
         try {
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            synchronized(lifecycleLock) { activeGenerationId = genId }
+            synchronized(lifecycleLock) {
+                if (engineState != EngineState.OPEN || nativeHandle != leaseHandle) return@withContext LlamaGenerationResult.Failed
+                activeGenerationId = genId
+            }
             if (toolRequestJson != null) {
                 check(nativeBridge === DefaultLlamaNativeBridge && nativeSupportsTools(leaseHandle)) { "Template does not support tools" }
                 nativeSetToolRequest(leaseHandle, toolRequestJson)
@@ -1612,6 +1615,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
      */
     fun close() {
         val handleToFree: Long
+        val generationToStop: Long
         var interruptedInWait = false
 
         synchronized(lifecycleLock) {
@@ -1663,13 +1667,14 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
             nativeHandle = 0L
             _activeBackend = LlamaBackend.CPU
             _actualConfiguration = null
+            generationToStop = activeGenerationId
             activeGenerationId = 0L
             initEpoch.incrementAndGet()
         }
 
         // 1. Signal cooperative abort to in-flight decodes
         if (nativeBridge.isAvailable() && handleToFree != 0L) {
-            try { nativeBridge.stop(handleToFree, 0L) } catch (_: Throwable) {}
+            try { nativeBridge.stop(handleToFree, generationToStop) } catch (_: Throwable) {}
         }
 
         // 2. Wait until all active operation leases have been released
