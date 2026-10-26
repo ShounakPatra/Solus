@@ -820,12 +820,6 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(selectedModel?.id, selectedThinkingCapability, thinkingMode) {
-        if (selectedThinkingCapability == ThinkingCapability.Unsupported && thinkingMode) {
-            chatViewModel.setThinkingMode(false)
-            visionViewModel.setThinkingMode(false)
-        }
-    }
 
     val scrollController = retainedScrollController ?: com.shounak.localmeshai.ui.models.rememberChatScrollController(listState, scope)
     DisposableEffect(scrollController) {
@@ -1990,7 +1984,6 @@ fun ChatScreen(
                                     val documentUri = selectedFileUri
                                     val documentName = selectedFileName ?: "document"
                                     val accepted = if (effectiveSupportsAttachments) {
-                                        val reqThinking = ThinkingModeConfig.resolveRequestThinking(selectedThinkingCapability, thinkingMode)
                                         visionViewModel.ask(
                                             bitmap = selectedBitmap,
                                             question = textState.trim(),
@@ -1999,7 +1992,7 @@ fun ChatScreen(
                                             audioUri = selectedAudioUri,
                                             audioName = selectedAudioName,
                                             audioBytes = selectedAudioBytes,
-                                            thinkingMode = reqThinking)
+                                            thinkingMode = thinkingMode)
                                     } else {
                                         chatViewModel.sendMessage(
                                             text = textState.trim(), documentUri = documentUri,

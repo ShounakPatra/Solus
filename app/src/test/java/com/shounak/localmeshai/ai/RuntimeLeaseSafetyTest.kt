@@ -16,6 +16,20 @@ import java.lang.reflect.Proxy
 import java.util.concurrent.atomic.AtomicInteger
 
 class RuntimeLeaseSafetyTest {
+    @Test fun firstThinkOnTurnRebuildsTheInitiallyDisabledLiteRtConversation() {
+        val manager = ChatInferenceManager(context())
+        val runtimeType = manager.javaClass.getDeclaredField("runtime").type
+        set(manager, "runtime", checkNotNull(runtimeType.enumConstants).first { it.toString() == "LiteRtLm" })
+        set(manager, "isDefaultThinkingModel", true)
+        val modeType = manager.javaClass.getDeclaredField("liteRtConversationMode").type
+        set(manager, "liteRtConversationMode", checkNotNull(modeType.enumConstants).first { it.toString() == "NoThinking" })
+        assertTrue(manager.needsResetForThinkingMode(true))
+        assertFalse(manager.needsResetForThinkingMode(false))
+        set(manager, "liteRtConversationMode", checkNotNull(modeType.enumConstants).first { it.toString() == "Default" })
+        assertFalse(manager.needsResetForThinkingMode(true))
+        assertTrue(manager.needsResetForThinkingMode(false))
+    }
+
     @get:Rule val files = TemporaryFolder()
 
     private fun context() = object : ContextWrapper(null) {

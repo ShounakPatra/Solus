@@ -564,7 +564,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             contextWindowTokens = defaultProfileContext,
                             supportsThinkingMode = currentSupportsThinkingMode,
                             allowUnsafeOverride = currentAllowUnsafeOverride,
-                            forceReload = true
+                            forceReload = true,
+                            bundle = currentBundle
                         )
                     }
                 }
@@ -814,6 +815,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 ) { operationId, operationControlId, updateProgress ->
                     val shutdownOk = runCatching {
+        _isStopping.value = false
                         kotlinx.coroutines.withTimeout(10_000L) {
                             releaseJob?.join()
                         }
@@ -1241,9 +1243,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     listOf(system, memory)
                         .filter { it.isNotBlank() }.joinToString("\n\n")
                 }
-                val modeChangedInStatefulThinkingRuntime =
-                    lastRuntimeThinkingMode?.let { it != thinkingModeForRequest } == true &&
-                        inferenceManager.needsResetWhenThinkingModeChanges()
+                val modeChangedInStatefulThinkingRuntime = inferenceManager.needsResetForThinkingMode(thinkingModeForRequest)
                 val shouldResetRuntimeConversation =
                     resetRuntimeConversationBeforeNextSend ||
                         inferenceManager.needsToolSettingsRefresh ||

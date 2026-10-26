@@ -1468,8 +1468,9 @@ class ChatInferenceManager(context: Context) {
     val isStopRequested: Boolean
         get() = stopRequested
 
-    fun needsResetWhenThinkingModeChanges(): Boolean {
-        return runtime == RuntimeKind.LiteRtLm && isDefaultThinkingModel
+    fun needsResetForThinkingMode(requested: Boolean): Boolean {
+        return runtime == RuntimeKind.LiteRtLm && isDefaultThinkingModel &&
+            (liteRtConversationMode != LiteRtConversationMode.NoThinking) != requested
     }
 
     fun cancelInitialization(expectedOperationControlId: Long? = null) {

@@ -564,7 +564,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             supportsAudioInput = currentSupportsAudioInput,
                             supportsThinkingMode = currentSupportsThinkingMode,
                             allowUnsafeOverride = currentAllowUnsafeOverride,
-                            forceReload = true
+                            forceReload = true,
+                            bundle = currentBundle
                         )
                     }
                 }
