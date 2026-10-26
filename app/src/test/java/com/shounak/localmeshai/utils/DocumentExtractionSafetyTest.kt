@@ -193,7 +193,7 @@ class DocumentExtractionSafetyTest {
             budget = budget
         )
 
-        assertTrue(result.contains("The attached file is 1.2 KB, but the selected model can read files up to 500 B"))
+        assertTrue(result.contains("The attached file is 1.2 KiB, but the selected model can read files up to 500 B"))
     }
 
     @Test
