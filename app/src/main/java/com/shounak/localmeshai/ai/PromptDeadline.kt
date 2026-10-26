@@ -13,19 +13,27 @@ internal class PromptTimeoutException : IllegalStateException(
 
 /** Stops stalled prefill without releasing a runtime that may still be executing native code. */
 internal class PromptDeadline(private val timeoutMillis: Long = 120_000L) {
-    // Exactly one of first token, completion, or timeout wins.
+    // 0: prompt/tool work, 1: visible generation, 2: timed out, 3: completed.
     private val state = AtomicInteger(0)
     private val progressLock = Any()
     private val lastProgressNanos = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
 
     fun onProgress(progress: RequestProgress) = synchronized(progressLock) {
         if (progress == RequestProgress.Generating) state.compareAndSet(0, 1)
-        else lastProgressNanos.set(System.nanoTime())
+        else if (state.get() < 2) {
+            lastProgressNanos.set(System.nanoTime())
+            state.compareAndSet(1, 0)
+        }
     }
 
     suspend fun <T> run(cancelNative: () -> Unit, onTimeout: () -> Unit = {}, block: suspend () -> T): T = coroutineScope {
         val watchdog = launch(Dispatchers.Default) {
-            while (state.get() == 0) {
+            while (state.get() < 2) {
+                // Visible streaming has no prefill deadline, but a later tool round can re-arm it.
+                if (state.get() == 1) {
+                    delay(timeoutMillis.coerceAtMost(1_000L).coerceAtLeast(1L))
+                    continue
+                }
                 val remaining = timeoutMillis - (System.nanoTime() - lastProgressNanos.get()) / 1_000_000L
                 if (remaining > 0) delay(remaining)
                 else if (synchronized(progressLock) {
@@ -38,14 +46,14 @@ internal class PromptDeadline(private val timeoutMillis: Long = 120_000L) {
         }
         try {
             val result = block()
-            state.compareAndSet(0, 1)
+            synchronized(progressLock) { if (state.get() != 2) state.set(3) }
             if (state.get() == 2) throw PromptTimeoutException()
             result
         } catch (error: Exception) {
             if (state.get() == 2) throw PromptTimeoutException().also { it.initCause(error) }
             throw error
         } finally {
-            state.compareAndSet(0, 1)
+            synchronized(progressLock) { if (state.get() != 2) state.set(3) }
             watchdog.cancel()
         }
     }

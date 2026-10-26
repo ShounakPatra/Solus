@@ -1091,6 +1091,7 @@ class ChatInferenceManager(context: Context) {
             },
             onDelta = { delta ->
                 if (stopRequested) return@LiteRtStreamAdapter
+                if (delta.isNotEmpty()) onProgress?.invoke(RequestProgress.Generating)
                 if (!firstChunkRecorded && delta.isNotEmpty()) {
                     firstChunkRecorded = true
                     timing?.recordFirstToken()
@@ -1282,7 +1283,8 @@ class ChatInferenceManager(context: Context) {
         responseController?.isStructuredMode = true
         try {
             ggufToolRecorder.clear()
-            if (ggufConversationHasTools && mediaInputs.isEmpty()) {
+            if (ggufConversationHasTools && mediaInputs.isEmpty() &&
+                com.shounak.localmeshai.ai.tools.ToolTurnPolicy.needsTools(messages)) {
                 val toolStream = com.shounak.localmeshai.ai.tools.GgufToolTurnStream(
                     publish = { answer, reasoning, thinking ->
                         responseController?.appendStructured(answer, reasoning, thinking,
@@ -1290,10 +1292,10 @@ class ChatInferenceManager(context: Context) {
                         publisher?.notifyStructuredUpdate(allowEmpty = true)
                     },
                     onText = { text ->
+                        onProgress?.invoke(RequestProgress.Generating)
                         if (!firstTokenRecorded) {
                             firstTokenRecorded = true
                             timing?.recordFirstToken()
-                            onProgress?.invoke(RequestProgress.Generating)
                         }
                         timing?.recordChunk(text)
                     }
@@ -1309,19 +1311,21 @@ class ChatInferenceManager(context: Context) {
                         record = ggufToolRecorder::add,
                         checkActive = {
                             if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
-                            onProgress?.invoke(RequestProgress.UsingTools)
-                        }
+                        },
+                        onToolStart = { onProgress?.invoke(RequestProgress.UsingTools) }
                     ) { request ->
                         var parsed: String? = null
+                        onProgress?.invoke(RequestProgress.ProcessingPrompt)
                         val status = engine.generateMultimodalStream(
                             prompt = prompt, messages = messages, enableThinking = !noThinking,
                             samplingParams = profileSampling(), onMetrics = onMetrics,
                             toolRequestJson = request, onToolResponse = { parsed = it },
-                            onFirstToken = { onProgress?.invoke(RequestProgress.UsingTools) },
+                            // Raw tokens can be tool arguments. Only parsed answer/reasoning is visible progress.
+                            onFirstToken = {},
                             onStructuredToken = { answer, reasoning, thinking ->
                                 if (!stopRequested && !isBeingClosed) toolStream.update(answer, reasoning, thinking)
                             },
-                            onToken = { onProgress?.invoke(RequestProgress.UsingTools) }
+                            onToken = {}
                         )
                         if (status == LlamaGenerationResult.Stopped) throw CancellationException("Generation cancelled")
                         org.json.JSONObject(checkNotNull(parsed) { "Missing tool response" }).also(toolStream::complete)
@@ -1337,8 +1341,7 @@ class ChatInferenceManager(context: Context) {
                     if (ggufToolRecorder.snapshot().isNotEmpty()) throw failure
                     toolStream.clear()
                     pendingToolHistory = null
-                    ggufConversationHasTools = false
-                    Log.w(TAG, "GGUF tools unavailable; retrying this conversation as ordinary chat", failure)
+                    Log.w(TAG, "GGUF tools unavailable for this turn; retrying as ordinary chat", failure)
                 }
             }
 
@@ -1559,6 +1562,13 @@ class ChatInferenceManager(context: Context) {
 
     private fun createLiteRtConversation(mode: LiteRtConversationMode): Conversation? {
         val engine = liteRtEngine ?: return null
+        val base = LiteRtThinkingConfig.apply(
+            ConversationConfig(extraContext = if (mode == LiteRtConversationMode.NoThinking)
+                ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
+                else emptyMap()),
+            enabled = if (isDefaultThinkingModel) mode != LiteRtConversationMode.NoThinking else null,
+            softSwitch = configuredCapabilities?.capabilities?.thinkingControl == ThinkingControlStrategy.QwenSoftSwitch
+        )
         val settings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
         if (conversationToolSettings?.requiresRefresh(settings) == true) liteRtToolsDisabledForLoad = false
         conversationToolSettings = settings
@@ -1573,12 +1583,9 @@ class ChatInferenceManager(context: Context) {
                 }
                 if (providers.isNotEmpty()) {
                     val createStart = TtftLog.now()
-                    val conversation = engine.createConversation(ConversationConfig(
+                    val conversation = engine.createConversation(base.copy(
                         tools = providers,
-                        automaticToolCalling = true,
-                        extraContext = if (mode == LiteRtConversationMode.NoThinking)
-                            ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
-                        else emptyMap()
+                        automaticToolCalling = true
                     ))
                     liteRtConversationHasTools = true
                     TtftLog.d("chat conversation.create ms=${TtftLog.elapsedMs(createStart)} tools=${providers.size} mode=$mode")
@@ -1591,17 +1598,7 @@ class ChatInferenceManager(context: Context) {
                 Log.w(TAG, "LiteRT tool conversation unavailable; using ordinary chat for this turn", failure)
             }
         }
-        return when (mode) {
-            LiteRtConversationMode.Default -> engine.createConversation()
-            LiteRtConversationMode.NoThinking -> engine.createConversation(
-                ConversationConfig(
-                    extraContext = ThinkingModeConfig.liteRtExtraContext(
-                        isDefaultThinkingModel = true,
-                        thinkingMode = false
-                    )
-                )
-            )
-        }
+        return engine.createConversation(base)
     }
 
     fun close(): ShutdownResult {
