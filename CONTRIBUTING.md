@@ -2,7 +2,7 @@
 
 First off, thank you for considering contributing to **Solus**! 🎉
 
-Solus is an open-source, 100% offline, on-device AI assistant for Android built with Kotlin, Jetpack Compose, C++17, and native ML runtimes (Google LiteRT, MediaPipe GenAI, and `llama.cpp`). Contributions from developers, designers, writers, and AI enthusiasts help make local on-device AI accessible, private, and fast for everyone.
+Solus is an open-source, on-device AI assistant for Android built with Kotlin, Jetpack Compose, C++17, Rust, and local inference runtimes. Inference and document retrieval run locally; downloads, updates and selected tools can use the network. Contributions from developers, designers, writers, and AI enthusiasts help improve the Android experience.
 
 Please take a moment to review this document before submitting your contribution.
 
@@ -34,11 +34,14 @@ Ensure you have the following installed on your development machine:
 
 - **Android Studio:** A version compatible with the configured Android Gradle Plugin (`9.4.1`).
 - **Gradle JVM:** Use Android Studio's bundled JBR. Kotlin and Java bytecode target Java 17; that target is separate from the JVM running Gradle.
-- **Android SDK:** API Level 37 (`compileSdk = 37`, `targetSdk = 37`, `minSdk = 28`).
+- **Android SDK:** API Level 37 (`compileSdk = 37`, `targetSdk = 37`, `minSdk = 30` / Android 11).
 - **Android NDK:** `28.2.13676358`, as pinned in `app/build.gradle.kts`.
 - **CMake:** `3.22.1`.
 - **Gradle:** Use the checked-in `9.8.2` wrapper; do not substitute a global Gradle installation.
 - **Git:** Latest version.
+- **Rust:** Install the `aarch64-linux-android` target for the Candle runtime. See [portable models](docs/portable-models.md) and the platform build helpers in `tools/`.
+
+Adjust Gradle and native build parallelism to suit your machine. Do not delete build outputs or native toolchains while another build is active.
 
 ### Setup Instructions
 
@@ -106,8 +109,8 @@ To keep our commit history clean and manageable:
 
 Before submitting your Pull Request, ensure:
 
-- [ ] Code builds cleanly via `./gradlew assembleDebug` without errors.
-- [ ] Unit tests pass cleanly via `./gradlew testDebugUnitTest`.
+- [ ] Relevant builds and tests pass; include the commands and their results.
+- [ ] Changed native/runtime behavior has focused regressions and explicitly recorded device checks where required. A host test or build is not phone verification.
 - [ ] Code follows project formatting and style guidelines.
 - [ ] No sensitive keys, keystores, or temporary build artifacts are included.
 - [ ] PR title is descriptive and follows Conventional Commits format.
@@ -121,7 +124,7 @@ When filing an issue on [Solus Issues](https://github.com/ShounakPatra/Solus/iss
 
 - **Use the Search Function:** Check if the issue has already been reported.
 - **Provide Environment Details:**
-  - App version and version code (current source: `6.0.0`, code `9`)
+  - Installed app version and version code (current version: `6.0.5`, code `11`)
   - Device Model & SoC (e.g., MediaTek Dimensity 7050, Snapdragon 8 Gen 2)
   - Installed RAM (e.g., 8 GB, 12 GB)
   - Android OS Version (Android 13, 14, 15, 16, 17)

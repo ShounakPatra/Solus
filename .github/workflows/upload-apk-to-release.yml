@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag (for example v6.0.2)
+        description: Existing release tag (for example v6.0.5)
         required: true
         type: string
       run_id:
