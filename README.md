@@ -20,7 +20,7 @@ Chat, write, code, and ask questions about documents with models running on your
 ![ARM64](https://img.shields.io/badge/ABI-arm64--v8a-22C55E)
 ![Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-A970FF)
 
-[Get started](#get-started) · [Features](#features) · [Model compatibility](#model-compatibility) · [Build from source](#build-from-source)
+[Get started](#get-started) · [Features](#features) · [Compare apps](#compare-apps) · [Model compatibility](#model-compatibility) · [Build from source](#build-from-source)
 
 </div>
 
@@ -77,7 +77,31 @@ Read the release notes on [GitHub Releases](https://github.com/ShounakPatra/Solu
 | Tune performance | CPU/compatible GPU options, optional warm-up, speed tuning, context and thermal telemetry |
 | Customize the interface | Glass controls, model accents, reduced motion and larger touch targets |
 
-### Tools and thinking
+## Compare apps
+
+These projects have different goals. The table summarizes their publicly documented
+features; **Not verified** means the linked documentation did not establish the
+answer, not that the feature is absent. Model, version and device support vary.
+
+| Feature | Solus v6.0.5 | AI Edge Gallery | PocketPal AI | LM Playground | ChatterUI |
+| --- | --- | --- | --- | --- | --- |
+| Local model formats | GGUF, LiteRT-LM, MediaPipe and selected portable exports | LiteRT | GGUF | GGUF | GGUF |
+| Import `.gguf`, `.litertlm` and `.task` | Supported exports | Not verified for all three | GGUF documented | GGUF documented | GGUF documented |
+| Images, audio and document chat | Available with compatible models and document extraction | Image and audio features documented; document chat not verified | Voice output documented; other inputs not verified | Image, voice dictation and document Q&A documented | Text-to-speech documented; other inputs not verified |
+| Thinking and tools | Available on compatible GGUF and LiteRT-LM models; model-dependent | Thinking on supported models; separate mobile actions | Tools documented; thinking not verified here | Reasoning and tools documented | Not verified |
+| Source passages for document answers | Retrieved passages available | Not verified | Not verified | Document retrieval documented; passage display not verified | Not verified |
+| Temporary chats excluded from history | Yes | Not verified | Not verified | Not verified | Not verified |
+| Backup chats, memories and settings | Yes; model weights excluded | Not verified | Not verified | Not verified | Not verified |
+| Android requirement | Android 11+ | Android 12+ | Check project | Check project | Check project |
+| Pricing | Free and open source | Open source | Free app; optional paid Pals | Check project | Check project |
+
+Sources: [AI Edge Gallery](https://github.com/google-ai-edge/gallery),
+[PocketPal AI](https://github.com/a-ghorbani/pocketpal-ai),
+[LM Playground](https://github.com/andriydruk/LMPlayground), and
+[ChatterUI](https://github.com/Vali-98/ChatterUI). Features and pricing can change;
+check each project's latest release before deciding.
+
+## Tools and thinking
 
 Enable **Tool calling** in Settings and select only the skills you need in **Manage tool skills**. Tool and document-search setting changes apply to the **next message in the current chat**.
 
@@ -89,7 +113,7 @@ Tools require compatible model behavior and templates. A plausible answer is not
 
 Wikipedia uses the network. Calendar/email actions can open another app or a review screen, and external services may need connectivity. Review actions before completing them.
 
-### Documents and sources
+## Documents and sources
 
 Attach a document using **+ → Files (RAG)**, or select a library document through **Knowledge Base**. Document context is scoped to the current chat's uploads and explicitly selected library documents; a new chat should not silently search another chat's uploads.
 
@@ -185,11 +209,11 @@ CI runs host native/Rust checks, unit tests, lint, instrumentation-test compilat
 
 Before publication, verify the exact signed APK's package/version, Android minimum, signing certificate, DEX/native packaging, upgrade behavior and device smoke tests. Use [the release upload guide](docs/release-artifact-upload.md): production signing uses the approval-protected **release** environment and a successful matching CI run from `main`.
 
-## Help and contributions
+## Contributors & community
 
 - [Report a reproducible issue](https://github.com/ShounakPatra/Solus/issues): include the app version/code, model file/revision, runtime, device, enabled tools and relevant redacted logs.
 - [Contribute](CONTRIBUTING.md) · [Report a security issue privately](SECURITY.md).
 - Maintainer: **Shounak Patra** · [GitHub](https://github.com/ShounakPatra) · [Email](mailto:shounakpatra68@gmail.com).
-- AI-assisted development contributors: **Claude (Anthropic)** and **Codex (OpenAI)**. Project maintenance and release decisions remain with Shounak Patra.
+- AI-assisted development: **Claude (Anthropic)** and **Codex (OpenAI)** contributed to implementation, review and documentation. Project maintenance and release decisions remain with Shounak Patra.
 
 Solus is licensed under [Apache 2.0](LICENSE). Imported models and third-party runtimes retain their own licenses.
