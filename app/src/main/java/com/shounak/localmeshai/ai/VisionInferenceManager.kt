@@ -1151,6 +1151,7 @@ class VisionInferenceManager(context: Context) {
             Log.w(TAG, "First vision tool turn failed before text; retrying without tools", failure)
             onProgress?.invoke(RequestProgress.RetryingWithoutTools)
             toolsDisabledForLoad = true
+            retryToolsNextTurn = true
             val used = toolRecorder.snapshot()
             onAttemptChanged?.invoke(2)
             responseController?.beginAttempt(2)
@@ -1159,7 +1160,6 @@ class VisionInferenceManager(context: Context) {
             liteRtConversation = null
             previousConversation?.close()
             liteRtConversation = createLiteRtConversation(conversationBaseConfig)
-            retryToolsNextTurn = true
             used.forEach(toolRecorder::add)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")

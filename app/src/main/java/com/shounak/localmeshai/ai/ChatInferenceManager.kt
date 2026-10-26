@@ -1006,6 +1006,7 @@ class ChatInferenceManager(context: Context) {
             Log.w(TAG, "First LiteRT tool turn failed before text; retrying without tools", failure)
             onProgress?.invoke(RequestProgress.RetryingWithoutTools)
             liteRtToolsDisabledForLoad = true
+            retryToolsNextTurn = true
             val toolsAlreadyUsed = liteRtToolRecorder.snapshot()
             onAttemptChanged?.invoke(2)
             responseController?.beginAttempt(2)
@@ -1014,7 +1015,6 @@ class ChatInferenceManager(context: Context) {
             liteRtConversation = null
             previousConversation?.close()
             liteRtConversation = createLiteRtConversation(liteRtConversationMode)
-            retryToolsNextTurn = true
             toolsAlreadyUsed.forEach(liteRtToolRecorder::add)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
