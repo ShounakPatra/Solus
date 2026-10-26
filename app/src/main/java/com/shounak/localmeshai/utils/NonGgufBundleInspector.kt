@@ -420,7 +420,7 @@ object NonGgufBundleInspector {
                 format = ModelFormat.LiteRtLm,
                 capabilities = defaultCapabilities(),
                 primaryArtifactName = file.name,
-                errorMessage = "Invalid or oversized LiteRT-LM header end offset ($headerEndOffset bytes, max payload 8MB).",
+                errorMessage = "Invalid or oversized LiteRT-LM header end offset ($headerEndOffset bytes, max payload 8 MiB).",
                 diagnosticDetails = "Header end offset out of bounds."
             )
         }

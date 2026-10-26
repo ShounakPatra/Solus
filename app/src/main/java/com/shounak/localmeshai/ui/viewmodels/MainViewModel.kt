@@ -763,7 +763,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 primaryArtifact = effectiveBundle.mainArtifacts.first()
                                 effectiveType = if (effectiveBundle.capabilities.isMediaModel) ModelType.Vision else ModelType.Text
                                 val sizeMb = effectiveBundle.totalSizeBytes / (1024 * 1024)
-                                sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GB", sizeMb / 1024f) else "$sizeMb MB"
+                                sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GiB", sizeMb / 1024f) else "$sizeMb MiB"
 
                                 val definition = CustomModelDefinition(
                                     id = effectiveBundle.id,
@@ -1781,7 +1781,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 val sizeMb = totalBytes / (1024 * 1024)
                 val sizeStr = if (totalBytes > 0L) {
-                    if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GB", sizeMb / 1024f) else "$sizeMb MB"
+                    if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GiB", sizeMb / 1024f) else "$sizeMb MiB"
                 } else "Custom"
                 val initialStatus = when {
                     isRecoveryRequired -> ModelStatus.Failed
@@ -1892,7 +1892,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val effectiveType = if (bundle.capabilities.isMediaModel) ModelType.Vision else ModelType.Text
         val sizeMb = bundle.totalSizeBytes / (1024 * 1024)
-        val sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GB", sizeMb / 1024f) else "$sizeMb MB"
+        val sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GiB", sizeMb / 1024f) else "$sizeMb MiB"
 
         val definition = CustomModelDefinition(
             id = bundle.id,
@@ -1996,7 +1996,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val effectiveType = if (bundleWithExistingId.capabilities.isMediaModel) ModelType.Vision else ModelType.Text
         val sizeMb = bundleWithExistingId.totalSizeBytes / (1024 * 1024)
-        val sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GB", sizeMb / 1024f) else "$sizeMb MB"
+        val sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GiB", sizeMb / 1024f) else "$sizeMb MiB"
         val oldLocation = existingDef.bundle?.mainArtifacts?.firstOrNull()?.source?.location
 
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
@@ -2233,7 +2233,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             val totalBytes = downloadSpec.artifacts.sumOf { it.expectedSizeBytes }
             val sizeMb = totalBytes / (1024 * 1024)
-            val sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GB", sizeMb / 1024f) else "$sizeMb MB"
+            val sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GiB", sizeMb / 1024f) else "$sizeMb MiB"
 
             val definition = CustomModelDefinition(
                 id = modelId,

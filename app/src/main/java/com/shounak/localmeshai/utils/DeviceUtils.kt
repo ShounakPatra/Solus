@@ -275,25 +275,25 @@ object DeviceUtils {
             val memInfo = ActivityManager.MemoryInfo()
             am.getMemoryInfo(memInfo)
             map["System Low Memory State"] = memInfo.lowMemory.toString()
-            map["Low Memory Threshold"] = "${memInfo.threshold / (1024L * 1024L)} MB"
-            map["Large Heap Limit"] = "${am.largeMemoryClass} MB"
-            map["Standard Heap Limit"] = "${am.memoryClass} MB"
+            map["Low Memory Threshold"] = "${memInfo.threshold / (1024L * 1024L)} MiB"
+            map["Large Heap Limit"] = "${am.largeMemoryClass} MiB"
+            map["Standard Heap Limit"] = "${am.memoryClass} MiB"
         }
 
         // 5. Runtime & Native Heap
         val rt = Runtime.getRuntime()
-        map["JVM Heap Max"] = "${rt.maxMemory() / (1024L * 1024L)} MB"
-        map["JVM Heap Total"] = "${rt.totalMemory() / (1024L * 1024L)} MB"
-        map["JVM Heap Free"] = "${rt.freeMemory() / (1024L * 1024L)} MB"
-        map["Native Heap Allocated"] = "${Debug.getNativeHeapAllocatedSize() / (1024L * 1024L)} MB"
-        map["Native Heap Free"] = "${Debug.getNativeHeapFreeSize() / (1024L * 1024L)} MB"
-        map["Native Heap Total"] = "${Debug.getNativeHeapSize() / (1024L * 1024L)} MB"
+        map["JVM Heap Max"] = "${rt.maxMemory() / (1024L * 1024L)} MiB"
+        map["JVM Heap Total"] = "${rt.totalMemory() / (1024L * 1024L)} MiB"
+        map["JVM Heap Free"] = "${rt.freeMemory() / (1024L * 1024L)} MiB"
+        map["Native Heap Allocated"] = "${Debug.getNativeHeapAllocatedSize() / (1024L * 1024L)} MiB"
+        map["Native Heap Free"] = "${Debug.getNativeHeapFreeSize() / (1024L * 1024L)} MiB"
+        map["Native Heap Total"] = "${Debug.getNativeHeapSize() / (1024L * 1024L)} MiB"
 
         // 6. Storage
         val freeStorageMb = runCatching { context.filesDir.freeSpace / (1024L * 1024L) }.getOrDefault(-1L)
         val totalStorageMb = runCatching { context.filesDir.totalSpace / (1024L * 1024L) }.getOrDefault(-1L)
-        map["Internal Storage Free"] = if (freeStorageMb >= 0) "$freeStorageMb MB" else "Unknown"
-        map["Internal Storage Total"] = if (totalStorageMb >= 0) "${totalStorageMb / 1024} GB ($totalStorageMb MB)" else "Unknown"
+        map["Internal Storage Free"] = if (freeStorageMb >= 0) "$freeStorageMb MiB" else "Unknown"
+        map["Internal Storage Total"] = if (totalStorageMb >= 0) "${totalStorageMb / 1024} GiB ($totalStorageMb MiB)" else "Unknown"
 
         // 7. Battery & Thermal
         runCatching {

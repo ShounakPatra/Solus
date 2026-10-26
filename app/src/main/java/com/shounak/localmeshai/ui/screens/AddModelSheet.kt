@@ -421,7 +421,7 @@ private fun PhoneImportSection(
                     Text("Capabilities: ${caps.joinToString(", ")}", style = MaterialTheme.typography.bodySmall)
 
                     val sizeMb = bundle.totalSizeBytes / (1024 * 1024)
-                    val sizeStr = if (sizeMb > 1024) String.format(Locale.US, "%.1f GB", sizeMb / 1024f) else "$sizeMb MB"
+                    val sizeStr = if (sizeMb > 1024) String.format(Locale.US, "%.1f GiB", sizeMb / 1024f) else "$sizeMb MiB"
                     Text("Total Size: $sizeStr (${bundle.allArtifacts.size} file${if (bundle.allArtifacts.size > 1) "s" else ""})", style = MaterialTheme.typography.bodySmall)
 
                     Spacer(modifier = Modifier.height(4.dp))
@@ -747,9 +747,9 @@ private fun CircularFileSelector(selected: Boolean) {
 private fun repositoryFileSize(bytes: Long): String = when {
     bytes <= 0 -> "size unknown"
     bytes < 1024 -> "$bytes B"
-    bytes < 1024 * 1024 -> "${(bytes + 1023) / 1024} KB"
-    bytes < 1024L * 1024 * 1024 -> String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024))
-    else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024 * 1024))
+    bytes < 1024 * 1024 -> "${(bytes + 1023) / 1024} KiB"
+    bytes < 1024L * 1024 * 1024 -> String.format(Locale.US, "%.1f MiB", bytes / (1024.0 * 1024))
+    else -> String.format(Locale.US, "%.2f GiB", bytes / (1024.0 * 1024 * 1024))
 }
 
 @Composable

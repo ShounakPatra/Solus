@@ -34,7 +34,7 @@ internal class RagOriginalStore(private val root: File) {
                     val count = input.read(buffer)
                     if (count < 0) break
                     total += count
-                    require(total <= 20L * 1024 * 1024) { "Document exceeds 20 MB" }
+                    require(total <= 20L * 1024 * 1024) { "Document exceeds 20 MiB" }
                     output.write(buffer, 0, count)
                 }
                 require(total > 0) { "Uploaded file is empty" }

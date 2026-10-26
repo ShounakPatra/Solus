@@ -22,9 +22,9 @@ object StorageDashboard {
             .filter { it.isFile && (it.canonicalFile == canonical || WorkspaceBackup.inside(it, canonical)) }.sumOf { it.length() }
     }
     fun format(bytes: Long): String = when {
-        bytes >= 1_073_741_824 -> "%.2f GB".format(java.util.Locale.US, bytes / 1_073_741_824.0)
-        bytes >= 1_048_576 -> "%.1f MB".format(java.util.Locale.US, bytes / 1_048_576.0)
-        bytes >= 1024 -> "%.1f KB".format(java.util.Locale.US, bytes / 1024.0)
+        bytes >= 1_073_741_824 -> "%.2f GiB".format(java.util.Locale.US, bytes / 1_073_741_824.0)
+        bytes >= 1_048_576 -> "%.1f MiB".format(java.util.Locale.US, bytes / 1_048_576.0)
+        bytes >= 1024 -> "%.1f KiB".format(java.util.Locale.US, bytes / 1024.0)
         else -> "$bytes B"
     }
 }

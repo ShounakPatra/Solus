@@ -107,7 +107,7 @@ internal class DocumentPreparation(private val context: Context, private val sco
                         val count = source.read(bytes)
                         if (count < 0) break
                         total += count
-                        require(total <= 20L * 1024L * 1024L) { "Attached document exceeds 20 MB" }
+                        require(total <= 20L * 1024L * 1024L) { "Attached document exceeds 20 MiB" }
                         output.write(bytes, 0, count)
                     }
                 }

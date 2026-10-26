@@ -827,8 +827,8 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                 val expectedMb = expectedBytes / (1024.0 * 1024.0)
                 return String.format(
                     java.util.Locale.US,
-                    "GGUF artifact size mismatch: expected ~%.1f MB (%.0f B) ±5%%, " +
-                    "actual %.1f MB (%d B). " +
+                    "GGUF artifact size mismatch: expected ~%.1f MiB (%.0f B) ±5%%, " +
+                    "actual %.1f MiB (%d B). " +
                     "A wrong quantization variant may have been downloaded. " +
                     "Delete the file and re-download to fix this.",
                     expectedMb, expectedBytes.toDouble(), actualMb, actualBytes

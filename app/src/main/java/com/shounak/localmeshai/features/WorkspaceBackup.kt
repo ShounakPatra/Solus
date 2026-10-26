@@ -65,7 +65,7 @@ class WorkspaceBackup internal constructor(
             }
         }
         visit(textJson); visit(visionJson)
-        require(attachments.size <= 5_000 && attachments.values.sumOf { it.length() } <= MAX_BYTES) { "Attachments exceed the 256 MB backup limit" }
+        require(attachments.size <= 5_000 && attachments.values.sumOf { it.length() } <= MAX_BYTES) { "Attachments exceed the 256 MiB backup limit" }
         val mapping = JSONObject()
         attachments.keys.forEachIndexed { index, path -> mapping.put(path, "attachments/$index") }
         val memories = JSONArray().apply { memory.getAllMemories().forEach { entry -> put(JSONObject().apply {
@@ -251,8 +251,8 @@ class WorkspaceBackup internal constructor(
 
         internal fun writeArchive(output: java.io.OutputStream, manifest: ByteArray, attachments: Map<String, File>) {
             output.use { destination ->
-                require(manifest.size <= MAX_MANIFEST) { "Chat data exceeds the 32 MB manifest limit" }
-                require(attachments.size <= 5_000 && manifest.size + attachments.values.sumOf { it.length() } <= MAX_BYTES) { "Backup exceeds 256 MB" }
+                require(manifest.size <= MAX_MANIFEST) { "Chat data exceeds the 32 MiB manifest limit" }
+                require(attachments.size <= 5_000 && manifest.size + attachments.values.sumOf { it.length() } <= MAX_BYTES) { "Backup exceeds 256 MiB" }
                 ZipOutputStream(destination).use { zip ->
                     zip.putNextEntry(ZipEntry("manifest.json")); zip.write(manifest); zip.closeEntry()
                     var total = manifest.size.toLong()
@@ -263,7 +263,7 @@ class WorkspaceBackup internal constructor(
                             val buffer = ByteArray(8192)
                             while (true) {
                                 val count = input.read(buffer); if (count < 0) break
-                                total += count; require(total <= MAX_BYTES) { "Attachment changed; backup exceeds 256 MB" }
+                                total += count; require(total <= MAX_BYTES) { "Attachment changed; backup exceeds 256 MiB" }
                                 zip.write(buffer, 0, count)
                             }
                         }

@@ -497,11 +497,11 @@ object DocumentTextExtractor {
         return when {
             bytes >= megabyte -> {
                 val value = bytes / megabyte
-                String.format(Locale.US, if (value >= 10) "%.0f MB" else "%.1f MB", value)
+                String.format(Locale.US, if (value >= 10) "%.0f MiB" else "%.1f MiB", value)
             }
             bytes >= kilobyte -> {
                 val value = bytes / kilobyte
-                String.format(Locale.US, if (value >= 10) "%.0f KB" else "%.1f KB", value)
+                String.format(Locale.US, if (value >= 10) "%.0f KiB" else "%.1f KiB", value)
             }
             else -> "$bytes B"
         }

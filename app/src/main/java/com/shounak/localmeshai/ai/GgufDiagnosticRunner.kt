@@ -87,9 +87,9 @@ data class GgufDiagnosticReport(
         sb.appendLine("**Backend:** `$backendUsed`")
         sb.appendLine("**Backend Policy:** `$backendPolicy`")
         sb.appendLine("**Response Quality Verified:** ${if (responseQualityVerified) "✅ Yes" else "⚠️ No"}")
-        sb.appendLine("**File Size:** ${fileSizeBytes / (1024 * 1024)} MB ($fileSizeBytes bytes)")
+        sb.appendLine("**File Size:** ${fileSizeBytes / (1024 * 1024)} MiB ($fileSizeBytes bytes)")
         if (expectedSizeBytes > 0L) {
-            sb.appendLine("**Expected Size:** ${expectedSizeBytes / (1024 * 1024)} MB ($expectedSizeBytes bytes)")
+            sb.appendLine("**Expected Size:** ${expectedSizeBytes / (1024 * 1024)} MiB ($expectedSizeBytes bytes)")
             sb.appendLine("**Size Check:** ${if (artifactSizeValidationPassed) "✅ PASSED (±5%)" else "⚠️ WARNING: $artifactSizeWarning"}")
         }
         sb.appendLine()

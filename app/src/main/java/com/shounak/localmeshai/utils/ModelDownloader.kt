@@ -1006,7 +1006,7 @@ open class ModelDownloader(
                             if (read == -1) break
                             totalUncompressedBytes += read
                             if (totalUncompressedBytes > maxAllowedBytes) {
-                                throw IOException("ZIP archive uncompressed size exceeds maximum safety limit (16 GB). Download aborted.")
+                                throw IOException("ZIP archive uncompressed size exceeds maximum safety limit (16 GiB). Download aborted.")
                             }
                             output.write(buffer, 0, read)
                         }
