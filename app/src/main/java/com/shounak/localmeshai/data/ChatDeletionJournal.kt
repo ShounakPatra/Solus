@@ -103,7 +103,7 @@ class ChatDeletionJournal(
     @Volatile private var hasCorruptData = false
     @Volatile private var retiredRagDocuments: Set<String> = emptySet()
     private val _documentChanges = kotlinx.coroutines.flow.MutableSharedFlow<Set<String>>(
-        extraBufferCapacity = 1, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+        replay = 1, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
     val documentChanges: kotlinx.coroutines.flow.SharedFlow<Set<String>> = _documentChanges
 
     fun deletedRagDocuments(): Set<String> {

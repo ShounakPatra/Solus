@@ -1,5 +1,7 @@
 package com.shounak.localmeshai.data
 
+import kotlinx.coroutines.flow.first
+
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -155,6 +157,16 @@ class ChatDeletionJournalTest {
         assertFalse(restored.retainRagDocument("private"))
         assertTrue(restored.recordRagDeletions(setOf("shared")))
         assertEquals(setOf("private", "shared"), ChatDeletionJournal(root).deletedRagDocuments())
+    }
+
+    @Test
+    fun documentCleanupSubscriberReceivesDeletionRecordedBeforeItStarted() = kotlinx.coroutines.runBlocking {
+        val journal = ChatDeletionJournal(tempFolder.newFolder("late_document_cleanup"))
+        assertTrue(journal.recordRagDeletions(setOf("deleted-before-subscription")))
+        val retired = kotlinx.coroutines.withTimeout(1_000) {
+            journal.documentChanges.first()
+        }
+        assertEquals(setOf("deleted-before-subscription"), retired)
     }
 
     @Test
