@@ -70,7 +70,7 @@ class AppSettings internal constructor(
             enableRag = prefs.getBoolean(KEY_ENABLE_RAG, false),
             ragTopK = prefs.getInt(KEY_RAG_TOP_K, 3),
             ragMinSimilarity = prefs.getFloat(KEY_RAG_MIN_SIMILARITY, 0.35f).let {
-                if (it < 0.30f) 0.35f else it
+                if (it.isFinite() && it in 0.25f..1f) it else 0.35f
             },
             ragEmbeddingModel = prefs.getString(KEY_RAG_EMBEDDING_MODEL, null) ?: "universal-fnv1a-384",
             embeddingModelPromptSkipped = prefs.getBoolean(KEY_EMBEDDING_PROMPT_SKIPPED, false),
