@@ -120,7 +120,8 @@ object DocumentTextExtractor {
                         archiveName = fileName,
                         budget = budget,
                         sharedContext = effectiveContext,
-                        isCancelled = effectiveCancelled
+                        isCancelled = effectiveCancelled,
+                        onFailure = onFailure
                     )
                 extension == "html" || extension == "htm" || mimeType.contains("html", ignoreCase = true) ->
                     extractHtml(bytes.decodeText())
@@ -330,12 +331,13 @@ object DocumentTextExtractor {
         context: Context?,
         entryName: String,
         bytes: ByteArray,
-        extractionContext: SharedExtractionContext? = null
+        extractionContext: SharedExtractionContext? = null,
+        onFailure: ((String) -> Unit)? = null
     ): String {
         val extension = entryName.substringAfterLast('.', "").lowercase(Locale.US)
         val ctx = extractionContext ?: SharedExtractionContext()
         return when {
-            extension == "pdf" -> if (context != null) extractPdf(context, bytes) else "PDF extraction requires Context"
+            extension == "pdf" -> if (context != null) extractPdf(context, bytes, onFailure) else "PDF extraction requires Context".also { onFailure?.invoke(it) }
             extension == "docx" -> extractDocx(bytes, ctx)
             extension == "pptx" -> extractOfficeOpenXml(bytes, "ppt/slides/", listOf("a:t"), ctx)
             extension == "xlsx" -> extractOfficeOpenXml(bytes, "xl/", listOf("t", "v"), ctx)
@@ -344,7 +346,7 @@ object DocumentTextExtractor {
             extension == "html" || extension == "htm" -> extractHtml(bytes.decodeText())
             extension == "rtf" -> extractRtf(bytes.decodeText())
             isPlainTextExtension(extension) -> bytes.decodeText()
-            else -> fallbackExtract(bytes, extension)
+            else -> fallbackExtract(bytes, extension, onFailure)
         }
     }
 
@@ -373,17 +375,24 @@ object DocumentTextExtractor {
 
     private fun extractRtf(text: String): String {
         val output = StringBuilder()
-        val groupFallbacks = java.util.ArrayDeque<Int>()
+        val groupFallbacks = java.util.ArrayDeque<Triple<Int, Boolean, Int>>()
         var unicodeFallbackLength = 1
         var fallbackRemaining = 0
+        var skipDestination = false
         var index = 0
         fun appendCharacter(character: Char) {
+            if (skipDestination) return
             if (fallbackRemaining > 0) fallbackRemaining-- else output.append(character)
         }
         while (index < text.length) {
             when (val character = text[index++]) {
-                '{' -> groupFallbacks.push(unicodeFallbackLength)
-                '}' -> if (groupFallbacks.isNotEmpty()) unicodeFallbackLength = groupFallbacks.pop()
+                '{' -> groupFallbacks.push(Triple(unicodeFallbackLength, skipDestination, fallbackRemaining))
+                '}' -> if (groupFallbacks.isNotEmpty()) {
+                    val previous = groupFallbacks.pop()
+                    unicodeFallbackLength = previous.first
+                    skipDestination = previous.second
+                    fallbackRemaining = previous.third
+                }
                 '\r', '\n' -> Unit // Source wrapping is not an RTF paragraph.
                 '\\' -> {
                     if (index >= text.length) break
@@ -407,14 +416,18 @@ object DocumentTextExtractor {
                             when (word) {
                                 "uc" -> unicodeFallbackLength = (number ?: 1).coerceAtLeast(0)
                                 "u" -> if (number != null) {
-                                    output.append((number and 0xFFFF).toChar())
+                                    if (!skipDestination) output.append((number and 0xFFFF).toChar())
                                     fallbackRemaining = unicodeFallbackLength
                                 }
                                 "par", "line" -> appendCharacter('\n')
                                 "tab" -> appendCharacter('\t')
                                 "bin" -> index += (number ?: 0).coerceIn(0, text.length - index)
+                                "fonttbl", "colortbl", "stylesheet", "info", "pict", "object", "themedata",
+                                "datastore", "xmlnstbl", "listtable", "listoverridetable", "latentstyles",
+                                "generator", "fldinst" -> skipDestination = true
                             }
                         }
+                        symbol == '*' -> skipDestination = true
                         symbol == '~' -> appendCharacter(' ')
                         symbol == '_' -> appendCharacter('-')
                     }

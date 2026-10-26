@@ -43,7 +43,8 @@ object ArchiveTextExtractor {
         budget: DocumentExtractionBudget = DocumentExtractionBudget.DEFAULT,
         currentDepth: Int = 1,
         isCancelled: (() -> Boolean)? = null,
-        sharedContext: SharedExtractionContext? = null
+        sharedContext: SharedExtractionContext? = null,
+        onFailure: ((String) -> Unit)? = null
     ): String {
         return extractFromStream(
             context = context,
@@ -52,7 +53,8 @@ object ArchiveTextExtractor {
             budget = budget,
             currentDepth = currentDepth,
             isCancelled = isCancelled,
-            sharedContext = sharedContext
+            sharedContext = sharedContext,
+            onFailure = onFailure
         )
     }
 
@@ -63,7 +65,8 @@ object ArchiveTextExtractor {
         budget: DocumentExtractionBudget = DocumentExtractionBudget.DEFAULT,
         currentDepth: Int = 1,
         isCancelled: (() -> Boolean)? = null,
-        sharedContext: SharedExtractionContext? = null
+        sharedContext: SharedExtractionContext? = null,
+        onFailure: ((String) -> Unit)? = null
     ): String {
         val extension = archiveName.substringAfterLast('.', "").lowercase(Locale.US)
         if (extension in ARCHIVE_EXTENSIONS && extension !in setOf("zip", "jar", "war", "apk")) {
@@ -219,14 +222,16 @@ object ArchiveTextExtractor {
                         extractionContext
                     }
 
+                    var entryFailed = false
                     val entryText = DocumentTextExtractor.extractZipEntryText(
                         context = context,
                         entryName = safeName,
                         bytes = entryBytes.bytes,
-                        extractionContext = entryExtractionContext
+                        extractionContext = entryExtractionContext,
+                        onFailure = { entryFailed = true }
                     ).normalizeDocumentWhitespace()
 
-                    if (entryText.isBlank() || entryText.isUnsupportedExtractionText()) {
+                    if (entryText.isBlank() || entryFailed) {
                         skippedFiles++
                         extractionContext.onSkippedEntry()
                         if (skippedEntries.size < MAX_SKIPPED_ENTRIES) {
@@ -276,6 +281,7 @@ object ArchiveTextExtractor {
                 }
                 else -> {
                     return "Could not extract archive $archiveName: ${extractionError.message ?: extractionError::class.java.simpleName}."
+                        .also { onFailure?.invoke(it) }
                 }
             }
         }
@@ -413,12 +419,6 @@ object ArchiveTextExtractor {
             .replace(Regex("""\n{3,}"""), "\n\n")
             .replace(Regex("""[ \t]{2,}"""), " ")
             .trim()
-    }
-
-    private fun String.isUnsupportedExtractionText(): Boolean {
-        val normalized = trim().lowercase(Locale.US)
-        return normalized == "this file type is not text-extractable by the app yet." ||
-            normalized.startsWith("could not extract")
     }
 
     private fun formatBytes(bytes: Long): String {

@@ -8,6 +8,29 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 class DocumentExtractionSafetyTest {
+    @Test fun wordRtfDestinationsDoNotLeakThemePictureOrFontData() {
+        val rtf = """{\rtf1{\fonttbl{\f0 Arial;}}{\*\themedata deadbeef}{\pict\pngblip 89504e47}Visible {\*\unknown hidden}text.}"""
+        assertEquals("Visible text.", DocumentTextExtractor.extractBytes(rtf.toByteArray(), "word.rtf"))
+    }
+
+    @Test fun encryptedArchiveReportsFailureInsteadOfBecomingDocumentText() {
+        val zip = createZip(mapOf("private.txt" to "Secret content".toByteArray()))
+        zip[6] = (zip[6].toInt() or 1).toByte()
+        var failure: String? = null
+        DocumentTextExtractor.extractBytes(zip, "locked.zip", onFailure = { failure = it })
+        assertNotNull(failure)
+        assertTrue(failure!!.startsWith("Could not extract archive"))
+    }
+
+    @Test fun errorLikeTextInsideAnArchiveRemainsReadableContent() {
+        val text = "Could not extract a confession from the witness."
+        val zip = createZip(mapOf("notes.txt" to text.toByteArray()))
+        var failure: String? = null
+        val result = DocumentTextExtractor.extractBytes(zip, "notes.zip", onFailure = { failure = it })
+        assertNull(failure)
+        assertTrue(result.contains(text))
+    }
+
 
     @Test
     fun extractionStatusDoesNotInterpretDocumentContentAsAnError() {
