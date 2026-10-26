@@ -25,8 +25,8 @@ Chat, write, code and explore documents with AI models running on your Android p
 
 </div>
 
-> [!NOTE]
-> The v6.0.5 APK is **50.60 MB (48.26 MiB)**. Verify its accompanying checksum before installing. Model weights are downloaded separately.
+> [!IMPORTANT]
+> Models are downloaded separately. Choose a compatible model that fits your device's available storage and memory; supported features depend on the model and its export.
 
 ---
 
