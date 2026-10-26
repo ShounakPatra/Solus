@@ -10,7 +10,7 @@ Chat, write, code and explore documents with AI models running on your Android p
 
 **v6.0.5 · Android 11+ · ARM64-v8a**
 
-<a href="https://github.com/ShounakPatra/Solus/releases/latest" title="Open the latest published Solus release">
+<a href="https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/app-release.apk" title="Download Solus v6.0.5">
   <img src="docs/assets/download-solus-apk.svg" alt="Get the latest signed Solus APK from GitHub Releases" width="360" height="72" />
 </a>
 
@@ -25,7 +25,7 @@ Chat, write, code and explore documents with AI models running on your Android p
 </div>
 
 > [!NOTE]
-> The download button opens the latest published release, which may differ from this source version. Check the APK version and checksum before installing. Model weights are downloaded separately.
+> The download button points to the v6.0.5 release APK. Check the release asset for its exact download size and checksum before installing. Model weights are downloaded separately.
 
 ---
 
@@ -43,7 +43,7 @@ Chat, write, code and explore documents with AI models running on your Android p
 
 ## Get started
 
-1. **Install** the signed APK from [GitHub Releases](https://github.com/ShounakPatra/Solus/releases/latest). v6.0.5 requires **Android 11+** and an **ARM64-v8a** device.
+1. **Install** the [v6.0.5 signed APK](https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/app-release.apk). v6.0.5 requires **Android 11+** and an **ARM64-v8a** device.
 2. **Choose a model** in **Models**, or use **Add model** to import one from your phone, Hugging Face or a direct URL.
 3. **Start a chat** after the model finishes loading. A small model is a good place to start if your phone has limited RAM.
 4. **Add context** with a PDF or DOCX. Image and audio inputs require a compatible model and export.
