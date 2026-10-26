@@ -26,6 +26,30 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 class ModelDownloaderResumeTest {
+    @Test fun cancelledPublicationResumesACompleteFileWithoutShaOrEtag() = runBlocking {
+        val modelId = "completed_without_validator"
+        val fileName = "model.bin"
+        val content = ByteArray(2048) { (it % 251).toByte() }
+        server.enqueue(MockResponse().setBody(Buffer().write(content)))
+        val url = server.url("/completed.bin").toString()
+        val staged = artifactStorage.getStagingFile(modelId, fileName)
+        var cancelledAtPublication = false
+        try {
+            downloader.downloadModel(url, modelId, fileName, ModelPackage.SingleFile, bearerToken = null) {
+                if (DownloadResumeMetadata.loadFor(staged)?.isCompleted == true) {
+                    cancelledAtPublication = true
+                    throw kotlinx.coroutines.CancellationException("Paused before publication")
+                }
+            }
+        } catch (_: kotlinx.coroutines.CancellationException) { }
+        assertTrue(cancelledAtPublication)
+        assertArrayEquals(content, staged.readBytes())
+        val result = downloader.downloadModel(url, modelId, fileName, ModelPackage.SingleFile, bearerToken = null) {}
+        assertEquals(1, server.requestCount)
+        assertArrayEquals(content, File(result.localPath).readBytes())
+        assertNull(DownloadResumeMetadata.loadFor(staged))
+    }
+
 
     @get:Rule
     val tempFolder = TemporaryFolder()

@@ -538,6 +538,13 @@ open class ModelDownloader(
 
         var existingBytes = if (stagingFile.exists()) stagingFile.length() else 0L
         val savedMeta = DownloadResumeMetadata.loadFor(stagingFile)
+        if (savedMeta?.isCompleted == true && existingBytes > 0 && savedMeta.lastDownloadedBytes == existingBytes &&
+            savedMeta.expectedTotalBytes == existingBytes && savedMeta.normalizedUrl == normalizedUrl &&
+            savedMeta.packageType == packageType && savedMeta.expectedSha256?.trim()?.lowercase() == expectedSha256?.trim()?.lowercase() &&
+            (sourceIdentity == null || savedMeta.sourceIdentity == sourceIdentity)) {
+            return handleDownloadSuccess(stagingFile, url, modelId, fileName, packageType, expectedSha256,
+                existingBytes, publishImmediately, sourceIdentity)
+        }
         var effectiveValidator: String? = eTag?.takeUnless { it.isBlank() || it.trimStart().startsWith("W/", ignoreCase = true) }
 
         if (existingBytes > 0L) {
@@ -795,6 +802,10 @@ open class ModelDownloader(
                 throw IOException("Truncated download: received $downloaded of $totalBytes total bytes.")
             }
 
+            DownloadResumeMetadata.saveFor(stagingFile, currentMeta.copy(
+                isCompleted = true, expectedTotalBytes = downloaded, lastDownloadedBytes = downloaded,
+                updatedAt = System.currentTimeMillis()
+            ))
             emitProgress(force = true)
             return handleDownloadSuccess(
                 stagingFile = stagingFile,
@@ -860,9 +871,7 @@ open class ModelDownloader(
             )
         }
 
-        DownloadResumeMetadata.deleteFor(stagingFile)
-
-        return publishCompletedDownload(
+        val published = publishCompletedDownload(
             stagingFile = stagingFile,
             url = url,
             modelId = modelId,
@@ -871,6 +880,8 @@ open class ModelDownloader(
             expectedSha256 = expectedSha256,
             downloaded = downloaded
         )
+        DownloadResumeMetadata.deleteFor(stagingFile)
+        return published
     }
 
     private suspend fun publishCompletedDownload(
@@ -934,7 +945,6 @@ open class ModelDownloader(
                 stagingExtractionDir.deleteRecursively()
                 stagingExtractionDir.mkdirs()
                 unzipModel(stagingFile, stagingExtractionDir, isCancelled = isCancelled)
-                stagingFile.delete()
                 val extracted = resolveExtractedModelDirectory(stagingExtractionDir)
                 val isTextModel = fileName.endsWith(".task", ignoreCase = true) ||
                     fileName.endsWith(".litertlm", ignoreCase = true) ||
@@ -951,6 +961,7 @@ open class ModelDownloader(
                     isTextModel = isTextModel
                 )
                 published.setLastModified(System.currentTimeMillis())
+                stagingFile.delete()
                 published.absolutePath
             }
         }
