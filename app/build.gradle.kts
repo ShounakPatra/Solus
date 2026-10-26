@@ -12,7 +12,7 @@ plugins {
 
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val nativeSourceDigest = MessageDigest.getInstance("SHA-256").apply {
-    update("toolchain:ndk-28.2.13676358;cmake-3.22.1;platform:android-28;abi:arm64-v8a;c++17".toByteArray())
+    update("toolchain:ndk-28.2.13676358;cmake-3.22.1;platform:android-30;abi:arm64-v8a;c++17".toByteArray())
     fileTree("src/main/rust") { include("src/**/*.rs", "Cargo.toml", "Cargo.lock") }
         .files.sortedBy { it.relativeTo(projectDir).invariantSeparatorsPath }.forEach { source ->
             update(source.relativeTo(projectDir).invariantSeparatorsPath.toByteArray())
@@ -49,7 +49,7 @@ android {
 
     defaultConfig {
         applicationId = "com.shounak.localmeshai"
-        minSdk = 28
+        minSdk = 30
         targetSdk = 37
         versionCode = 11
         versionName = "6.0.5"
@@ -65,7 +65,7 @@ android {
 
         externalNativeBuild {
             cmake {
-                arguments("-DANDROID_PLATFORM=android-28", "-DANDROID_LD=lld")
+                arguments("-DANDROID_PLATFORM=android-30", "-DANDROID_LD=lld")
             }
         }
     }
