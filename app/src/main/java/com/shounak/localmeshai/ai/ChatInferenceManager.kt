@@ -521,7 +521,10 @@ class ChatInferenceManager(context: Context) {
             val inferenceBackend = when (pref) {
                 "CPU" -> InferenceBackend.LITERT_CPU
                 "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
-                else -> if (InitCrashGuard.isModelBlocked(context, effectiveId)) InferenceBackend.LITERT_CPU
+                else -> if (InitCrashGuard.isModelBlocked(context, effectiveId)) {
+                    RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, effectiveFile.absolutePath, configuredContextWindow)
+                    InferenceBackend.LITERT_CPU
+                }
                     else RuntimeSpeedTuner.liteRtBackend(context, effectiveId, effectiveFile.absolutePath, configuredContextWindow)
             }
             val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
@@ -561,6 +564,7 @@ class ChatInferenceManager(context: Context) {
                 liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
                 liteRtCacheDir = null
                 loadedBackend = InferenceBackend.LITERT_CPU
+                onModelProgress?.invoke(ModelLoadStage.ContextPreparation("CPU"), null, null)
                 warmupMs = 0
                 Log.w(TAG, "Measured GPU failed; retrying LiteRT initialization on CPU", failure)
                 initLiteRtLm(resolvedModelPath, effectiveId, loadedBackend, configuredContextWindow) {
@@ -680,7 +684,7 @@ class ChatInferenceManager(context: Context) {
                 throw t
             }
             LiteRtRuntimeCache.release(context, liteRtCacheDir)
-            LiteRtRuntimeCache.clear(context, liteRtCacheDir)
+            if (t !is CancellationException && !stopRequested && !isBeingClosed) LiteRtRuntimeCache.clear(context, liteRtCacheDir)
             liteRtCacheDir = null
             throw t
         }
@@ -1006,7 +1010,9 @@ class ChatInferenceManager(context: Context) {
             onAttemptChanged?.invoke(2)
             responseController?.beginAttempt(2)
             publisher?.beginAttempt(2)
-            runCatching { liteRtConversation?.close() }
+            val previousConversation = liteRtConversation
+            liteRtConversation = null
+            previousConversation?.close()
             liteRtConversation = createLiteRtConversation(liteRtConversationMode)
             retryToolsNextTurn = true
             toolsAlreadyUsed.forEach(liteRtToolRecorder::add)

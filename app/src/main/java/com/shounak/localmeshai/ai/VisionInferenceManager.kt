@@ -96,6 +96,7 @@ class VisionInferenceManager(context: Context) {
         val spec = checkNotNull(liteRtLoadSpec)
         val enableVision = vision || visionEncoderLoaded
         val enableAudio = audio || audioEncoderLoaded
+        val audioAvailable = spec.supportsAudio && modelSupportsAudioInput
         liteRtConversation?.close()
         liteRtConversation = null
         liteRtEngine?.closeIfInitialized()
@@ -106,7 +107,7 @@ class VisionInferenceManager(context: Context) {
         requestsSinceLoad = 0
         warmupMs = 0
         try {
-            initializeLiteRtLm(spec.path, spec.id, spec.backend, spec.supportsAudio, spec.contextTokens,
+            initializeLiteRtLm(spec.path, spec.id, spec.backend, audioAvailable, spec.contextTokens,
                 enableVisionEncoder = enableVision, enableAudioEncoder = enableAudio)
         } catch (failure: Exception) {
             if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
@@ -114,7 +115,7 @@ class VisionInferenceManager(context: Context) {
             RuntimeSpeedTuner.recordGpuFailure(context, spec.id, spec.path, spec.contextTokens)
             liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
             liteRtCacheDir = null
-            initializeLiteRtLm(spec.path, spec.id, InferenceBackend.LITERT_CPU, spec.supportsAudio, spec.contextTokens,
+            initializeLiteRtLm(spec.path, spec.id, InferenceBackend.LITERT_CPU, audioAvailable, spec.contextTokens,
                 enableVisionEncoder = enableVision, enableAudioEncoder = enableAudio)
             activeBackendDisplayName = "LiteRT-LM CPU"
         }
@@ -390,7 +391,10 @@ class VisionInferenceManager(context: Context) {
                 val inferenceBackend = when (pref) {
                     "CPU" -> InferenceBackend.LITERT_CPU
                     "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
-                    else -> if (InitCrashGuard.isModelBlocked(context, modelIdForLiteRt)) InferenceBackend.LITERT_CPU
+                    else -> if (InitCrashGuard.isModelBlocked(context, modelIdForLiteRt)) {
+                        RuntimeSpeedTuner.recordGpuFailure(context, modelIdForLiteRt, resolvedModelPath, configuredContextWindow)
+                        InferenceBackend.LITERT_CPU
+                    }
                         else RuntimeSpeedTuner.liteRtBackend(context, modelIdForLiteRt, resolvedModelPath, configuredContextWindow)
                 }
                 val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
@@ -1068,7 +1072,7 @@ class VisionInferenceManager(context: Context) {
                 throw t
             }
             LiteRtRuntimeCache.release(context, liteRtCacheDir)
-            LiteRtRuntimeCache.clear(context, liteRtCacheDir)
+            if (t !is CancellationException && !stopRequested && !isBeingClosed) LiteRtRuntimeCache.clear(context, liteRtCacheDir)
             liteRtCacheDir = null
             throw t
         }
@@ -1151,7 +1155,9 @@ class VisionInferenceManager(context: Context) {
             onAttemptChanged?.invoke(2)
             responseController?.beginAttempt(2)
             publisher?.beginAttempt(2)
-            runCatching { liteRtConversation?.close() }
+            val previousConversation = liteRtConversation
+            liteRtConversation = null
+            previousConversation?.close()
             liteRtConversation = createLiteRtConversation(conversationBaseConfig)
             retryToolsNextTurn = true
             used.forEach(toolRecorder::add)
