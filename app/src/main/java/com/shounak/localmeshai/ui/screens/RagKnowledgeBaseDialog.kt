@@ -47,7 +47,8 @@ import java.util.Locale
 @Composable
 fun RagKnowledgeBaseDialog(
     ragManager: RagManager,
-    onDismissRequest: () -> Unit
+    onDismissRequest: () -> Unit,
+    onDocumentSelected: ((String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -378,7 +379,9 @@ fun RagKnowledgeBaseDialog(
                         items(documents, key = { it.documentId }) { doc ->
                             RagDocumentRow(
                                 document = doc,
-                                onDelete = { docToDelete = doc }
+                                onDelete = { docToDelete = doc },
+                                hazeState = hazeState,
+                                onUse = onDocumentSelected?.let { select -> { select(doc.documentId) } }
                             )
                         }
                     }
@@ -627,7 +630,9 @@ fun RagKnowledgeBaseDialog(
 @Composable
 private fun RagDocumentRow(
     document: RagDocumentSummary,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    hazeState: HazeState,
+    onUse: (() -> Unit)? = null
 ) {
     val colors = MaterialTheme.colorScheme
     val dateStr = remember(document.addedAt) {
@@ -682,6 +687,12 @@ private fun RagDocumentRow(
                         color = colors.onSurfaceVariant.copy(alpha = 0.80f),
                         maxLines = 1
                     )
+                }
+            }
+            if (onUse != null) {
+                LiquidGlassButton(onClick = onUse, hazeState = hazeState,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)) {
+                    Text("Use in chat", style = MaterialTheme.typography.labelMedium)
                 }
             }
             IconButton(

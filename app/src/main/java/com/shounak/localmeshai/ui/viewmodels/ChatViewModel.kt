@@ -595,6 +595,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private var pendingRagDocumentId: String? = null
+    fun useKnowledgeBaseDocument(id: String): Boolean {
+        if (_isGenerating.value || _isStopping.value || _isDeletingHistory.value || ragManager.indexedDocuments.none { it.documentId == id }) return false
+        pendingRagDocumentId = id
+        currentSessionDocumentId = id
+        setRagActive(true)
+        return true
+    }
     var currentSessionDocumentId: String? = null
         private set
 
@@ -789,6 +796,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         currentModelPath = path
         currentBundle = bundle
+        pendingClearSelection = false
         currentModelId = modelId
         currentModelName = modelName
         currentModelSize = modelSize
@@ -796,7 +804,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentSupportsThinkingMode = supportsThinkingMode
         currentAllowUnsafeOverride = allowUnsafeOverride
         currentRequestedIdentity = identity
-        pendingClearSelection = false
 
         if (_isGenerating.value) stopGenerating()
         currentModelEpoch++
@@ -808,6 +815,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         inferenceManager.cancelGeneration()
         _isInitializing.value = true
         _isGenerating.value = false
+        _isStopping.value = false
         _runtimeCapabilities.value = null
         _isModelReady.value = false
         _error.value = null
@@ -822,7 +830,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 ) { operationId, operationControlId, updateProgress ->
                     val shutdownOk = runCatching {
-        _isStopping.value = false
                         kotlinx.coroutines.withTimeout(10_000L) {
                             releaseJob?.join()
                         }
@@ -1029,7 +1036,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         ensureCurrentSession(userText, documentName)
 
         val userMsgId = UUID.randomUUID().toString()
-        val userMessage = ChatMessage(userText, true, id = userMsgId, documentName = documentName, documentPath = documentPath,
+        val selectedDocumentName = documentName ?: pendingRagDocumentId?.let { id -> ragManager.indexedDocuments.firstOrNull { it.documentId == id }?.documentName }
+        val userMessage = ChatMessage(userText, true, id = userMsgId, documentName = selectedDocumentName, documentPath = documentPath,
             ragDocumentId = if (documentUri != null) UUID.randomUUID().toString() else pendingRagDocumentId)
         messages.add(userMessage)
 
@@ -1084,6 +1092,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             ?.takeIf { com.shounak.localmeshai.rag.ChatDocumentScope.isDocumentQuestion(userText, listOfNotNull(it.documentName)) }
         val inputUri = documentUri ?: documentPath?.let { Uri.fromFile(File(it)) } ?: savedDocument?.documentPath?.let { Uri.fromFile(File(it)) }
         val inputName = documentName ?: savedDocument?.documentName ?: "document"
+        val repairedUploadId = if (!_temporaryChat.value && appSettings.settings.value.enableRag && documentUri == null)
+            com.shounak.localmeshai.rag.LegacyDocumentLink.repairId(savedDocument?.documentPath, savedDocument?.ragDocumentId,
+                attachmentStoreForChat,
+                com.shounak.localmeshai.data.ChatKind.Text, targetSessionId) else null
         val preparation = inputUri?.let { documentPreparation.take(it, inputName) }
 
         timing.recordAcknowledged()
@@ -1143,7 +1155,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     documentPreparation.remember(durable)
-                    documentForIndex = if (documentUri != null) durable else null
+                    documentForIndex = if (documentUri != null || repairedUploadId != null) durable else null
                     resolvedDocPath = durable.durableFile?.absolutePath
                     resolvedDocName = durable.name
                     withContext(Dispatchers.Main.immediate) {
@@ -1151,8 +1163,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         if (activeRequestId == requestId && _currentSessionId.value == targetSessionId) {
                             val userIdx = assistantIndex - 1
                             messages[userIdx] = messages[userIdx].copy(
-                                documentName = if (documentUri != null) resolvedDocName else messages[userIdx].documentName,
-                                documentPath = if (documentUri != null) resolvedDocPath else messages[userIdx].documentPath)
+                                documentName = if (documentUri != null || repairedUploadId != null) resolvedDocName else messages[userIdx].documentName,
+                                documentPath = if (documentUri != null || repairedUploadId != null) resolvedDocPath else messages[userIdx].documentPath,
+                                ragDocumentId = messages[userIdx].ragDocumentId ?: repairedUploadId)
                         }
                     }
                     require(prepared.extractionError == null && !prepared.extractedText.isNullOrBlank()) {
@@ -2068,6 +2081,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun releaseModel(clearCoordinator: Boolean, clearSelection: Boolean = false) {
+        pendingClearSelection = pendingClearSelection || clearSelection
         autoUnloadJob?.cancel()
         autoUnloadJob = null
         val jobToCancel = generationJob
@@ -2081,7 +2095,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         initJob?.cancel()
         initJob = null
         if (jobToCancel != null && jobToCancel.isActive) {
-        pendingClearSelection = pendingClearSelection || clearSelection
             _isStopping.value = true
         }
 

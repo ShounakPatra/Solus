@@ -197,6 +197,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun useKnowledgeBaseDocument(id: String): Boolean {
+        if (_isAnalyzing.value || _isStopping.value || _isDeletingHistory.value || ragManager.indexedDocuments.none { it.documentId == id }) return false
+        setPendingRagDocumentId(id)
+        appSettings.updateSettings { it.copy(enableRag = true) }
+        return true
+    }
+
     suspend fun ingestDocumentForRag(uri: Uri, fileName: String, mimeType: String = ""): RagIngestionResult {
         if (_temporaryChat.value) return RagIngestionResult(false, "", fileName, 0, 0, "Temporary chats do not add documents to the knowledge base.")
         val result = ragManager.ingestDocument(uri, fileName, mimeType)
@@ -439,6 +446,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     val automaticModelSelection = com.shounak.localmeshai.ui.models.AutomaticModelSelection()
     private val ioMutex = Mutex()
     private var releaseJob: Job? = null
+    private var pendingClearSelection = false
     private val documentPreparation = DocumentPreparation(application, viewModelScope)
 
     private val imagePreparation = ImagePreparation(getApplication(), viewModelScope)
@@ -446,7 +454,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
     fun stageDocumentAttachment(uri: Uri, name: String) = documentPreparation.stage(uri, name)
     fun cancelStagedDocument() = documentPreparation.cancel()
-    private var pendingClearSelection = false
 
 
     fun resetAutoUnloadTimer() {
@@ -699,6 +706,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
         currentModelPath = path
         currentBundle = bundle
+        pendingClearSelection = false
         currentModelId = modelId
         currentModelName = modelName
         currentModelSize = modelSize
@@ -706,7 +714,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         currentSupportsAudioInput = supportsAudioInput
         currentSupportsThinkingMode = supportsThinkingMode
         currentAllowUnsafeOverride = allowUnsafeOverride
-        pendingClearSelection = false
         currentRequestedIdentity = identity
 
         if (_isAnalyzing.value) stopAnalyzing()
@@ -1066,6 +1073,10 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         val activeSessionId = jobSessionId ?: _currentSessionId.value ?: UUID.randomUUID().toString().also {
             _currentSessionId.value = it
         }
+        val repairedUploadId = if (!_temporaryChat.value && appSettings.settings.value.enableRag && fileUri == null)
+            com.shounak.localmeshai.rag.LegacyDocumentLink.repairId(savedDocument?.documentPath, savedDocument?.ragDocumentId,
+                attachmentStoreForChat,
+                com.shounak.localmeshai.data.ChatKind.Vision, activeSessionId) else null
 
         if (isRetry || (fileName != null && lastAttachedFileName != null && fileName != lastAttachedFileName)) {
             resetRuntimeConversationBeforeNextAsk = true
@@ -1094,7 +1105,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         var capturedMetrics: com.shounak.localmeshai.ai.InferenceMetrics? = null
         val basePrompt = resolved.effectivePrompt
         val displayPrompt = if (resolved.isImageOnlyPrompt) "" else question.trim()
-        val targetDocId = if (fileUri != null) null else pendingRagDocumentId ?: currentSessionDocumentId
+        val selectedLibraryDocument = pendingRagDocumentId
+        val targetDocId = if (fileUri != null) null else selectedLibraryDocument ?: currentSessionDocumentId
         pendingRagDocumentId = null
         if (targetDocId != null) {
             currentSessionDocumentId = targetDocId
@@ -1118,8 +1130,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     audioPath = null,
                     audioName = placeholderAudioName,
                     audioDurationMs = 0L,
-                    documentName = fileName,
-                    ragDocumentId = if (fileUri != null) UUID.randomUUID().toString() else null,
+                    documentName = fileName ?: selectedLibraryDocument?.let { id -> ragManager.indexedDocuments.firstOrNull { it.documentId == id }?.documentName },
+                    ragDocumentId = if (fileUri != null) UUID.randomUUID().toString() else selectedLibraryDocument ?: repairedUploadId ?: savedDocument?.ragDocumentId,
                     documentPath = null
                 )
             )
@@ -1248,7 +1260,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     documentPreparation.remember(durable)
                     persistentDocFile = durable.durableFile
                     fileText = durable.extractedText.orEmpty()
-                    documentForIndex = if (fileUri != null) durable else null
+                    documentForIndex = if (fileUri != null || repairedUploadId != null) durable else null
                 }
 
                 var renderedPdfBitmap: Bitmap? = null
@@ -2670,6 +2682,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun releaseModel(clearCoordinator: Boolean, clearSelection: Boolean = false) {
+        pendingClearSelection = pendingClearSelection || clearSelection
         autoUnloadJob?.cancel()
         autoUnloadJob = null
         val jobToCancel = analysisJob
@@ -2682,7 +2695,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         analysisGeneration++
         initJob?.cancel()
         initJob = null
-        pendingClearSelection = pendingClearSelection || clearSelection
         if (jobToCancel != null && jobToCancel.isActive) {
             _isStopping.value = true
         }

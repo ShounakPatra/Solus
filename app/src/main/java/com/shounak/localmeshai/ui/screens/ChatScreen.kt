@@ -412,6 +412,7 @@ fun ChatScreen(
     var recordingElapsedMs by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
     var cameraTempFilePath by rememberSaveable { mutableStateOf<String?>(null) }
     var showHistory by remember { mutableStateOf(false) }
+    var showKnowledgeBase by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
     val appSettingsData by mainViewModel.appSettingsData.collectAsState()
     var fullscreenMessageIndex by remember { mutableStateOf<Int?>(null) }
@@ -867,6 +868,20 @@ fun ChatScreen(
         }
     }
 
+    if (showKnowledgeBase) {
+        RagKnowledgeBaseDialog(
+            ragManager = remember(context) { com.shounak.localmeshai.rag.RagManager.getInstance(context) },
+            onDismissRequest = { showKnowledgeBase = false },
+            onDocumentSelected = { id ->
+                val selected = if (effectiveSupportsAttachments) visionViewModel.useKnowledgeBaseDocument(id)
+                    else chatViewModel.useKnowledgeBaseDocument(id)
+                if (selected) {
+                    showKnowledgeBase = false
+                    android.widget.Toast.makeText(context, "Document selected for the next message in this chat", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
     if (showHistory) {
         ChatHistoryDialog(
             textSessions = chatViewModel.chatSessions,
@@ -1943,6 +1958,7 @@ fun ChatScreen(
                                 supportsAudioInput = effectiveSupportsAttachments && selectedSupportsAudio,
                                 visionDisabledReason = when {
                                     selectedModel == null -> "Select a model"
+                                    !effectiveSupportsAttachments -> "Start a multimodal chat to use images or audio"
                                     !isCurrentModelReady -> "Initialize the model to use images"
                                     runtimeSnapshot?.capabilities?.supportsVision != true -> "Image input unavailable in this runtime"
                                     else -> null
@@ -1958,11 +1974,11 @@ fun ChatScreen(
                                     val request = createCameraCaptureRequest(context)
                                     cameraTempFilePath = request.file.absolutePath
                                     cameraLauncher.launch(request.uri)
-                                    !effectiveSupportsAttachments -> "Start a multimodal chat to use images or audio"
                                 },
                                 onPhotosSelect = { imagePicker.launch("image/*") },
                                 onAudioSelect = { audioFilePicker.launch(arrayOf("audio/*", "application/ogg")) },
                                 onFilesSelect = { filePicker.launch(arrayOf("*/*")) },
+                                onKnowledgeBaseSelect = { showKnowledgeBase = true },
                                 onMicRecord = {
                                     if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                                         startMicRecording()
@@ -2331,6 +2347,7 @@ private fun ChatComposerActions(
     onPhotosSelect: () -> Unit,
     onAudioSelect: () -> Unit,
     onFilesSelect: () -> Unit,
+    onKnowledgeBaseSelect: () -> Unit,
     onMicRecord: () -> Unit,
     onMicUnavailable: () -> Unit,
     onSend: () -> Unit,
@@ -2428,6 +2445,10 @@ private fun ChatComposerActions(
                 onFilesSelect = {
                     onToggleAttachmentMenu(false)
                     onFilesSelect()
+                },
+                onKnowledgeBaseSelect = {
+                    onToggleAttachmentMenu(false)
+                    onKnowledgeBaseSelect()
                 }
             )
         }
@@ -2615,7 +2636,8 @@ private fun AttachmentInlineMenu(
     onCameraSelect: () -> Unit,
     onPhotosSelect: () -> Unit,
     onAudioSelect: () -> Unit,
-    onFilesSelect: () -> Unit
+    onFilesSelect: () -> Unit,
+    onKnowledgeBaseSelect: () -> Unit
 ) {
     val menuShape = RoundedCornerShape(14.dp)
     val menuTint = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -2669,6 +2691,13 @@ private fun AttachmentInlineMenu(
                     subtitle = "PDF, DOCX, TXT, Code",
                     enabled = true,
                     onClick = onFilesSelect
+                ),
+                AttachmentMenuSpec(
+                    icon = Icons.AutoMirrored.Filled.InsertDriveFile,
+                    title = "Knowledge Base",
+                    subtitle = "Choose a document for this chat",
+                    enabled = true,
+                    onClick = onKnowledgeBaseSelect
                 )
             ).forEachIndexed { index, item ->
                 AttachmentInlineMenuItem(
