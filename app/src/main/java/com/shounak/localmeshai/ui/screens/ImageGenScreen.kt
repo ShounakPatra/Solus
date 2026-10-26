@@ -2193,6 +2193,16 @@ fun ImagePreviewModal(
     onDismiss: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val originalPreview = androidx.compose.runtime.produceState(bitmap, imagePath) {
+        val source = imagePath?.let(::File)?.takeIf { it.isFile }
+        if (source != null) {
+            value = withContext(Dispatchers.IO) {
+                val pixelBudget = (Runtime.getRuntime().maxMemory() / 8).coerceAtMost(64L * 1024L * 1024L)
+                val dimension = kotlin.math.sqrt(pixelBudget / 4.0).toInt().coerceIn(1024, 4096)
+                runCatching { loadBitmap(context, Uri.fromFile(source), dimension) }.getOrDefault(bitmap)
+            }
+        }
+    }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
@@ -2213,7 +2223,7 @@ fun ImagePreviewModal(
             contentAlignment = Alignment.Center
         ) {
             Image(
-                bitmap = bitmap.asImageBitmap(),
+                bitmap = originalPreview.value.asImageBitmap(),
                 contentDescription = "Full image preview",
                 modifier = Modifier
                     .fillMaxWidth(0.95f)
@@ -2388,7 +2398,7 @@ fun VisionChatBubble(
         presentation.segments
     }
     val showStreamingDots = presentation.showStreamingDots
-    val hasTopImage = resolvedBitmap != null && !resolvedBitmap.isRecycled
+    val hasTopImage = (resolvedBitmap != null && !resolvedBitmap.isRecycled) || !imagePath.isNullOrBlank()
     val hasTopAudio = isUser && !audioPath.isNullOrBlank()
     val hasTopDoc = isUser && !documentName.isNullOrBlank()
     val entryValue = entryProgress.value
@@ -2439,6 +2449,7 @@ fun VisionChatBubble(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .height(220.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .background(MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.5f))
                             .border(
@@ -2448,7 +2459,7 @@ fun VisionChatBubble(
                             )
                             .clickable { showFullImagePreview = true }
                     ) {
-                        Image(
+                        if (resolvedBitmap != null && !resolvedBitmap.isRecycled) Image(
                             bitmap = resolvedBitmap.asImageBitmap(),
                             contentDescription = if (isUser) "Query image. Tap to view full size" else "Generated image. Tap to view full size",
                             modifier = Modifier
