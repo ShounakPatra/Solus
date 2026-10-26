@@ -10,6 +10,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiteRtStreamAdapterTest {
+    @Test fun rawGemmaChannelsStreamWithoutLeakingReasoningIntoTheAnswer() {
+        for (thinking in listOf(true, false)) {
+            val deltas = mutableListOf<String>()
+            val adapter = LiteRtStreamAdapter("gemma", thinkingMode = thinking, onDelta = { deltas += it })
+            "<|channel>thought\nCareful reasoning<channel|>Hello".forEach {
+                adapter.onMessage(Message.model(it.toString()))
+                assertFalse(adapter.currentSnapshot().answerText.contains("Careful"))
+            }
+            adapter.onDone()
+            assertEquals("Careful reasoning", adapter.currentSnapshot().reasoningText)
+            assertEquals("Hello", adapter.currentSnapshot().answerText)
+            assertEquals(if (thinking) "<think>\nCareful reasoning\n</think>\n\nHello" else "Hello", deltas.joinToString(""))
+        }
+    }
+
 
     @Test
     fun verifiedPrefillSeparatesReasoningFromTheFirstTokenWithThinkingOnOrOff() {

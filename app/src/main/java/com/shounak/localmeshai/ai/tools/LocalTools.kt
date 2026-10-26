@@ -11,8 +11,7 @@ import org.json.JSONObject
 /** Snapshot tool availability at conversation creation, shared by text and vision. */
 internal object LocalTools {
     fun conversationConfig(base: com.google.ai.edge.litertlm.ConversationConfig?,
-        tools: List<com.google.ai.edge.litertlm.ToolProvider>) = com.google.ai.edge.litertlm.ConversationConfig(
-        initialMessages = base?.initialMessages.orEmpty(), extraContext = base?.extraContext.orEmpty(),
+        tools: List<com.google.ai.edge.litertlm.ToolProvider>) = (base ?: com.google.ai.edge.litertlm.ConversationConfig()).copy(
         tools = tools, automaticToolCalling = true
     )
 

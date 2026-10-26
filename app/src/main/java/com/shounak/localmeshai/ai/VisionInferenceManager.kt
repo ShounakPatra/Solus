@@ -952,12 +952,14 @@ class VisionInferenceManager(context: Context) {
      */
     private fun createLiteRtConversation(base: ConversationConfig?, prefillPreface: Boolean = false): Conversation {
         val createStart = TtftLog.now()
+        val configBase = LiteRtThinkingConfig.apply(base, liteRtConversationThinking,
+            configuredCapabilities?.capabilities?.thinkingControl == ThinkingControlStrategy.QwenSoftSwitch)
         seededMemoryPrefix = null
         val engine = checkNotNull(liteRtEngine)
         val settings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
         if (conversationToolSettings?.requiresRefresh(settings) == true) toolsDisabledForLoad = false
         conversationToolSettings = settings
-        conversationBaseConfig = base
+        conversationBaseConfig = configBase
         completedLiteRtTurns = 0
         conversationHasTools = false
         conversationToolChars = 0
@@ -969,7 +971,7 @@ class VisionInferenceManager(context: Context) {
                     .forConversation(context, settings = settings, documentIds = { documentSearchDocumentIds }) { stopRequested || isBeingClosed }
                 val providers = tools.map { com.google.ai.edge.litertlm.tool(toolRecorder.recording(it)) }
                 if (providers.isNotEmpty()) {
-                    val config = com.shounak.localmeshai.ai.tools.LocalTools.conversationConfig(base, providers)
+                    val config = com.shounak.localmeshai.ai.tools.LocalTools.conversationConfig(configBase, providers)
                     val toolChars = tools.sumOf { it.getToolDescriptionJsonString().length }
                     val prefilled = prefillPreface
                     return createConversationWithOptionalPrefill(engine, config, prefilled).also {
@@ -987,7 +989,7 @@ class VisionInferenceManager(context: Context) {
                 Log.w(TAG, "Vision tools unavailable; using ordinary conversation", failure)
             }
         }
-        return (if (base != null) engine.createConversation(base) else engine.createConversation()).also {
+        return engine.createConversation(configBase).also {
             TtftLog.d("vision conversation.create ms=${TtftLog.elapsedMs(createStart)} tools=0 " +
                 "history=${base?.initialMessages?.size ?: 0} thinking=$liteRtConversationThinking prefillPreface=false")
         }
@@ -1368,6 +1370,7 @@ class VisionInferenceManager(context: Context) {
                 onDelta = { delta ->
                     if (delta.isNotEmpty()) textSeen.set(true)
                     if (stopRequested) return@LiteRtStreamAdapter
+                    if (delta.isNotEmpty()) onProgress?.invoke(RequestProgress.Generating)
                     if (!firstChunkRecorded && delta.isNotEmpty()) {
                         firstChunkRecorded = true
                         timing?.recordFirstToken()

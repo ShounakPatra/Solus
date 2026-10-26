@@ -203,7 +203,8 @@ class LiteRtStreamAdapter(
         val text = if (isCompleted.get()) raw else ThinkingTextUtils.holdIncompleteTag(raw)
         // A legacy template may already supply the opening tag. Native channels take
         // precedence, and an explicitly generated opening tag must not add a second depth.
-        val prefill = startsInReasoning && reasoningBuffer.isEmpty() && !LEADING_REASONING_TAG.containsMatchIn(text)
+        val prefill = startsInReasoning && reasoningBuffer.isEmpty() &&
+            !LEADING_REASONING_TAG.containsMatchIn(text) && !text.trimStart().startsWith("<|channel>thought\n")
         return ThinkingTextUtils.parse(if (prefill) "<think>$text" else text, allowActiveThinking = true)
     }
 
