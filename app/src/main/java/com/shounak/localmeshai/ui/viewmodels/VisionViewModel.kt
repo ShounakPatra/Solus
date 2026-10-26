@@ -2735,8 +2735,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 currentRequestedIdentity = null
                 currentLoadedIdentity = null
                 currentResolvedThinkingCapability = ThinkingCapability.Unknown
-                    if (pendingClearSelection) {
-                        pendingClearSelection = false
+                if (pendingClearSelection) {
+                    pendingClearSelection = false
                     currentModelPath = null
                     currentBundle = null
                     currentModelId = ""
