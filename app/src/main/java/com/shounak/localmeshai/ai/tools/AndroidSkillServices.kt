@@ -53,7 +53,7 @@ internal class AndroidSkillServices(private val context: Context, private val ca
         }
         return JSONObject().put("date", date.toString()).put("timezone", zone.id).put("events", result).put("limit", 30).toString()
     }
-    override fun wikipedia(topic: String): String = WikipediaLookup.lookup(topic, WikipediaLookup.client)
+    override fun wikipedia(topic: String): String = ApprovedWikipediaLookups.request(topic)
 }
 
 internal fun boundedSkillText(text: String, max: Int): String {

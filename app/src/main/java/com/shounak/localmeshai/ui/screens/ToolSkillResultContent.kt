@@ -29,7 +29,7 @@ import org.json.JSONObject
 internal fun ToolSkillResultContent(use: ToolUse) {
     val data = remember(use) { runCatching { JSONObject(use.result) }.getOrNull() } ?: return
     val kind = data.optString("solus_tool_action")
-    val expected = when (use.name) { "send_email" -> "email"; "create_calendar_event" -> "calendar"; "interactive_map" -> "map"; "schedule_notification" -> "reminder"; "mood_tracker" -> "delete_mood"; else -> "" }
+    val expected = when (use.name) { "send_email" -> "email"; "create_calendar_event" -> "calendar"; "interactive_map" -> "map"; "schedule_notification" -> "reminder"; "mood_tracker" -> if (kind == "save_mood") "save_mood" else "delete_mood"; "query_wikipedia" -> "wikipedia"; else -> "" }
     if (expected.isNotEmpty() && kind == expected) SkillActionButton(kind, data)
     val media = data.optString("solus_skill_media")
     if ((use.name == "qr_code" && media == "qr_code") || (use.name == "learn_something_new" && media == "learning_card")) {
@@ -65,6 +65,35 @@ internal fun SkillActionButton(kind: String, data: JSONObject, onDone: () -> Uni
     var status by remember(data.toString()) { mutableStateOf<String?>(null) }
     var busy by remember(data.toString()) { mutableStateOf(false) }
     var confirmDeletion by remember(data.toString()) { mutableStateOf(false) }
+    var confirmAction by remember(data.toString()) { mutableStateOf(false) }
+    if (confirmAction) AlertDialog(
+        onDismissRequest = { confirmAction = false },
+        title = { Text(if (kind == "wikipedia") "Send query to Wikipedia?" else "Save mood log?") },
+        text = { Text(if (kind == "wikipedia") "This exact query will be sent to en.wikipedia.org:\n\n${data.optString("topic")}" else
+            "${data.optString("date")}: ${data.optString("mood")}\n\n${data.optString("comment")}") },
+        confirmButton = { TextButton(onClick = {
+            confirmAction = false
+            busy = true
+            scope.launch {
+                status = withContext(Dispatchers.IO) {
+                    runCatching {
+                        if (kind == "wikipedia") {
+                            ApprovedWikipediaLookups.approve(SkillCatalog.text(data, "topic", 300)) {
+                                WikipediaLookup.lookup(it, WikipediaLookup.client)
+                            }
+                            "Search complete. Ask the model to continue with the approved result."
+                        } else {
+                            ToolSkillStore.get(context).mood(data)
+                            "Mood log saved."
+                        }
+                    }.getOrElse { it.message ?: "Could not complete the action" }
+                }
+                busy = false
+                onDone()
+            }
+        }) { Text(if (kind == "wikipedia") "Send query" else "Save") } },
+        dismissButton = { TextButton(onClick = { confirmAction = false }) { Text("Cancel") } }
+    )
     if (confirmDeletion) AlertDialog(onDismissRequest = { confirmDeletion = false },
         title = { Text("Delete mood log?") }, text = { Text("Delete the mood log for ${data.optString("date")}? This cannot be undone.") },
         confirmButton = { TextButton(onClick = {
@@ -92,7 +121,9 @@ internal fun SkillActionButton(kind: String, data: JSONObject, onDone: () -> Uni
     }
     OutlinedButton(enabled = !busy, onClick = {
         try {
-            if (kind == "delete_mood") {
+            if (kind == "wikipedia" || kind == "save_mood") {
+                confirmAction = true
+            } else if (kind == "delete_mood") {
                 confirmDeletion = true
             } else if (kind == "reminder") {
                 if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
@@ -119,7 +150,7 @@ internal fun SkillActionButton(kind: String, data: JSONObject, onDone: () -> Uni
             }
         } catch (failure: Exception) { status = failure.message ?: "No app is available for this action." }
     }) {
-        Text(when (kind) { "calendar" -> "Review calendar event"; "email" -> "Review email"; "map" -> "Open interactive map"; "reminder" -> "Confirm reminder"; "delete_mood" -> "Review mood deletion"; else -> "Review" })
+        Text(when (kind) { "calendar" -> "Review calendar event"; "email" -> "Review email"; "map" -> "Open interactive map"; "reminder" -> "Confirm reminder"; "delete_mood" -> "Review mood deletion"; "save_mood" -> "Review mood log"; "wikipedia" -> "Review Wikipedia query"; else -> "Review" })
     }
     status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 }

@@ -7,6 +7,16 @@ import org.junit.Test
 import java.time.LocalDate
 
 class SkillCatalogTest {
+    @Test fun modelGeneratedMoodWritesRequireUserReview() {
+        val noWrites = object : SkillServices by services {
+            override fun mood(arguments: JSONObject): String = error("Model cannot commit a mood write")
+        }
+        val tool = SkillCatalog.builtins.single { it.id == "mood_tracker" }.tool(noWrites)
+        val result = JSONObject(tool.execute("""{"operation":"log","mood":"Calm","comment":"User must review this"}"""))
+        assertEquals("save_mood", result.getString("solus_tool_action"))
+        assertEquals("requires_user_action", result.getString("status"))
+    }
+
     private val services = object : SkillServices {
         override fun calendar(date: LocalDate) = JSONObject().put("date", date.toString()).put("events", JSONArray()).toString()
         override fun mood(arguments: JSONObject) = JSONObject().put("operation", arguments.getString("operation")).toString()
