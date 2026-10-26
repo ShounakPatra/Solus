@@ -16,6 +16,7 @@ Chat, write, code and explore documents with AI models running on your Android p
 
 [![Android CI](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg)](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml)
 ![Version 6.0.5](https://img.shields.io/badge/version-6.0.5-0EA5E9)
+![APK size 50.60 MB](https://img.shields.io/badge/APK-50.60%20MB-22C55E)
 ![Android 11 or newer](https://img.shields.io/badge/Android-11%2B-3DDC84)
 ![ARM64](https://img.shields.io/badge/ABI-arm64--v8a-22C55E)
 ![Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-A970FF)
