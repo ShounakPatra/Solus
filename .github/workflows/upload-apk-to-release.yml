@@ -30,6 +30,11 @@ concurrency:
 jobs:
   upload:
     if: github.ref == 'refs/heads/main'
+    # Signing keys must only reach a run a maintainer approved. Configure the "release"
+    # environment with required reviewers and a main-only deployment branch rule, and store
+    # the ANDROID_* signing secrets as environment secrets (not repository secrets).
+    environment:
+      name: release
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -42,7 +47,7 @@ jobs:
       APK_KIND: ${{ inputs.kind }}
     steps:
       - name: Check out workflow tools
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.sha }}

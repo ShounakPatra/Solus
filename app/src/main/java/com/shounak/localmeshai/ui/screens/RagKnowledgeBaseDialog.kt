@@ -65,6 +65,7 @@ fun RagKnowledgeBaseDialog(
     var showClearConfirmation by remember { mutableStateOf(false) }
     var docToDelete by remember { mutableStateOf<RagDocumentSummary?>(null) }
     var showSettingsSection by remember { mutableStateOf(false) }
+    val indexNeedsRecovery by ragManager.indexNeedsRecovery.collectAsState()
 
     fun refresh() {
         documents = ragManager.indexedDocuments
@@ -358,13 +359,14 @@ fun RagKnowledgeBaseDialog(
                                 tint = colors.onSurfaceVariant.copy(alpha = 0.40f)
                             )
                             Text(
-                                text = "No documents indexed",
+                                text = if (indexNeedsRecovery) "Document index needs recovery" else "No documents indexed",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
-                                color = colors.onSurfaceVariant
+                                color = if (indexNeedsRecovery) colors.error else colors.onSurfaceVariant
                             )
                             Text(
-                                text = "Index PDFs, DOCX, TXT, or notes to give chat models\naccurate context grounded in your files.",
+                                text = if (indexNeedsRecovery) RagManager.INDEX_RECOVERY_MESSAGE
+                                    else "Index PDFs, DOCX, TXT, or notes to give chat models\naccurate context grounded in your files.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.onSurfaceVariant.copy(alpha = 0.75f),
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -520,10 +522,13 @@ fun RagKnowledgeBaseDialog(
                         docToDelete = null
                         scope.launch {
                             try {
-                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                val removal = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                     ragManager.removeDocument(doc.documentId)
                                 }
                                 refresh()
+                                if (!removal.success) {
+                                    Toast.makeText(context, removal.message ?: "Could not change documents", Toast.LENGTH_LONG).show()
+                                }
                             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                                 throw cancelled
                             } catch (error: Exception) {
@@ -578,10 +583,13 @@ fun RagKnowledgeBaseDialog(
                     onClick = {
                         scope.launch {
                             try {
-                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                val removal = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                     ragManager.clearKnowledgeBase()
                                 }
                                 refresh()
+                                if (!removal.success) {
+                                    Toast.makeText(context, removal.message ?: "Could not change documents", Toast.LENGTH_LONG).show()
+                                }
                             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                                 throw cancelled
                             } catch (error: Exception) {

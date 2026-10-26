@@ -518,11 +518,12 @@ class ChatInferenceManager(context: Context) {
         val resolvedModelPath = effectiveFile.absolutePath
 
         if (shouldUseLiteRtLmConversation) {
+            var blockedAutoLoad = false
             val inferenceBackend = when (pref) {
                 "CPU" -> InferenceBackend.LITERT_CPU
                 "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
                 else -> if (InitCrashGuard.isModelBlocked(context, effectiveId)) {
-                    RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, effectiveFile.absolutePath, configuredContextWindow)
+                    blockedAutoLoad = true
                     InferenceBackend.LITERT_CPU
                 }
                     else RuntimeSpeedTuner.liteRtBackend(context, effectiveId, effectiveFile.absolutePath, configuredContextWindow)
@@ -536,6 +537,10 @@ class ChatInferenceManager(context: Context) {
             )
             if (InitCrashGuard.isModelBlocked(context, effectiveId) && (!allowUnsafeOverride || !InitCrashGuard.isRetryAuthorized(context, effectiveId))) {
                 throw IllegalStateException(InitCrashGuard.blockedModelMessage())
+            }
+            // Only an authorised Try Anyway reaches here; keep the GPU tune unless the recorded crash was a GPU attempt.
+            if (blockedAutoLoad && InitCrashGuard.blockedCrashMayHaveUsedGpu(context, effectiveId)) {
+                RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, effectiveFile.absolutePath)
             }
             if (!allowUnsafeOverride && inferenceBackend != InferenceBackend.LITERT_CPU) {
                 val (allowed, reason) = DeviceUtils.canInitializeLiteRtLm(
@@ -560,7 +565,7 @@ class ChatInferenceManager(context: Context) {
             } catch (failure: Exception) {
                 if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
                     pref != "AUTO" || inferenceBackend != InferenceBackend.LITERT_GPU) throw failure
-                RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, resolvedModelPath, configuredContextWindow)
+                RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, resolvedModelPath)
                 liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
                 liteRtCacheDir = null
                 loadedBackend = InferenceBackend.LITERT_CPU
@@ -603,7 +608,8 @@ class ChatInferenceManager(context: Context) {
         onWarmupStart: () -> Unit = {}
     ) {
         // Mark that we're about to attempt a potentially fatal native init
-        InitCrashGuard.markInitStarted(context, modelId)
+        InitCrashGuard.markInitStarted(context, modelId,
+            if (inferenceBackend == InferenceBackend.LITERT_GPU) InitCrashGuard.BACKEND_GPU else InitCrashGuard.BACKEND_CPU)
 
         // This call may invoke native abort() and kill the entire process.
         // If that happens, InitCrashGuard.checkAndRecoverCrash() on next
@@ -1013,7 +1019,9 @@ class ChatInferenceManager(context: Context) {
             publisher?.beginAttempt(2)
             val previousConversation = liteRtConversation
             liteRtConversation = null
-            previousConversation?.close()
+            runCatching { previousConversation?.close() }.onFailure { t ->
+                Log.w(TAG, "LiteRT-LM conversation close before tool retry failed", t)
+            }
             liteRtConversation = createLiteRtConversation(liteRtConversationMode)
             toolsAlreadyUsed.forEach(liteRtToolRecorder::add)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()

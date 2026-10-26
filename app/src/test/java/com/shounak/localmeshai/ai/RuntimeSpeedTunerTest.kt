@@ -1,5 +1,6 @@
 package com.shounak.localmeshai.ai
 
+import com.shounak.localmeshai.utils.InferenceBackend
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -43,5 +44,33 @@ class RuntimeSpeedTunerTest {
         assertFalse(RuntimeSpeedTuner.qualifiesGpu(100.0, 80.0, cpu, listOf("Hello", "5", "Blue")))
         assertFalse(RuntimeSpeedTuner.qualifiesGpu(100.0, 80.0, emptyList(), emptyList()))
         assertFalse(RuntimeSpeedTuner.qualifiesGpu(100.0, Double.NaN, cpu, cpu))
+    }
+    @Test fun gpuFailureVetoesEveryReceiptForTheFileRegardlessOfContextOrThreads() {
+        val folder = java.nio.file.Files.createTempDirectory("speed-veto").toFile()
+        try {
+            val model = java.io.File(folder, "m.litertlm").apply { writeText("model") }
+            val prefs = com.shounak.localmeshai.features.FeatureTestPreferences()
+            val context = object : android.content.ContextWrapper(null) {
+                override fun getSharedPreferences(name: String, mode: Int): android.content.SharedPreferences = prefs
+                override fun getApplicationContext(): android.content.Context = this
+                override fun getSystemService(name: String): Any? = null
+            }
+            val threads = RuntimeExecutionPolicy.resolve(context, "m").cpuThreads
+            // Tuned GPU receipts at both the requested and a fallback context, and for other thread counts.
+            for (tokens in listOf(2048, 4096)) for (t in setOf(threads, 2, 4, 6)) {
+                prefs.edit().putString("litert_${RuntimeSpeedTuner.key("m", model, tokens, t)}", "GPU").commit()
+            }
+            assertEquals(InferenceBackend.LITERT_GPU, RuntimeSpeedTuner.liteRtBackend(context, "m", model.path, 4096))
+            RuntimeSpeedTuner.recordGpuFailure(context, "m", model.path)
+            assertEquals(InferenceBackend.LITERT_CPU, RuntimeSpeedTuner.liteRtBackend(context, "m", model.path, 4096))
+            assertEquals(InferenceBackend.LITERT_CPU, RuntimeSpeedTuner.liteRtBackend(context, "m", model.path, 2048))
+        } finally { folder.deleteRecursively() }
+    }
+    @Test fun backendSelectionNeedsAGpuReceiptAndNoVetoOrProbeCrash() {
+        assertEquals(InferenceBackend.LITERT_GPU, RuntimeSpeedTuner.selectLiteRtBackend("GPU", gpuVetoed = false, gpuProbeBlocked = false))
+        assertEquals(InferenceBackend.LITERT_CPU, RuntimeSpeedTuner.selectLiteRtBackend("GPU", gpuVetoed = true, gpuProbeBlocked = false))
+        assertEquals(InferenceBackend.LITERT_CPU, RuntimeSpeedTuner.selectLiteRtBackend("GPU", gpuVetoed = false, gpuProbeBlocked = true))
+        assertEquals(InferenceBackend.LITERT_CPU, RuntimeSpeedTuner.selectLiteRtBackend("CPU", gpuVetoed = false, gpuProbeBlocked = false))
+        assertEquals(InferenceBackend.LITERT_CPU, RuntimeSpeedTuner.selectLiteRtBackend(null, gpuVetoed = false, gpuProbeBlocked = false))
     }
 }

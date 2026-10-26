@@ -18,12 +18,51 @@ internal class RagOriginalStore(private val root: File) {
     @Synchronized fun find(id: String): File? = directory(id).listFiles()
         ?.firstOrNull { it.isFile && !it.name.startsWith(".pending_") }
 
+    private fun safeName(name: String): String = name.replace('\\', '/').substringAfterLast('/').take(180)
+        .replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").takeUnless { it.isBlank() || it == "." || it == ".." }
+        ?: "document.bin"
+
+    /**
+     * The retained original of [id] when it already holds exactly the bytes of [source] under
+     * [name], so the caller can skip a redundant copy. Reads only; an atomic [save] running
+     * concurrently replaces the file by rename, so a comparison never sees a partial file.
+     */
+    fun findIdentical(id: String, name: String, source: File, checkActive: () -> Unit = {}): File? {
+        val existing = find(id) ?: return null
+        if (existing.name != safeName(name) || !source.isFile || existing.length() != source.length()) return null
+        return existing.takeIf { sameBytes(it, source, checkActive) }
+    }
+
+    private fun sameBytes(first: File, second: File, checkActive: () -> Unit): Boolean {
+        first.inputStream().use { left ->
+            second.inputStream().use { right ->
+                val a = ByteArray(8192)
+                val b = ByteArray(8192)
+                var count: Int
+                do {
+                    checkActive()
+                    count = left.readBlock(a)
+                    if (right.readBlock(b) != count) return false
+                    for (i in 0 until count) if (a[i] != b[i]) return false
+                } while (count > 0)
+            }
+        }
+        return true
+    }
+
+    private fun InputStream.readBlock(buffer: ByteArray): Int {
+        var total = 0
+        while (total < buffer.size) {
+            val count = read(buffer, total, buffer.size - total)
+            if (count < 0) break
+            total += count
+        }
+        return total
+    }
+
     @Synchronized fun save(id: String, name: String, input: InputStream, checkActive: () -> Unit = {}): File {
         val dir = directory(id).apply { check(mkdirs() || isDirectory) { "Could not retain uploaded file" } }
-        val safeName = name.replace('\\', '/').substringAfterLast('/').take(180)
-            .replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").takeUnless { it.isBlank() || it == "." || it == ".." }
-            ?: "document.bin"
-        val target = File(dir, safeName)
+        val target = File(dir, safeName(name))
         val pending = File(dir, ".pending_${UUID.randomUUID()}")
         try {
             pending.outputStream().use { output ->

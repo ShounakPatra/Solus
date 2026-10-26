@@ -1582,7 +1582,7 @@ private fun DeviceHardwareCard(hazeState: HazeState) {
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     Text(
-                        text = String.format(Locale.US, "%.2f GB free", ramInfo.availableGb),
+                        text = String.format(Locale.US, "%.2f GiB free", ramInfo.availableGb),
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
@@ -1611,7 +1611,7 @@ private fun DeviceHardwareCard(hazeState: HazeState) {
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "Available: ${String.format(Locale.US, "%.2f", ramInfo.availableGb)} GB / Total: ${String.format(Locale.US, "%.1f", ramInfo.totalGb)} GB",
+                        text = "Available: ${String.format(Locale.US, "%.2f", ramInfo.availableGb)} GiB / Total: ${String.format(Locale.US, "%.1f", ramInfo.totalGb)} GiB",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3195,7 +3195,7 @@ private const val UrlAnnotationTag = "URL"
 
 private fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "--"
-    val units = arrayOf("B", "KB", "MB", "GB")
+    val units = arrayOf("B", "KiB", "MiB", "GiB")
     var value = bytes.toDouble()
     var unitIndex = 0
     while (value >= 1024.0 && unitIndex < units.lastIndex) {

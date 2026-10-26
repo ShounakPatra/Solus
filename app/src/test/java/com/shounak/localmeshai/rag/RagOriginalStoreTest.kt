@@ -37,6 +37,23 @@ class RagOriginalStoreTest {
         assertEquals(listOf(previous), root.walkTopDown().filter { it.isFile }.toList())
     }
 
+    @Test fun identicalOriginalIsFoundWithoutCopyingAndDifferentFilesAreNot() {
+        val root = temporary.newFolder()
+        val store = RagOriginalStore(root)
+        val bytes = ByteArray(20_000) { (it % 251).toByte() }
+        val saved = store.save("doc", "report.pdf", bytes.inputStream())
+        val modified = saved.lastModified()
+        val same = temporary.newFile("same.pdf").apply { writeBytes(bytes) }
+        assertEquals(saved, store.findIdentical("doc", "report.pdf", same))
+        assertEquals(modified, store.find("doc")!!.lastModified())
+        val changed = temporary.newFile("changed.pdf").apply { writeBytes(bytes.copyOf().also { it[19_999] = 7 }) }
+        assertNull(store.findIdentical("doc", "report.pdf", changed))
+        val shorter = temporary.newFile("shorter.pdf").apply { writeBytes(bytes.copyOf(19_000)) }
+        assertNull(store.findIdentical("doc", "report.pdf", shorter))
+        assertNull("A different upload name is a different original", store.findIdentical("doc", "other.pdf", same))
+        assertNull(store.findIdentical("missing", "report.pdf", same))
+    }
+
     @Test fun uploadedNameCannotEscapeItsOwnedDirectory() {
         val root = temporary.newFolder()
         val store = RagOriginalStore(root)

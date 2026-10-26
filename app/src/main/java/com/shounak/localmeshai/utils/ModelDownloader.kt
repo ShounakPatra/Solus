@@ -537,7 +537,16 @@ open class ModelDownloader(
         }
 
         var existingBytes = if (stagingFile.exists()) stagingFile.length() else 0L
-        val savedMeta = DownloadResumeMetadata.loadFor(stagingFile)
+        val loadedMeta = DownloadResumeMetadata.loadFor(stagingFile)
+        // These exact bytes already failed to publish; download them again rather than
+        // re-running the same failing publish on every Resume.
+        val republishExhausted = loadedMeta?.isCompleted == true && loadedMeta.publishFailures >= MAX_PUBLISH_ATTEMPTS
+        if (republishExhausted) {
+            stagingFile.delete()
+            DownloadResumeMetadata.deleteFor(stagingFile)
+            existingBytes = 0L
+        }
+        val savedMeta = loadedMeta.takeUnless { republishExhausted }
         if (savedMeta?.isCompleted == true && existingBytes > 0 && savedMeta.lastDownloadedBytes == existingBytes &&
             savedMeta.expectedTotalBytes == existingBytes && savedMeta.normalizedUrl == normalizedUrl &&
             savedMeta.packageType == packageType && savedMeta.expectedSha256?.trim()?.lowercase() == expectedSha256?.trim()?.lowercase() &&
@@ -871,18 +880,39 @@ open class ModelDownloader(
             )
         }
 
-        val published = publishCompletedDownload(
-            stagingFile = stagingFile,
-            url = url,
-            modelId = modelId,
-            fileName = fileName,
-            packageType = packageType,
-            expectedSha256 = expectedSha256,
-            downloaded = downloaded
-        )
+        val published = try {
+            publishCompletedDownload(
+                stagingFile = stagingFile,
+                url = url,
+                modelId = modelId,
+                fileName = fileName,
+                packageType = packageType,
+                expectedSha256 = expectedSha256,
+                downloaded = downloaded
+            )
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            // Pause or cancel during publication is not a failure of the downloaded bytes.
+            throw cancelled
+        } catch (failure: Exception) {
+            recordPublishFailure(stagingFile)
+            throw failure
+        }
         DownloadResumeMetadata.deleteFor(stagingFile)
         return published
     }
+
+    /** Counts a failed publish of a completed file that was kept for Resume; see [MAX_PUBLISH_ATTEMPTS]. */
+    private fun recordPublishFailure(stagingFile: File) {
+        if (!stagingFile.isFile) return
+        val meta = DownloadResumeMetadata.loadFor(stagingFile)?.takeIf { it.isCompleted } ?: return
+        DownloadResumeMetadata.saveFor(stagingFile, meta.copy(
+            publishFailures = meta.publishFailures + 1,
+            updatedAt = System.currentTimeMillis()
+        ))
+    }
+
+    /** Thrown when the downloaded archive itself can never be extracted; retrying the same bytes is pointless. */
+    private class UnextractableArchiveException(message: String, cause: Throwable? = null) : IOException(message, cause)
 
     private suspend fun publishCompletedDownload(
         stagingFile: File,
@@ -944,8 +974,24 @@ open class ModelDownloader(
                 val stagingExtractionDir = artifactStorage.getStagingDir(modelId).resolve("extracted")
                 stagingExtractionDir.deleteRecursively()
                 stagingExtractionDir.mkdirs()
-                unzipModel(stagingFile, stagingExtractionDir, isCancelled = isCancelled)
-                val extracted = resolveExtractedModelDirectory(stagingExtractionDir)
+                val extracted = try {
+                    unzipModel(stagingFile, stagingExtractionDir, isCancelled = isCancelled)
+                    resolveExtractedModelDirectory(stagingExtractionDir)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (invalid: Exception) {
+                    val reason = when (invalid) {
+                        is UnextractableArchiveException -> invalid.message
+                        // Corrupt or truncated archive data is a property of these bytes.
+                        is java.util.zip.ZipException, is java.io.EOFException -> "the archive is damaged (${invalid.message ?: invalid.javaClass.simpleName})"
+                        else -> null
+                    } ?: throw invalid
+                    // Same as a checksum mismatch: discard, so the next attempt downloads fresh bytes.
+                    stagingExtractionDir.deleteRecursively()
+                    stagingFile.delete()
+                    DownloadResumeMetadata.deleteFor(stagingFile)
+                    throw UnextractableArchiveException("Could not extract the downloaded model: $reason. The download was removed; download the model again.", invalid)
+                }
                 val isTextModel = fileName.endsWith(".task", ignoreCase = true) ||
                     fileName.endsWith(".litertlm", ignoreCase = true) ||
                     fileName.endsWith(".gguf", ignoreCase = true) ||
@@ -989,7 +1035,7 @@ open class ModelDownloader(
                 val safeName = entry.name.replace('\\', '/')
                 val outputFile = File(canonicalTarget, safeName).canonicalFile
                 if (!outputFile.path.startsWith(canonicalTarget.path + File.separator)) {
-                    throw IOException("Blocked unsafe ZIP entry path traversal: ${entry.name}")
+                    throw UnextractableArchiveException("Blocked unsafe ZIP entry path traversal: ${entry.name}")
                 }
 
                 if (entry.isDirectory) {
@@ -1006,7 +1052,7 @@ open class ModelDownloader(
                             if (read == -1) break
                             totalUncompressedBytes += read
                             if (totalUncompressedBytes > maxAllowedBytes) {
-                                throw IOException("ZIP archive uncompressed size exceeds maximum safety limit (16 GiB). Download aborted.")
+                                throw UnextractableArchiveException("ZIP archive uncompressed size exceeds maximum safety limit (16 GiB). Download aborted.")
                             }
                             output.write(buffer, 0, read)
                         }
@@ -1028,7 +1074,7 @@ open class ModelDownloader(
         val resolved = if (files.isEmpty() && directories.size == 1) directories.first() else root
         val canonicalResolved = resolved.canonicalFile
         if (!canonicalResolved.path.startsWith(canonicalRoot.path)) {
-            throw IOException("Extracted model directory path traversal detected.")
+            throw UnextractableArchiveException("Extracted model directory path traversal detected.")
         }
         return canonicalResolved
     }
@@ -1099,6 +1145,8 @@ open class ModelDownloader(
         private const val PROGRESS_EMIT_INTERVAL_MS = 250L
         private const val SPEED_SAMPLE_INTERVAL_MS = 500L
         private const val MAX_DOWNLOAD_RETRIES = 5
+        /** Failed publishes of one completed file before Resume downloads it again (one retry for a transient disk error). */
+        internal const val MAX_PUBLISH_ATTEMPTS = 2
         private const val RETRY_BASE_DELAY_MS = 1_500L
 
         fun defaultStorage(context: Context?): ModelArtifactStorage {
