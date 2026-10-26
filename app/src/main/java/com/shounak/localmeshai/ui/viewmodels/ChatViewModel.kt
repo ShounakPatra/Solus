@@ -129,7 +129,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun editAndRegenerate(userMessageId: String, replacement: String? = null) {
         if (generationJob?.isActive == true || _isInitializing.value) return
         if (_isGenerating.value || _isStopping.value || _isDeletingHistory.value) return
-        val sessionId = _currentSessionId.value ?: return
+        val sessionId = _currentSessionId.value ?: _pendingSessionId.value ?: return
         val index = messages.indexOfFirst { it.isUser && it.id == userMessageId }
         if (index < 0 || replacement != null && replacement.isBlank()) return
         if (currentModelPath == null) { _error.value = "Choose a model before editing this conversation."; return }
@@ -268,6 +268,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (_currentSessionId.value != sessionId) {
             selectChatSession(sessionId)
         }
+        if (_pendingSessionId.value == sessionId) {
+            _currentSessionId.value = sessionId
+            _pendingSessionId.value = null
+        }
+        if (_currentSessionId.value != sessionId) return
 
         val docPath = userMsg.documentPath
         if (!docPath.isNullOrBlank()) {
@@ -363,7 +368,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun retryLastFailedMessage() {
-        val sId = _currentSessionId.value ?: return
+        val sId = _currentSessionId.value ?: _pendingSessionId.value ?: return
         val failedAssistant = messages.lastOrNull { !it.isUser && (it.terminalStatus == RequestTerminalStatus.Failed || it.errorMessage != null) } ?: return
         val userMsgId = failedAssistant.userMessageId ?: messages.takeWhile { it.id != failedAssistant.id }.lastOrNull { it.isUser }?.id ?: return
         retryMessage(sId, userMsgId)
@@ -372,6 +377,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val automaticModelSelection = com.shounak.localmeshai.ui.models.AutomaticModelSelection()
     private val ioMutex = Mutex()
     private var releaseJob: Job? = null
+    private var pendingClearSelection = false
     private val documentPreparation = DocumentPreparation(application, viewModelScope)
 
     val modelLoadController = ModelLoadController()
@@ -488,7 +494,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         ) {
-            releaseModel(clearCoordinator = false)
+            withContext(Dispatchers.Main.immediate) { releaseModel(clearCoordinator = false) }
             val joinOk = withTimeoutOrNull(10_000L) {
                 releaseJob?.join()
                 true
@@ -790,6 +796,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentSupportsThinkingMode = supportsThinkingMode
         currentAllowUnsafeOverride = allowUnsafeOverride
         currentRequestedIdentity = identity
+        pendingClearSelection = false
 
         if (_isGenerating.value) stopGenerating()
         currentModelEpoch++
@@ -2074,6 +2081,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         initJob?.cancel()
         initJob = null
         if (jobToCancel != null && jobToCancel.isActive) {
+        pendingClearSelection = pendingClearSelection || clearSelection
             _isStopping.value = true
         }
 
@@ -2107,7 +2115,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     currentRequestedIdentity = null
                     currentLoadedIdentity = null
                     currentResolvedThinkingCapability = ThinkingCapability.Unknown
-                    if (clearSelection) {
+                    if (pendingClearSelection) {
+                        pendingClearSelection = false
                         currentModelPath = null
                         currentBundle = null
                         currentModelId = ""

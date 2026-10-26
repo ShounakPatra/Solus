@@ -446,6 +446,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
     fun stageDocumentAttachment(uri: Uri, name: String) = documentPreparation.stage(uri, name)
     fun cancelStagedDocument() = documentPreparation.cancel()
+    private var pendingClearSelection = false
 
 
     fun resetAutoUnloadTimer() {
@@ -493,7 +494,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 inferenceManager.cancelGeneration()
             }
         ) {
-            releaseModel(clearCoordinator = false)
+            withContext(Dispatchers.Main.immediate) { releaseModel(clearCoordinator = false) }
             val joinOk = withTimeoutOrNull(10_000L) {
                 releaseJob?.join()
                 true
@@ -705,6 +706,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         currentSupportsAudioInput = supportsAudioInput
         currentSupportsThinkingMode = supportsThinkingMode
         currentAllowUnsafeOverride = allowUnsafeOverride
+        pendingClearSelection = false
         currentRequestedIdentity = identity
 
         if (_isAnalyzing.value) stopAnalyzing()
@@ -1953,12 +1955,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         ?: (if (index == 0 && !session.audioPath.isNullOrBlank() && File(session.audioPath).exists()) session.audioPath else null)
                 }
 
-                val resolvedImagePath = if (!msg.isUser) null else if (!msg.imagePath.isNullOrBlank() && File(msg.imagePath).exists()) {
+                val resolvedImagePath = if (!msg.imagePath.isNullOrBlank() && File(msg.imagePath).exists()) {
                     msg.imagePath
-                } else if (index == 0 && !session.imagePath.isNullOrBlank() && File(session.imagePath).exists()) {
+                } else if (msg.isUser && index == 0 && !session.imagePath.isNullOrBlank() && File(session.imagePath).exists()) {
                     session.imagePath
                 } else {
-                    defaultSessionImagePath
+                    defaultSessionImagePath.takeIf { msg.isUser }
                 }
 
                 messages.add(
@@ -2680,6 +2682,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         analysisGeneration++
         initJob?.cancel()
         initJob = null
+        pendingClearSelection = pendingClearSelection || clearSelection
         if (jobToCancel != null && jobToCancel.isActive) {
             _isStopping.value = true
         }
@@ -2719,7 +2722,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 currentRequestedIdentity = null
                 currentLoadedIdentity = null
                 currentResolvedThinkingCapability = ThinkingCapability.Unknown
-                if (clearSelection) {
+                    if (pendingClearSelection) {
+                        pendingClearSelection = false
                     currentModelPath = null
                     currentBundle = null
                     currentModelId = ""

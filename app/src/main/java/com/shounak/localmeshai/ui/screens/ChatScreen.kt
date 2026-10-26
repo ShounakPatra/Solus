@@ -1939,8 +1939,8 @@ fun ChatScreen(
                                 canThink = isCurrentModelReady && runtimeSnapshot != null && selectedSupportsThinking && !isCurrentModelResponding,
                                 supportsAttachments = selectedModelPath != null,
                                 hasAttachment = hasVisionAttachment,
-                                supportsVision = runtimeSnapshot?.capabilities?.supportsVision == true,
-                                supportsAudioInput = selectedSupportsAudio,
+                                supportsVision = effectiveSupportsAttachments && runtimeSnapshot?.capabilities?.supportsVision == true,
+                                supportsAudioInput = effectiveSupportsAttachments && selectedSupportsAudio,
                                 visionDisabledReason = when {
                                     selectedModel == null -> "Select a model"
                                     !isCurrentModelReady -> "Initialize the model to use images"
@@ -1958,6 +1958,7 @@ fun ChatScreen(
                                     val request = createCameraCaptureRequest(context)
                                     cameraTempFilePath = request.file.absolutePath
                                     cameraLauncher.launch(request.uri)
+                                    !effectiveSupportsAttachments -> "Start a multimodal chat to use images or audio"
                                 },
                                 onPhotosSelect = { imagePicker.launch("image/*") },
                                 onAudioSelect = { audioFilePicker.launch(arrayOf("audio/*", "application/ogg")) },
@@ -1978,7 +1979,11 @@ fun ChatScreen(
                                         }
                                     })
                                 },
-                                onSend = {
+                                onSend = send@ {
+                                    if (!effectiveSupportsAttachments && (selectedBitmap != null || selectedAudioUri != null || selectedAudioBytes?.isNotEmpty() == true)) {
+                                        android.widget.Toast.makeText(context, "Start a multimodal chat to send the image or audio. Your draft was kept.", android.widget.Toast.LENGTH_LONG).show()
+                                        return@send
+                                    }
                                     attachmentMenuExpanded = false
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     val documentUri = selectedFileUri
