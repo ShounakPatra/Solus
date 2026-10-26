@@ -219,6 +219,5 @@ Before publication, verify the exact signed APK's package/version, Android minim
 - [Report a reproducible issue](https://github.com/ShounakPatra/Solus/issues): include the app version/code, model file/revision, runtime, device, enabled tools and relevant redacted logs.
 - [Contribute](CONTRIBUTING.md) · [Report a security issue privately](SECURITY.md).
 - Maintainer: **Shounak Patra** · [GitHub](https://github.com/ShounakPatra) · [Email](mailto:shounakpatra68@gmail.com).
-- AI-assisted development: **Claude (Anthropic)** and **Codex (OpenAI)** contributed to implementation, review and documentation. Project maintenance and release decisions remain with Shounak Patra.
 
 Solus is licensed under [Apache 2.0](LICENSE). Imported models and third-party runtimes retain their own licenses.
