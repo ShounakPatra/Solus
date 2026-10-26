@@ -163,6 +163,6 @@ class WorkspaceFeaturesTest {
     @Test fun storageCountsNestedDataAndFormatsUnits() {
         val root = folder.newFolder(); root.resolve("nested").mkdirs()
         root.resolve("a").writeBytes(ByteArray(10)); root.resolve("nested/b").writeBytes(ByteArray(20))
-        assertEquals(30L, StorageDashboard.size(root)); assertEquals("1.0 KB", StorageDashboard.format(1024))
+        assertEquals(30L, StorageDashboard.size(root)); assertEquals("1.0 KiB", StorageDashboard.format(1024))
     }
 }
