@@ -10,7 +10,8 @@ import java.security.MessageDigest
 data class ExtractedApkInfo(
     val packageName: String,
     val versionCode: Long,
-    val signatures: List<String>
+    val signatures: List<String>,
+    val signingCertificateHistory: List<String> = emptyList()
 )
 
 sealed class VerificationResult {
@@ -59,7 +60,11 @@ class AndroidApkMetadataExtractor(private val context: Context) : ApkMetadataExt
         ExtractedApkInfo(
             packageName = packageName,
             versionCode = versionCode,
-            signatures = signatures
+            signatures = signatures,
+            signingCertificateHistory = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                pkgInfo.signingInfo?.hasMultipleSigners() == false) {
+                pkgInfo.signingInfo?.signingCertificateHistory?.map { UpdateArtifactVerifier.certificateFingerprint(it.toByteArray()) }.orEmpty()
+            } else emptyList()
         )
     }.getOrNull()
 }
@@ -131,7 +136,10 @@ class UpdateArtifactVerifier(
 
         val currentSignersSet = currentSignatures.toSet()
         val apkSignersSet = info.signatures.toSet()
-        if (currentSignersSet != apkSignersSet) {
+        val rotationFromInstalledSigner = currentSignersSet.size == 1 && apkSignersSet.size == 1 &&
+            info.signingCertificateHistory.lastOrNull() == apkSignersSet.single() &&
+            info.signingCertificateHistory.contains(currentSignersSet.single())
+        if (currentSignersSet != apkSignersSet && !rotationFromInstalledSigner) {
             apkFile.delete()
             return VerificationResult.Failure(
                 "Signature mismatch: APK signing certificate set does not match installed application"

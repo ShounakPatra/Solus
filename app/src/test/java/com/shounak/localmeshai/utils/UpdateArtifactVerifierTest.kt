@@ -10,6 +10,22 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 
 class UpdateArtifactVerifierTest {
+    @Test fun acceptsForwardRotationButRejectsUnrelatedOrMismatchedLineage() {
+        val cases = listOf(
+            Triple(listOf(evilCertFingerprint), listOf(validCertFingerprint, evilCertFingerprint), true),
+            Triple(listOf(evilCertFingerprint), listOf(evilCertFingerprint), false),
+            Triple(listOf(evilCertFingerprint), listOf(evilCertFingerprint, validCertFingerprint), false),
+            Triple(listOf(validCertFingerprint, evilCertFingerprint), listOf(validCertFingerprint, evilCertFingerprint), false)
+        )
+        for ((index, test) in cases.withIndex()) {
+            val file = createDummyApkFile("rotation-$index.apk")
+            val verifier = UpdateArtifactVerifier(targetPackage, installedVersionCode, listOf(validCertFingerprint), object : ApkMetadataExtractor {
+                override fun extract(apkFile: File) = ExtractedApkInfo(targetPackage, installedVersionCode + 1, test.first, test.second)
+            })
+            assertEquals("rotation case $index", test.third, verifier.verify(file) is VerificationResult.Success)
+        }
+    }
+
 
     @get:Rule
     val tempFolder = TemporaryFolder()
