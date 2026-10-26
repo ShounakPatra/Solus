@@ -4,9 +4,9 @@
 
 # Solus
 
-### Your models. Your conversations. On your Android phone.
+### Your models. Your conversations. Your device.
 
-Chat, write, code, and ask questions about documents with models running on your device.
+Chat, write, code and explore documents with AI models running on your Android phone.
 
 **v6.0.5 · Android 11+ · ARM64-v8a**
 
@@ -20,11 +20,14 @@ Chat, write, code, and ask questions about documents with models running on your
 ![ARM64](https://img.shields.io/badge/ABI-arm64--v8a-22C55E)
 ![Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-A970FF)
 
-[Get started](#get-started) · [Features](#features) · [Compare apps](#compare-apps) · [Model compatibility](#model-compatibility) · [Build from source](#build-from-source)
+[Get started](#get-started) · [Features](#made-for-your-own-models) · [Compare apps](#compare-apps) · [Model compatibility](#model-compatibility) · [Build from source](#build-from-source)
 
 </div>
 
-Download the signed APK from GitHub Releases. Check the release version and accompanying checksum before installing; the latest published APK may differ from this version of the source. Model weights are downloaded separately.
+> [!NOTE]
+> The download button opens the latest published release, which may differ from this source version. Check the APK version and checksum before installing. Model weights are downloaded separately.
+
+---
 
 ## App preview
 
@@ -36,14 +39,14 @@ Download the signed APK from GitHub Releases. Check the release version and acco
   <img src="docs/screenshots/model-download-progress.jpeg" width="260" alt="Solus model download progress" />
 </p>
 
-Screenshots illustrate the workspace; available controls depend on the installed version and selected model.
+<p align="center"><sub>Chat, manage models and follow downloads in the glass workspace. Controls vary by version and model.</sub></p>
 
 ## Get started
 
-1. Download the signed APK from [GitHub Releases](https://github.com/ShounakPatra/Solus/releases/latest). Solus v6.0.5 requires **Android 11/API 30 or newer** on an **ARM64-v8a** device.
-2. Open **Models** and choose a catalog model, or use **Add model** to import from your phone, a Hugging Face link or a direct URL.
-3. Start with a small model that fits your available RAM. Wait for loading and optional preparation to finish, then send a message.
-4. Attach a PDF or DOCX for document questions. Images and audio require a model and export that support those inputs.
+1. **Install** the signed APK from [GitHub Releases](https://github.com/ShounakPatra/Solus/releases/latest). v6.0.5 requires **Android 11+** and an **ARM64-v8a** device.
+2. **Choose a model** in **Models**, or use **Add model** to import one from your phone, Hugging Face or a direct URL.
+3. **Start a chat** after the model finishes loading. A small model is a good place to start if your phone has limited RAM.
+4. **Add context** with a PDF or DOCX. Image and audio inputs require a compatible model and export.
 
 An existing installation can be updated without uninstalling when Android accepts the package and signing identity. Back up important chats first. Model weights need additional storage and are not included in workspace backups.
 
@@ -63,19 +66,20 @@ History search and pinning, temporary chats, backups, document sources, per-mode
 
 Read the release notes on [GitHub Releases](https://github.com/ShounakPatra/Solus/releases). Available features and performance depend on the model export, runtime and device; not every model supports every input or tool.
 
-## Features
+## Made for your own models
 
-| Task | What Solus provides |
+Use the workspace for a quick question or build a longer conversation around your own files.
+
+| | What you can do |
 | --- | --- |
-| Chat, write and code | Local generation, formatted code/math, prompt shortcuts, personas, Edit and Regenerate |
-| Work with documents | PDF, DOCX, text and code extraction; chat-scoped context; original-file preview |
-| Use images or audio | Camera/photos, audio-file and microphone inputs with compatible models |
-| Use tools | Built-in and custom skills through supported model templates; collapsible **Used tool** records |
-| Keep a private workspace | Search, pin and rename history; temporary chats; saved memories and model profiles |
-| Move your workspace | Backup/restore of chats, memories, settings and available attachments |
-| Manage model files | Catalog and HF downloads, pause/resume, companion bundles, imports, relinking and deletion |
-| Tune performance | CPU/compatible GPU options, optional warm-up, speed tuning, context and thermal telemetry |
-| Customize the interface | Glass controls, model accents, reduced motion and larger touch targets |
+| 💬 **Chat, write and code** | Local generation, formatted code and math, personas, prompt editing and regeneration |
+| 📚 **Ask about documents** | PDF, DOCX, text and code extraction; chat-scoped context and original-file previews |
+| 🎙️ **Use images and audio** | Camera, photos, audio files and microphone input with compatible models |
+| 🛠️ **Give models tools** | Built-in and custom skills, with collapsible **Used tool** records |
+| 🗂️ **Keep your workspace** | Search and pin history, temporary chats, saved memories and per-model profiles |
+| 💾 **Back up and restore** | Move chats, memories, settings and available attachments between installations |
+| 📦 **Manage model files** | Catalog and Hugging Face downloads, companion bundles, imports and relinking |
+| ⚙️ **Tune your experience** | Compatible CPU/GPU options, optional warm-up, performance telemetry and glass controls |
 
 ## Compare apps
 
