@@ -381,8 +381,7 @@ class ModelDownloadService : Service() {
             ?: com.shounak.localmeshai.models.CustomModelStore(applicationContext.filesDir).getById(modelId)?.downloadSpec
             ?: com.shounak.localmeshai.models.ModelCatalog.defaultModels.find { it.id == modelId }?.downloadSpec
 
-        val tokenFromIntent = getStringExtra(EXTRA_TOKEN)?.ifBlank { null }
-        val effectiveToken = tokenFromIntent ?: com.shounak.localmeshai.utils.AppSettings.getInstance(this@ModelDownloadService)
+        val effectiveToken = com.shounak.localmeshai.utils.AppSettings.getInstance(this@ModelDownloadService)
             .settings.value.huggingFaceToken.ifBlank { null }
 
         return DownloadRequest(
@@ -425,7 +424,6 @@ class ModelDownloadService : Service() {
         private const val EXTRA_URL = "url"
         private const val EXTRA_FILE_NAME = "file_name"
         private const val EXTRA_PACKAGE_TYPE = "package_type"
-        private const val EXTRA_TOKEN = "token"
         private const val EXTRA_SHA256 = "sha256"
         private const val EXTRA_DOWNLOAD_SPEC = "download_spec"
         private const val EXTRA_RETAIN_STAGING = "retain_staging"
@@ -449,7 +447,6 @@ class ModelDownloadService : Service() {
                 .putExtra(EXTRA_URL, url)
                 .putExtra(EXTRA_FILE_NAME, fileName)
                 .putExtra(EXTRA_PACKAGE_TYPE, packageType.name)
-                .putExtra(EXTRA_TOKEN, token)
                 .putExtra(EXTRA_SHA256, sha256)
                 .putExtra(EXTRA_RETAIN_STAGING, retainStagingOnCancel)
             if (downloadSpec != null) {
@@ -485,7 +482,6 @@ class ModelDownloadService : Service() {
                     .putExtra(EXTRA_URL, url)
                     .putExtra(EXTRA_FILE_NAME, fileName)
                     .putExtra(EXTRA_PACKAGE_TYPE, packageType.name)
-                    .putExtra(EXTRA_TOKEN, token)
                     .putExtra(EXTRA_SHA256, sha256)
                     .putExtra(EXTRA_RETAIN_STAGING, retainStaging)
             )
