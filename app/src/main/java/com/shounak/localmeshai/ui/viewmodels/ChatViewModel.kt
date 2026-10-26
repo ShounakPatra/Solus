@@ -595,8 +595,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private var pendingRagDocumentId: String? = null
-    fun useKnowledgeBaseDocument(id: String): Boolean {
+    suspend fun useKnowledgeBaseDocument(id: String): Boolean {
         if (_isGenerating.value || _isStopping.value || _isDeletingHistory.value || ragManager.indexedDocuments.none { it.documentId == id }) return false
+        if (!ragManager.retainForLibrary(id)) return false
         pendingRagDocumentId = id
         currentSessionDocumentId = id
         setRagActive(true)

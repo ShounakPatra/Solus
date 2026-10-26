@@ -185,22 +185,22 @@ class RagEmbeddingSwitchTest {
         val source = InMemoryRagVectorStore(null, expectedDimension = 8, algorithmId = "fake-8")
         RagManager(null, sourceEngine, source).ingestText("cars.txt", "The battery powers the car.")
         val fallback = lexicalManager()
-        fallback.ingestText("stale.txt", "A document removed from the authoritative index.")
+        fallback.ingestText("fallback-new.txt", "A new document added while using fallback search.")
         val manager = RagManager(null, UniversalSemanticEmbeddingEngine(), fallback.vectorStore, orphanedStore = source)
         manager.loadAsync()
         manager.loadAsync()
-        assertEquals(listOf("cars.txt"), manager.indexedDocuments.map { it.documentName })
+        assertEquals(setOf("cars.txt", "fallback-new.txt"), manager.indexedDocuments.map { it.documentName }.toSet())
         assertEquals(0, source.getTotalChunkCount())
     }
 
     @Test
-    fun emptyOrphanIndexDoesNotResurrectDeletedDocuments() = runBlocking {
+    fun emptyOrphanIndexDoesNotEraseNewFallbackDocuments() = runBlocking {
         val fallback = lexicalManager()
-        fallback.ingestText("stale.txt", "A document removed from the authoritative index.")
+        fallback.ingestText("fallback-new.txt", "A new document added while using fallback search.")
         val source = InMemoryRagVectorStore(null, expectedDimension = 8, algorithmId = "fake-8")
         val manager = RagManager(null, UniversalSemanticEmbeddingEngine(), fallback.vectorStore, orphanedStore = source)
         manager.loadAsync()
-        assertEquals(0, manager.totalIndexedChunks)
+        assertEquals(listOf("fallback-new.txt"), manager.indexedDocuments.map { it.documentName })
     }
     @Test
     fun interactiveSearchDoesNotWaitForIndexingAndRecoversAfterwards() = runBlocking {

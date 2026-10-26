@@ -58,7 +58,10 @@ class RagManager(
     vectorStore: VectorStore = InMemoryRagVectorStore(context, expectedDimension = embeddingEngine.dimension),
     val chunker: TextChunker = TextChunker(),
     /** A store left behind by an embedding model that is no longer installed; migrated on [loadAsync]. */
-    private var orphanedStore: VectorStore? = null
+    private var orphanedStore: VectorStore? = null,
+    private val deletionJournal: com.shounak.localmeshai.data.ChatDeletionJournal? = context?.let {
+        com.shounak.localmeshai.data.ChatSessionRepository.getInstance(it).deletionJournal
+    }
 ) {
     // Independent ownership is intentional: JNI may ignore cancellation. The caller may
     // stop waiting, but the worker retains the index lock until native work unwinds.
@@ -74,8 +77,12 @@ class RagManager(
             retrieve(query, topK, minScore, preferredDocumentId, allowGlobalSearch, allowedDocumentIds)
         }
         return try {
-            kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) { task.await() }
+            val result = kotlinx.coroutines.withTimeoutOrNull(timeoutMillis) { task.await() }
                 ?: RagRetrievalResult(query, emptyList(), false, "Document search timed out; document contents are temporarily unavailable. Do not infer that no documents exist.")
+            val removed = deletedDocumentIds()
+            val visible = result.matches.filterNot { it.chunk.documentId in removed }
+            if (visible.size == result.matches.size) result else result.copy(matches = visible, hasContext = visible.isNotEmpty(),
+                unavailableReason = if (visible.isEmpty()) "The linked document was removed. Attach the intended document again." else result.unavailableReason)
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -110,6 +117,7 @@ class RagManager(
             } else vectorStore.loadState.value
             if (loaded is com.shounak.localmeshai.data.StoreLoadState.Ready) {
                 try {
+                    purgeRetiredDocumentsLocked(deletedDocumentIds())
                     recoverOrphanedStore()
                     loaded
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -130,11 +138,12 @@ class RagManager(
     private val ingestionMutex = Mutex()
     private val originals = context?.let { RagOriginalStore(java.io.File(it.filesDir, "rag_originals")) }
 
-    fun originalDocumentFile(documentId: String): java.io.File? = originals?.find(documentId)
+    fun originalDocumentFile(documentId: String): java.io.File? =
+        if (documentId in deletedDocumentIds()) null else originals?.find(documentId)
 
     private fun saveOriginal(documentId: String, name: String, input: java.io.InputStream, checkActive: () -> Unit): java.io.File? =
         synchronized(mutationLock) {
-            if (vectorStore.getDocuments().none { it.documentId == documentId }) null
+            if (documentId in deletedDocumentIds() || vectorStore.getDocuments().none { it.documentId == documentId }) null
             else originals?.save(documentId, name, input, checkActive)
         }
 
@@ -145,11 +154,43 @@ class RagManager(
     private val mutationLock = Any()
     private var deletionVersion = 0L
 
+    init {
+        if (context != null && deletionJournal != null) retrievalScope.launch {
+            deletionJournal.documentChanges.collect { ids ->
+                try { ingestionMutex.withLock { withContext(Dispatchers.IO) { purgeRetiredDocumentsLocked(ids) } } }
+                catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (failure: Exception) { _embeddingStatus.value = EmbeddingModelStatus.Failed(failure.message ?: "Document cleanup needs recovery") }
+            }
+        }
+    }
+
+    private fun deletedDocumentIds(): Set<String> = deletionJournal?.deletedRagDocuments().orEmpty()
+
+    suspend fun retainForLibrary(documentId: String): Boolean = withContext(Dispatchers.IO) {
+        deletionJournal?.retainRagDocument(documentId) ?: true
+    }
+
+    /** Called under ingestionMutex; durable identities reject readers and late indexing before cleanup finishes. */
+    private fun purgeRetiredDocumentsLocked(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        synchronized(mutationLock) {
+            deletionVersion++
+            for (store in listOfNotNull(vectorStore, orphanedStore).distinct()) {
+                val present = store.getDocuments().map { it.documentId }.toSet()
+                for (id in ids.intersect(present)) check(store.removeDocument(id)) { "Could not remove indexed document $id" }
+            }
+            ids.forEach { originals?.remove(it) }
+        }
+    }
+
     val totalIndexedChunks: Int
-        get() = vectorStore.getTotalChunkCount()
+        get() = indexedDocuments.sumOf { it.chunkCount }
 
     val indexedDocuments: List<RagDocumentSummary>
-        get() = vectorStore.getDocuments()
+        get() {
+            val removed = runCatching { deletedDocumentIds() }.getOrElse { return emptyList() }
+            return vectorStore.getDocuments().filterNot { it.documentId in removed }
+        }
 
     private fun computeContentFingerprint(text: String): String {
         val md = MessageDigest.getInstance("SHA-256")
@@ -287,6 +328,7 @@ class RagManager(
         }
 
         val docId = targetDocumentId ?: UUID.randomUUID().toString()
+        if (docId in deletedDocumentIds()) return@withLock RagIngestionResult(false, docId, documentName, 0, 0, "This document was removed. Attach it again to create a new upload.")
         val textChunks = chunker.chunk(trimmed)
         if (textChunks.isEmpty()) {
             return RagIngestionResult(
@@ -358,7 +400,7 @@ class RagManager(
 
         kotlin.coroutines.coroutineContext.ensureActive()
         val persisted = synchronized(mutationLock) {
-            if (version != deletionVersion) {
+            if (version != deletionVersion || docId in deletedDocumentIds()) {
                 return@withLock RagIngestionResult(false, docId, documentName, 0, 0,
                     "Documents changed during indexing. Retry if you still want to add this document.")
             }
@@ -518,8 +560,11 @@ class RagManager(
                 "Documents are still being indexed; their contents are temporarily unavailable. Do not infer that no documents exist.")
         }
         try {
-        if (allowedDocumentIds != null) {
-            return@withContext retrieveScoped(query.trim(), allowedDocumentIds, preferredDocumentId, topK, minScore)
+        val removed = deletedDocumentIds()
+        val eligibleIds = allowedDocumentIds?.minus(removed)
+            ?: if (removed.isNotEmpty()) indexedDocuments.map { it.documentId }.toSet() else null
+        if (eligibleIds != null) {
+            return@withContext retrieveScoped(query.trim(), eligibleIds, preferredDocumentId, topK, minScore)
         }
         val trimmedQuery = query.trim()
         if (vectorStore.getTotalChunkCount() == 0 || (!allowGlobalSearch && preferredDocumentId == null)) {
@@ -725,7 +770,8 @@ class RagManager(
         from: VectorStore,
         engine: SemanticEmbeddingEngine,
         to: VectorStore,
-        onProgress: (done: Int, total: Int) -> Unit
+        onProgress: (done: Int, total: Int) -> Unit,
+        preserveExisting: Boolean = false
     ): Int {
         val documents = from.getDocuments()
         val total = documents.sumOf { it.chunkCount }
@@ -735,12 +781,20 @@ class RagManager(
             kotlin.coroutines.coroutineContext.ensureActive()
             val chunks = from.getChunksForDocument(doc.documentId, Int.MAX_VALUE).sortedBy { it.chunkIndex }
             if (chunks.isEmpty()) continue
+            if (doc.documentId in deletedDocumentIds() || preserveExisting && to.getChunksForDocument(doc.documentId, 1).isNotEmpty()) {
+                done += chunks.size
+                onProgress(done, total)
+                continue
+            }
             val prefix = doc.documentName.substringBeforeLast('.').replace('_', ' ').replace('-', ' ').trim()
             val vectors = engine.embedBatch(chunks.map { if (prefix.isNotBlank()) "$prefix: ${it.text}" else it.text })
             check(vectors.size == chunks.size) { "Embedding batch size mismatch while re-indexing ${doc.documentName}" }
             check(vectors.all { it.size == to.dimension }) { "Incompatible vector dimension while re-indexing ${doc.documentName}" }
             val records = chunks.mapIndexed { i, chunk -> chunk.copy(embedding = vectors[i]) }
-            val persisted = to.replaceDocument(doc.documentId, records)
+            val persisted = synchronized(mutationLock) {
+                if (doc.documentId in deletedDocumentIds() || preserveExisting && to.getChunksForDocument(doc.documentId, 1).isNotEmpty()) true
+                else to.replaceDocument(doc.documentId, records)
+            }
             if (!persisted) {
                 val reason = (to as? InMemoryRagVectorStore)?.lastError ?: "Failed to persist re-indexed document"
                 throw IllegalStateException(reason)
@@ -756,11 +810,11 @@ class RagManager(
         val orphan = orphanedStore ?: return
         withContext(Dispatchers.IO) {
             check(orphan.loadAsync() is com.shounak.localmeshai.data.StoreLoadState.Ready) { "Previous search index requires recovery" }
-            // The selected neural index is authoritative, including an empty index after
-            // deleting all documents. Never resurrect leftovers from an earlier switch.
-            vectorStore.clearAll()
-            check(vectorStore.getTotalChunkCount() == 0) { "Could not reset fallback search index" }
-            migrateChunks(orphan, embeddingEngine, vectorStore) { _, _ -> }
+            val version = synchronized(mutationLock) { deletionVersion }
+            // Preserve uploads already added to fallback; durable retirement records were
+            // applied to both stores before this step and also guard every migrated write.
+            migrateChunks(orphan, embeddingEngine, vectorStore, { _, _ -> }, preserveExisting = true)
+            check(synchronized(mutationLock) { deletionVersion == version }) { "Documents changed during recovery. Retry document search to finish safely." }
             context?.let { com.shounak.localmeshai.utils.AppSettings.getInstance(it).commitEmbeddingModel(embeddingEngine.algorithmId) }
             orphan.clearAll()
             orphanedStore = null
@@ -860,6 +914,7 @@ class RagManager(
      */
     fun removeDocument(documentId: String): Boolean {
         return synchronized(mutationLock) {
+            check(deletionJournal?.recordRagDeletions(setOf(documentId)) != false) { "Could not record document deletion" }
             deletionVersion++
             vectorStore.removeDocument(documentId).also { if (it) originals?.remove(documentId) }
         }
@@ -870,6 +925,8 @@ class RagManager(
      */
     fun clearKnowledgeBase() {
         synchronized(mutationLock) {
+            val retired = (vectorStore.getDocuments() + orphanedStore?.getDocuments().orEmpty()).map { it.documentId }.toSet()
+            check(deletionJournal?.recordRagDeletions(retired) != false) { "Could not record document deletion" }
             deletionVersion++
             val ids = vectorStore.getDocuments().map { it.documentId }
             vectorStore.clearAll()

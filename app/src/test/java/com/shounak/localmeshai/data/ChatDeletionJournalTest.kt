@@ -142,6 +142,37 @@ class ChatDeletionJournalTest {
     }
 
     @Test
+    fun documentRetirementSurvivesCleanupAndExplicitLibraryRetention() {
+        val root = tempFolder.newFolder("document_retirement")
+        val journal = ChatDeletionJournal(root)
+        assertTrue(journal.retainRagDocument("shared"))
+        val entry = DeletionJournalEntry(chatKind = ChatKind.Text, sessionId = "owner",
+            ownedResourcePaths = emptyList(), ownedRagDocumentIds = setOf("private", "shared"))
+        assertTrue(journal.recordPendingDeletion(entry))
+        assertTrue(journal.removeEntry(entry.id))
+        val restored = ChatDeletionJournal(root)
+        assertEquals(setOf("private"), restored.deletedRagDocuments())
+        assertFalse(restored.retainRagDocument("private"))
+        assertTrue(restored.recordRagDeletions(setOf("shared")))
+        assertEquals(setOf("private", "shared"), ChatDeletionJournal(root).deletedRagDocuments())
+    }
+
+    @Test
+    fun malformedDocumentRetirementFailsClosedWithoutOverwritingJournal() {
+        val root = tempFolder.newFolder("invalid_document_retirement")
+        val file = File(root, "chat_deletion_journal.json")
+        val invalid = """{"version":3,"pending":[],"tombstones":[],"deletedRagDocuments":[42],"retainedRagDocuments":[]}"""
+        file.writeText(invalid)
+        val journal = ChatDeletionJournal(root)
+        journal.ensureLoaded()
+        assertTrue(journal.hasRecoveryError())
+        assertFalse(journal.recordRagDeletions(setOf("new")))
+        assertFalse(journal.retainRagDocument("new"))
+        assertEquals(invalid, file.readText())
+        assertTrue(runCatching { journal.deletedRagDocuments() }.isFailure)
+    }
+
+    @Test
     fun reconcilePendingDeletions_cleansCompletedAndRetainsFailing() {
         val rootDir = tempFolder.newFolder("journal_reconcile")
         val journal = ChatDeletionJournal(rootDir)

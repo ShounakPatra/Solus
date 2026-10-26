@@ -385,6 +385,28 @@ class ChatSessionRepository(
                 return@withLock DeletionOutcome.FailedBeforeCommit("History storage requires recovery before deletion")
             }
 
+            val allText = textSessions ?: loadChatSessions()
+            val allVision = visionSessions ?: loadVisionSessions()
+            val otherReferences = buildSet {
+                allText.filterNot { chatKind == ChatKind.Text && it.id == sessionId }.forEach { session ->
+                    session.documentId?.let(::add)
+                    session.messages.mapNotNullTo(this) { it.ragDocumentId }
+                }
+                allVision.filterNot { chatKind == ChatKind.Vision && it.id == sessionId }.forEach { session ->
+                    session.documentId?.let(::add)
+                    session.messages.mapNotNullTo(this) { it.ragDocumentId }
+                }
+            }
+            val uploads = when (chatKind) {
+                ChatKind.Text -> allText.firstOrNull { it.id == sessionId }?.messages.orEmpty()
+                    .filter { it.isUser }.map { it.ragDocumentId to it.documentPath }
+                ChatKind.Vision -> allVision.firstOrNull { it.id == sessionId }?.messages.orEmpty()
+                    .filter { it.isUser }.map { it.ragDocumentId to it.documentPath }
+            }
+            val ownedDocumentIds = if (isChatStoreHealthy() && isVisionStoreHealthy()) uploads.mapNotNull { (id, path) ->
+                id?.takeIf { it !in otherReferences && path != null && attachmentStore.isOwnedAttachment(File(path), chatKind, sessionId) }
+            }.toSet() else emptySet()
+
             // 1. Gather owned directory path (entire directory is recorded to guard any concurrent writes)
             val sessionDir = attachmentStore.getSessionAttachmentsDir(chatKind, sessionId, create = false)
             val ownedPaths = buildList {
@@ -399,7 +421,8 @@ class ChatSessionRepository(
             val entry = DeletionJournalEntry(
                 chatKind = chatKind,
                 sessionId = sessionId,
-                ownedResourcePaths = ownedPaths
+                ownedResourcePaths = ownedPaths,
+                ownedRagDocumentIds = ownedDocumentIds
             )
             val journalRecorded = deletionJournal.recordPendingDeletion(entry)
             if (!journalRecorded) {

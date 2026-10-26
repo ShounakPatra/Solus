@@ -43,7 +43,8 @@ data class DeletionJournalEntry(
     val chatKind: ChatKind,
     val sessionId: String,
     val ownedResourcePaths: List<String>,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val ownedRagDocumentIds: Set<String> = emptySet()
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -51,6 +52,7 @@ data class DeletionJournalEntry(
         put("sessionId", sessionId)
         put("ownedResourcePaths", JSONArray(ownedResourcePaths))
         put("createdAt", createdAt)
+        put("ownedRagDocumentIds", JSONArray(ownedRagDocumentIds.toList()))
     }
 
     companion object {
@@ -67,17 +69,26 @@ data class DeletionJournalEntry(
                 chatKind = ChatKind.valueOf(obj.requiredJournalString("chatKind")),
                 sessionId = obj.requiredJournalString("sessionId"),
                 ownedResourcePaths = paths,
-                createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+                createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
+                ownedRagDocumentIds = if (obj.has("ownedRagDocumentIds")) obj.getJSONArray("ownedRagDocumentIds").journalStrings() else emptySet()
             )
         }
     }
 }
 
 internal data class JournalDocument(
-    val version: Int = 2,
+    val version: Int = 3,
     val pending: List<DeletionJournalEntry> = emptyList(),
-    val tombstones: List<JournalTombstone> = emptyList()
+    val tombstones: List<JournalTombstone> = emptyList(),
+    val deletedRagDocuments: Set<String> = emptySet(),
+    val retainedRagDocuments: Set<String> = emptySet()
 )
+
+private fun JSONArray.journalStrings(): Set<String> = (0 until length()).map { index ->
+    val value = get(index)
+    require(value is String && value.isNotBlank()) { "Document identity must be a nonblank string" }
+    value
+}.toSet()
 
 class ChatDeletionJournal(
     val rootDir: File
@@ -90,6 +101,41 @@ class ChatDeletionJournal(
     private val tombstones = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
     @Volatile private var isLoaded = false
     @Volatile private var hasCorruptData = false
+    @Volatile private var retiredRagDocuments: Set<String> = emptySet()
+    private val _documentChanges = kotlinx.coroutines.flow.MutableSharedFlow<Set<String>>(
+        extraBufferCapacity = 1, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+    val documentChanges: kotlinx.coroutines.flow.SharedFlow<Set<String>> = _documentChanges
+
+    fun deletedRagDocuments(): Set<String> {
+        if (!isLoaded) ensureLoaded()
+        check(!hasCorruptData) { "Document deletion journal requires recovery" }
+        return retiredRagDocuments
+    }
+
+    fun retainRagDocument(id: String): Boolean = lock.withLock {
+        ensureLoaded()
+        if (hasCorruptData || id in retiredRagDocuments) return false
+        val current = readCurrentDoc()
+        if (hasCorruptData) return false
+        val next = current.copy(deletedRagDocuments = current.deletedRagDocuments + retiredRagDocuments,
+            retainedRagDocuments = current.retainedRagDocuments + id)
+        atomicFile.write(next) { encodeDocument(it) }.isSuccess
+    }
+
+    fun recordRagDeletions(ids: Set<String>): Boolean = lock.withLock {
+        ensureLoaded()
+        if (hasCorruptData) return false
+        val current = readCurrentDoc()
+        if (hasCorruptData) return false
+        val next = current.copy(deletedRagDocuments = current.deletedRagDocuments + retiredRagDocuments + ids,
+            retainedRagDocuments = current.retainedRagDocuments - ids)
+        val saved = atomicFile.write(next) { encodeDocument(it) }.isSuccess
+        if (saved) {
+            retiredRagDocuments = next.deletedRagDocuments
+            _documentChanges.tryEmit(retiredRagDocuments)
+        }
+        saved
+    }
 
     // Disk-free constructor: NO rootDir.mkdirs() or loadTombstones() in init
     init {
@@ -128,6 +174,7 @@ class ChatDeletionJournal(
         when (val res = atomicFile.read { decodeDocument(it) }) {
             is AtomicReadResult.Success -> {
                 hasCorruptData = false
+                retiredRagDocuments = retiredRagDocuments + res.data.deletedRagDocuments
                 res.data.tombstones.forEach {
                     tombstones.add(tombstoneKey(it.chatKind, it.sessionId))
                 }
@@ -158,9 +205,14 @@ class ChatDeletionJournal(
         val nextTombstones = (currentDoc.tombstones.filter { it.sessionId != entry.sessionId || it.chatKind != entry.chatKind } +
                 JournalTombstone(entry.chatKind, entry.sessionId)).distinct()
 
-        val nextDoc = JournalDocument(version = 2, pending = nextPending, tombstones = nextTombstones)
+        val nextDoc = currentDoc.copy(version = 3, pending = nextPending, tombstones = nextTombstones,
+            deletedRagDocuments = currentDoc.deletedRagDocuments + retiredRagDocuments + (entry.ownedRagDocumentIds - currentDoc.retainedRagDocuments))
         val writeResult = atomicFile.write(nextDoc) { encodeDocument(it) }
-        if (writeResult.isSuccess) markTombstoned(entry.chatKind, entry.sessionId)
+        if (writeResult.isSuccess) {
+            markTombstoned(entry.chatKind, entry.sessionId)
+            retiredRagDocuments = nextDoc.deletedRagDocuments
+            _documentChanges.tryEmit(retiredRagDocuments)
+        }
         writeResult.isSuccess
     }
 
@@ -171,7 +223,8 @@ class ChatDeletionJournal(
         if (hasCorruptData) return false
         val nextPending = currentDoc.pending.filter { it.id != id }
         // Keep tombstones durably in the file!
-        val nextDoc = currentDoc.copy(pending = nextPending)
+        val nextDoc = currentDoc.copy(pending = nextPending,
+            deletedRagDocuments = currentDoc.deletedRagDocuments + retiredRagDocuments)
         val writeResult = atomicFile.write(nextDoc) { encodeDocument(it) }
         writeResult.isSuccess
     }
@@ -223,7 +276,9 @@ class ChatDeletionJournal(
 
     private fun encodeDocument(doc: JournalDocument): String {
         val root = JSONObject()
-        root.put("version", 2)
+        root.put("version", 3)
+        root.put("deletedRagDocuments", JSONArray(doc.deletedRagDocuments.toList()))
+        root.put("retainedRagDocuments", JSONArray(doc.retainedRagDocuments.toList()))
         val pendingArr = JSONArray()
         doc.pending.forEach { pendingArr.put(it.toJson()) }
         root.put("pending", pendingArr)
@@ -256,7 +311,7 @@ class ChatDeletionJournal(
             val version = (rawVersion as Number).toLong()
             require(version in 1L..Int.MAX_VALUE.toLong()) { "Invalid deletion journal version" }
             val ver = version.toInt()
-            if (ver > 2) throw com.shounak.localmeshai.utils.UnsupportedVersionException(ver, 2)
+            if (ver > 3) throw com.shounak.localmeshai.utils.UnsupportedVersionException(ver, 3)
             val pendingList = mutableListOf<DeletionJournalEntry>()
             val pendingArr = root.getJSONArray("pending")
             for (i in 0 until pendingArr.length()) {
@@ -269,7 +324,9 @@ class ChatDeletionJournal(
             for (i in 0 until tombstonesArr.length()) {
                 tombstoneList.add(JournalTombstone.fromJson(tombstonesArr.getJSONObject(i)))
             }
-            return JournalDocument(version = ver, pending = pendingList, tombstones = tombstoneList)
+            return JournalDocument(version = ver, pending = pendingList, tombstones = tombstoneList,
+                deletedRagDocuments = if (ver >= 3) root.getJSONArray("deletedRagDocuments").journalStrings() else emptySet(),
+                retainedRagDocuments = if (ver >= 3) root.getJSONArray("retainedRagDocuments").journalStrings() else emptySet())
         }
     }
 }

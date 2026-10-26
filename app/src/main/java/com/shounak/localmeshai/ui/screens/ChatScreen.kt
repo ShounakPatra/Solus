@@ -869,15 +869,18 @@ fun ChatScreen(
     }
 
     if (showKnowledgeBase) {
+        val libraryScope = rememberCoroutineScope()
         RagKnowledgeBaseDialog(
             ragManager = remember(context) { com.shounak.localmeshai.rag.RagManager.getInstance(context) },
             onDismissRequest = { showKnowledgeBase = false },
             onDocumentSelected = { id ->
-                val selected = if (effectiveSupportsAttachments) visionViewModel.useKnowledgeBaseDocument(id)
-                    else chatViewModel.useKnowledgeBaseDocument(id)
-                if (selected) {
-                    showKnowledgeBase = false
-                    android.widget.Toast.makeText(context, "Document selected for the next message in this chat", android.widget.Toast.LENGTH_SHORT).show()
+                libraryScope.launch {
+                    val selected = if (effectiveSupportsAttachments) visionViewModel.useKnowledgeBaseDocument(id)
+                        else chatViewModel.useKnowledgeBaseDocument(id)
+                    if (selected) {
+                        showKnowledgeBase = false
+                        android.widget.Toast.makeText(context, "Document selected for the next message in this chat", android.widget.Toast.LENGTH_SHORT).show()
+                    } else android.widget.Toast.makeText(context, "Document unavailable. Refresh the library and try again.", android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
         )

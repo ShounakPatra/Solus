@@ -197,8 +197,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun useKnowledgeBaseDocument(id: String): Boolean {
+    suspend fun useKnowledgeBaseDocument(id: String): Boolean {
         if (_isAnalyzing.value || _isStopping.value || _isDeletingHistory.value || ragManager.indexedDocuments.none { it.documentId == id }) return false
+        if (!ragManager.retainForLibrary(id)) return false
         setPendingRagDocumentId(id)
         appSettings.updateSettings { it.copy(enableRag = true) }
         return true
