@@ -253,7 +253,7 @@ internal class PhoneImportSession(
             sessionGrants.removeAll(bundleUris)
             currentDraftResult = null
             currentDraftUris = emptySet()
-            val cleanup = isDismissPending || isDisposed || isTeardownStarted
+            val cleanup = isDismissPending || isDisposed || isTeardownStarted || sessionGrants.isNotEmpty()
             if (cleanup) {
                 isDismissPending = false
             }

@@ -15,6 +15,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PhoneImportSessionTest {
+    @Test fun successfulManagedCopyReleasesGrantsNotUsedByTheRegisteredBundle() = runBlocking {
+        val released = mutableListOf<String>()
+        val session = PhoneImportSession(releasePermission = { released.add(it) }, isUriRegistered = { false })
+        session.recordGrant("content://provider/copied-task")
+        session.onRegistrationSuccess(emptySet())
+        assertEquals(listOf("content://provider/copied-task"), released)
+        assertTrue(session.getSessionGrants().isEmpty())
+    }
+
 
     @Test
     fun testSameFileReselectionPreservesReleaseOwnership() = runBlocking {
