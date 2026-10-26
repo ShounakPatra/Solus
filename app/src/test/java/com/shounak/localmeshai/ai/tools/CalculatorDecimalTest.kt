@@ -6,6 +6,11 @@ import org.junit.Test
 
 class CalculatorDecimalTest {
     @Test fun decimalArithmeticDoesNotExposeBinaryRoundingArtifacts() {
+        assertEquals("1", CalculatorEvaluator.evaluate("1/3*3"))
+        assertEquals("1", CalculatorEvaluator.evaluate("(1/7)*7"))
+        assertEquals("1", CalculatorEvaluator.evaluate("(1/3)^2*9"))
+        assertEquals("0.5", CalculatorEvaluator.evaluate("1/6+1/3"))
+        assertEquals("0", CalculatorEvaluator.evaluate("(2/3)%(1/3)"))
         assertEquals("0.3", CalculatorEvaluator.evaluate("0.1+0.2"))
         assertEquals("0.02", CalculatorEvaluator.evaluate("0.1*0.2"))
         assertEquals("0.1", CalculatorEvaluator.evaluate("0.3-0.2"))
