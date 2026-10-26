@@ -820,7 +820,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                 supportsThinkingMode = supportsThinkingMode,
                                 allowUnsafeOverride = allowUnsafeOverride,
                                 contextWindowTokens = resolvedContextWindowTokens,
-                                bundle = bundle
+                                bundle = bundle,
+                                initialThinkingPreference = _thinkingMode.value
                             )
                             // Re-check after the (potentially long) native init.
                             if (myGen != initGeneration) {
@@ -904,7 +905,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         modelPath = path, modelId = currentModelId, modelName = currentModelName,
                         modelSize = currentModelSize, supportsAudioInput = currentSupportsAudioInput,
                         supportsThinkingMode = currentSupportsThinkingMode, allowUnsafeOverride = currentAllowUnsafeOverride,
-                        contextWindowTokens = resolvedContextWindowTokens, bundle = expectedBundle
+                        contextWindowTokens = resolvedContextWindowTokens, bundle = expectedBundle,
+                        // This load runs inside the request: skip the warm-up turn the request would duplicate.
+                        initialThinkingPreference = _thinkingMode.value, warmStart = false
                     )
                     if (expectedGeneration != initGeneration || path != currentModelPath) {
                         inferenceManager.close()
@@ -1437,7 +1440,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
 
-                thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(currentResolvedThinkingCapability, requestThinkingPreference)
+                // Same capability fallback as the pre-load resolution above, so a runtime that has not
+                // resolved its capability does not silently turn a Think-on request off.
+                thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(
+                    currentResolvedThinkingCapability.takeIf { it != ThinkingCapability.Unknown }
+                        ?: currentBundle?.capabilities?.thinking ?: ThinkingCapability.Unknown,
+                    requestThinkingPreference
+                )
                 // Loading may have selected a smaller fallback than the requested limit.
                 documentBudget = documentTextBudget(
                     userPrompt = basePrompt,
@@ -1462,6 +1471,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 val effectiveDocId = (targetDocId ?: currentSessionDocumentId)?.takeIf { it in chatDocumentIds }
                 val shouldQueryRag = appSettings.settings.value.enableRag && promptFileText.isBlank() && basePrompt.isNotBlank() && chatDocumentIds.isNotEmpty()
                 if (shouldQueryRag) {
+                    val ragStart = com.shounak.localmeshai.ai.TtftLog.now()
                     val ragSettings = appSettings.settings.value
                     val retrieval = ragManager.retrieveForChat(
                         query = basePrompt,
@@ -1471,6 +1481,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         allowGlobalSearch = false,
                         allowedDocumentIds = chatDocumentIds
                     )
+                    com.shounak.localmeshai.ai.TtftLog.d("vision rag.retrieve ms=${com.shounak.localmeshai.ai.TtftLog.elapsedMs(ragStart)} " +
+                        "docs=${chatDocumentIds.size} matches=${retrieval.matches.size}")
                     if (retrieval.unavailableReason != null) ragAugmentedContext = ragManager.buildAugmentedPrompt(basePrompt, retrieval)
                     if (retrieval.hasContext) {
                         currentRagPassages = retrieval.matches.map { com.shounak.localmeshai.features.RagPassage(it.chunk.documentId, it.chunk.documentName, it.chunk.chunkIndex, it.chunk.text) }
@@ -1572,15 +1584,17 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             historySnapshot.any { it.audioPath != null }
                         if (inferenceManager.needsMediaEncoders(needsVision, needsAudio)) {
                             timing.startLoading()
-                            try { inferenceManager.prepareMediaEncoders(needsVision, needsAudio) }
+                            try { inferenceManager.prepareMediaEncoders(needsVision, needsAudio, thinkingPreference = thinkingModeForRequest) }
                             finally {
                                 timing.endLoading()
                                 resetRuntimeConversationBeforeNextAsk = true
                                 withContext(Dispatchers.Main.immediate) { publishRuntimeCapabilities() }
                             }
                         }
-                        if (resetRuntimeConversationBeforeNextAsk || inferenceManager.needsToolSettingsRefresh ||
-                            inferenceManager.needsResetForThinkingMode(thinkingModeForRequest)) {
+                        val resetForLoad = resetRuntimeConversationBeforeNextAsk
+                        val resetForTools = inferenceManager.needsToolSettingsRefresh
+                        val resetForThinking = inferenceManager.needsResetForThinkingMode(thinkingModeForRequest)
+                        if (resetForLoad || resetForTools || resetForThinking) {
                             val previousMessages = historySnapshot.filter { it.id != userMessageId && it.id != assistantMessageId }
                             val restorationHistory = VisionRequestContextResolver.buildRestorationHistory(
                                 sessionMessages = previousMessages,
@@ -1588,7 +1602,17 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                 placeholderTexts = PLACEHOLDER_ANSWERS,
                                 failedAnswerTexts = FAILED_ANSWER_STRINGS
                             )
-                            inferenceManager.resetConversation(thinkingMode = thinkingModeForRequest, initialMessages = restorationHistory)
+                            // A fresh, never-used conversation that already matches the thinking and tool settings
+                            // is what the reset would build when there is no history, so keep it (and any preface
+                            // prefilled during load) instead of closing and recreating it.
+                            if (inferenceManager.canReuseFreshConversation(thinkingModeForRequest, restorationHistory.isEmpty())) {
+                                com.shounak.localmeshai.ai.TtftLog.d("vision conversation.reset skipped: fresh conversation matches " +
+                                    "thinking=$thinkingModeForRequest load=$resetForLoad tools=$resetForTools thinkingMismatch=$resetForThinking")
+                            } else {
+                                com.shounak.localmeshai.ai.TtftLog.d("vision conversation.reset reason load=$resetForLoad tools=$resetForTools " +
+                                    "thinkingMismatch=$resetForThinking history=${restorationHistory.size}")
+                                inferenceManager.resetConversation(thinkingMode = thinkingModeForRequest, initialMessages = restorationHistory)
+                            }
                             resetRuntimeConversationBeforeNextAsk = false
                         }
                         val effectiveImageFile = persistentImageFile ?: resolved.imageFileToUse
@@ -1915,6 +1939,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     timing.formatMetricsSummary(metrics.copy(firstVisibleTextLatencyMs = timing.buildMetrics(requestId, activeSessionId).firstVisibleTextLatencyMs))
                 } ?: timing.detailedSummary(requestId, activeSessionId)
                 Log.i("VisionLatency", latency)
+                // Same breakdown under the TTFT tag: firstTokMs is measured from Send, so it includes
+                // prepMs (RAG/memory/attachments), queueMs, loadMs (on-demand load, media-encoder reload) and prefill.
+                com.shounak.localmeshai.ai.TtftLog.d("vision request $latency")
                 preparedInput?.close()
                 documentPreparation.release(preparation)
                 imagePreparation.release(imageInput)

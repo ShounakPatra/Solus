@@ -1620,6 +1620,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     timing.formatMetricsSummary(m)
                 } ?: timing.detailedSummary(requestId, targetSessionId ?: "")
                 Log.i("ChatLatency", "backend=${inferenceManager.activeBackendDisplayName} $finalMetricsStr")
+                com.shounak.localmeshai.ai.TtftLog.d("chat request backend=${inferenceManager.activeBackendDisplayName.replace(' ', '_')} $finalMetricsStr")
                 liveUpdates.close()
                 liveUpdateJob.cancel()
                 preparedInput?.close()

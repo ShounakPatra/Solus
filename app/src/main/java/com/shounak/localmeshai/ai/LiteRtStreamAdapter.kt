@@ -1,5 +1,6 @@
 package com.shounak.localmeshai.ai
 
+import android.util.Log
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.Message
@@ -32,6 +33,7 @@ class LiteRtStreamAdapter(
 ) : MessageCallback {
 
     companion object {
+        private const val TAG = "LiteRtStreamAdapter"
         private val REASONING_CHANNEL_KEYS = setOf("thought", "reasoning", "thinking", "analysis")
         private val LEADING_REASONING_TAG = Regex("^\\s*(?:<\\s*(?:think|thought|reasoning)\\s*>|\\[\\s*(?:think|thought|reasoning)\\s*\\])", RegexOption.IGNORE_CASE)
     }
@@ -41,6 +43,8 @@ class LiteRtStreamAdapter(
     private val answerBuffer = StringBuilder()
     private val reasoningBuffer = StringBuilder()
     private val namedChannels = mutableMapOf<String, StringBuilder>()
+    /** Channel keys seen this request, logged once each for on-device confirmation. */
+    private val seenChannelKeys = linkedSetOf<String>()
 
     private val revisionCounter = AtomicInteger(0)
     private val callbackCounter = AtomicInteger(0)
@@ -87,6 +91,14 @@ class LiteRtStreamAdapter(
             // 2. Process named channels (e.g. thought/reasoning)
             val channelsMap = message.channels.orEmpty()
             for ((key, value) in channelsMap) {
+                if (seenChannelKeys.add(key)) {
+                    val isReasoning = reasoningKeys.contains(key.lowercase())
+                    Log.d(TAG, "req=$requestId attempt=$attemptId channel key=\"$key\" reasoning=$isReasoning " +
+                        "thinkingMode=$thinkingMode chars=${value.length}")
+                    if (isReasoning && !thinkingMode) {
+                        Log.w(TAG, "req=$requestId reasoning channel \"$key\" received while thinkingMode=false; it will not be shown")
+                    }
+                }
                 if (value.isNotEmpty()) {
                     val buf = namedChannels.getOrPut(key) { StringBuilder() }
                     buf.append(value)
@@ -166,6 +178,9 @@ class LiteRtStreamAdapter(
         isThinkingOpen = false
         revisionCounter.incrementAndGet()
         val finalSnapshot = snapshotLocked()
+        Log.d(TAG, "req=$requestId attempt=$attemptId end=${if (cancelled) "cancelled" else if (error != null) "error" else "done"} " +
+            "callbacks=${callbackCounter.get()} channelKeys=$seenChannelKeys thinkingMode=$thinkingMode " +
+            "answerChars=${finalSnapshot.answerText.length} reasoningChars=${finalSnapshot.reasoningText.length}")
         try {
             publishDeltas(
                 if (finalSnapshot.answerText.startsWith(previous.answerText)) finalSnapshot.answerText.substring(previous.answerText.length) else "",

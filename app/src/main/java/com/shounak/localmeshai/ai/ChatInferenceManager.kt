@@ -607,6 +607,7 @@ class ChatInferenceManager(context: Context) {
         contextWindowTokens: Int? = null,
         onWarmupStart: () -> Unit = {}
     ) {
+        val engineStart = TtftLog.now()
         // Mark that we're about to attempt a potentially fatal native init
         InitCrashGuard.markInitStarted(context, modelId,
             if (inferenceBackend == InferenceBackend.LITERT_GPU) InitCrashGuard.BACKEND_GPU else InitCrashGuard.BACKEND_CPU)
@@ -654,9 +655,12 @@ class ChatInferenceManager(context: Context) {
                 }
             }
 
+            TtftLog.d("chat engine.init ms=${TtftLog.elapsedMs(engineStart)} backend=${backend.name} threads=$runtimeThreads " +
+                "maxTokens=${runtimeContextCapacity.tokens}")
             if (RuntimeWarmup.enabled(context)) {
                 onWarmupStart()
                 warmupMs = RuntimeWarmup.liteRt(requireNotNull(engine)) { liteRtConversation = it }.coerceAtLeast(1)
+                TtftLog.d("chat warmup ms=$warmupMs")
             }
 
             liteRtToolsDisabledForLoad = false
@@ -1056,6 +1060,7 @@ class ChatInferenceManager(context: Context) {
             userPreference = thinkingMode
         )
         val requestStartedAt = System.currentTimeMillis()
+        val sendStartNanos = java.util.concurrent.atomic.AtomicLong(0L)
         var firstChunkRecorded = false
         Log.i(
             TAG,
@@ -1071,6 +1076,9 @@ class ChatInferenceManager(context: Context) {
             startsInReasoning = configuredCapabilities?.capabilities?.reasoningPrefill == true,
             onFirstToken = {
                 timing?.recordFirstToken()
+                sendStartNanos.get().takeIf { it != 0L }?.let { start ->
+                    TtftLog.d("chat send->firstToken req=$requestId ms=${TtftLog.elapsedMs(start)}")
+                }
                 if (!firstChunkRecorded) {
                     firstChunkRecorded = true
                     onProgress?.invoke(RequestProgress.Generating)
@@ -1112,6 +1120,10 @@ class ChatInferenceManager(context: Context) {
         )
         activeLiteRtAdapter = adapter
         try {
+            val kvBefore = runCatching { conversation.getTokenCount() }.getOrDefault(-1)
+            TtftLog.d("chat send req=$requestId kvTokensBefore=$kvBefore promptChars=${prompt.length} tools=$liteRtConversationHasTools " +
+                "thinking=$requestedThinking mode=$liteRtConversationMode backend=${activeBackendDisplayName.replace(' ', '_')} threads=$runtimeThreads")
+            sendStartNanos.set(TtftLog.now())
             conversation.sendMessageAsync(
                 requestMessage,
                 adapter,
@@ -1120,6 +1132,9 @@ class ChatInferenceManager(context: Context) {
             )
             val finalSnapshot = adapter.awaitDone()
             lastLiteRtSnapshot = finalSnapshot
+            val kvAfter = runCatching { conversation.getTokenCount() }.getOrDefault(-1)
+            TtftLog.d("chat done req=$requestId totalMs=${TtftLog.elapsedMs(sendStartNanos.get())} " +
+                "kvTokensBefore=$kvBefore kvTokensAfter=$kvAfter callbacks=${adapter.callbackCount}")
             val answerText = finalSnapshot.answerText
             val rawTokens = if (adapter.callbackCount > 0) {
                 adapter.callbackCount
@@ -1532,8 +1547,10 @@ class ChatInferenceManager(context: Context) {
             Log.w(TAG, "LiteRT-LM conversation close during reset failed", t)
         }
         stopRequested = false
+        val resetStart = TtftLog.now()
         liteRtConversation = createLiteRtConversation(mode)
         liteRtMessageCount = 0
+        TtftLog.d("chat conversation.reset ms=${TtftLog.elapsedMs(resetStart)} mode=$mode (history is re-sent in the next prompt)")
     }
 
     private fun toolsForNewConversation(): List<com.shounak.localmeshai.ai.tools.ChatTool> =
@@ -1555,6 +1572,7 @@ class ChatInferenceManager(context: Context) {
                     tool(liteRtToolRecorder.recording(it))
                 }
                 if (providers.isNotEmpty()) {
+                    val createStart = TtftLog.now()
                     val conversation = engine.createConversation(ConversationConfig(
                         tools = providers,
                         automaticToolCalling = true,
@@ -1563,6 +1581,7 @@ class ChatInferenceManager(context: Context) {
                         else emptyMap()
                     ))
                     liteRtConversationHasTools = true
+                    TtftLog.d("chat conversation.create ms=${TtftLog.elapsedMs(createStart)} tools=${providers.size} mode=$mode")
                     return conversation
                 }
             } catch (failure: Exception) {
