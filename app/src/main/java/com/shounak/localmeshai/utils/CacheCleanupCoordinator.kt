@@ -149,6 +149,9 @@ class CacheCleanupCoordinator(
             }
             if (!reconcileOk) failures++
 
+            deletedFiles += AbandonedModelFiles.prune(
+                ModelDownloader.defaultStorage(context).rootDir, RepositoryFileDownloads.root(context))
+
         } catch (e: Throwable) {
             Log.e(TAG, "Error during cache cleanup execution", e)
             failures++

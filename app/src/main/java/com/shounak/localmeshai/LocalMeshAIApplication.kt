@@ -10,6 +10,7 @@ class LocalMeshAIApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        com.shounak.localmeshai.utils.AbandonedModelFiles.initialize()
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO).launch {
             runCatching { com.shounak.localmeshai.ai.tools.ToolReminders.reschedule(applicationContext) }
                 .onFailure { android.util.Log.w("ToolReminders", "Could not recover reminders", it) }

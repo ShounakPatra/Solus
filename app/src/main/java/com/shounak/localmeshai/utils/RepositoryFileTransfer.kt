@@ -54,6 +54,13 @@ internal class RepositoryFileTransfer(private val root: File, private val client
     fun download(repo: String, revision: String, file: RepoFile,
         downloadUrl: String = url(repo, revision, file.path),
         checkActive: () -> Unit = {}, onProgress: (Long, Long) -> Unit = { _, _ -> },
+        onCall: (okhttp3.Call?) -> Unit = {}): File =
+        ModelArtifactStorage.leaseArtifact(File(root, "staging/" + key(repo, revision, file.path) + ".part")).use {
+            downloadLeased(repo, revision, file, downloadUrl, checkActive, onProgress, onCall)
+        }
+
+    private fun downloadLeased(repo: String, revision: String, file: RepoFile, downloadUrl: String,
+        checkActive: () -> Unit, onProgress: (Long, Long) -> Unit,
         onCall: (okhttp3.Call?) -> Unit = {}): File {
         val target = target(repo, revision, file)
         fun verify(candidate: File): Boolean {
