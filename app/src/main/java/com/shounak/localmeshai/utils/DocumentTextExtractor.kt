@@ -20,7 +20,7 @@ object DocumentTextExtractor {
         uri: Uri,
         fileName: String,
         mimeType: String = "",
-        budget: DocumentExtractionBudget = DocumentExtractionBudget.DEFAULT,
+        budget: DocumentExtractionBudget,
         isCancelled: (() -> Boolean)? = null,
         onFailure: ((String) -> Unit)? = null
     ): String {
