@@ -280,7 +280,7 @@ class StorageSafetyRegressionTest {
     @Test fun sharedKnowledgeSurvivesChatDeletion() = runBlocking {
         val manager = RagManager()
         val first = manager.ingestText("first.txt", "Shared content for both chat sessions.")
-        val second = manager.ingestText("second.txt", "Shared content for both chat sessions.")
+        val second = manager.ingestText("second.txt", "Shared content for both chat sessions.", targetDocumentId = first.documentId)
         assertTrue(first.success)
         assertEquals(first.documentId, second.documentId)
         val repo = ChatSessionRepository(files.newFolder())

@@ -212,11 +212,11 @@ class ImportWorkflowCoordinationTest {
             )
         }
 
-        val catalogSmall = makeModel("cat_small", "Catalog Small", 1500L, isCustom = false, status = ModelStatus.NotDownloaded)
-        val catalogLarge = makeModel("cat_large", "Catalog Large", 7000L, isCustom = false, status = ModelStatus.NotDownloaded)
-        val importedDownloadedSmall = makeModel("imp_dl_small", "Imported DL Small", 2000L, isCustom = true, status = ModelStatus.Available)
-        val importedDownloadedLarge = makeModel("imp_dl_large", "Imported DL Large", 8000L, isCustom = true, status = ModelStatus.Available)
-        val importedPendingSmall = makeModel("imp_not_dl_small", "Imported Not DL Small", 1800L, isCustom = true, status = ModelStatus.NotDownloaded)
+        val catalogSmall = makeModel("cat_small", "Catalog Small 1B", 1500L, isCustom = false, status = ModelStatus.NotDownloaded)
+        val catalogLarge = makeModel("cat_large", "Catalog Large 7B", 7000L, isCustom = false, status = ModelStatus.NotDownloaded)
+        val importedDownloadedSmall = makeModel("imp_dl_small", "Imported DL Small 2B", 2000L, isCustom = true, status = ModelStatus.Available)
+        val importedDownloadedLarge = makeModel("imp_dl_large", "Imported DL Large 8B", 8000L, isCustom = true, status = ModelStatus.Available)
+        val importedPendingSmall = makeModel("imp_not_dl_small", "Imported Not DL Small 1.8B", 1800L, isCustom = true, status = ModelStatus.NotDownloaded)
 
         val allModels = listOf(
             catalogSmall,
@@ -231,7 +231,7 @@ class ImportWorkflowCoordinationTest {
         val sourceFiltered = allModels.filter { it.isCustom }
         assertEquals(3, sourceFiltered.size)
 
-        // 2. Size filter = Small (< 3 GB)
+        // 2. Parameter filter = Small (< 3B)
         val tierSmallFiltered = sourceFiltered.filter { it.matches("", SizeTier.Small) }
         assertEquals(2, tierSmallFiltered.size)
         assertTrue(tierSmallFiltered.contains(importedDownloadedSmall))
