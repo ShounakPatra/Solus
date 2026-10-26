@@ -25,7 +25,7 @@ Chat, write, code and explore documents with AI models running on your Android p
 </div>
 
 > [!NOTE]
-> The download button points to the v6.0.5 release APK. Check the release asset for its exact download size and checksum before installing. Model weights are downloaded separately.
+> The v6.0.5 APK is **50.60 MB (48.26 MiB)**. Verify its accompanying checksum before installing. Model weights are downloaded separately.
 
 ---
 
