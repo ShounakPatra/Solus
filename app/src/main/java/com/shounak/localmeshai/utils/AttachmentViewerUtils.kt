@@ -12,9 +12,15 @@ import androidx.core.content.FileProvider
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 
 object AttachmentViewerUtils {
+    private val viewerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private const val TAG = "AttachmentViewerUtils"
     private const val FILE_PROVIDER_AUTHORITY = "com.shounak.localmeshai.fileprovider"
 
@@ -135,13 +141,15 @@ object AttachmentViewerUtils {
         }
 
         val previewLease = ActiveInputFiles.protect(file)
+        viewerScope.launch {
         try {
             // External viewers may open the URI after this app enters the background.
             // Renew the cache retention window before handing the file to another app.
             if (file.canonicalPath.startsWith(context.cacheDir.canonicalPath + File.separator)) {
                 file.setLastModified(System.currentTimeMillis())
             }
-            val uri: Uri = FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, file)
+            val export = withContext(Dispatchers.IO) { SharedFileExports.stage(context.cacheDir, file) }
+            val uri: Uri = FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, export)
             val mimeType = explicitMimeType ?: resolveMimeType(file.name)
 
             val intent = Intent(Intent.ACTION_VIEW).apply {
@@ -161,6 +169,7 @@ object AttachmentViewerUtils {
             Toast.makeText(context, "Could not open file: ${e.localizedMessage ?: "Unknown error"}", Toast.LENGTH_SHORT).show()
         } finally {
             previewLease.close()
+        }
         }
     }
 

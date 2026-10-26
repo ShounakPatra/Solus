@@ -30,6 +30,7 @@ object AppCacheCleaner {
 
                 // Prune unleased temporary inputs
                 deletedCount += pruneExpiredInputs(context.cacheDir, now, protectedPaths)
+                deletedCount += SharedFileExports.prune(context.cacheDir, now)
                 deletedCount += com.shounak.localmeshai.features.TemporaryChatFiles.prune(context.cacheDir.resolve("temporary_chats"), now)
 
                 // Prune external cache directory if available

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <files-path name="internal_files" path="." />
-    <external-files-path name="external_files" path="." />
-    <cache-path name="cache" path="." />
+    <files-path name="updates" path="updates/" />
+    <cache-path name="camera_inputs" path="camera_inputs/" />
+    <cache-path name="shared_exports" path="shared_exports/" />
 </paths>
