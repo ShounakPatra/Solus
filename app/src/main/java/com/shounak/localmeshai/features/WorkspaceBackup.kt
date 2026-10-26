@@ -150,6 +150,8 @@ class WorkspaceBackup internal constructor(
                 if (id in existingText || repository.isTombstoned(ChatKind.Text, id)) return@map session.copy(id = id)
                 session.copy(id = id, documentId = null, messages = session.messages.map { message -> message.copy(
                     id = remap("message", message.id), userMessageId = message.userMessageId?.let { remap("message", it) },
+                    ragDocumentId = message.ragDocumentId?.let { remap("rag", it) },
+                    ragPassages = message.ragPassages.map { it.copy(documentId = remap("rag", it.documentId)) },
                     documentPath = attachment(message.documentPath, ChatKind.Text, id), progress = null, isThinkingActive = false
                 ) })
             }
@@ -160,6 +162,8 @@ class WorkspaceBackup internal constructor(
                     imagePath = attachment(session.imagePath, ChatKind.Vision, id), audioPath = attachment(session.audioPath, ChatKind.Vision, id),
                     messages = session.messages.map { message -> message.copy(
                         id = remap("message", message.id), userMessageId = message.userMessageId?.let { remap("message", it) },
+                        ragDocumentId = message.ragDocumentId?.let { remap("rag", it) },
+                        ragPassages = message.ragPassages.map { it.copy(documentId = remap("rag", it.documentId)) },
                         imagePath = attachment(message.imagePath, ChatKind.Vision, id), audioPath = attachment(message.audioPath, ChatKind.Vision, id),
                         documentPath = attachment(message.documentPath, ChatKind.Vision, id), progress = null, isThinkingActive = false
                     ) })

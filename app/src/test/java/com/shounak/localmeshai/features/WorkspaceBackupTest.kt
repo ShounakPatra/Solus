@@ -126,7 +126,9 @@ class WorkspaceBackupTest {
         val restored = target.repository.loadChatSessions().single { it.id != "existing" }
         assertNotEquals(original.id, restored.id)
         assertEquals("Exact attached text", File(restored.messages.first().documentPath!!).readText())
-        assertEquals(listOf(passage), restored.messages.last().ragPassages)
+        val restoredPassage = restored.messages.last().ragPassages.single()
+        assertNotEquals(passage.documentId, restoredPassage.documentId)
+        assertEquals(passage.copy(documentId = restoredPassage.documentId), restoredPassage)
         assertEquals(listOf(toolUse), restored.messages.last().toolUses)
         assertTrue(target.settings.settings.value.enableToolCalling)
         assertEquals(restored.messages.first().id, restored.messages.last().userMessageId)
@@ -150,6 +152,30 @@ class WorkspaceBackupTest {
         target.backup.restoreFrom(output.toByteArray().inputStream())
         assertEquals(listOf("existing"), target.repository.loadChatSessions().map { it.id })
         assertTrue(target.cache.listFiles().orEmpty().none { it.name.startsWith("backup_restore_") })
+    }
+
+    @Test fun restoredDocumentsGetIndependentStableIdentitiesAfterOriginalDeletion() = runBlocking {
+        val source = Workspace(folder.newFolder())
+        val document = source.repository.attachmentStore.storeAttachmentFromFile(ChatKind.Text, "source",
+            sourceFile = File(source.cache, "notes.txt").apply { writeText("Document contents") })
+        val passage = RagPassage("original-document", "notes.txt", 0, "Document contents")
+        source.repository.saveChatSessions(listOf(chat("source").copy(messages = listOf(
+            ChatMessage(text = "Read notes", isUser = true, documentPath = document.path,
+                documentName = "notes.txt", ragDocumentId = passage.documentId),
+            ChatMessage(text = "Answer", isUser = false, ragPassages = listOf(passage))
+        ))))
+        val output = ByteArrayOutputStream(); source.backup.exportTo(output, true)
+        val target = Workspace(folder.newFolder())
+        assertTrue(target.repository.deletionJournal.recordRagDeletions(setOf(passage.documentId)))
+        target.backup.restoreFrom(output.toByteArray().inputStream())
+        val restored = target.repository.loadChatSessions().single()
+        val upload = restored.messages.first()
+        assertNotEquals(passage.documentId, upload.ragDocumentId)
+        assertFalse(upload.ragDocumentId in target.repository.deletionJournal.deletedRagDocuments())
+        assertEquals(upload.ragDocumentId, restored.messages.last().ragPassages.single().documentId)
+        assertTrue(File(requireNotNull(upload.documentPath)).isFile)
+        target.backup.restoreFrom(output.toByteArray().inputStream())
+        assertEquals(upload.ragDocumentId, target.repository.loadChatSessions().single().messages.first().ragDocumentId)
     }
 
     @Test fun failedHistoryCommitRemovesUncommittedAttachments() = runBlocking {
