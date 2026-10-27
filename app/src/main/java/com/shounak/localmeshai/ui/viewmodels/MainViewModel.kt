@@ -1819,6 +1819,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     status = initialStatus,
                     progress = initialProgress,
                     downloadedBytes = if (initialStatus == ModelStatus.Paused) partialBytes else savedSnapshot?.downloadedBytes ?: 0L,
+                    downloadStartedAt = savedSnapshot?.startedAt ?: 0L,
                     totalBytes = if (totalBytes > 0L) totalBytes else savedSnapshot?.totalBytes ?: -1L,
                     localPath = localPath,
                     errorMessage = initialError,

@@ -27,9 +27,8 @@ class ModelSearchAndSortingTest {
         val previous = createTestModel("previous", "Previous", ModelStatus.Available, 10L)
         val failed = createTestModel("failed", "Failed", ModelStatus.Failed, 40L)
         val other = createTestModel("other", "Other", ModelStatus.Available, 30L)
-        val paused = createTestModel("paused", "Paused", ModelStatus.Paused)
         val used = mapOf("current" to 200L, "previous" to 100L)
-        val unchanged = listOf(other, previous, failed, paused, current)
+        val unchanged = listOf(other, previous, failed, current)
         val first = createTestModel("first", "First", ModelStatus.Downloading)
         val second = createTestModel("second", "Second", ModelStatus.Downloading)
         val ordered = com.shounak.localmeshai.ui.screens.orderDownloadedModels(
@@ -38,6 +37,17 @@ class ModelSearchAndSortingTest {
         assertEquals(
             com.shounak.localmeshai.ui.screens.orderDownloadedModels(unchanged, used),
             ordered.drop(2))
+    }
+
+    @Test fun pausedDownloadKeepsItsPositionAboveDownloadedModels() {
+        val ready = createTestModel("ready", "Ready", ModelStatus.Available, 50L)
+        val older = createTestModel("older", "Older", ModelStatus.Downloading).copy(downloadStartedAt = 100L)
+        val newer = createTestModel("newer", "Newer", ModelStatus.Downloading).copy(downloadStartedAt = 101L)
+        fun order(items: List<ModelInfo>) =
+            com.shounak.localmeshai.ui.screens.orderDownloadedModels(items, mapOf("ready" to 200L)).map { it.id }
+        assertEquals(listOf("newer", "older", "ready"), order(listOf(ready, older, newer)))
+        assertEquals(listOf("newer", "older", "ready"), order(listOf(ready, older, newer.copy(status = ModelStatus.Paused))))
+        assertEquals(listOf("newer", "older", "ready"), order(listOf(ready, older.copy(status = ModelStatus.Paused), newer.copy(status = ModelStatus.Paused))))
     }
 
     @Test fun completedDownloadsJoinRecencyAndLaterLoadsStillTakePriority() {

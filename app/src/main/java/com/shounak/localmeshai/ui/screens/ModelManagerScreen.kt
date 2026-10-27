@@ -243,9 +243,9 @@ internal fun ModelInfo.downloadedSectionSortRank(): Int {
     }
 }
 
-/** Active downloads lead; the remaining cards retain their recency and fallback order. */
+/** In-progress and paused downloads lead; other cards retain their existing order. */
 internal fun orderDownloadedModels(models: List<ModelInfo>, usedAt: Map<String, Long>): List<ModelInfo> {
-    val downloading = models.filter { it.status == ModelStatus.Downloading }
+    val downloading = models.filter { it.status == ModelStatus.Downloading || it.status == ModelStatus.Paused }
         .sortedWith(compareByDescending<ModelInfo> { it.downloadStartedAt }.thenBy { it.id })
     val used = models.filter { it.status == ModelStatus.Available && it.id in usedAt }.sortedByDescending { usedAt[it.id] }
     val newestDownload = models.filter { it.status == ModelStatus.Available }
