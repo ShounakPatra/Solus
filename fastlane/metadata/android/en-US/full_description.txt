@@ -1,0 +1,11 @@
+Solus lets you chat with compatible AI models running on your Android device.
+Download or import a supported model, then use it for conversation, writing,
+coding, or questions about your documents.
+
+Features include chat history, temporary chats, backups, model management,
+document previews, and optional tools for compatible models. Image and audio
+inputs depend on model and runtime support.
+
+Models are downloaded separately and require storage and memory. Some features,
+including model downloads and Wikipedia, use an internet connection. Availability
+and performance depend on the selected model, its export, and your device.

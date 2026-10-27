@@ -1,0 +1,1 @@
+Adds supported model import pipelines, conversation tools for compatible models, improved document handling, runtime diagnostics, and download recovery. Requires Android 11 or newer on an ARM64 device.
