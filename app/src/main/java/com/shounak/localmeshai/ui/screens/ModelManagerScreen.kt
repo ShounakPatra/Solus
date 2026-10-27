@@ -243,13 +243,14 @@ internal fun ModelInfo.downloadedSectionSortRank(): Int {
     }
 }
 
-/** A new completed download temporarily leads the successful-load MRU list. */
+/** Active downloads lead; the remaining cards retain their recency and fallback order. */
 internal fun orderDownloadedModels(models: List<ModelInfo>, usedAt: Map<String, Long>): List<ModelInfo> {
+    val downloading = models.filter { it.status == ModelStatus.Downloading }
     val used = models.filter { it.status == ModelStatus.Available && it.id in usedAt }.sortedByDescending { usedAt[it.id] }
     val newestDownload = models.filter { it.status == ModelStatus.Available }
         .maxByOrNull { it.downloadTime() }
         ?.takeIf { it.downloadTime() > (used.firstOrNull()?.let { model -> usedAt[model.id] } ?: 0L) }
-    val promoted = (listOfNotNull(newestDownload) + used).distinctBy { it.id }
+    val promoted = (downloading + listOfNotNull(newestDownload) + used).distinctBy { it.id }
     val promotedIds = promoted.map { it.id }.toSet()
     return promoted + models.filter { it.id !in promotedIds }.sortedWith(
         compareBy<ModelInfo> { it.downloadedSectionSortRank() }.thenByDescending { it.downloadTime() }.thenBy { it.id }

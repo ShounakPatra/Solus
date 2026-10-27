@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/** Successful chat/vision loads only; benchmark runs must not reorder the model library. */
+/** Successful chat/vision loads and completed downloads; benchmarks do not change recency. */
 class ModelUsageStore internal constructor(
     preferences: () -> SharedPreferences,
     scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

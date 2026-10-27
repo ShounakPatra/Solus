@@ -13,6 +13,39 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModelSearchAndSortingTest {
+    @Test fun activeDownloadsLeadWithoutReorderingTheOtherCards() {
+        val current = createTestModel("current", "Current", ModelStatus.Available, 20L)
+        val previous = createTestModel("previous", "Previous", ModelStatus.Available, 10L)
+        val failed = createTestModel("failed", "Failed", ModelStatus.Failed, 40L)
+        val other = createTestModel("other", "Other", ModelStatus.Available, 30L)
+        val paused = createTestModel("paused", "Paused", ModelStatus.Paused)
+        val used = mapOf("current" to 200L, "previous" to 100L)
+        val unchanged = listOf(other, previous, failed, paused, current)
+        val first = createTestModel("first", "First", ModelStatus.Downloading)
+        val second = createTestModel("second", "Second", ModelStatus.Downloading)
+        val ordered = com.shounak.localmeshai.ui.screens.orderDownloadedModels(
+            unchanged + first + second, used)
+        assertEquals(listOf("first", "second"), ordered.take(2).map { it.id })
+        assertEquals(
+            com.shounak.localmeshai.ui.screens.orderDownloadedModels(unchanged, used),
+            ordered.drop(2))
+    }
+
+    @Test fun completedDownloadsJoinRecencyAndLaterLoadsStillTakePriority() {
+        val current = createTestModel("current", "Current", ModelStatus.Available, 10L)
+        val previous = createTestModel("previous", "Previous", ModelStatus.Available, 20L)
+        val first = createTestModel("first", "First", ModelStatus.Available, 300L)
+        val second = createTestModel("second", "Second", ModelStatus.Available, 400L)
+        val failed = createTestModel("failed", "Failed", ModelStatus.Failed)
+        val models = listOf(previous, failed, second, first, current)
+        val usage = mapOf("current" to 200L, "previous" to 100L, "first" to 301L, "second" to 401L)
+        fun order(used: Map<String, Long>) =
+            com.shounak.localmeshai.ui.screens.orderDownloadedModels(models, used).map { it.id }
+        assertEquals(listOf("second", "first", "current", "previous", "failed"), order(usage))
+        assertEquals(listOf("previous", "second", "first", "current", "failed"),
+            order(usage + ("previous" to 500L)))
+    }
+
     @Test fun parameterFiltersUseDeclaredCountsInsteadOfDownloadSize() {
         val unknown = createTestModel("unknown", "Custom model").copy(size = "8.0 GB")
         assertFalse(unknown.matches("", SizeTier.Large))
