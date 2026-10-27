@@ -14,9 +14,16 @@ Chat, write, code and explore documents with AI models running on your Android p
   <img src="docs/assets/download-solus-apk.svg" alt="Get the latest signed Solus APK from GitHub Releases" width="360" height="72" />
 </a>
 
+<br />
+<img src="docs/assets/google-play-coming-soon.svg" alt="Coming soon on Google Play" width="239" height="71" />
+<br />
+<img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" alt="F-Droid badge; custom repository coming soon" height="80" />
+
+<sub>A custom F-Droid repository is planned; its download link will be added here when available.</sub>
+
 [![Android CI](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg)](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml)
 ![Version 6.0.5](https://img.shields.io/badge/version-6.0.5-0EA5E9)
-![APK size 50.60 MB](https://img.shields.io/badge/APK-50.60%20MB-22C55E)
+![APK size 49.81 MB](https://img.shields.io/badge/APK-49.81%20MB-22C55E)
 ![Android 11 or newer](https://img.shields.io/badge/Android-11%2B-3DDC84)
 ![ARM64](https://img.shields.io/badge/ABI-arm64--v8a-22C55E)
 ![Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-A970FF)
@@ -44,7 +51,7 @@ Chat, write, code and explore documents with AI models running on your Android p
 
 ## Get started
 
-1. **Install** the [v6.0.5 signed APK](https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/app-release.apk). v6.0.5 requires **Android 11+** and an **ARM64-v8a** device.
+1. **Install** the [v6.0.5 prerelease signed APK](https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/app-release.apk). It is **49.81 MB (47.50 MiB)** and requires **Android 11+** and an **ARM64-v8a** device. Verify it with the [matching SHA-256 checksum](https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/app-release.apk.sha256).
 2. **Choose a model** in **Models**, or use **Add model** to import one from your phone, Hugging Face or a direct URL.
 3. **Start a chat** after the model finishes loading. A small model is a good place to start if your phone has limited RAM.
 4. **Add context** with a PDF or DOCX. Image and audio inputs require a compatible model and export.
