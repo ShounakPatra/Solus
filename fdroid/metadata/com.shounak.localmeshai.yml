@@ -1,0 +1,14 @@
+Categories:
+  - Internet
+License: Apache-2.0
+AuthorName: Shounak Patra
+WebSite: https://github.com/ShounakPatra/Solus
+SourceCode: https://github.com/ShounakPatra/Solus
+IssueTracker: https://github.com/ShounakPatra/Solus/issues
+Name: Solus
+Summary: On-device AI chat and document assistance
+Description: |-
+    Chat with compatible AI models on your Android device. Model files are
+    downloaded separately; available features depend on the chosen model.
+AllowedAPKSigningKeys:
+  - a188e072ab29759eaa1346a1a7056f1854c92d78ecb2a310ae560b8e5cb0ffc3
