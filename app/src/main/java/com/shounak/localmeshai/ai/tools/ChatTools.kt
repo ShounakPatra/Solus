@@ -37,16 +37,28 @@ class CurrentDateTimeTool(private val clock: Clock? = null) : ChatTool {
     }
 }
 
-/** SDK callbacks can execute on worker threads. Snapshot copies never expose mutable state. */
-class ToolUseRecorder {
+/**
+ * SDK callbacks can execute on worker threads. Snapshot copies never expose mutable state.
+ *
+ * With automatic tool calling the SDK chains calls on its own, so tool output could keep driving
+ * further calls. [clear] starts a request; after [maxCallsPerRequest] executions in it every
+ * further call is refused without running, and the model is told to answer instead.
+ */
+class ToolUseRecorder(private val maxCallsPerRequest: Int = MAX_CALLS_PER_REQUEST) {
     @Volatile var onProgress: (() -> Unit)? = null
     private val uses = mutableListOf<ToolUse>()
+    private var attempts = 0
     @Synchronized fun add(use: ToolUse) { if (uses.size < 128) uses.add(use.copy(arguments = use.arguments.take(32768), result = use.result.take(32768))) }
-    @Synchronized fun clear() { uses.clear() }
+    @Synchronized fun clear() { uses.clear(); attempts = 0 }
     @Synchronized fun snapshot(): List<ToolUse> = uses.toList()
+    @Synchronized private fun admit(): Boolean = ++attempts <= maxCallsPerRequest
     fun recording(delegate: ChatTool): OpenApiTool = object : OpenApiTool {
         override fun getToolDescriptionJsonString(): String = delegate.getToolDescriptionJsonString()
         override fun execute(paramsJsonString: String): String {
+            if (!admit()) {
+                add(ToolUse(delegate.name, paramsJsonString, CALL_LIMIT_RESULT))
+                return CALL_LIMIT_RESULT
+            }
             onProgress?.invoke()
             try {
                 val result = delegate.execute(paramsJsonString)
@@ -54,5 +66,11 @@ class ToolUseRecorder {
                 return result
             } finally { onProgress?.invoke() }
         }
+    }
+
+    companion object {
+        /** Matches [ToolCallingLoop]'s bound in spirit: a few rounds, never an unbounded chain. */
+        const val MAX_CALLS_PER_REQUEST = 12
+        const val CALL_LIMIT_RESULT = "Error: Tool call limit reached for this answer. Do not call more tools; answer with the results you already have."
     }
 }

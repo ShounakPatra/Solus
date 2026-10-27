@@ -10,6 +10,7 @@ object ToolCallingLoop {
         tools: List<ChatTool>,
         record: (ToolUse) -> Unit,
         checkActive: () -> Unit,
+        onToolStart: () -> Unit = {},
         generate: suspend (request: String) -> JSONObject
     ): JSONObject {
         val descriptions = JSONArray().apply {
@@ -33,6 +34,7 @@ object ToolCallingLoop {
                 val function = call.getJSONObject("function")
                 val name = function.getString("name")
                 val arguments = function.get("arguments").let { if (it is String) it else it.toString() }
+                onToolStart()
                 val result = registry[name]?.execute(arguments) ?: "Error: Unknown tool $name"
                 record(ToolUse(name, arguments, result))
                 messages.put(JSONObject().put("role", "tool").put("name", name)

@@ -7,6 +7,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ToolCallingLoopTest {
+    @Test fun toolProgressOnlyStartsWhenAnActualCallIsExecuted() = runBlocking<Unit> {
+        var starts = 0
+        ToolCallingLoop.run(JSONArray(), emptyList(), {}, {}, onToolStart = { starts++ }) {
+            JSONObject().put("content", "Hello")
+        }
+        assertEquals(0, starts)
+        var rounds = 0
+        ToolCallingLoop.run(JSONArray(), listOf(CalculatorTool()), {}, {}, onToolStart = { starts++ }) {
+            if (rounds++ == 0) call() else JSONObject().put("content", "done")
+        }
+        assertEquals(1, starts)
+    }
+
     private fun call(name: String = "calculator") = JSONObject("""{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"$name","arguments":"{\"expression\":\"17.5*23\"}"}}]}""")
 
     @Test fun executesAndFeedsResultBeforeFinalAnswer() = runBlocking<Unit> {

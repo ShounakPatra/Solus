@@ -376,10 +376,15 @@ object LocalModelImporter {
                                 format = format,
                                 loadRestriction = inspection.loadRestriction
                             )
+                            // The model now lives in app storage, so the grant taken to copy it is
+                            // never used again; holding it would leak one of the app's limited grants.
+                            withContext(NonCancellable) {
+                                rollbackPermissions(context, newlyAcquiredGrants)
+                            }
                             return@withContext Result.success(
                                 ImportResult(
                                     bundle = bundle,
-                                    newlyAcquiredGrants = newlyAcquiredGrants,
+                                    newlyAcquiredGrants = emptyList(),
                                     stagedArtifactItem = stagedItem,
                                     draftStagingDir = stagingDir
                                 )
@@ -529,7 +534,16 @@ object LocalModelImporter {
                 contextLength = bundleValidation.contextLength.takeIf { it > 0 } ?: capabilities.contextLength
             )
 
-            Result.success(ImportResult(bundle = bundle, newlyAcquiredGrants = newlyAcquiredGrants))
+            // Only files the bundle references are read later. Release the grants this call took
+            // for any other selected file; grants that existed before the import are left alone.
+            val referencedUris = (orderedMain.map { it.uri } + listOfNotNull(projector?.uri)).toSet()
+            val unusedGrants = newlyAcquiredGrants.filterNot { it in referencedUris }
+            if (unusedGrants.isNotEmpty()) {
+                withContext(NonCancellable) {
+                    rollbackPermissions(context, unusedGrants)
+                }
+            }
+            Result.success(ImportResult(bundle = bundle, newlyAcquiredGrants = newlyAcquiredGrants.filter { it in referencedUris }))
         } catch (t: Throwable) {
             if (onGrantAcquired == null) {
                 withContext(NonCancellable) {

@@ -61,6 +61,39 @@ class DocumentExtractionSafetyTest {
     }
 
     @Test
+    fun rtfHexEscapesUseTheDeclaredAnsiCodePage() {
+        val cyrillic = """{\rtf1\ansi\ansicpg1251 \'cf\'f0\'e8\'e2\'e5\'f2}"""
+        assertEquals("Привет", DocumentTextExtractor.extractBytes(cyrillic.toByteArray(), "cyrillic.rtf"))
+        val japanese = """{\rtf1\ansi\ansicpg932 \'82\'a0}"""
+        assertEquals("あ", DocumentTextExtractor.extractBytes(japanese.toByteArray(), "japanese.rtf"))
+        val western = """{\rtf1\ansi caf\'e9}"""
+        assertEquals("café", DocumentTextExtractor.extractBytes(western.toByteArray(), "western.rtf"))
+    }
+
+    @Test
+    fun rtfEmbeddedObjectKeepsItsDisplayedResultText() {
+        val rtf = """{\rtf1 Before. {\object\objemb{\*\objclass Excel.Sheet.12}{\*\objdata 01050000}{\result{\pict\wmetafile8 0100}Embedded total 42.}} After.}"""
+        assertEquals("Before. Embedded total 42. After.", DocumentTextExtractor.extractBytes(rtf.toByteArray(), "object.rtf"))
+    }
+
+    @Test
+    fun archiveMimeTypeWithoutExtensionIsReadBySignature() {
+        val gzip = ByteArrayOutputStream().also { out ->
+            java.util.zip.GZIPOutputStream(out).use { it.write("compressed text".toByteArray()) }
+        }.toByteArray()
+        var failure: String? = null
+        val result = DocumentTextExtractor.extractBytes(gzip, "download", mimeType = "application/gzip", onFailure = { failure = it })
+        assertTrue(result, result.startsWith("Unsupported archive format: gzip"))
+        assertNotNull(failure)
+
+        val zip = createZip(mapOf("notes.txt" to "Zipped meeting notes".toByteArray()))
+        failure = null
+        val extracted = DocumentTextExtractor.extractBytes(zip, "download", mimeType = "application/zip", onFailure = { failure = it })
+        assertNull(failure)
+        assertTrue(extracted.contains("Zipped meeting notes"))
+    }
+
+    @Test
     fun nonZipArchivesReportUnsupportedWithoutOpeningTheStream() {
         val result = ArchiveTextExtractor.extractFromStream(
             inputStreamSupplier = { error("Unsupported formats must not reach the ZIP reader") },

@@ -7,8 +7,13 @@ data class ParsedThinkingContent(
 )
 
 object ThinkingTextUtils {
+    private const val GEMMA_THOUGHT = "<|channel>thought\n"
+    private const val GEMMA_CHANNEL_END = "<channel|>"
+
     /** Hold a possible control-tag suffix until the next delta disambiguates it. */
     fun holdIncompleteTag(text: String): String {
+        // The header itself can arrive over several callbacks, including its channel name.
+        if (GEMMA_THOUGHT.startsWith(text.trimStart()) && text.trimStart() != GEMMA_THOUGHT) return ""
         val lastAngle = text.lastIndexOf('<')
         val lastBracket = text.lastIndexOf('[')
         val start = maxOf(lastAngle, lastBracket)
@@ -16,7 +21,8 @@ object ThinkingTextUtils {
         val suffix = text.substring(start).lowercase()
         val tags = listOf(
             "<think>", "</think>", "<thought>", "</thought>", "<reasoning>", "</reasoning>",
-            "[think]", "[/think]", "[thought]", "[/thought]", "[reasoning]", "[/reasoning]"
+            "[think]", "[/think]", "[thought]", "[/thought]", "[reasoning]", "[/reasoning]",
+            GEMMA_CHANNEL_END
         )
         return if (tags.any { it.startsWith(suffix) && it != suffix }) text.substring(0, start) else text
     }
@@ -30,6 +36,19 @@ object ThinkingTextUtils {
 
     fun parse(text: String, allowActiveThinking: Boolean): ParsedThinkingContent {
         if (text.isBlank()) return ParsedThinkingContent(null, "", false)
+
+        // Some exports return Gemma's raw channel envelope instead of SDK named channels.
+        // Restrict this to the response prefix so quoted protocol examples remain ordinary text.
+        val gemma = text.trimStart()
+        if (gemma.startsWith(GEMMA_THOUGHT)) {
+            val end = gemma.indexOf(GEMMA_CHANNEL_END, GEMMA_THOUGHT.length)
+            val reasoning = gemma.substring(GEMMA_THOUGHT.length, if (end < 0) gemma.length else end).trimLineBreaks()
+            return ParsedThinkingContent(
+                reasoning.takeIf { it.isNotBlank() },
+                if (end < 0) "" else gemma.substring(end + GEMMA_CHANNEL_END.length).trimLineBreaks(),
+                allowActiveThinking && end < 0
+            )
+        }
 
         val firstClose = closeThinkTagRegex.find(text)
         val firstOpen = openThinkTagRegex.find(text)

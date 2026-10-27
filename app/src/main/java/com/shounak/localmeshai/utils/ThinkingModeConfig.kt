@@ -258,6 +258,16 @@ object ThinkingModeConfig {
         ThinkingCapability.Unknown -> false
     }
 
+    /**
+     * Whether a request's reasoning must reach the UI. It is true whenever the runtime is asked to
+     * think ([resolveRequestThinking]) as well as when the user asked for it, so a ModelControlled
+     * model that thinks regardless of the preference never has its reasoning channel discarded.
+     */
+    fun displaysReasoning(
+        capability: ThinkingCapability,
+        userPreference: Boolean
+    ): Boolean = userPreference || resolveRequestThinking(capability, userPreference)
+
     fun supportsTextNoThinkingSwitch(
         capability: ThinkingCapability
     ): Boolean = capability == ThinkingCapability.Toggleable

@@ -26,6 +26,24 @@ class ChatToolsTest {
         recorder.recording(CalculatorTool()).execute("""{"expression":"2+2"}""")
         assertEquals(4, progress)
     }
+    @Test fun automaticToolChainingIsCappedPerRequestAndResetByClear() {
+        var executions = 0
+        val counting = object : ChatTool {
+            override val name = "counting"
+            override fun getToolDescriptionJsonString() = "{}"
+            override fun execute(paramsJsonString: String): String { executions++; return "ok" }
+        }
+        val recorder = ToolUseRecorder(maxCallsPerRequest = 2)
+        val tool = recorder.recording(counting)
+        assertEquals("ok", tool.execute("{}"))
+        assertEquals("ok", tool.execute("{}"))
+        assertEquals(ToolUseRecorder.CALL_LIMIT_RESULT, tool.execute("{}"))
+        assertEquals(2, executions)
+        assertEquals(ToolUseRecorder.CALL_LIMIT_RESULT, recorder.snapshot().last().result)
+        recorder.clear()
+        assertEquals("ok", tool.execute("{}"))
+        assertEquals(3, executions)
+    }
     @Test fun precedenceAndAssociativity() {
         mapOf("17.5 × 23" to "402.5", "2+3*4" to "14", "(2+3)*4" to "20",
             "2^3^2" to "512", "-2^2" to "-4", "(-2)^2" to "4", "2^-2" to "0.25",

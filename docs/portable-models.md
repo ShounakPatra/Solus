@@ -1,6 +1,6 @@
 # Portable model imports and runtimes
 
-Solus imports ONNX and safetensors model data and provides explicit pipelines for
+Solus imports ONNX, TensorFlow Lite and safetensors model data and provides explicit pipelines for
 text generation, image classification, speech transcription and text-to-image.
 A file extension does not identify an architecture or provide a complete pipeline.
 This is **not universal compatibility with arbitrary checkpoints or ONNX graphs**.
@@ -21,8 +21,11 @@ relative to each graph, including component subdirectories. Direct HTTP text-mod
 URLs fetch `config.json` and `tokenizer.json` from the same URL folder; use a
 repository or archive for complete media pipelines.
 
-Unsupported architectures can be imported and show a runtime restriction. They are
-not relabelled GGUF. Runtime restrictions are refreshed after app upgrades while
+HF/URL admission checks reject known unsupported or incomplete exports before
+registering a runnable model or starting its full weight download. The file browser's
+**Save files only** action does not add inference support. Phone-file imports and
+previously registered bundles may show a runtime restriction after inspection; they
+are not relabelled GGUF. Runtime restrictions are refreshed after app upgrades while
 device and prior-crash restrictions are preserved. Runtime graph validation still
 has the final say: an import succeeding does not prove its tensor interface or
 operators are executable.
@@ -109,7 +112,8 @@ Existing GGUF, LiteRT-LM and MediaPipe backends remain available.
 Gradle's `buildCandleAndroid` task packages `libsolus_candle.so` for arm64-v8a.
 The helper uses the Android NDK and either system Rust or the private ignored
 installation in `tools/solus-rust`; cargo-ndk is unnecessary. LiteRT-LM stays at
-0.18.0. The user runs `./gradlew assembleDebug`.
+0.18.0. Current app builds require Android 11/API 30 or newer on arm64-v8a.
+Adjust build parallelism to suit your machine. See the README for build commands.
 
 Focused Rust checks (substitute the installed NDK version if different):
 
