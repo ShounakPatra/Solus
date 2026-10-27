@@ -10,6 +10,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiteRtStreamAdapterTest {
+    @Test fun rawGemmaChannelsStreamWithoutLeakingReasoningIntoTheAnswer() {
+        for (thinking in listOf(true, false)) {
+            val deltas = mutableListOf<String>()
+            val adapter = LiteRtStreamAdapter("gemma", thinkingMode = thinking, onDelta = { deltas += it })
+            "<|channel>thought\nCareful reasoning<channel|>Hello".forEach {
+                adapter.onMessage(Message.model(it.toString()))
+                assertFalse(adapter.currentSnapshot().answerText.contains("Careful"))
+            }
+            adapter.onDone()
+            assertEquals("Careful reasoning", adapter.currentSnapshot().reasoningText)
+            assertEquals("Hello", adapter.currentSnapshot().answerText)
+            assertEquals(if (thinking) "<think>\nCareful reasoning\n</think>\n\nHello" else "Hello", deltas.joinToString(""))
+        }
+    }
+
 
     @Test
     fun verifiedPrefillSeparatesReasoningFromTheFirstTokenWithThinkingOnOrOff() {
@@ -342,5 +357,52 @@ class LiteRtStreamAdapterTest {
         adapter.onMessage(textMsg2)
 
         assertEquals("Chunk 1", adapter.currentSnapshot().answerText)
+    }
+
+    @Test
+    fun gemma4ThoughtChannelDeltasReachLiveAndFinalReasoning() {
+        // LiteRT-LM 0.18 streams Gemma 4 reasoning as per-token deltas on channels["thought"]
+        // (internal_callback_util.cc SendMessageToChannel), then the answer as content deltas.
+        val controller = InferenceResponseController(thinkingMode = true, rawUserText = "what's up", requestId = "g4")
+        val deltas = mutableListOf<String>()
+        var firstTokens = 0
+        val adapter = LiteRtStreamAdapter("g4", thinkingMode = true, reasoningChannelKeys = setOf("thought"),
+            onFirstToken = { firstTokens++ }, onDelta = { deltas += it }, onSnapshot = {
+                controller.appendStructured(it.answerText, it.reasoningText, it.isThinkingActive, "g4", 1, replaceSnapshot = true)
+            })
+        adapter.onMessage(Message.model(channels = mapOf("thought" to "The user")))
+        assertEquals(1, firstTokens)
+        assertEquals("The user", controller.snapshot().reasoningText)
+        assertTrue(controller.snapshot().isThinkingActive)
+        adapter.onMessage(Message.model(channels = mapOf("thought" to " is greeting me.")))
+        adapter.onMessage(Message.model("Not much! "))
+        adapter.onMessage(Message.model("How about you?"))
+        adapter.onDone()
+        controller.finish()
+        assertEquals("The user is greeting me.", adapter.currentSnapshot().reasoningText)
+        assertEquals("Not much! How about you?", adapter.currentSnapshot().answerText)
+        assertEquals("The user is greeting me.", controller.getReasoningText())
+        assertEquals("Not much! How about you?", controller.getFinalAnswer())
+        assertTrue(deltas.joinToString("").startsWith("<think>\nThe user is greeting me."))
+        val terminal = ResponseFinalizer.finalize("g4", rawAnswer = adapter.currentSnapshot().answerText,
+            rawReasoning = adapter.currentSnapshot().reasoningText, thinkingMode = true).toExecutionResult()
+        assertEquals("The user is greeting me.", terminal.reasoningText)
+    }
+
+    @Test
+    fun thinkingModeFalseDiscardsAThoughtChannelSoCallersMustPassTheResolvedFlag() {
+        // Documents the contract VisionInferenceManager now honours with displaysReasoning: a model
+        // that thinks while the adapter and controller run with thinkingMode=false loses its reasoning.
+        val controller = InferenceResponseController(thinkingMode = false, requestId = "hidden")
+        val adapter = LiteRtStreamAdapter("hidden", thinkingMode = false, onSnapshot = {
+            controller.appendStructured(it.answerText, it.reasoningText, it.isThinkingActive, "hidden", 1, replaceSnapshot = true)
+        })
+        adapter.onMessage(Message.model(channels = mapOf("thought" to "Hidden reasoning")))
+        adapter.onMessage(Message.model("Answer"))
+        adapter.onDone()
+        controller.finish()
+        assertEquals("Hidden reasoning", adapter.currentSnapshot().reasoningText)
+        assertEquals("", controller.getReasoningText())
+        assertEquals("Answer", controller.getFinalAnswer())
     }
 }

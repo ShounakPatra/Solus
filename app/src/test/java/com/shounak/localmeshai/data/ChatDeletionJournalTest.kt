@@ -170,18 +170,34 @@ class ChatDeletionJournalTest {
     }
 
     @Test
-    fun malformedDocumentRetirementFailsClosedWithoutOverwritingJournal() {
+    fun invalidDocumentIdsAreDroppedWithoutFailingTheWholeJournal() {
         val root = tempFolder.newFolder("invalid_document_retirement")
         val file = File(root, "chat_deletion_journal.json")
-        val invalid = """{"version":3,"pending":[],"tombstones":[],"deletedRagDocuments":[42],"retainedRagDocuments":[]}"""
+        file.writeText("""{"version":3,"pending":[{"id":"entry","chatKind":"Text","sessionId":"owner","ownedResourcePaths":[],"ownedRagDocumentIds":["owned",""]}],""" +
+            """"tombstones":[],"deletedRagDocuments":[42,"","  ","retired",null],"retainedRagDocuments":[7,"kept"]}""")
+        val journal = ChatDeletionJournal(root)
+        assertTrue(journal.refreshForHistoryAccess())
+        assertFalse(journal.hasRecoveryError())
+        assertEquals(setOf("retired"), journal.deletedRagDocuments())
+        assertEquals(setOf("owned"), journal.getPendingEntries().single().ownedRagDocumentIds)
+        assertTrue(journal.isTombstoned(ChatKind.Text, "owner"))
+        assertTrue(journal.recordRagDeletions(setOf("new")))
+        assertEquals(setOf("retired", "new"), ChatDeletionJournal(root).deletedRagDocuments())
+        assertFalse("Retired ids stay retired", journal.retainRagDocument("retired"))
+    }
+
+    @Test
+    fun unreadableJournalReportsRecoveryWithoutThrowingOrOverwriting() {
+        val root = tempFolder.newFolder("unreadable_document_retirement")
+        val file = File(root, "chat_deletion_journal.json")
+        val invalid = """{"version":3,"pending":[],"tombstones":[],"deletedRagDocuments":"broken","retainedRagDocuments":[]}"""
         file.writeText(invalid)
         val journal = ChatDeletionJournal(root)
-        journal.ensureLoaded()
-        assertTrue(journal.hasRecoveryError())
+        assertTrue(journal.deletedRagDocuments().isEmpty())
+        assertTrue("Callers must treat the empty set as incomplete", journal.hasRecoveryError())
         assertFalse(journal.recordRagDeletions(setOf("new")))
         assertFalse(journal.retainRagDocument("new"))
         assertEquals(invalid, file.readText())
-        assertTrue(runCatching { journal.deletedRagDocuments() }.isFailure)
     }
 
     @Test

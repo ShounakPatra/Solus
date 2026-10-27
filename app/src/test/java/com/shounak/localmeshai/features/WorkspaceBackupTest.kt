@@ -102,7 +102,7 @@ class WorkspaceBackupTest {
         val passage = RagPassage("doc", "notes.txt", 2, "Exact retrieved passage")
         val toolUse = com.shounak.localmeshai.ai.tools.ToolUse("calculator", "{\"expression\":\"2+2\"}", "4")
         val original = chat("original").copy(messages = listOf(
-            ChatMessage(id = "u", text = "Question", isUser = true, documentPath = attachment.path),
+            ChatMessage(id = "u", text = "Question", isUser = true, documentPath = attachment.path, ragDocumentId = passage.documentId),
             ChatMessage(id = "a", text = "Answer", isUser = false, userMessageId = "u", ragPassages = listOf(passage), toolUses = listOf(toolUse))))
         assertTrue(source.repository.saveChatSessions(listOf(original)))
         assertTrue(source.repository.saveVisionSessions(listOf(vision("vision"))))
@@ -176,6 +176,50 @@ class WorkspaceBackupTest {
         assertTrue(File(requireNotNull(upload.documentPath)).isFile)
         target.backup.restoreFrom(output.toByteArray().inputStream())
         assertEquals(upload.ragDocumentId, target.repository.loadChatSessions().single().messages.first().ragDocumentId)
+    }
+
+    @Test fun restoredChatsKeepKnowledgeBaseIdsAndRemapOnlyTheirOwnUploads() = runBlocking {
+        val source = Workspace(folder.newFolder())
+        val document = source.repository.attachmentStore.storeAttachmentFromFile(ChatKind.Text, "source",
+            sourceFile = File(source.cache, "notes.txt").apply { writeText("Document contents") })
+        val uploadPassage = RagPassage("upload-doc", "notes.txt", 0, "Document contents")
+        val libraryPassage = RagPassage("library-doc", "handbook.pdf", 3, "Library passage")
+        source.repository.saveChatSessions(listOf(chat("source").copy(documentId = "library-doc", messages = listOf(
+            ChatMessage(id = "u1", text = "Read notes", isUser = true, documentPath = document.path,
+                documentName = "notes.txt", ragDocumentId = uploadPassage.documentId),
+            ChatMessage(id = "u2", text = "What does the handbook say?", isUser = true,
+                documentName = "handbook.pdf", ragDocumentId = libraryPassage.documentId),
+            ChatMessage(id = "a2", text = "Answer", isUser = false, userMessageId = "u2", ragPassages = listOf(uploadPassage, libraryPassage))
+        ))))
+        assertTrue(source.repository.saveVisionSessions(listOf(vision("vision").copy(documentId = "library-doc", messages = listOf(
+            VisionChatMessage(id = "v1", text = "Question", isUser = true, documentName = "handbook.pdf", ragDocumentId = "library-doc"),
+            VisionChatMessage(id = "v2", text = "Answer", isUser = false, ragPassages = listOf(libraryPassage))
+        )))))
+        val output = ByteArrayOutputStream(); source.backup.exportTo(output, true)
+        val target = Workspace(folder.newFolder())
+        target.backup.restoreFrom(output.toByteArray().inputStream())
+
+        val restored = target.repository.loadChatSessions().single()
+        val (upload, library, answer) = restored.messages
+        assertNotEquals(uploadPassage.documentId, upload.ragDocumentId)
+        assertEquals(upload.ragDocumentId, answer.ragPassages[0].documentId)
+        assertEquals("library-doc", library.ragDocumentId)
+        assertEquals("library-doc", answer.ragPassages[1].documentId)
+        assertEquals("library-doc", restored.documentId)
+        val restoredVision = target.repository.loadVisionSessions().single()
+        assertEquals("library-doc", restoredVision.documentId)
+        assertEquals("library-doc", restoredVision.messages.first().ragDocumentId)
+        assertEquals("library-doc", restoredVision.messages.last().ragPassages.single().documentId)
+    }
+
+    @Test fun ownedUploadIdsCountOnlyTheMessageThatAttachedEachFile() {
+        assertEquals(setOf("d1", "d2"), WorkspaceBackup.ownedUploadIds(listOf(
+            Triple(true, "/a/d1.txt", "d1"),
+            Triple(true, "/a/d1.txt", "library"),
+            Triple(true, null, "library"),
+            Triple(false, "/a/x.png", "assistant"),
+            Triple(true, "/a/d2.txt", "d2"),
+            Triple(true, "/a/d3.txt", null))))
     }
 
     @Test fun failedHistoryCommitRemovesUncommittedAttachments() = runBlocking {

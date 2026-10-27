@@ -7,10 +7,10 @@
 
 ## 2. Dependency Pins & Tooling
 - **SPIRV-Headers:** Commit `86f980c731e62ae4eaf383d320449d71687936bf` in `app/src/main/cpp/spirv-headers`.
-- **Android NDK:** `28.2.13676358` (API level 28 min, 64-bit arm64-v8a target, 16 KB page-size alignment, lld linker).
+- **Android NDK:** `28.2.13676358` (API level 30 min / Android 11, 64-bit arm64-v8a target, 16 KB page-size alignment, lld linker).
 - **CMake:** `3.22.1` with Ninja generator. Host toolchain scoped strictly to `CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows"`; discovery of Linux/macOS host compilers and shader tools is automatic.
 - **Shader Compilation:** Host `vulkan-shaders-gen` built via portable LLVM-MinGW 20261006 (UCRT x86_64) using `tools/prepare-native-tools.ps1` and `app/src/main/cpp/cmake/windows-host-toolchain.cmake`; device shader compiler uses NDK `glslc.exe`.
-- **Concurrency Bounds:** Ninja job pools configured with `compile_pool=2` and `link_pool=1` to prevent memory exhaustion during parallel C++ compilation.
+- **Concurrency Bounds:** The configured Ninja job pools use `compile_pool=4` and `link_pool=1`. Gradle and Cargo parallelism can be adjusted for the host.
 
 ## 3. Implemented Architecture & Completed Repairs
 

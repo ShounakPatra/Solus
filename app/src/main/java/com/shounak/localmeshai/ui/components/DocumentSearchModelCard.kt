@@ -57,7 +57,7 @@ fun DocumentSearchModelCard(hazeState: HazeState, modifier: Modifier = Modifier)
     val spec = EmbeddingModels.BGE_SMALL_EN_V15
     val installed = ragManager.embeddingEngine.algorithmId == spec.id
     val hasDownloadedFiles = remember(filesRevision, status) { EmbeddingModels.directory(context, spec).exists() }
-    val sizeMb = spec.downloadBytes / 1_000_000
+    val sizeLabel = com.shounak.localmeshai.utils.ByteSizeLabel.wholeMib(spec.downloadBytes)
     val colors = MaterialTheme.colorScheme
     val busy = status is EmbeddingModelStatus.Downloading || status is EmbeddingModelStatus.Reindexing
     val compact = installed || (settings.embeddingModelPromptSkipped && !busy && status !is EmbeddingModelStatus.Failed)
@@ -77,7 +77,7 @@ fun DocumentSearchModelCard(hazeState: HazeState, modifier: Modifier = Modifier)
                 ragManager.requestEmbeddingModel(EmbeddingModels.LEXICAL_ID)
             }
         ) {
-            Text("This removes the downloaded search model ($sizeMb MB). Your documents stay in the knowledge base and switch to built-in keyword search. You can download the model again later.")
+            Text("This removes the downloaded search model ($sizeLabel). Your documents stay in the knowledge base and switch to built-in keyword search. You can download the model again later.")
         }
     }
 
@@ -104,9 +104,9 @@ fun DocumentSearchModelCard(hazeState: HazeState, modifier: Modifier = Modifier)
                     )
                     Text(
                         when {
-                            installed -> "${spec.displayName} installed · $sizeMb MB · runs offline"
-                            compact -> "Not downloaded · $sizeMb MB · search uses keyword matching until then"
-                            else -> "${spec.displayName} · $sizeMb MB. Lets Solus find answers in your documents by meaning, not just matching words. Runs fully offline."
+                            installed -> "${spec.displayName} installed · $sizeLabel · runs offline"
+                            compact -> "Not downloaded · $sizeLabel · search uses keyword matching until then"
+                            else -> "${spec.displayName} · $sizeLabel. Lets Solus find answers in your documents by meaning, not just matching words. Runs fully offline."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
@@ -128,7 +128,7 @@ fun DocumentSearchModelCard(hazeState: HazeState, modifier: Modifier = Modifier)
                     val fraction = (s.bytesDone.toFloat() / s.bytesTotal.coerceAtLeast(1L)).coerceIn(0f, 1f)
                     LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth().height(6.dp), color = colors.primary)
                     Text(
-                        "Downloading… ${(fraction * 100).toInt()}% of $sizeMb MB",
+                        "Downloading… ${(fraction * 100).toInt()}% of $sizeLabel",
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.onSurfaceVariant
                     )
@@ -178,7 +178,7 @@ fun DocumentSearchModelCard(hazeState: HazeState, modifier: Modifier = Modifier)
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
                     ) {
                         Text(
-                            if (status is EmbeddingModelStatus.Failed) "Retry" else "Download $sizeMb MB",
+                            if (status is EmbeddingModelStatus.Failed) "Retry" else "Download $sizeLabel",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = colors.primary

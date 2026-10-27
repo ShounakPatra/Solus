@@ -518,11 +518,12 @@ class ChatInferenceManager(context: Context) {
         val resolvedModelPath = effectiveFile.absolutePath
 
         if (shouldUseLiteRtLmConversation) {
+            var blockedAutoLoad = false
             val inferenceBackend = when (pref) {
                 "CPU" -> InferenceBackend.LITERT_CPU
                 "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
                 else -> if (InitCrashGuard.isModelBlocked(context, effectiveId)) {
-                    RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, effectiveFile.absolutePath, configuredContextWindow)
+                    blockedAutoLoad = true
                     InferenceBackend.LITERT_CPU
                 }
                     else RuntimeSpeedTuner.liteRtBackend(context, effectiveId, effectiveFile.absolutePath, configuredContextWindow)
@@ -536,6 +537,10 @@ class ChatInferenceManager(context: Context) {
             )
             if (InitCrashGuard.isModelBlocked(context, effectiveId) && (!allowUnsafeOverride || !InitCrashGuard.isRetryAuthorized(context, effectiveId))) {
                 throw IllegalStateException(InitCrashGuard.blockedModelMessage())
+            }
+            // Only an authorised Try Anyway reaches here; keep the GPU tune unless the recorded crash was a GPU attempt.
+            if (blockedAutoLoad && InitCrashGuard.blockedCrashMayHaveUsedGpu(context, effectiveId)) {
+                RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, effectiveFile.absolutePath)
             }
             if (!allowUnsafeOverride && inferenceBackend != InferenceBackend.LITERT_CPU) {
                 val (allowed, reason) = DeviceUtils.canInitializeLiteRtLm(
@@ -560,7 +565,7 @@ class ChatInferenceManager(context: Context) {
             } catch (failure: Exception) {
                 if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
                     pref != "AUTO" || inferenceBackend != InferenceBackend.LITERT_GPU) throw failure
-                RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, resolvedModelPath, configuredContextWindow)
+                RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, resolvedModelPath)
                 liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
                 liteRtCacheDir = null
                 loadedBackend = InferenceBackend.LITERT_CPU
@@ -602,8 +607,10 @@ class ChatInferenceManager(context: Context) {
         contextWindowTokens: Int? = null,
         onWarmupStart: () -> Unit = {}
     ) {
+        val engineStart = TtftLog.now()
         // Mark that we're about to attempt a potentially fatal native init
-        InitCrashGuard.markInitStarted(context, modelId)
+        InitCrashGuard.markInitStarted(context, modelId,
+            if (inferenceBackend == InferenceBackend.LITERT_GPU) InitCrashGuard.BACKEND_GPU else InitCrashGuard.BACKEND_CPU)
 
         // This call may invoke native abort() and kill the entire process.
         // If that happens, InitCrashGuard.checkAndRecoverCrash() on next
@@ -648,9 +655,12 @@ class ChatInferenceManager(context: Context) {
                 }
             }
 
+            TtftLog.d("chat engine.init ms=${TtftLog.elapsedMs(engineStart)} backend=${backend.name} threads=$runtimeThreads " +
+                "maxTokens=${runtimeContextCapacity.tokens}")
             if (RuntimeWarmup.enabled(context)) {
                 onWarmupStart()
                 warmupMs = RuntimeWarmup.liteRt(requireNotNull(engine)) { liteRtConversation = it }.coerceAtLeast(1)
+                TtftLog.d("chat warmup ms=$warmupMs")
             }
 
             liteRtToolsDisabledForLoad = false
@@ -1013,7 +1023,9 @@ class ChatInferenceManager(context: Context) {
             publisher?.beginAttempt(2)
             val previousConversation = liteRtConversation
             liteRtConversation = null
-            previousConversation?.close()
+            runCatching { previousConversation?.close() }.onFailure { t ->
+                Log.w(TAG, "LiteRT-LM conversation close before tool retry failed", t)
+            }
             liteRtConversation = createLiteRtConversation(liteRtConversationMode)
             toolsAlreadyUsed.forEach(liteRtToolRecorder::add)
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -1048,6 +1060,7 @@ class ChatInferenceManager(context: Context) {
             userPreference = thinkingMode
         )
         val requestStartedAt = System.currentTimeMillis()
+        val sendStartNanos = java.util.concurrent.atomic.AtomicLong(0L)
         var firstChunkRecorded = false
         Log.i(
             TAG,
@@ -1063,6 +1076,9 @@ class ChatInferenceManager(context: Context) {
             startsInReasoning = configuredCapabilities?.capabilities?.reasoningPrefill == true,
             onFirstToken = {
                 timing?.recordFirstToken()
+                sendStartNanos.get().takeIf { it != 0L }?.let { start ->
+                    TtftLog.d("chat send->firstToken req=$requestId ms=${TtftLog.elapsedMs(start)}")
+                }
                 if (!firstChunkRecorded) {
                     firstChunkRecorded = true
                     onProgress?.invoke(RequestProgress.Generating)
@@ -1075,6 +1091,7 @@ class ChatInferenceManager(context: Context) {
             },
             onDelta = { delta ->
                 if (stopRequested) return@LiteRtStreamAdapter
+                if (delta.isNotEmpty()) onProgress?.invoke(RequestProgress.Generating)
                 if (!firstChunkRecorded && delta.isNotEmpty()) {
                     firstChunkRecorded = true
                     timing?.recordFirstToken()
@@ -1104,6 +1121,10 @@ class ChatInferenceManager(context: Context) {
         )
         activeLiteRtAdapter = adapter
         try {
+            val kvBefore = runCatching { conversation.getTokenCount() }.getOrDefault(-1)
+            TtftLog.d("chat send req=$requestId kvTokensBefore=$kvBefore promptChars=${prompt.length} tools=$liteRtConversationHasTools " +
+                "thinking=$requestedThinking mode=$liteRtConversationMode backend=${activeBackendDisplayName.replace(' ', '_')} threads=$runtimeThreads")
+            sendStartNanos.set(TtftLog.now())
             conversation.sendMessageAsync(
                 requestMessage,
                 adapter,
@@ -1112,6 +1133,9 @@ class ChatInferenceManager(context: Context) {
             )
             val finalSnapshot = adapter.awaitDone()
             lastLiteRtSnapshot = finalSnapshot
+            val kvAfter = runCatching { conversation.getTokenCount() }.getOrDefault(-1)
+            TtftLog.d("chat done req=$requestId totalMs=${TtftLog.elapsedMs(sendStartNanos.get())} " +
+                "kvTokensBefore=$kvBefore kvTokensAfter=$kvAfter callbacks=${adapter.callbackCount}")
             val answerText = finalSnapshot.answerText
             val rawTokens = if (adapter.callbackCount > 0) {
                 adapter.callbackCount
@@ -1259,7 +1283,8 @@ class ChatInferenceManager(context: Context) {
         responseController?.isStructuredMode = true
         try {
             ggufToolRecorder.clear()
-            if (ggufConversationHasTools && mediaInputs.isEmpty()) {
+            if (ggufConversationHasTools && mediaInputs.isEmpty() &&
+                com.shounak.localmeshai.ai.tools.ToolTurnPolicy.needsTools(messages)) {
                 val toolStream = com.shounak.localmeshai.ai.tools.GgufToolTurnStream(
                     publish = { answer, reasoning, thinking ->
                         responseController?.appendStructured(answer, reasoning, thinking,
@@ -1267,10 +1292,10 @@ class ChatInferenceManager(context: Context) {
                         publisher?.notifyStructuredUpdate(allowEmpty = true)
                     },
                     onText = { text ->
+                        onProgress?.invoke(RequestProgress.Generating)
                         if (!firstTokenRecorded) {
                             firstTokenRecorded = true
                             timing?.recordFirstToken()
-                            onProgress?.invoke(RequestProgress.Generating)
                         }
                         timing?.recordChunk(text)
                     }
@@ -1286,19 +1311,21 @@ class ChatInferenceManager(context: Context) {
                         record = ggufToolRecorder::add,
                         checkActive = {
                             if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
-                            onProgress?.invoke(RequestProgress.UsingTools)
-                        }
+                        },
+                        onToolStart = { onProgress?.invoke(RequestProgress.UsingTools) }
                     ) { request ->
                         var parsed: String? = null
+                        onProgress?.invoke(RequestProgress.ProcessingPrompt)
                         val status = engine.generateMultimodalStream(
                             prompt = prompt, messages = messages, enableThinking = !noThinking,
                             samplingParams = profileSampling(), onMetrics = onMetrics,
                             toolRequestJson = request, onToolResponse = { parsed = it },
-                            onFirstToken = { onProgress?.invoke(RequestProgress.UsingTools) },
+                            // Raw tokens can be tool arguments. Only parsed answer/reasoning is visible progress.
+                            onFirstToken = {},
                             onStructuredToken = { answer, reasoning, thinking ->
                                 if (!stopRequested && !isBeingClosed) toolStream.update(answer, reasoning, thinking)
                             },
-                            onToken = { onProgress?.invoke(RequestProgress.UsingTools) }
+                            onToken = {}
                         )
                         if (status == LlamaGenerationResult.Stopped) throw CancellationException("Generation cancelled")
                         org.json.JSONObject(checkNotNull(parsed) { "Missing tool response" }).also(toolStream::complete)
@@ -1314,8 +1341,7 @@ class ChatInferenceManager(context: Context) {
                     if (ggufToolRecorder.snapshot().isNotEmpty()) throw failure
                     toolStream.clear()
                     pendingToolHistory = null
-                    ggufConversationHasTools = false
-                    Log.w(TAG, "GGUF tools unavailable; retrying this conversation as ordinary chat", failure)
+                    Log.w(TAG, "GGUF tools unavailable for this turn; retrying as ordinary chat", failure)
                 }
             }
 
@@ -1524,8 +1550,10 @@ class ChatInferenceManager(context: Context) {
             Log.w(TAG, "LiteRT-LM conversation close during reset failed", t)
         }
         stopRequested = false
+        val resetStart = TtftLog.now()
         liteRtConversation = createLiteRtConversation(mode)
         liteRtMessageCount = 0
+        TtftLog.d("chat conversation.reset ms=${TtftLog.elapsedMs(resetStart)} mode=$mode (history is re-sent in the next prompt)")
     }
 
     private fun toolsForNewConversation(): List<com.shounak.localmeshai.ai.tools.ChatTool> =
@@ -1534,6 +1562,13 @@ class ChatInferenceManager(context: Context) {
 
     private fun createLiteRtConversation(mode: LiteRtConversationMode): Conversation? {
         val engine = liteRtEngine ?: return null
+        val base = LiteRtThinkingConfig.apply(
+            ConversationConfig(extraContext = if (mode == LiteRtConversationMode.NoThinking)
+                ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
+                else emptyMap()),
+            enabled = if (isDefaultThinkingModel) mode != LiteRtConversationMode.NoThinking else null,
+            softSwitch = configuredCapabilities?.capabilities?.thinkingControl == ThinkingControlStrategy.QwenSoftSwitch
+        )
         val settings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
         if (conversationToolSettings?.requiresRefresh(settings) == true) liteRtToolsDisabledForLoad = false
         conversationToolSettings = settings
@@ -1547,14 +1582,13 @@ class ChatInferenceManager(context: Context) {
                     tool(liteRtToolRecorder.recording(it))
                 }
                 if (providers.isNotEmpty()) {
-                    val conversation = engine.createConversation(ConversationConfig(
+                    val createStart = TtftLog.now()
+                    val conversation = engine.createConversation(base.copy(
                         tools = providers,
-                        automaticToolCalling = true,
-                        extraContext = if (mode == LiteRtConversationMode.NoThinking)
-                            ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
-                        else emptyMap()
+                        automaticToolCalling = true
                     ))
                     liteRtConversationHasTools = true
+                    TtftLog.d("chat conversation.create ms=${TtftLog.elapsedMs(createStart)} tools=${providers.size} mode=$mode")
                     return conversation
                 }
             } catch (failure: Exception) {
@@ -1564,17 +1598,7 @@ class ChatInferenceManager(context: Context) {
                 Log.w(TAG, "LiteRT tool conversation unavailable; using ordinary chat for this turn", failure)
             }
         }
-        return when (mode) {
-            LiteRtConversationMode.Default -> engine.createConversation()
-            LiteRtConversationMode.NoThinking -> engine.createConversation(
-                ConversationConfig(
-                    extraContext = ThinkingModeConfig.liteRtExtraContext(
-                        isDefaultThinkingModel = true,
-                        thinkingMode = false
-                    )
-                )
-            )
-        }
+        return engine.createConversation(base)
     }
 
     fun close(): ShutdownResult {

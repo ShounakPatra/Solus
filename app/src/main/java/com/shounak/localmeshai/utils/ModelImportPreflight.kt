@@ -24,7 +24,7 @@ internal object ModelImportPreflight {
             .callTimeout(20, TimeUnit.SECONDS)) { token }.build()
         val format = spec.effectiveFormat
         val primary = spec.artifacts.firstOrNull() ?: error("No model artifact selected")
-        val remote = RemoteModelMetadata(client, primary.downloadUrl, if (format == ModelFormat.Onnx) 4096L else 65536L)
+        val remote by lazy { RemoteModelMetadata(client, primary.downloadUrl, if (format == ModelFormat.Onnx) 4096L else 65536L) }
         if (!format.isPortable) {
             val header = remote.read(0, 8)
             val valid = when (format) {
@@ -40,11 +40,6 @@ internal object ModelImportPreflight {
             remote.read(0, 8)
             require(remote.length > 8) { "The source must report a model size for metadata inspection" }
             TfliteExportInspector.inspect(remote.length, remote::read).also { it.check(JSONObject()) }
-        } else null
-        val onnx = if (format == ModelFormat.Onnx) {
-            remote.read(0, 8)
-            require(remote.length > 8) { "The source must report an ONNX graph size for metadata inspection" }
-            OnnxExportInspector.inspectSignatures(remote.length, remote::read)
         } else null
         if (format == ModelFormat.Safetensors) {
             val header = java.nio.ByteBuffer.wrap(remote.read(0, 8)).order(java.nio.ByteOrder.LITTLE_ENDIAN).long
@@ -128,6 +123,13 @@ internal object ModelImportPreflight {
         } else if (task == ModelTask.SpeechRecognition) {
             require(exists("vocab.json")) { "Missing files: CTC transcription requires vocab.json" }
         }
+        // Reject unsupported metadata before probing a potentially large remote graph. Start
+        // the graph's bounded inspection deadline here, after companion metadata requests.
+        val onnx = if (format == ModelFormat.Onnx) {
+            remote.read(0, 8)
+            require(remote.length > 8) { "The source must report an ONNX graph size for metadata inspection" }
+            OnnxExportInspector.inspectSignatures(remote.length, remote::read)
+        } else null
         onnx?.check(task)
         onnx?.external?.forEach { name ->
             val directory = primary.fileName.substringBeforeLast('/', "")

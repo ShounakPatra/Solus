@@ -145,25 +145,30 @@ class WorkspaceBackup internal constructor(
                         sourceFile = stage.resolve(entry), targetFileName = File(path).name)
                 }.absolutePath
             }
+            // Only a chat's own uploads get a restored identity, so the restored copy never shares retirement with
+            // the original. Knowledge-base documents belong to the shared library and keep their ids.
+            fun remapRag(id: String, ownedUploads: Set<String>) = if (id in ownedUploads) remap("rag", id) else id
             val text = originalText.map { session ->
                 val id = remap("text", session.id)
                 if (id in existingText || repository.isTombstoned(ChatKind.Text, id)) return@map session.copy(id = id)
-                session.copy(id = id, documentId = null, messages = session.messages.map { message -> message.copy(
+                val owned = ownedUploadIds(session.messages.map { Triple(it.isUser, it.documentPath, it.ragDocumentId) })
+                session.copy(id = id, documentId = session.documentId?.let { remapRag(it, owned) }, messages = session.messages.map { message -> message.copy(
                     id = remap("message", message.id), userMessageId = message.userMessageId?.let { remap("message", it) },
-                    ragDocumentId = message.ragDocumentId?.let { remap("rag", it) },
-                    ragPassages = message.ragPassages.map { it.copy(documentId = remap("rag", it.documentId)) },
+                    ragDocumentId = message.ragDocumentId?.let { remapRag(it, owned) },
+                    ragPassages = message.ragPassages.map { it.copy(documentId = remapRag(it.documentId, owned)) },
                     documentPath = attachment(message.documentPath, ChatKind.Text, id), progress = null, isThinkingActive = false
                 ) })
             }
             val vision = originalVision.map { session ->
                 val id = remap("vision", session.id)
                 if (id in existingVision || repository.isTombstoned(ChatKind.Vision, id)) return@map session.copy(id = id)
-                session.copy(id = id, documentId = null,
+                val owned = ownedUploadIds(session.messages.map { Triple(it.isUser, it.documentPath, it.ragDocumentId) })
+                session.copy(id = id, documentId = session.documentId?.let { remapRag(it, owned) },
                     imagePath = attachment(session.imagePath, ChatKind.Vision, id), audioPath = attachment(session.audioPath, ChatKind.Vision, id),
                     messages = session.messages.map { message -> message.copy(
                         id = remap("message", message.id), userMessageId = message.userMessageId?.let { remap("message", it) },
-                        ragDocumentId = message.ragDocumentId?.let { remap("rag", it) },
-                        ragPassages = message.ragPassages.map { it.copy(documentId = remap("rag", it.documentId)) },
+                        ragDocumentId = message.ragDocumentId?.let { remapRag(it, owned) },
+                        ragPassages = message.ragPassages.map { it.copy(documentId = remapRag(it.documentId, owned)) },
                         imagePath = attachment(message.imagePath, ChatKind.Vision, id), audioPath = attachment(message.audioPath, ChatKind.Vision, id),
                         documentPath = attachment(message.documentPath, ChatKind.Vision, id), progress = null, isThinkingActive = false
                     ) })
@@ -203,6 +208,14 @@ class WorkspaceBackup internal constructor(
         const val MAX_BYTES = 256L * 1024 * 1024
         const val MAX_MANIFEST = 32 * 1024 * 1024
         private val PATH_FIELDS = setOf("documentPath", "imagePath", "audioPath")
+        /**
+         * Ids of uploads a chat owns: the first user message carrying each uploaded file. A later message that
+         * repeats the path (an older build stamped follow-ups that way) does not make its id an upload.
+         */
+        internal fun ownedUploadIds(messages: List<Triple<Boolean, String?, String?>>): Set<String> =
+            messages.filter { (isUser, path, _) -> isUser && !path.isNullOrBlank() }
+                .distinctBy { it.second }
+                .mapNotNull { (_, _, id) -> id?.takeIf(String::isNotBlank) }.toSet()
         internal fun inside(child: File, root: File) = child.canonicalPath.startsWith(root.canonicalPath + File.separator)
         internal fun validateSessions(json: JSONObject) {
             require(json.getInt("version") in 1..SessionCodec.CURRENT_VERSION) { "Unsupported history schema" }

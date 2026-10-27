@@ -15,6 +15,34 @@ class ChatDocumentScopeTest {
         assertEquals(setOf("summary.pdf"), ChatDocumentScope.referencedNames("Summarize summary.pdf", listOf("summary.pdf", "notes.pdf")))
     }
 
+    @Test fun commonWordFilenamesNarrowOnlyWhenMentionedLikeAFile() = runBlocking {
+        val names = listOf("contract.pdf", "budget.xlsx")
+        assertTrue(ChatDocumentScope.referencedNames("What does the contract say about payment?", names).isEmpty())
+        assertTrue(ChatDocumentScope.referencedNames("Is the budget over target?", names).isEmpty())
+        assertEquals(setOf("contract.pdf"), ChatDocumentScope.referencedNames("Summarize contract.pdf", names))
+        assertEquals(setOf("budget.xlsx"), ChatDocumentScope.referencedNames("What is in the budget spreadsheet?", names))
+        assertEquals(setOf("budget.xlsx"), ChatDocumentScope.referencedNames("Open \"budget\" please", names))
+        assertEquals(setOf("Q3_Report.pdf"), ChatDocumentScope.referencedNames("Compare Q3_Report with last year", listOf("Q3_Report.pdf", "data.csv")))
+        assertTrue(ChatDocumentScope.referencedNames("Summarize the contract", listOf("contract")).isEmpty())
+        assertTrue("A bare stem is still a document hint", ChatDocumentScope.isDocumentQuestion("Is the budget over target?", names))
+
+        val rag = manager()
+        rag.ingestText("contract.pdf", "Payment is due within thirty days.", "contract")
+        rag.ingestText("invoice.pdf", "Invoice payment total is 540 dollars.", "invoice")
+        val result = rag.retrieveForChat("What does the contract say about payment?", allowedDocumentIds = setOf("contract", "invoice"))
+        assertEquals(setOf("contract", "invoice"), result.matches.map { it.chunk.documentId }.toSet())
+    }
+
+    @Test fun namedDocumentPartsAndKindsAreDocumentQuestionsWithoutNumbers() {
+        for (query in listOf("What does the termination clause say?", "Explain the confidentiality provisions",
+                "What is in the second chapter?", "What does the contract say about notice?", "Summarise the lease")) {
+            assertTrue(query, ChatDocumentScope.isDocumentQuestion(query))
+        }
+        for (query in listOf("What is the periodic table?", "How do I write a good essay?", "Hi", "Explain ocean tides")) {
+            assertFalse(query, ChatDocumentScope.isDocumentQuestion(query))
+        }
+    }
+
     @Test fun namedUploadOverridesTheLastUploadForSummariesAndSearch() = runBlocking {
         val rag = manager()
         rag.ingestText("batteries.pdf", "Battery replacement information.", "battery")
