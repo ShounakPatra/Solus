@@ -81,10 +81,14 @@ object AttachmentViewerUtils {
             if (f.exists() && f.isFile) return f
         }
 
-        val cacheInputs = context.cacheDir.resolve("multimodal_inputs").resolve(documentName)
-        if (cacheInputs.exists() && cacheInputs.isFile) return cacheInputs
-
-        return null
+        // A display name from history or a document provider is not an explicit file path.
+        if (documentName.isBlank() || documentName in setOf(".", "..") ||
+            documentName.any { it == '/' || it == '\\' || it == '\u0000' }) return null
+        return runCatching {
+            val root = context.cacheDir.resolve("multimodal_inputs").canonicalFile
+            val file = root.resolve(documentName)
+            file.takeIf { it.isFile && it.canonicalFile.parentFile == root }
+        }.getOrNull()
     }
 
     /**
