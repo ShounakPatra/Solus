@@ -17,9 +17,11 @@ Chat, write, code and explore documents with AI models running on your Android p
 <br />
 <img src="docs/assets/google-play-coming-soon.svg" alt="Coming soon on Google Play" width="239" height="71" />
 <br />
-<img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" alt="F-Droid badge; custom repository coming soon" height="80" />
+<a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC" title="Add the Solus repository to F-Droid">
+  <img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" alt="Add the Solus custom repository to F-Droid" height="80" />
+</a>
 
-<sub>A custom F-Droid repository is planned; its download link will be added here when available.</sub>
+<sub>Add the Solus custom repository to F-Droid to install the app. Official F-Droid catalog inclusion is under review.</sub>
 
 [![Android CI](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg)](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml)
 ![Version 6.0.5](https://img.shields.io/badge/version-6.0.5-0EA5E9)
