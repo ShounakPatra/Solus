@@ -48,7 +48,6 @@ class ModelDownloadService : Service() {
             result: DownloadResult,
             snapshot: DownloadSnapshot
         ) {
-            com.shounak.localmeshai.utils.ModelUsageStore.get(applicationContext).recordUsed(request.modelId)
             notificationManager.cancel(request.modelId.notificationId())
             notifyEvent(request, "Download complete ✓", "${request.name} is ready to use.")
         }

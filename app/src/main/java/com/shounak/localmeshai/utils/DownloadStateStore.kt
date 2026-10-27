@@ -16,7 +16,8 @@ data class DownloadSnapshot(
     val bytesPerSecond: Long = 0L,
     val localPath: String? = null,
     val errorMessage: String? = null,
-    val downloadedAt: Long = 0L
+    val downloadedAt: Long = 0L,
+    val startedAt: Long = 0L
 )
 
 object DownloadStateStore {
@@ -92,6 +93,7 @@ object DownloadStateStore {
             snapshot.localPath != previous.localPath ||
             snapshot.errorMessage != previous.errorMessage ||
             snapshot.downloadedAt != previous.downloadedAt ||
+            snapshot.startedAt != previous.startedAt ||
             kotlin.math.abs(snapshot.downloadedBytes - previous.downloadedBytes) >= PERSIST_BYTE_STEP ||
             now - (lastPersistedAt[snapshot.modelId] ?: 0L) >= PERSIST_INTERVAL_MS
         if (!shouldPersist) return
@@ -111,6 +113,7 @@ object DownloadStateStore {
         put("localPath", snapshot.localPath ?: JSONObject.NULL)
         put("errorMessage", snapshot.errorMessage ?: JSONObject.NULL)
         put("downloadedAt", snapshot.downloadedAt)
+        put("startedAt", snapshot.startedAt)
     }.toString()
 
     private fun decode(value: String): DownloadSnapshot {
@@ -127,7 +130,8 @@ object DownloadStateStore {
             bytesPerSecond = json.optLong("bytesPerSecond", 0L),
             localPath = if (json.isNull("localPath")) null else json.optString("localPath"),
             errorMessage = null,
-            downloadedAt = json.optLong("downloadedAt", 0L)
+            downloadedAt = json.optLong("downloadedAt", 0L),
+            startedAt = json.optLong("startedAt", 0L)
         )
     }
 }

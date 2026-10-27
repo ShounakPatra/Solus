@@ -57,13 +57,15 @@ class DownloadController(
     val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     val networkChecker: (() -> Boolean)? = null,
     var eventListener: DownloadEventListener? = null,
-    var inferenceShutdownAwaiter: (suspend (String) -> Boolean)? = null
+    var inferenceShutdownAwaiter: (suspend (String) -> Boolean)? = null,
+    private val recordCompletedDownload: (String) -> Unit = {}
 ) {
     private val mutexes = ConcurrentHashMap<String, Mutex>()
     private val activeJobs = ConcurrentHashMap<String, Job>()
     private val activeAttempts = ConcurrentHashMap<String, Long>()
     private val requests = ConcurrentHashMap<String, DownloadRequest>()
     private val attemptCounter = AtomicLong(0L)
+    private val lastStartedAt = AtomicLong(0L)
 
     private val pendingOperationsCount = AtomicInteger(0)
     private val cancellingJobs: MutableSet<Job> = Collections.newSetFromMap(ConcurrentHashMap<Job, Boolean>())
@@ -85,6 +87,7 @@ class DownloadController(
     fun start(request: DownloadRequest): Job {
         requests[request.modelId] = request
         val attemptId = attemptCounter.incrementAndGet()
+        val startedAt = lastStartedAt.updateAndGet { maxOf(System.currentTimeMillis(), it + 1L) }
         pendingOperationsCount.incrementAndGet()
 
         var previousJob: Job? = null
@@ -134,6 +137,7 @@ class DownloadController(
 
                     val startSnapshot = DownloadSnapshot(
                         modelId = request.modelId,
+                        startedAt = startedAt,
                         status = ModelStatus.Downloading,
                         progress = initialProgress,
                         downloadedBytes = partialBytes,
@@ -155,6 +159,7 @@ class DownloadController(
                             if (activeAttempts[request.modelId] != attemptId) return@downloadArtifactBundle
                             val snapshot = DownloadSnapshot(
                                 modelId = request.modelId,
+                                startedAt = startedAt,
                                 status = ModelStatus.Downloading,
                                 progress = progress.progress,
                                 downloadedBytes = progress.downloadedBytes,
@@ -176,6 +181,7 @@ class DownloadController(
                             if (activeAttempts[request.modelId] != attemptId) return@downloadModel
                             val snapshot = DownloadSnapshot(
                                 modelId = request.modelId,
+                                startedAt = startedAt,
                                 status = ModelStatus.Downloading,
                                 progress = progress.progress,
                                 downloadedBytes = progress.downloadedBytes,
@@ -202,7 +208,7 @@ class DownloadController(
                                 localPath = result.localPath,
                                 downloadedAt = System.currentTimeMillis()
                             )
-                            DownloadStateStore.update(completeSnapshot)
+                            publishCompleted(completeSnapshot)
                             eventListener?.onDownloadCompleted(request, result, completeSnapshot)
                         }
                     }
@@ -213,6 +219,7 @@ class DownloadController(
                             val publishedFile = downloader.artifactStorage.getPublishedArtifact(request.modelId)
                             val isAvailable = snapshot?.status == ModelStatus.Available || publishedFile != null
                             if (isAvailable) {
+                                recoverPublishedDownload(request.modelId)
                                 return@withLock
                             }
                             val pausedSnapshot = DownloadSnapshot(
@@ -229,6 +236,9 @@ class DownloadController(
                 } catch (e: Exception) {
                     getMutex(request.modelId).withLock {
                         if (activeAttempts[request.modelId] == attemptId) {
+                            // Publishing is already committed: an ancillary failure (such as a
+                            // notification callback) must not turn a usable model into Failed/Paused.
+                            if (recoverPublishedDownload(request.modelId)) return@withLock
                             val previous = DownloadStateStore.get(request.modelId)
                             val currentPartial = maxOf(
                                 previous?.downloadedBytes ?: 0L,
@@ -295,6 +305,7 @@ class DownloadController(
             }
             getMutex(modelId).withLock {
                 val request = requests[modelId]
+                if (recoverPublishedDownload(modelId)) return@withLock
                 val snapshot = DownloadStateStore.get(modelId)
                 val partialBytes = maxOf(snapshot?.downloadedBytes ?: 0L, downloader.getPartialDownloadBytes(modelId))
                 val pausedSnapshot = DownloadSnapshot(
@@ -317,6 +328,37 @@ class DownloadController(
     }
 
     fun resume(request: DownloadRequest): Job = start(request)
+
+    private fun publishCompleted(snapshot: DownloadSnapshot) {
+        val previous = DownloadStateStore.get(snapshot.modelId)
+        DownloadStateStore.update(snapshot)
+        if (previous?.status != ModelStatus.Available || previous.downloadedAt != snapshot.downloadedAt) {
+            recordCompletedDownload(snapshot.modelId)
+        }
+    }
+
+    /** A publish can finish just before Stop/Pause cancels the download coroutine. */
+    private fun recoverPublishedDownload(modelId: String): Boolean {
+        val previous = DownloadStateStore.get(modelId)
+        val publishedFile = downloader.artifactStorage.getPublishedArtifact(modelId)
+        if (previous?.status != ModelStatus.Available && publishedFile == null) return false
+        val resolvedBytes = when {
+            (previous?.downloadedBytes ?: 0L) > 0L -> previous?.downloadedBytes ?: 0L
+            (previous?.totalBytes ?: 0L) > 0L -> previous?.totalBytes ?: 0L
+            publishedFile != null && publishedFile.length() > 0L -> publishedFile.length()
+            else -> 0L
+        }
+        publishCompleted(DownloadSnapshot(
+            modelId = modelId,
+            status = ModelStatus.Available,
+            progress = 1f,
+            downloadedBytes = resolvedBytes,
+            totalBytes = previous?.totalBytes ?: -1L,
+            localPath = previous?.localPath ?: publishedFile?.absolutePath,
+            downloadedAt = previous?.downloadedAt?.takeIf { it > 0 } ?: System.currentTimeMillis()
+        ))
+        return true
+    }
 
     suspend fun cancelDownload(modelId: String, retainStaging: Boolean = false) {
         pendingOperationsCount.incrementAndGet()
@@ -344,23 +386,7 @@ class DownloadController(
                             downloader.deleteStagingDownload(modelId)
                         }
                     }
-                    val localPath = latestSnapshot?.localPath ?: publishedFile?.absolutePath
-                    val resolvedBytes = when {
-                        (latestSnapshot?.downloadedBytes ?: 0L) > 0L -> latestSnapshot?.downloadedBytes ?: 0L
-                        (latestSnapshot?.totalBytes ?: 0L) > 0L -> latestSnapshot?.totalBytes ?: 0L
-                        publishedFile != null && publishedFile.length() > 0L -> publishedFile.length()
-                        else -> 0L
-                    }
-                    val completeSnapshot = DownloadSnapshot(
-                        modelId = modelId,
-                        status = ModelStatus.Available,
-                        progress = 1f,
-                        downloadedBytes = resolvedBytes,
-                        totalBytes = latestSnapshot?.totalBytes ?: -1L,
-                        localPath = localPath,
-                        downloadedAt = latestSnapshot?.downloadedAt?.takeIf { it > 0 } ?: System.currentTimeMillis()
-                    )
-                    DownloadStateStore.update(completeSnapshot)
+                    recoverPublishedDownload(modelId)
                     return@withLock
                 }
 
@@ -496,7 +522,10 @@ class DownloadController(
             instance ?: synchronized(this) {
                 instance ?: DownloadController(
                     downloader = ModelDownloader(context),
-                    networkChecker = { NetworkUtils.isConnected(context) }
+                    networkChecker = { NetworkUtils.isConnected(context) },
+                    recordCompletedDownload = { modelId ->
+                        com.shounak.localmeshai.utils.ModelUsageStore.get(context.applicationContext).recordUsed(modelId)
+                    }
                 ).also { instance = it }
             }
 

@@ -78,7 +78,8 @@ data class ModelInfo(
     val bundle: ModelBundle? = null,
     val downloadSpec: ModelDownloadSpec? = null,
     val supportsVisionInput: Boolean = false,
-    val loadRestriction: LoadRestriction? = null
+    val loadRestriction: LoadRestriction? = null,
+    val downloadStartedAt: Long = 0L
 ) {
     /** Old persisted descriptions counted only selected weights, before companion discovery. */
     val displayDescription: String

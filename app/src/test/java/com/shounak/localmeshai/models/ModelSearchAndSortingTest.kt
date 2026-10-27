@@ -13,6 +13,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModelSearchAndSortingTest {
+    @Test fun newestActiveDownloadLeadsRegardlessOfCatalogOrderAndProgress() {
+        val older = createTestModel("older", "Older", ModelStatus.Downloading).copy(downloadStartedAt = 100L)
+        val newer = createTestModel("newer", "Newer", ModelStatus.Downloading).copy(downloadStartedAt = 101L)
+        val ready = createTestModel("ready", "Ready", ModelStatus.Available)
+        val ordered = com.shounak.localmeshai.ui.screens.orderDownloadedModels(
+            listOf(older.copy(progress = 0.9f), ready, newer.copy(progress = 0.1f)), mapOf("ready" to 200L))
+        assertEquals(listOf("newer", "older", "ready"), ordered.map { it.id })
+    }
+
     @Test fun activeDownloadsLeadWithoutReorderingTheOtherCards() {
         val current = createTestModel("current", "Current", ModelStatus.Available, 20L)
         val previous = createTestModel("previous", "Previous", ModelStatus.Available, 10L)

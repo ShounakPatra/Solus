@@ -8,6 +8,7 @@ import com.shounak.localmeshai.utils.DownloadSnapshot
 import com.shounak.localmeshai.utils.DownloadStateStore
 import com.shounak.localmeshai.utils.ModelArtifactStorage
 import com.shounak.localmeshai.utils.ModelDownloader
+import com.shounak.localmeshai.utils.ModelManifest
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,6 +30,100 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 
 class DownloadControllerTest {
+
+    @Test(timeout = 10_000L) fun completionCallbackFailureDoesNotDowngradePublishedDownload() = runBlocking {
+        val recorded = mutableListOf<String>()
+        var failed = false
+        val downloader = object : ModelDownloader(context = null, artifactStorage = artifactStorage, minValidModelBytes = 0L) {
+            override suspend fun downloadModel(
+                url: String, modelId: String, fileName: String, packageType: ModelPackage,
+                bearerToken: String?, expectedSha256: String?, eTag: String?,
+                publishImmediately: Boolean, sourceIdentity: String?,
+                onProgress: suspend (DownloadProgress) -> Unit
+            ) = DownloadResult("/models/completed.gguf", 1000L)
+        }
+        val controller = DownloadController(downloader, scope = createTestScope(),
+            eventListener = object : DownloadEventListener {
+                override fun onDownloadCompleted(request: DownloadRequest, result: DownloadResult, snapshot: DownloadSnapshot) {
+                    throw IllegalStateException("Notification could not be shown")
+                }
+                override fun onDownloadFailed(request: DownloadRequest, error: Throwable, snapshot: DownloadSnapshot) {
+                    failed = true
+                }
+            }, recordCompletedDownload = { recorded.add(it) })
+        val id = "completion_callback_failure"
+        controller.start(DownloadRequest(id, "Completed", "https://example.com/model", "completed.gguf", ModelPackage.SingleFile)).join()
+        val snapshot = DownloadStateStore.get(id)!!
+        assertEquals(ModelStatus.Available, snapshot.status)
+        assertEquals("/models/completed.gguf", snapshot.localPath)
+        assertEquals(1000L, snapshot.downloadedBytes)
+        assertEquals(listOf(id), recorded)
+        assertFalse(failed)
+    }
+
+    @Test fun recoveredPublicationRecordsRecencyOnceForPauseAndCancel() = runBlocking {
+        for (pause in listOf(true, false)) {
+            val id = "recovered_publication_$pause"
+            val file = artifactStorage.getModelDir(id, create = true).resolve("model.gguf")
+            file.writeText("published model data")
+            artifactStorage.getManifestFile(id).writeText(ModelManifest(
+                modelId = id, relativePath = file.name, sourceIdentity = "test",
+                sizeBytes = file.length(), checksumSha256 = null).toJson())
+            DownloadStateStore.update(DownloadSnapshot(id, ModelStatus.Downloading,
+                downloadedBytes = file.length(), totalBytes = file.length(), startedAt = 100L))
+            val recorded = mutableListOf<String>()
+            val controller = DownloadController(fakeDownloader, scope = createTestScope(),
+                recordCompletedDownload = { recorded.add(it) })
+            if (pause) controller.pause(id) else controller.cancelDownload(id)
+            val completed = DownloadStateStore.get(id)!!
+            assertEquals(ModelStatus.Available, completed.status)
+            assertEquals(file.absolutePath, completed.localPath)
+            assertTrue(completed.downloadedAt > 0L)
+            assertEquals(listOf(id), recorded)
+            // Late/repeated UI actions must not make an old model recent again.
+            controller.pause(id)
+            controller.cancelDownload(id)
+            assertEquals(completed.downloadedAt, DownloadStateStore.get(id)?.downloadedAt)
+            assertEquals(listOf(id), recorded)
+            assertTrue(file.exists())
+        }
+    }
+
+    @Test(timeout = 10_000L) fun progressKeepsStartOrderAndCompletionRecordsWithoutAListener() = runBlocking {
+        val starts = mapOf("start_order_older" to CompletableDeferred<Unit>(), "start_order_newer" to CompletableDeferred<Unit>())
+        val finish = CompletableDeferred<Unit>()
+        val recorded = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val downloader = object : ModelDownloader(context = null, artifactStorage = artifactStorage, minValidModelBytes = 0L) {
+            override suspend fun downloadModel(
+                url: String, modelId: String, fileName: String, packageType: ModelPackage,
+                bearerToken: String?, expectedSha256: String?, eTag: String?,
+                publishImmediately: Boolean, sourceIdentity: String?,
+                onProgress: suspend (DownloadProgress) -> Unit
+            ): DownloadResult {
+                onProgress(DownloadProgress(0.5f, 50L, 100L, 0L))
+                starts.getValue(modelId).complete(Unit)
+                finish.await()
+                onProgress(DownloadProgress(1f, 100L, 100L, 0L))
+                return DownloadResult("/models/$fileName", 100L)
+            }
+        }
+        val controller = DownloadController(downloader, scope = createTestScope(),
+            recordCompletedDownload = { recorded.add(it) })
+        val older = controller.start(DownloadRequest("start_order_older", "Older", "https://example.com/older", "older.gguf", ModelPackage.SingleFile))
+        starts.getValue("start_order_older").await()
+        val newer = controller.start(DownloadRequest("start_order_newer", "Newer", "https://example.com/newer", "newer.gguf", ModelPackage.SingleFile))
+        starts.getValue("start_order_newer").await()
+        val olderStart = DownloadStateStore.get("start_order_older")!!.startedAt
+        val newerStart = DownloadStateStore.get("start_order_newer")!!.startedAt
+        assertTrue(olderStart > 0L)
+        assertTrue(newerStart > olderStart)
+        finish.complete(Unit)
+        older.join()
+        newer.join()
+        assertEquals(setOf("start_order_older", "start_order_newer"), recorded.toSet())
+        assertEquals(2, recorded.size)
+        assertEquals(ModelStatus.Available, DownloadStateStore.get("start_order_newer")?.status)
+    }
 
     @get:Rule
     val tempFolder = TemporaryFolder()

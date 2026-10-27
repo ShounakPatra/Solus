@@ -246,6 +246,7 @@ internal fun ModelInfo.downloadedSectionSortRank(): Int {
 /** Active downloads lead; the remaining cards retain their recency and fallback order. */
 internal fun orderDownloadedModels(models: List<ModelInfo>, usedAt: Map<String, Long>): List<ModelInfo> {
     val downloading = models.filter { it.status == ModelStatus.Downloading }
+        .sortedWith(compareByDescending<ModelInfo> { it.downloadStartedAt }.thenBy { it.id })
     val used = models.filter { it.status == ModelStatus.Available && it.id in usedAt }.sortedByDescending { usedAt[it.id] }
     val newestDownload = models.filter { it.status == ModelStatus.Available }
         .maxByOrNull { it.downloadTime() }

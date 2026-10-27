@@ -2566,6 +2566,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _modelValidationStates.update { it - current.id }
                         updateModel(current.id) { model -> model.copy(
                             status = snapshot.status, progress = snapshot.progress,
+                            downloadStartedAt = snapshot.startedAt,
                             downloadedBytes = snapshot.downloadedBytes, totalBytes = snapshot.totalBytes,
                             bytesPerSecond = snapshot.bytesPerSecond,
                             localPath = if (snapshot.status == ModelStatus.NotDownloaded) null else snapshot.localPath ?: model.localPath,
