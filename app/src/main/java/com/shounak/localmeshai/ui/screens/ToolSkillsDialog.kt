@@ -97,7 +97,7 @@ internal fun ToolSkillsDialog(hazeState: HazeState, onDismiss: () -> Unit) {
                     item {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text("${entries.size} skills • Wikipedia uses internet; calendar and email actions open a review screen.", style = MaterialTheme.typography.labelSmall)
-                            Text("Custom skills require a model and chat backend that support tool calling. Availability is not limited to Gemma models.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Gemma 4 models support tool calling with a compatible chat backend. Custom skills also work with other models and backends that support tool calling.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     items(entries.filter { it.title.contains(query, true) || it.description.contains(query, true) }, key = { it.id }) { entry ->
