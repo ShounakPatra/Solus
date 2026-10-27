@@ -32,21 +32,39 @@ internal object RuntimeSpeedTuner {
         file.isFile && ModelFormat.fromFileName(file.name) in setOf(ModelFormat.GGUF, ModelFormat.LiteRtLm)
     } == true
 
-    private fun key(id: String, file: File, tokens: Int, threads: Int): String {
+    internal fun key(id: String, file: File, tokens: Int, threads: Int): String {
         val identity = "speed-v1|$id|${file.canonicalPath}|${file.length()}|${file.lastModified()}|$tokens|$threads|${Build.FINGERPRINT}|${Build.HARDWARE}|${BuildConfig.LITERT_RUNTIME_VERSION}|${BuildConfig.NATIVE_BUILD_ID}"
         return MessageDigest.getInstance("SHA-256").digest(identity.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 
-    fun liteRtBackend(context: Context, id: String, path: String, tokens: Int?): InferenceBackend {
-        val receipt = key(id, File(path), liteRtContextTokens(tokens, null), RuntimeExecutionPolicy.resolve(context, id).cpuThreads)
-        val prefs = context.getSharedPreferences("runtime_speed", Context.MODE_PRIVATE)
-        return if (prefs.getString("litert_$receipt", null) == "GPU" &&
-            !InitCrashGuard.isModelBlocked(context, "$id:speed:gpu:$receipt")) InferenceBackend.LITERT_GPU else InferenceBackend.LITERT_CPU
+    /**
+     * Artifact/device identity without context tokens or CPU threads. A GPU failure must veto every
+     * receipt for the file: threads change with power-save/low-RAM and Vision may retry at a smaller
+     * context, so a receipt-scoped flip can miss the receipt the next Auto load reads.
+     */
+    private fun gpuVetoKey(id: String, file: File): String {
+        val identity = "gpu-veto-v1|$id|${file.canonicalPath}|${file.length()}|${file.lastModified()}|${Build.FINGERPRINT}|${Build.HARDWARE}|${BuildConfig.LITERT_RUNTIME_VERSION}|${BuildConfig.NATIVE_BUILD_ID}"
+        return "litert_gpu_veto_" + MessageDigest.getInstance("SHA-256").digest(identity.toByteArray()).joinToString("") { "%02x".format(it) }
     }
 
-    fun recordGpuFailure(context: Context, id: String, path: String, tokens: Int?) {
-        val receipt = key(id, File(path), liteRtContextTokens(tokens, null), RuntimeExecutionPolicy.resolve(context, id).cpuThreads)
-        context.getSharedPreferences("runtime_speed", Context.MODE_PRIVATE).edit().putString("litert_$receipt", "CPU").commit()
+    internal fun selectLiteRtBackend(receiptBackend: String?, gpuVetoed: Boolean, gpuProbeBlocked: Boolean): InferenceBackend =
+        if (receiptBackend == "GPU" && !gpuVetoed && !gpuProbeBlocked) InferenceBackend.LITERT_GPU else InferenceBackend.LITERT_CPU
+
+    fun liteRtBackend(context: Context, id: String, path: String, tokens: Int?): InferenceBackend {
+        val file = File(path)
+        val receipt = key(id, file, liteRtContextTokens(tokens, null), RuntimeExecutionPolicy.resolve(context, id).cpuThreads)
+        val prefs = context.getSharedPreferences("runtime_speed", Context.MODE_PRIVATE)
+        return selectLiteRtBackend(
+            receiptBackend = prefs.getString("litert_$receipt", null),
+            gpuVetoed = prefs.getBoolean(gpuVetoKey(id, file), false),
+            gpuProbeBlocked = InitCrashGuard.isModelBlocked(context, "$id:speed:gpu:$receipt")
+        )
+    }
+
+    /** Vetoes GPU for every receipt (any context size or thread count) of this model file; only an explicit re-tune lifts it. */
+    fun recordGpuFailure(context: Context, id: String, path: String) {
+        context.getSharedPreferences("runtime_speed", Context.MODE_PRIVATE).edit()
+            .putBoolean(gpuVetoKey(id, File(path)), true).commit()
     }
 
     suspend fun run(context: Context, model: ModelInfo, progress: suspend (String) -> Unit): String = withContext(Dispatchers.IO) {
@@ -94,7 +112,8 @@ internal object RuntimeSpeedTuner {
             ensureActive()
             val prefs = context.getSharedPreferences("runtime_speed", Context.MODE_PRIVATE)
             val editor = prefs.edit().putInt(RuntimeExecutionPolicy.threadPreferenceKey(model.id), best.threads)
-            if (format == ModelFormat.LiteRtLm) editor.putString("litert_$receipt", backend)
+            // A fresh explicit measurement supersedes an earlier GPU-failure veto for this file.
+            if (format == ModelFormat.LiteRtLm) editor.putString("litert_$receipt", backend).remove(gpuVetoKey(model.id, file))
             check(editor.commit()) { "Could not save speed measurements" }
             "CPU: ${best.threads} threads (${best.medianMs.toLong()} ms median first token). " +
                 (if (format == ModelFormat.LiteRtLm) "Auto selects $backend for this model/configuration$gpuNote."
@@ -108,7 +127,7 @@ internal object RuntimeSpeedTuner {
         val cache = LiteRtRuntimeCache.prepare(context, guardId, kind, file.absolutePath)
         val times = mutableListOf<Double>()
         val answers = mutableListOf<String>()
-        InitCrashGuard.markInitStarted(context, guardId)
+        InitCrashGuard.markInitStarted(context, guardId, if (gpu) InitCrashGuard.BACKEND_GPU else InitCrashGuard.BACKEND_CPU)
         try {
             Engine(EngineConfig(modelPath = file.absolutePath, backend = backend, maxNumTokens = tokens, cacheDir = cache.absolutePath)).use { engine ->
                 engine.initialize()

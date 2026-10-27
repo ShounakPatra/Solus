@@ -16,6 +16,7 @@ class DocumentSearchToolTest {
         val response = org.json.JSONObject(tool.execute("""{"query":"summarize previous uploaded documents"}"""))
         assertEquals("no_context_for_question", response.getString("status"))
         assertTrue(response.getString("note").contains("does not establish"))
+        assertTrue(response.getString("note").contains("do not claim that none exist"))
         assertEquals(0, response.getJSONArray("matches").length())
     }
     private val arguments = """{"query":"hello"}"""

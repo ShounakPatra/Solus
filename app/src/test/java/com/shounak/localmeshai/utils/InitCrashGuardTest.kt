@@ -119,4 +119,45 @@ class InitCrashGuardTest {
         assertFalse(InitCrashGuard.isModelBlocked(context, "facade-model"))
         assertTrue(InitCrashGuard.hasSuccessfulRetry(context, "facade-model"))
     }
+    @Test fun crashRecordsWhetherTheAttemptUsedTheGpu() {
+        val prefs = FeatureTestPreferences()
+        InitCrashState(prefs).markStarted("gpu-model", InitCrashGuard.BACKEND_GPU)
+        val afterGpuCrash = InitCrashState(prefs)
+        assertEquals("gpu-model", afterGpuCrash.recoverCrash())
+        assertTrue(afterGpuCrash.blockedCrashMayHaveUsedGpu("gpu-model"))
+
+        afterGpuCrash.markStarted("cpu-model", InitCrashGuard.BACKEND_CPU)
+        val afterCpuCrash = InitCrashState(prefs)
+        assertEquals("cpu-model", afterCpuCrash.recoverCrash())
+        assertTrue(afterCpuCrash.isBlocked("cpu-model"))
+        assertFalse(afterCpuCrash.blockedCrashMayHaveUsedGpu("cpu-model"))
+        assertTrue(afterCpuCrash.blockedCrashMayHaveUsedGpu("gpu-model"))
+        assertFalse("An unblocked model has no crash to attribute", afterCpuCrash.blockedCrashMayHaveUsedGpu("other"))
+        assertFalse(prefs.contains("init_in_progress_backend"))
+    }
+    @Test fun legacyCrashMarkersWithoutBackendStayConservativelyGpu() {
+        val legacyBlock = InitCrashState(crashedPrefs("old"))
+        assertTrue(legacyBlock.blockedCrashMayHaveUsedGpu("old"))
+        val prefs = FeatureTestPreferences(mapOf("init_in_progress_model_id" to "legacy-marker"))
+        val restarted = InitCrashState(prefs)
+        assertEquals("legacy-marker", restarted.recoverCrash())
+        assertTrue(restarted.blockedCrashMayHaveUsedGpu("legacy-marker"))
+        restarted.markStarted("unknown-backend")
+        val afterUnknown = InitCrashState(prefs)
+        assertEquals("unknown-backend", afterUnknown.recoverCrash())
+        assertTrue(afterUnknown.blockedCrashMayHaveUsedGpu("unknown-backend"))
+    }
+    @Test fun successfulRetryClearsTheRecordedCrashBackend() {
+        val prefs = FeatureTestPreferences()
+        InitCrashState(prefs).markStarted("m", InitCrashGuard.BACKEND_CPU)
+        val state = InitCrashState(prefs)
+        state.recoverCrash()
+        state.authorizeRetry("m"); state.markStarted("m", InitCrashGuard.BACKEND_CPU); state.markSucceeded("m")
+        assertFalse(state.blockedCrashMayHaveUsedGpu("m"))
+        // A later GPU crash of the same id is attributed to the GPU again.
+        state.markStarted("m", InitCrashGuard.BACKEND_GPU)
+        val restarted = InitCrashState(prefs)
+        restarted.recoverCrash()
+        assertTrue(restarted.blockedCrashMayHaveUsedGpu("m"))
+    }
 }

@@ -63,6 +63,36 @@ class RagIdentityAndReplacementTest {
     }
 
     @Test
+    fun staleChatUploadCannotOverwriteASelectedLibraryDocument() = runBlocking {
+        val manager = RagManager(
+            context = null,
+            embeddingEngine = UniversalSemanticEmbeddingEngine(),
+            vectorStore = InMemoryRagVectorStore(null)
+        )
+        val library = manager.ingestText("library_contract.pdf", "Library contract: payment is due within thirty days.", "library-k")
+        assertTrue(library.success)
+
+        // A completed turn re-indexes the chat's older upload under the id of the library document the user selected.
+        val stale = manager.ingestText("old_upload.pdf", "Old chat upload about holiday plans.", targetDocumentId = "library-k")
+        assertFalse(stale.success)
+        val kept = manager.vectorStore.getChunksForDocument("library-k")
+        assertTrue(kept.isNotEmpty())
+        assertTrue(kept.all { it.documentName == "library_contract.pdf" })
+        assertTrue(kept.any { it.text.contains("payment is due within thirty days") })
+        assertFalse(kept.any { it.text.contains("holiday plans") })
+        assertEquals(1, manager.indexedDocuments.size)
+
+        // Re-confirming the same upload with identical text is still a cheap no-op success.
+        val same = manager.ingestText("library_contract.pdf", "Library contract: payment is due within thirty days.", "library-k")
+        assertTrue(same.success)
+        assertEquals(library.chunkCount, manager.totalIndexedChunks)
+
+        // A new id is created as before.
+        assertTrue(manager.ingestText("fresh_upload.pdf", "A brand new upload.", "fresh-id").success)
+        assertEquals(2, manager.indexedDocuments.size)
+    }
+
+    @Test
     fun testFailedReplacement_PreservesOldData() = runBlocking {
         val testFile = File(tempFolder.root, "rag_replacement_test.json")
         val failableTx = FailableAtomicFileTransaction(testFile)
@@ -88,7 +118,8 @@ class RagIdentityAndReplacementTest {
         val failedReplace = manager.ingestText(
             documentName = "original.txt",
             content = "Corrupted draft replacement that must not overwrite.",
-            targetDocumentId = doc1.documentId
+            targetDocumentId = doc1.documentId,
+            replacesSameUpload = true
         )
 
         assertFalse(failedReplace.success)
@@ -114,7 +145,8 @@ class RagIdentityAndReplacementTest {
         val replaced = manager.ingestText(
             documentName = "spec.txt",
             content = "Final revised production specifications and deployment keys.",
-            targetDocumentId = targetId
+            targetDocumentId = targetId,
+            replacesSameUpload = true
         )
 
         assertTrue(replaced.success)

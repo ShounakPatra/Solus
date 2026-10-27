@@ -8,6 +8,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VisionToolConfigTest {
+    @Test fun addingToolsPreservesNativeThinkingAndPrefillConfiguration() {
+        val base = ConversationConfig(
+            thinkingConfig = com.google.ai.edge.litertlm.ThinkingConfig(enableThinking = true),
+            channels = emptyList(),
+            prefillPrefaceOnInit = true
+        )
+        val providers = listOf(tool(CalculatorTool()))
+        assertEquals(base.copy(tools = providers, automaticToolCalling = true), LocalTools.conversationConfig(base, providers))
+    }
+
     @Test fun addingToolsPreservesThinkingControlsAndRestoredConversationMessages() {
         val context = ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
         val messages = listOf(Message.of(com.google.ai.edge.litertlm.Content.Text("Previous question")))

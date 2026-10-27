@@ -131,10 +131,23 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         com.shounak.localmeshai.data.ChatAttachmentStore(getApplication<Application>().cacheDir.resolve("temporary_chats/vision"))
     }
     private val attachmentStoreForChat get() = if (_temporaryChat.value) temporaryAttachments else sessionRepository.attachmentStore
+    /** Knowledge-base document chosen for the next message; shown as a removable composer chip. */
+    private val _pendingLibraryDocument = MutableStateFlow<com.shounak.localmeshai.rag.LibraryDocumentSelection?>(null)
+    val pendingLibraryDocument = _pendingLibraryDocument.asStateFlow()
+    @set:JvmName("assignPendingRagDocumentId")
+    private var pendingRagDocumentId: String?
+        get() = _pendingLibraryDocument.value?.id
+        set(value) {
+            _pendingLibraryDocument.value = value?.let { id ->
+                com.shounak.localmeshai.rag.LibraryDocumentSelection(id,
+                    ragManager.indexedDocuments.firstOrNull { it.documentId == id }?.documentName ?: "Library document")
+            }
+        }
+    fun clearPendingLibraryDocument() { pendingRagDocumentId = null }
     fun setTemporaryChat(enabled: Boolean): Boolean = conversationPrivacy.setForNewChat(
         enabled, isNewChat = messages.isEmpty() && _currentSessionId.value == null,
         busy = analysisJob?.isActive == true || _isAnalyzing.value || _isStopping.value || _isInitializing.value || _isDeletingHistory.value
-    )
+    ).also { changed -> if (changed) pendingRagDocumentId = null }
     fun refreshHistory() { viewModelScope.launch { loadSessionsAsync() } }
     fun editAndRegenerate(userMessageId: String, replacement: String? = null) {
         if (analysisJob?.isActive == true || _isInitializing.value) return
@@ -175,7 +188,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private val sessionPersistenceChannel = kotlinx.coroutines.channels.Channel<List<VisionChatSession>>(kotlinx.coroutines.channels.Channel.CONFLATED)
     private val appSettings = AppSettings.getInstance(application)
     private val ragManager = RagManager.getInstance(application)
-    private var pendingRagDocumentId: String? = null
     var currentSessionDocumentId: String? = null
         private set
 
@@ -197,12 +209,17 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    suspend fun useKnowledgeBaseDocument(id: String): Boolean {
-        if (_isAnalyzing.value || _isStopping.value || _isDeletingHistory.value || ragManager.indexedDocuments.none { it.documentId == id }) return false
-        if (!ragManager.retainForLibrary(id)) return false
+    suspend fun useKnowledgeBaseDocument(id: String, attachmentPending: Boolean = false): com.shounak.localmeshai.rag.LibrarySelectionResult {
+        // A temporary chat is never saved, so it must not leave a permanent "retained" library record behind.
+        if (_temporaryChat.value) return com.shounak.localmeshai.rag.LibrarySelectionResult.TemporaryChat
+        if (_isAnalyzing.value || _isStopping.value || _isDeletingHistory.value || analysisJob?.isActive == true || retryDecodeJob?.isActive == true)
+            return com.shounak.localmeshai.rag.LibrarySelectionResult.Busy
+        if (attachmentPending) return com.shounak.localmeshai.rag.LibrarySelectionResult.AttachmentPending
+        if (ragManager.indexedDocuments.none { it.documentId == id }) return com.shounak.localmeshai.rag.LibrarySelectionResult.Unavailable
+        if (!ragManager.retainForLibrary(id)) return com.shounak.localmeshai.rag.LibrarySelectionResult.Unavailable
         setPendingRagDocumentId(id)
         appSettings.updateSettings { it.copy(enableRag = true) }
-        return true
+        return com.shounak.localmeshai.rag.LibrarySelectionResult.Selected
     }
 
     suspend fun ingestDocumentForRag(uri: Uri, fileName: String, mimeType: String = ""): RagIngestionResult {
@@ -258,6 +275,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     val tokensPerSecond = _tokensPerSecond.asStateFlow()
 
     private var currentModelPath: String? = null
+    /** The model this chat is set to use, loaded or not. */
+    val selectedModelPath: String? get() = currentModelPath
     private var currentBundle: ModelBundle? = null
     private var currentModelId: String = ""
     private var currentModelName: String = ""
@@ -297,9 +316,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private var coordinatorToken: RegistrationToken? = null
     private var lastShutdownResult: com.shounak.localmeshai.ai.ShutdownResult? = null
 
+    private var retryDecodeJob: Job? = null
+
     fun retryMessage(sessionId: String, userMessageId: String) {
         if (_isDeletingHistory.value) return
-        if (_isAnalyzing.value || _isStopping.value || analysisJob?.isActive == true) return
+        if (_isAnalyzing.value || _isStopping.value || analysisJob?.isActive == true || retryDecodeJob?.isActive == true) return
         val session = imageChatSessions.firstOrNull { it.id == sessionId }
             ?: if (_temporaryChat.value && _currentSessionId.value == sessionId) VisionChatSession(sessionId, "Temporary chat", "", "", 0L, messages = messages.toList()) else return
         val userMsg = session.messages.firstOrNull { it.isUser && it.id == userMessageId } ?: return
@@ -327,7 +348,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-        val docPath = userMsg.documentPath
+        // Only the message that attached a file replays it; a follow-up stamped with the same path by an older
+        // build is retried as the follow-up it was.
+        val docPath = userMsg.documentPath?.takeIf {
+            com.shounak.localmeshai.rag.TurnDocumentPlanner.isOriginalUpload(session.messages.map { msg -> msg.toTurnDocumentEntry() }, userMsg.id)
+        }
         if (!docPath.isNullOrBlank()) {
             val file = File(docPath)
             if (!file.exists()) {
@@ -410,19 +435,18 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             currentSessionId = sessionId
         )
 
-        val retryBitmap = userMsg.bitmap?.takeUnless { it.isRecycled }
-            ?: resolved.bitmapToUse
-            ?: resolved.imageFileToUse?.let { VisionRequestContextResolver.decodeImageFile(it) }
-            ?: imgPath?.takeIf { it.isNotBlank() }?.let { VisionRequestContextResolver.decodeImageFile(File(it)) }
+        val readyBitmap = userMsg.bitmap?.takeUnless { it.isRecycled } ?: resolved.bitmapToUse
+        val imageFiles = if (readyBitmap != null) emptyList() else listOfNotNull(
+            resolved.imageFileToUse, imgPath?.takeIf { it.isNotBlank() }?.let(::File))
 
         val retryDocUri = docPath?.let { Uri.fromFile(File(it)) }
         val retryAudUri = audPath?.let { Uri.fromFile(File(it)) }
 
-        ask(
-            bitmap = retryBitmap,
+        fun askAgain(bitmap: Bitmap?) = ask(
+            bitmap = bitmap,
             question = userMsg.text,
             fileUri = retryDocUri,
-            fileName = userMsg.documentName,
+            fileName = if (docPath != null) userMsg.documentName else null,
             audioUri = retryAudUri,
             audioName = userMsg.audioName ?: session.audioName,
             audioBytes = null,
@@ -434,6 +458,35 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             forcedRequestId = newRequestId,
             isRetry = true
         )
+        if (imageFiles.isEmpty()) {
+            askAgain(readyBitmap)
+            return
+        }
+        // Full-resolution decoding stays off the main thread; the placeholder is already showing.
+        val placeholderId = placeholderAssistant.id
+        retryDecodeJob = viewModelScope.launch {
+            val decoded = try {
+                withContext(Dispatchers.IO) {
+                    imageFiles.firstNotNullOfOrNull { VisionRequestContextResolver.decodeImageFile(it) }
+                }
+            } catch (cancelled: CancellationException) {
+                // Stopped before the request started: settle the placeholder instead of leaving it "Reading input…".
+                if (actualAssistantIndex in messages.indices && messages[actualAssistantIndex].id == placeholderId &&
+                    messages[actualAssistantIndex].requestId == newRequestId && messages[actualAssistantIndex].terminalStatus == null) {
+                    messages[actualAssistantIndex] = messages[actualAssistantIndex].copy(text = "", progress = null,
+                        isThinkingActive = false, terminalStatus = RequestTerminalStatus.Stopped)
+                    saveVisibleConversationIfComplete()
+                }
+                throw cancelled
+            }
+            if (_currentSessionId.value != sessionId || actualAssistantIndex !in messages.indices ||
+                messages[actualAssistantIndex].id != placeholderId || messages[actualAssistantIndex].requestId != newRequestId) {
+                decoded?.recycle()
+                return@launch
+            }
+            retryDecodeJob = null
+            if (!askAgain(decoded)) decoded?.recycle()
+        }
     }
 
     fun retryLastFailedMessage() {
@@ -767,7 +820,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                 supportsThinkingMode = supportsThinkingMode,
                                 allowUnsafeOverride = allowUnsafeOverride,
                                 contextWindowTokens = resolvedContextWindowTokens,
-                                bundle = bundle
+                                bundle = bundle,
+                                initialThinkingPreference = _thinkingMode.value
                             )
                             // Re-check after the (potentially long) native init.
                             if (myGen != initGeneration) {
@@ -780,7 +834,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             publishRuntimeCapabilities()
 
                             currentContextWindowTokens = inferenceManager.runtimeCapabilities?.initializedContextTokens ?: resolvedContextWindowTokens
-                            resetRuntimeConversationBeforeNextAsk = false
+                            // A fresh load starts an empty runtime conversation; rebuild it before the next ask so
+                            // the visible session history and the requested thinking mode are restored.
+                            resetRuntimeConversationBeforeNextAsk = true
                             _activeBackend.value = inferenceManager.activeBackendDisplayName
                             _isModelReady.value = inferenceManager.isReady
                         } catch (exception: Exception) {
@@ -849,7 +905,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         modelPath = path, modelId = currentModelId, modelName = currentModelName,
                         modelSize = currentModelSize, supportsAudioInput = currentSupportsAudioInput,
                         supportsThinkingMode = currentSupportsThinkingMode, allowUnsafeOverride = currentAllowUnsafeOverride,
-                        contextWindowTokens = resolvedContextWindowTokens, bundle = expectedBundle
+                        contextWindowTokens = resolvedContextWindowTokens, bundle = expectedBundle,
+                        // This load runs inside the request: skip the warm-up turn the request would duplicate.
+                        initialThinkingPreference = _thinkingMode.value, warmStart = false
                     )
                     if (expectedGeneration != initGeneration || path != currentModelPath) {
                         inferenceManager.close()
@@ -859,7 +917,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     publishRuntimeCapabilities()
                     lastLoadedBackendPreference = appSettings.settings.value.llamaBackendPreference
                     currentContextWindowTokens = inferenceManager.runtimeCapabilities?.initializedContextTokens ?: resolvedContextWindowTokens
-                    resetRuntimeConversationBeforeNextAsk = false
+                    // See initModel: the reloaded conversation is empty, so restore history before the next ask.
+                    resetRuntimeConversationBeforeNextAsk = true
                     _activeBackend.value = inferenceManager.activeBackendDisplayName
                     _isModelReady.value = true
                     true
@@ -1056,6 +1115,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         isRetry: Boolean = false
     ): Boolean {
         if (_isDeletingHistory.value || _isAnalyzing.value || _isStopping.value || analysisJob?.isActive == true) return false
+        // While a retry decodes its image, only that retry may start.
+        if (!isRetry && retryDecodeJob?.isActive == true) return false
         val path = currentModelPath
         if (path == null) {
             _error.value = "Choose and initialise a multimodal model first."
@@ -1064,27 +1125,45 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         if (bitmap?.isRecycled == true) return false
 
         autoUnloadJob?.cancel()
-        val savedDocument = messages.lastOrNull { it.isUser && !it.documentPath.isNullOrBlank() }
-            ?.takeIf { com.shounak.localmeshai.rag.ChatDocumentScope.isDocumentQuestion(question, listOfNotNull(it.documentName)) }
-        val inputUri = fileUri ?: savedDocument?.documentPath?.let { Uri.fromFile(File(it)) }
-        val inputName = fileName ?: savedDocument?.documentName ?: "document"
+        // Nothing below mutates session or generation state until the attachments have been validated.
+        val activeSessionId = jobSessionId ?: _currentSessionId.value ?: UUID.randomUUID().toString()
+        val hasOwnAttachment = fileUri != null || preparedAttachment != null
+        val turnHistory = messages.map { it.toTurnDocumentEntry() }
+        val existingTurn = existingUserMessageId?.let { id -> messages.firstOrNull { it.id == id && it.isUser } }
+        // A newly attached file wins over a pending library pick. A retried turn keeps the pick it was sent with.
+        val libraryDocument = when {
+            hasOwnAttachment -> null
+            existingUserMessageId != null -> com.shounak.localmeshai.rag.TurnDocumentPlanner.libraryDocumentId(turnHistory, existingUserMessageId)
+                ?.let { id -> com.shounak.localmeshai.rag.LibraryDocumentSelection(id, existingTurn?.documentName ?: "Library document") }
+            else -> _pendingLibraryDocument.value
+        }
+        val canRepair = !_temporaryChat.value && appSettings.settings.value.enableRag
+        val ownUploadId = when {
+            fileUri == null -> null
+            existingTurn == null -> UUID.randomUUID().toString()
+            else -> existingTurn.ragDocumentId ?: if (!canRepair) null else com.shounak.localmeshai.rag.LegacyDocumentLink.repairId(
+                existingTurn.documentPath, null, attachmentStoreForChat, com.shounak.localmeshai.data.ChatKind.Vision, activeSessionId)
+        }
+        val documentPlan = com.shounak.localmeshai.rag.TurnDocumentPlanner.plan(
+            history = turnHistory,
+            turnMessageId = existingUserMessageId,
+            hasOwnAttachment = hasOwnAttachment,
+            ownUploadId = ownUploadId,
+            libraryDocumentId = libraryDocument?.id,
+            isDocumentQuestion = { com.shounak.localmeshai.rag.ChatDocumentScope.isDocumentQuestion(question, listOfNotNull(it.name)) },
+            repair = { upload ->
+                if (!canRepair) null else com.shounak.localmeshai.rag.LegacyDocumentLink.repairId(upload.path, upload.ragDocumentId,
+                    attachmentStoreForChat, com.shounak.localmeshai.data.ChatKind.Vision, activeSessionId,
+                    isIndexed = { id -> ragManager.indexedDocuments.any { it.documentId == id } })
+            }
+        )
+        val savedDocument = documentPlan.savedUpload
+        val indexTargetId = documentPlan.indexTargetId
+        val indexOwnerMessageId = documentPlan.indexOwnerMessageId
+        val inputUri = fileUri ?: savedDocument?.path?.let { Uri.fromFile(File(it)) }
+        val inputName = fileName ?: savedDocument?.name ?: "document"
         val preparation = if (preparedAttachment == null) inputUri?.let { documentPreparation.take(it, inputName) } else null
         val imageInput = bitmap?.let(imagePreparation::take)
-        val myGen = ++analysisGeneration
-        val activeSessionId = jobSessionId ?: _currentSessionId.value ?: UUID.randomUUID().toString().also {
-            _currentSessionId.value = it
-        }
-        val repairedUploadId = if (!_temporaryChat.value && appSettings.settings.value.enableRag && fileUri == null)
-            com.shounak.localmeshai.rag.LegacyDocumentLink.repairId(savedDocument?.documentPath, savedDocument?.ragDocumentId,
-                attachmentStoreForChat,
-                com.shounak.localmeshai.data.ChatKind.Vision, activeSessionId) else null
-
-        if (isRetry || (fileName != null && lastAttachedFileName != null && fileName != lastAttachedFileName)) {
-            resetRuntimeConversationBeforeNextAsk = true
-        }
-        if (fileName != null) {
-            lastAttachedFileName = fileName
-        }
 
         val resolved = VisionRequestContextResolver.resolve(
             rawQuestion = question,
@@ -1102,13 +1181,22 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             return false
         }
 
+        val myGen = ++analysisGeneration
+        if (_currentSessionId.value == null && jobSessionId == null) _currentSessionId.value = activeSessionId
+        if (isRetry || (fileName != null && lastAttachedFileName != null && fileName != lastAttachedFileName)) {
+            resetRuntimeConversationBeforeNextAsk = true
+        }
+        if (fileName != null) {
+            lastAttachedFileName = fileName
+        }
+
         val timing = InferenceTiming()
         var capturedMetrics: com.shounak.localmeshai.ai.InferenceMetrics? = null
         val basePrompt = resolved.effectivePrompt
         val displayPrompt = if (resolved.isImageOnlyPrompt) "" else question.trim()
-        val selectedLibraryDocument = pendingRagDocumentId
-        val targetDocId = if (fileUri != null) null else selectedLibraryDocument ?: currentSessionDocumentId
-        pendingRagDocumentId = null
+        val selectedLibraryDocument = libraryDocument?.id
+        val targetDocId = if (hasOwnAttachment) null else selectedLibraryDocument ?: currentSessionDocumentId
+        if (existingUserMessageId == null) pendingRagDocumentId = null
         if (targetDocId != null) {
             currentSessionDocumentId = targetDocId
         }
@@ -1131,8 +1219,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     audioPath = null,
                     audioName = placeholderAudioName,
                     audioDurationMs = 0L,
-                    documentName = fileName ?: selectedLibraryDocument?.let { id -> ragManager.indexedDocuments.firstOrNull { it.documentId == id }?.documentName },
-                    ragDocumentId = if (fileUri != null) UUID.randomUUID().toString() else selectedLibraryDocument ?: repairedUploadId ?: savedDocument?.ragDocumentId,
+                    documentName = fileName ?: libraryDocument?.name,
+                    ragDocumentId = ownUploadId ?: selectedLibraryDocument,
                     documentPath = null
                 )
             )
@@ -1261,7 +1349,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     documentPreparation.remember(durable)
                     persistentDocFile = durable.durableFile
                     fileText = durable.extractedText.orEmpty()
-                    documentForIndex = if (fileUri != null || repairedUploadId != null) durable else null
+                    documentForIndex = if (indexTargetId != null) durable else null
                 }
 
                 var renderedPdfBitmap: Bitmap? = null
@@ -1312,7 +1400,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             imagePath = persistentImageFile?.absolutePath,
                             audioPath = persistentAudioFile?.absolutePath,
                             audioDurationMs = resolvedAudioDurationMs,
-                            documentPath = persistentDocFile?.absolutePath
+                            // A follow-up that reads an earlier upload is not labelled as re-attaching it.
+                            documentPath = if (hasOwnAttachment) persistentDocFile?.absolutePath else messages[uIndex].documentPath
                         )
                     }
                 }
@@ -1351,7 +1440,13 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
 
-                thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(currentResolvedThinkingCapability, requestThinkingPreference)
+                // Same capability fallback as the pre-load resolution above, so a runtime that has not
+                // resolved its capability does not silently turn a Think-on request off.
+                thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(
+                    currentResolvedThinkingCapability.takeIf { it != ThinkingCapability.Unknown }
+                        ?: currentBundle?.capabilities?.thinking ?: ThinkingCapability.Unknown,
+                    requestThinkingPreference
+                )
                 // Loading may have selected a smaller fallback than the requested limit.
                 documentBudget = documentTextBudget(
                     userPrompt = basePrompt,
@@ -1371,10 +1466,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 var currentRagTopMatchPct = 0
                 var ragAugmentedContext: String? = null
 
-                val chatDocumentIds = com.shounak.localmeshai.rag.ChatDocumentScope.ids(historySnapshot.map { it.isUser to it.ragDocumentId })
+                val chatDocumentIds = if (selectedLibraryDocument != null) documentPlan.ragScope
+                    else com.shounak.localmeshai.rag.ChatDocumentScope.ids(historySnapshot.map { it.isUser to it.ragDocumentId })
                 val effectiveDocId = (targetDocId ?: currentSessionDocumentId)?.takeIf { it in chatDocumentIds }
                 val shouldQueryRag = appSettings.settings.value.enableRag && promptFileText.isBlank() && basePrompt.isNotBlank() && chatDocumentIds.isNotEmpty()
                 if (shouldQueryRag) {
+                    val ragStart = com.shounak.localmeshai.ai.TtftLog.now()
                     val ragSettings = appSettings.settings.value
                     val retrieval = ragManager.retrieveForChat(
                         query = basePrompt,
@@ -1384,6 +1481,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         allowGlobalSearch = false,
                         allowedDocumentIds = chatDocumentIds
                     )
+                    com.shounak.localmeshai.ai.TtftLog.d("vision rag.retrieve ms=${com.shounak.localmeshai.ai.TtftLog.elapsedMs(ragStart)} " +
+                        "docs=${chatDocumentIds.size} matches=${retrieval.matches.size}")
                     if (retrieval.unavailableReason != null) ragAugmentedContext = ragManager.buildAugmentedPrompt(basePrompt, retrieval)
                     if (retrieval.hasContext) {
                         currentRagPassages = retrieval.matches.map { com.shounak.localmeshai.features.RagPassage(it.chunk.documentId, it.chunk.documentName, it.chunk.chunkIndex, it.chunk.text) }
@@ -1485,14 +1584,17 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             historySnapshot.any { it.audioPath != null }
                         if (inferenceManager.needsMediaEncoders(needsVision, needsAudio)) {
                             timing.startLoading()
-                            try { inferenceManager.prepareMediaEncoders(needsVision, needsAudio) }
+                            try { inferenceManager.prepareMediaEncoders(needsVision, needsAudio, thinkingPreference = thinkingModeForRequest) }
                             finally {
                                 timing.endLoading()
                                 resetRuntimeConversationBeforeNextAsk = true
                                 withContext(Dispatchers.Main.immediate) { publishRuntimeCapabilities() }
                             }
                         }
-                        if (resetRuntimeConversationBeforeNextAsk || inferenceManager.needsToolSettingsRefresh) {
+                        val resetForLoad = resetRuntimeConversationBeforeNextAsk
+                        val resetForTools = inferenceManager.needsToolSettingsRefresh
+                        val resetForThinking = inferenceManager.needsResetForThinkingMode(thinkingModeForRequest)
+                        if (resetForLoad || resetForTools || resetForThinking) {
                             val previousMessages = historySnapshot.filter { it.id != userMessageId && it.id != assistantMessageId }
                             val restorationHistory = VisionRequestContextResolver.buildRestorationHistory(
                                 sessionMessages = previousMessages,
@@ -1500,7 +1602,17 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                 placeholderTexts = PLACEHOLDER_ANSWERS,
                                 failedAnswerTexts = FAILED_ANSWER_STRINGS
                             )
-                            inferenceManager.resetConversation(thinkingMode = thinkingModeForRequest, initialMessages = restorationHistory)
+                            // A fresh, never-used conversation that already matches the thinking and tool settings
+                            // is what the reset would build when there is no history, so keep it (and any preface
+                            // prefilled during load) instead of closing and recreating it.
+                            if (inferenceManager.canReuseFreshConversation(thinkingModeForRequest, restorationHistory.isEmpty())) {
+                                com.shounak.localmeshai.ai.TtftLog.d("vision conversation.reset skipped: fresh conversation matches " +
+                                    "thinking=$thinkingModeForRequest load=$resetForLoad tools=$resetForTools thinkingMismatch=$resetForThinking")
+                            } else {
+                                com.shounak.localmeshai.ai.TtftLog.d("vision conversation.reset reason load=$resetForLoad tools=$resetForTools " +
+                                    "thinkingMismatch=$resetForThinking history=${restorationHistory.size}")
+                                inferenceManager.resetConversation(thinkingMode = thinkingModeForRequest, initialMessages = restorationHistory)
+                            }
                             resetRuntimeConversationBeforeNextAsk = false
                         }
                         val effectiveImageFile = persistentImageFile ?: resolved.imageFileToUse
@@ -1609,17 +1721,28 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
                     if (execResult.status == RequestTerminalStatus.Completed && !_temporaryChat.value && appSettings.settings.value.enableRag) {
                         documentForIndex?.let { document ->
-                            val uploadId = historySnapshot.firstOrNull { it.id == userMessageId }?.ragDocumentId
+                            // Index only into the id this turn owns, never into whatever id the message carries.
+                            val uploadId = indexTargetId
                             viewModelScope.launch(Dispatchers.Default) {
                                 if (uploadId == null) return@launch
-                                val indexed = ragManager.ingestText(document.name, document.extractedText.orEmpty(), targetDocumentId = uploadId)
+                                val indexed = try {
+                                    ragManager.ingestText(document.name, document.extractedText.orEmpty(), targetDocumentId = uploadId)
+                                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                                catch (failure: Exception) {
+                                    android.util.Log.w("VisionViewModel", "Could not index the attached document", failure)
+                                    return@launch
+                                }
                                 if (indexed.success) document.durableFile?.let { original ->
                                     try { ragManager.retainOriginalDocument(indexed.documentId, document.name, original) }
                                     catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                                     catch (failure: Exception) { android.util.Log.w("RagPreview", "Could not retain original upload", failure) }
                                 }
-                                if (indexed.success && activeRequestId == requestId && _currentSessionId.value == activeSessionId) {
-                                    currentSessionDocumentId = indexed.documentId
+                                if (indexed.success) withContext(Dispatchers.Main.immediate) {
+                                    val ownerId = indexOwnerMessageId ?: userMessageId.takeIf { ownUploadId != null }
+                                    if (ownerId != null) stampUploadDocumentId(activeSessionId, ownerId, indexed.documentId)
+                                    if (activeRequestId == requestId && _currentSessionId.value == activeSessionId) {
+                                        currentSessionDocumentId = indexed.documentId
+                                    }
                                 }
                             }
                         }
@@ -1816,6 +1939,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     timing.formatMetricsSummary(metrics.copy(firstVisibleTextLatencyMs = timing.buildMetrics(requestId, activeSessionId).firstVisibleTextLatencyMs))
                 } ?: timing.detailedSummary(requestId, activeSessionId)
                 Log.i("VisionLatency", latency)
+                // Same breakdown under the TTFT tag: firstTokMs is measured from Send, so it includes
+                // prepMs (RAG/memory/attachments), queueMs, loadMs (on-demand load, media-encoder reload) and prefill.
+                com.shounak.localmeshai.ai.TtftLog.d("vision request $latency")
                 preparedInput?.close()
                 documentPreparation.release(preparation)
                 imagePreparation.release(imageInput)
@@ -1834,6 +1960,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun stopAnalyzing() {
+        retryDecodeJob?.cancel()
+        retryDecodeJob = null
         val wasAnalyzing = _isAnalyzing.value
         val wasInitializing = _isInitializing.value
         if (!wasAnalyzing && !_isStopping.value && !wasInitializing) return
@@ -1881,6 +2009,23 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     fun uninitializeModel() {
         releaseModel(clearCoordinator = true, clearSelection = true)
     }
+    /** Records the index id on the message that attached the upload, once indexing under that id succeeded. */
+    private fun stampUploadDocumentId(sessionId: String, messageId: String, documentId: String) {
+        fun List<VisionChatMessage>.stamped() = map { if (it.id == messageId && it.ragDocumentId == null) it.copy(ragDocumentId = documentId) else it }
+        if (_currentSessionId.value == sessionId) {
+            val index = messages.indexOfFirst { it.id == messageId }
+            if (index >= 0 && messages[index].ragDocumentId == null) messages[index] = messages[index].copy(ragDocumentId = documentId)
+        }
+        val position = imageChatSessions.indexOfFirst { it.id == sessionId }
+        if (position >= 0) {
+            val updated = imageChatSessions[position].messages.stamped()
+            if (updated != imageChatSessions[position].messages) {
+                imageChatSessions[position] = imageChatSessions[position].copy(messages = updated)
+                persistSessions()
+            }
+        }
+    }
+
     fun startNewChat() {
         if (_temporaryChat.value) {
             val oldId = _currentSessionId.value
@@ -1936,6 +2081,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             return null
         }
         if (!conversationPrivacy.openSavedChat(busy = false, discardTemporary = ::startNewChat)) return null
+        retryDecodeJob?.cancel()
+        // A library pick belongs to the chat it was made in.
+        pendingRagDocumentId = null
         _currentSessionId.value = session.id
         resetRuntimeConversationBeforeNextAsk = true
         lastAttachedFileName = session.documentName
@@ -1952,6 +2100,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
         val defaultSessionImagePath = getSessionBitmapFile(session.id).takeIf { it.exists() }?.absolutePath
             ?: getLegacySessionBitmapFile(session.id).takeIf { it.exists() }?.absolutePath
+        // Builds up to v6.0.0 saved the user's query photo onto assistant replies. Those copies are not
+        // generated images, so they never qualify as an assistant image.
+        val userImagePaths = listOfNotNull(getSessionBitmapFile(session.id).absolutePath,
+            getLegacySessionBitmapFile(session.id).absolutePath, session.imagePath) +
+            session.messages.filter { it.isUser }.mapNotNull { it.imagePath }
 
         if (session.messages.isNotEmpty()) {
             session.messages.forEachIndexed { index, msg ->
@@ -1968,7 +2121,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         ?: (if (index == 0 && !session.audioPath.isNullOrBlank() && File(session.audioPath).exists()) session.audioPath else null)
                 }
 
-                val resolvedImagePath = if (!msg.imagePath.isNullOrBlank() && File(msg.imagePath).exists()) {
+                val resolvedImagePath = if (!msg.isUser) {
+                    com.shounak.localmeshai.ui.models.VisionHistoryImages.assistantImagePath(msg.imagePath, userImagePaths) { file ->
+                        sessionRepository.attachmentStore.isOwnedAttachment(file, com.shounak.localmeshai.data.ChatKind.Vision, session.id)
+                    }
+                } else if (!msg.imagePath.isNullOrBlank() && File(msg.imagePath).exists()) {
                     msg.imagePath
                 } else if (msg.isUser && index == 0 && !session.imagePath.isNullOrBlank() && File(session.imagePath).exists()) {
                     session.imagePath
@@ -2822,3 +2979,6 @@ private fun Int.withThousandsSeparator(): String {
         .joinToString(",")
         .reversed()
 }
+
+private fun VisionChatMessage.toTurnDocumentEntry() =
+    com.shounak.localmeshai.rag.TurnDocumentPlanner.Entry(id, isUser, documentName, documentPath, ragDocumentId)

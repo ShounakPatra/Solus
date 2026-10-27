@@ -45,7 +45,7 @@ class RagManagerTest {
         manager = RagManager(null, engine, InMemoryRagVectorStore(null))
         val first = manager.ingestText("document.txt", "The original indexed document.")
         deleteDuringEmbedding = first.documentId
-        val result = manager.ingestText("document.txt", "Updated document content.", first.documentId)
+        val result = manager.ingestText("document.txt", "Updated document content.", first.documentId, replacesSameUpload = true)
         assertFalse(result.success)
         assertEquals(0, manager.totalIndexedChunks)
     }
@@ -185,8 +185,9 @@ class RagManagerTest {
         assertEquals(2, manager.indexedDocuments.size)
         assertTrue(ing1.documentId != ing2.documentId)
 
-        // Explicit replacement using targetDocumentId -> replaces existing document
-        val ing3 = manager.ingestText("file.txt", "Third version replacing second.", targetDocumentId = ing2.documentId)
+        // Explicit replacement of the same upload -> replaces existing document
+        val ing3 = manager.ingestText("file.txt", "Third version replacing second.", targetDocumentId = ing2.documentId,
+            replacesSameUpload = true)
         assertTrue(ing3.success)
         assertEquals(2, manager.indexedDocuments.size)
         assertEquals(ing2.documentId, ing3.documentId)
