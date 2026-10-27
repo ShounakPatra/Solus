@@ -21,7 +21,7 @@ pdfboxAndroid = "2.0.27.0"
 latexRenderer = "1.4.7"
 okhttp = "5.5.1"
 orgJson = "20240303"
-autoValueAnnotations = "1.6.2"
+autoValueAnnotations = "1.11.1"
 
 [libraries]
 auto-value-annotations = { group = "com.google.auto.value", name = "auto-value-annotations", version.ref = "autoValueAnnotations" }
