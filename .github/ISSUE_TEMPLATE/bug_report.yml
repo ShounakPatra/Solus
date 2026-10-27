@@ -11,7 +11,7 @@ body:
     id: version
     attributes:
       label: Solus version
-      placeholder: "1.1.0"
+      placeholder: "Example: 6.0.5 / versionCode 11; signed release or debug build"
     validations:
       required: true
 
@@ -27,8 +27,8 @@ body:
     id: model
     attributes:
       label: Model and runtime
-      description: Include the model name and whether it uses MediaPipe or LiteRT-LM.
-      placeholder: "Example: Qwen 2.5 1.5B Instruct, MediaPipe"
+      description: Include the exact model/export revision, format, runtime/backend, and whether Think or tools were enabled.
+      placeholder: "Example: Gemma 4 E2B IT, LiteRT-LM CPU, Think on, tools off"
 
   - type: textarea
     id: problem

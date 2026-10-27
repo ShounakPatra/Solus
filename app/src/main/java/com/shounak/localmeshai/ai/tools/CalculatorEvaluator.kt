@@ -7,20 +7,53 @@ import kotlin.math.pow
 
 /** Bounded arithmetic parser. Power binds more tightly than unary signs. */
 object CalculatorEvaluator {
+    /** Longest terminating decimal printed exactly; longer ones are rounded and marked. */
+    private const val MAX_EXACT_DIGITS = 100
+
     fun evaluate(expression: String): String = try {
         require(expression.length <= 512) { "Expression exceeds 512 characters" }
-        val value = Parser(expression.replace("×", "*").replace("÷", "/")
-            .replace("−", "-").replace("**", "^")).parse()
-        value.decimal(MathContext.DECIMAL128).stripTrailingZeros().toPlainString()
+        val parser = Parser(expression.replace("×", "*").replace("÷", "/")
+            .replace("−", "-").replace("**", "^"))
+        format(parser.parse(), parser.approximate)
     } catch (e: ArithmeticException) {
         "Error: ${e.message}"
     } catch (e: IllegalArgumentException) {
         "Error: ${e.message}"
     }
 
+    /**
+     * Prints exact results with every digit; integers are already bounded by the parser's
+     * limits. A value that cannot be shown exactly (a repeating decimal, a very long one, or a
+     * non-integer power computed in floating point) is rounded to 34 significant digits and
+     * marked as approximate, so it never looks exact when it is not.
+     */
+    private fun format(value: Rational, approximate: Boolean): String {
+        if (!approximate) {
+            if (value.denominator == BigInteger.ONE) return value.numerator.toString()
+            value.exactDecimalOrNull(MAX_EXACT_DIGITS)?.let { return it }
+        }
+        val rounded = value.decimal(MathContext.DECIMAL128).stripTrailingZeros().toPlainString()
+        val fraction = "${value.numerator}/${value.denominator}".takeIf { !approximate && it.length <= 80 }
+        return if (fraction != null) "≈$rounded (rounded to 34 significant digits; exact value $fraction)"
+            else "≈$rounded (approximate)"
+    }
+
     /** Fractions keep division exact until the final displayed decimal is rounded. */
     private class Rational private constructor(val numerator: BigInteger, val denominator: BigInteger) {
         fun decimal(context: MathContext) = BigDecimal(numerator).divide(BigDecimal(denominator), context)
+
+        /** The exact decimal when the fraction terminates within [maxDigits] significant digits. */
+        fun exactDecimalOrNull(maxDigits: Int): String? {
+            var rest = denominator
+            val two = BigInteger.valueOf(2)
+            val five = BigInteger.valueOf(5)
+            while (rest.mod(two).signum() == 0) rest /= two
+            while (rest.mod(five).signum() == 0) rest /= five
+            if (rest != BigInteger.ONE) return null
+            // Only 2s and 5s remain, so this division terminates and is exact.
+            val exact = BigDecimal(numerator).divide(BigDecimal(denominator)).stripTrailingZeros()
+            return if (exact.precision() <= maxDigits) exact.toPlainString() else null
+        }
         fun signum() = numerator.signum()
         operator fun plus(other: Rational) = of(numerator * other.denominator + other.numerator * denominator, denominator * other.denominator)
         operator fun minus(other: Rational) = this + -other
@@ -61,6 +94,9 @@ object CalculatorEvaluator {
     private class Parser(private val source: String) {
         private var position = 0
         private var depth = 0
+        /** Set once a non-integer power was computed in floating point. */
+        var approximate = false
+            private set
         fun parse(): Rational {
             val result = sum()
             whitespace()
@@ -110,9 +146,11 @@ object CalculatorEvaluator {
             if (integer != null && integer in -4096..4096) {
                 return finite(value.pow(integer))
             }
-            val approximate = value.decimal(MathContext.DECIMAL64).toDouble().pow(exponent.decimal(MathContext.DECIMAL64).toDouble())
-            require(approximate.isFinite()) { "Result is not finite" }
-            return finite(Rational.of(BigDecimal.valueOf(approximate)))
+            val estimate = value.decimal(MathContext.DECIMAL64).toDouble().pow(exponent.decimal(MathContext.DECIMAL64).toDouble())
+            require(estimate.isFinite()) { "Result is not finite" }
+            // A floating-point integer such as 4^0.5 is exact; anything else is an estimate.
+            if (estimate != kotlin.math.floor(estimate)) approximate = true
+            return finite(Rational.of(BigDecimal.valueOf(estimate)))
         }
         private fun primary(): Rational {
             if (take('(')) return nested {

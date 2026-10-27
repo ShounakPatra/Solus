@@ -10,6 +10,37 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 class ModelImportPreflightTest {
+    @Test fun unsupportedOnnxMetadataIsRejectedWithoutRequestingTheGraph() = runBlocking {
+        val server = MockWebServer()
+        val paths = java.util.Collections.synchronizedList(mutableListOf<String>())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.requestUrl!!.encodedPath
+                paths.add(path)
+                return when (path) {
+                    "/config.json" -> MockResponse().setBody("""{"model_type":"bert","architectures":["BertModel"]}""")
+                    "/model.onnx" -> MockResponse().setResponseCode(503)
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+        }
+        server.start()
+        try {
+            val spec = ModelDownloadSpec("unsupported-bert", artifacts = listOf(
+                DownloadArtifactSpec(server.url("/model.onnx").toString(), "model.onnx"),
+                DownloadArtifactSpec(server.url("/config.json").toString(), "config.json")
+            ), format = ModelFormat.Onnx)
+            try {
+                ModelImportPreflight.check(spec, null)
+                fail("Unsupported BERT must not be admitted as a supported pipeline")
+            } catch (failure: IllegalArgumentException) {
+                assertTrue(failure.message, failure.message.orEmpty().contains("supported task/architecture"))
+            }
+            assertTrue(paths.contains("/config.json"))
+            assertFalse("Do not probe graph bytes for an already unsupported architecture", paths.contains("/model.onnx"))
+        } finally { server.shutdown() }
+    }
+
     private fun weights(): ByteArray {
         val header = """{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}""".toByteArray()
         return ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(header.size.toLong()).array() + header + ByteArray(4)

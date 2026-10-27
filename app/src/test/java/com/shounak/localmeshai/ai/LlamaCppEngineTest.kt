@@ -1858,5 +1858,44 @@ class LlamaCppEngineTest {
         assertTrue("Engine must retain failed handle", engine.testFailedHandle != 0L)
         assertNotNull("Engine must retain failed lease", engine.testFailedBundleLease)
     }
+
+    @Test
+    fun userStopWhileGenerationIsQueuedBehindAnotherNativeOperationStopsThatGeneration() = runBlocking {
+        val fakeBridge = FakeLlamaNativeBridge()
+        val engine = LlamaCppEngine(null, fakeBridge)
+        engine.initialize(createDummyModelFile("queued_stop.gguf").absolutePath)
+        // Stand in for warm-up / a probe holding the native operation lock.
+        val nativeOperations = LlamaCppEngine::class.java.getDeclaredField("nativeOperations")
+            .apply { isAccessible = true }.get(engine) as java.util.concurrent.locks.ReentrantLock
+        nativeOperations.lock()
+        val generation = try {
+            val queued = async(Dispatchers.Default) { engine.generateStream("queued prompt") {} }
+            val deadline = System.currentTimeMillis() + 3_000
+            while (!nativeOperations.hasQueuedThreads() && System.currentTimeMillis() < deadline) delay(10)
+            assertTrue("Generation must be waiting for the native operation lock", nativeOperations.hasQueuedThreads())
+            engine.stop()
+            assertEquals("No generation id is published while queued", 0L, fakeBridge.lastStoppedGeneration.get())
+            queued
+        } finally {
+            nativeOperations.unlock()
+        }
+        assertEquals(LlamaGenerationResult.Stopped, generation.await())
+        assertEquals("A stopped queued turn must not decode", 0, fakeBridge.generateCallCount.get())
+
+        // The stop is consumed by that turn only; the next turn runs normally.
+        assertEquals(LlamaGenerationResult.Completed, engine.generateStream("next prompt") {})
+        assertEquals(1, fakeBridge.generateCallCount.get())
+        engine.close()
+    }
+
+    @Test
+    fun stopWithNoQueuedGenerationDoesNotCancelALaterTurn() = runBlocking {
+        val fakeBridge = FakeLlamaNativeBridge()
+        val engine = LlamaCppEngine(null, fakeBridge)
+        engine.initialize(createDummyModelFile("idle_stop.gguf").absolutePath)
+        engine.stop()
+        assertEquals(LlamaGenerationResult.Completed, engine.generateStream("prompt") {})
+        engine.close()
+    }
 }
 

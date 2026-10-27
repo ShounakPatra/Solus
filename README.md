@@ -4,449 +4,220 @@
 
 # Solus
 
-### A private AI workspace. Right on your Android phone.
+### Your models. Your conversations. Your device.
 
-Chat, write, code, and ask questions about your documents with AI running on your device.
+Chat, write, code and explore documents with AI models running on your Android phone.
 
-**Bring your own models. Keep your conversations local. Go offline when you want.**
+**v6.0.5 · Android 11+ · ARM64-v8a**
 
-Solus brings model imports, document search, image and audio inputs, and conversation tools into one open-source Android app.
+<a href="https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/app-release.apk" title="Download Solus v6.0.5">
+  <img src="docs/assets/download-solus-apk.svg" alt="Get the latest signed Solus APK from GitHub Releases" width="360" height="72" />
+</a>
 
-<br/>
+[![Android CI](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg)](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml)
+![Version 6.0.5](https://img.shields.io/badge/version-6.0.5-0EA5E9)
+![APK size 50.60 MB](https://img.shields.io/badge/APK-50.60%20MB-22C55E)
+![Android 11 or newer](https://img.shields.io/badge/Android-11%2B-3DDC84)
+![ARM64](https://img.shields.io/badge/ABI-arm64--v8a-22C55E)
+![Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-A970FF)
 
-<!-- Custom glass-gradient download CTA (docs/assets/download-solus-apk.svg) -->
-<p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v6.0.0/app-release.apk" title="Download Solus v6.0.0 APK">
-    <img
-      src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — v6.0.0"
-      width="360"
-      height="72"
-    />
-  </a>
-</p>
-
-<p>
-  <sub>v6.0.0 · 39.85 MB (38.00 MiB) · Android 9.0+ · ARM64</sub>
-</p>
-
-<p>
-  <img src="https://img.shields.io/badge/version-6.0.0-0EA5E9?style=for-the-badge&logo=android&logoColor=white" alt="Released version 6.0.0" />
-  <img src="https://img.shields.io/badge/APK_size-39.85_MB_(38.00_MiB)-22C55E?style=for-the-badge&logo=android&logoColor=white" alt="APK size: 39.85 MB (38.00 MiB)" />
-  <img src="https://img.shields.io/badge/ABI-arm64--v8a-22C55E?style=for-the-badge&logo=android&logoColor=white" alt="ARM64 devices" />
-  <img src="https://img.shields.io/github/stars/ShounakPatra/Solus?style=for-the-badge&logo=github&label=Stars&color=FFD700" alt="GitHub stars" />
-  <img src="https://img.shields.io/github/downloads/ShounakPatra/Solus/total?style=for-the-badge&label=Downloads&color=20C997" alt="Total downloads" />
-</p>
-
-<p>
-  <img src="https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg" alt="Android CI" />
-  <img src="https://img.shields.io/badge/Android-9.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android 9.0 or newer" />
-  <img src="https://img.shields.io/badge/License-Apache_2.0-A970FF?style=for-the-badge&logo=apache&logoColor=white" alt="Apache 2.0 license" />
-</p>
-
-<p align="center">
-  <a href="https://trendshift.io/repositories/156746" target="_blank" rel="noopener noreferrer">
-    <img
-      src="https://img.shields.io/badge/Trendshift-View%20Solus-7C3AED?style=for-the-badge&logo=trendmicro&logoColor=white"
-      alt="View Solus on Trendshift"
-    />
-  </a>
-</p>
-
-**🔒 Offline conversations &nbsp;•&nbsp; 🧩 Bring your own models &nbsp;•&nbsp; 📚 Ask your documents**
-
-[Get started](#get-started) · [Explore features](#features) · [What's new](#whats-new) · [Roadmap](#roadmap) · [Build from source](#build-from-source)
+[Get started](#get-started) · [Features](#made-for-your-own-models) · [Compare apps](#compare-apps) · [Model compatibility](#model-compatibility) · [Build from source](#build-from-source)
 
 </div>
 
+> [!IMPORTANT]
+> Models are downloaded separately. Choose a compatible model that fits your device's available storage and memory; supported features depend on the model and its export.
+
 ---
 
-## 📱 App Preview
+## App preview
 
 <p align="center">
-  <img src="docs/screenshots/chat-response.jpeg" width="260" alt="Solus chat UI" />
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/model-manager-overview.jpeg" width="260" alt="Solus Model Manager" />
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/model-download-progress.jpeg" width="260" alt="Solus download progress" />
+  <img src="docs/screenshots/chat-response.jpeg" width="260" alt="Solus chat and response controls" />
+  &nbsp;
+  <img src="docs/screenshots/model-manager-overview.jpeg" width="260" alt="Solus model library" />
+  &nbsp;
+  <img src="docs/screenshots/model-download-progress.jpeg" width="260" alt="Solus model download progress" />
 </p>
 
-<p align="center">
-  <sub><b>Private chat</b> · <b>Model manager</b> · <b>Resumable downloads</b></sub>
-</p>
+<p align="center"><sub>Chat, manage models and follow downloads in the glass workspace. Controls vary by version and model.</sub></p>
 
----
+## Get started
 
-<a id="features"></a>
+1. **Install** the [v6.0.5 signed APK](https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/app-release.apk). v6.0.5 requires **Android 11+** and an **ARM64-v8a** device.
+2. **Choose a model** in **Models**, or use **Add model** to import one from your phone, Hugging Face or a direct URL.
+3. **Start a chat** after the model finishes loading. A small model is a good place to start if your phone has limited RAM.
+4. **Add context** with a PDF or DOCX. Image and audio inputs require a compatible model and export.
 
-## ✨ An AI workspace that fits the way you work
+An existing installation can be updated without uninstalling when Android accepts the package and signing identity. Back up important chats first. Model weights need additional storage and are not included in workspace backups.
 
-| What you want to do | How Solus helps |
-|---|---|
-| **Use the model you choose** | Download from the catalog or import compatible GGUF, LiteRT-LM and MediaPipe models from your phone, Hugging Face or a URL. |
-| **Keep conversations local** | Run inference on your device. Use temporary chats when you do not want a conversation saved to history or memory. |
-| **Understand your documents** | Ask questions about PDFs, DOCX, text and code, then inspect the retrieved source passages. |
-| **Write, learn and code** | Switch personas, use prompt shortcuts, view formatted code and math, and edit prompts or regenerate replies. |
-| **Work with images and audio** | Attach photos, use the camera or record audio with a model that supports the input. |
-| **Keep your workspace organised** | Search, pin and rename chats; save per-model profiles; back up chats, memories and settings. |
-| **Make it feel like yours** | Enjoy floating glass controls, model-inspired colours, reduced-motion options and larger touch targets. |
+## What's new in v6.0.5
 
-Models run locally; downloading models, checking updates and opening external links use the network. Input capabilities and performance depend on the selected model and device.
+Solus v6.0.5 expands supported model pipelines and improves the existing workspace:
 
----
+- **More model formats:** architecture-specific ONNX, TensorFlow Lite and SafeTensors paths alongside GGUF, LiteRT-LM and MediaPipe.
+- **More complete imports:** companion configuration, tokenizer and weight files; preserved archive folders; checks for missing files and unsupported export contracts.
+- **A Hugging Face file browser:** select individual or multiple files, include required companions automatically, or save files without registering them as runnable models.
+- **Conversation skills:** tools for compatible text and vision models, saved tool-use records, and settings that apply to the next message in the current chat.
+- **Optional neural document search:** a small downloadable BGE model, local fallback search, re-indexing and clearer document management.
+- **Runtime preparation and diagnostics:** optional warm-up, backend/thread tuning, prompt/first-token timing, and improved thinking and cancellation handling.
+- **Reliability repairs:** document scoping and retained originals, history/deletion handling, download recovery, audio decoding and signed-update selection.
 
-<a id="get-started"></a>
+History search and pinning, temporary chats, backups, document sources, per-model profiles and the glass interface already existed; they are retained and improved.
 
-## 📥 From download to your first conversation
+Read the release notes on [GitHub Releases](https://github.com/ShounakPatra/Solus/releases). Available features and performance depend on the model export, runtime and device; not every model supports every input or tool.
 
-1. **Install Solus.** Download [`app-release.apk` for v6.0.0](https://github.com/ShounakPatra/Solus/releases/download/v6.0.0/app-release.apk) and open it on your phone. Allow installation from that source if Android asks.
-2. **Choose your model.** Open **Models** to download from the catalog, or tap **Add model** to import a compatible file from your phone, Hugging Face or a URL.
-3. **Make it yours.** Select the model, wait for initialization, then start a conversation. Try a persona, attach a document, or turn on temporary chat before your first message.
+## Made for your own models
 
-**Choosing your first model?** Start with a small text model that fits your phone's available RAM. Choose a vision or audio-capable model when you need those inputs.
+Use the workspace for a quick question or build a longer conversation around your own files.
 
-**Requirements:** Android 9.0+ (API 28+), ARM64-v8a device. Model weights require additional storage; RAM needs depend on the model.
+| | What you can do |
+| --- | --- |
+| 💬 **Chat, write and code** | Local generation, formatted code and math, personas, prompt editing and regeneration |
+| 📚 **Ask about documents** | PDF, DOCX, text and code extraction; chat-scoped context and original-file previews |
+| 🎙️ **Use images and audio** | Camera, photos, audio files and microphone input with compatible models |
+| 🛠️ **Give models tools** | Built-in and custom skills, with collapsible **Used tool** records |
+| 🗂️ **Keep your workspace** | Search and pin history, temporary chats, saved memories and per-model profiles |
+| 💾 **Back up and restore** | Move chats, memories, settings and available attachments between installations |
+| 📦 **Manage model files** | Catalog and Hugging Face downloads, companion bundles, imports and relinking |
+| ⚙️ **Tune your experience** | Compatible CPU/GPU options, optional warm-up, performance telemetry and glass controls |
 
-The signed **v6.0.0 APK is available** in the [release assets](https://github.com/ShounakPatra/Solus/releases/tag/v6.0.0). Its published size and SHA-256 match the verified release file. See the [release verification details](docs/releases/v6.0.0.md#apk-verification).
+## Compare apps
 
----
+These projects have different goals. The table summarizes their publicly documented
+features; **Not verified** means the linked documentation did not establish the
+answer, not that the feature is absent. Model, version and device support vary.
 
-<a id="whats-new"></a>
+| Feature | Solus v6.0.5 | AI Edge Gallery | PocketPal AI | LM Playground | ChatterUI |
+| --- | --- | --- | --- | --- | --- |
+| Local model formats | GGUF, LiteRT-LM, MediaPipe and selected portable exports | LiteRT | GGUF | GGUF | GGUF |
+| Import `.gguf`, `.litertlm` and `.task` | Supported exports | Not verified for all three | GGUF documented | GGUF documented | GGUF documented |
+| Images, audio and document chat | Available with compatible models and document extraction | Image and audio features documented; document chat not verified | Voice output documented; other inputs not verified | Image, voice dictation and document Q&A documented | Text-to-speech documented; other inputs not verified |
+| Thinking and tools | Available on compatible GGUF and LiteRT-LM models; model-dependent | Thinking on supported models; separate mobile actions | Tools documented; thinking not verified here | Reasoning and tools documented | Not verified |
+| Source passages for document answers | Retrieved passages available | Not verified | Not verified | Document retrieval documented; passage display not verified | Not verified |
+| Temporary chats excluded from history | Yes | Not verified | Not verified | Not verified | Not verified |
+| Backup chats, memories and settings | Yes; model weights excluded | Not verified | Not verified | Not verified | Not verified |
+| Android requirement | Android 11+ | Android 12+ | Check project | Check project | Check project |
+| Pricing | Free and open source | Open source | Free app; optional paid Pals | Check project | Check project |
 
-## 🆕 What’s New in **v6.0.0**
+Sources: [AI Edge Gallery](https://github.com/google-ai-edge/gallery),
+[PocketPal AI](https://github.com/a-ghorbani/pocketpal-ai),
+[LM Playground](https://github.com/andriydruk/LMPlayground), and
+[ChatterUI](https://github.com/Vali-98/ChatterUI). Features and pricing can change;
+check each project's latest release before deciding.
 
-**Shipped: v6.0.0** · Android version code **9**. This release brings custom model imports and a more complete private workspace to Solus.
+## Tools and thinking
 
-- **Bring your own models.** Import compatible `.gguf`, `.litertlm`, and `.task` files from your phone, Hugging Face or a direct URL. Supported GGUF bundles can include split shards and companion projectors.
-- **A model library that stays organised.** Browse catalog downloads and imported models together, filter your imports, and pause or resume remote downloads.
-- **More control over every conversation.** Search, pin and rename chats, edit a prompt, regenerate a reply, or start a temporary chat that skips saved history and memory.
-- **A workspace you can take with you.** Back up and restore chats, memories, settings and optional available attachments. Save custom instructions and supported settings for each model.
-- **Follow the answer back to its sources.** Inspect retrieved document passages and see estimated context use against the initialized model's actual capacity.
-- **Clearer thinking and smoother interaction.** Separate reasoning from answers on supported models, with improved streaming, Stop handling and capability detection.
-- **A refreshed glass interface.** Floating controls, colourful personas, scrollable suggestions, tidier history menus, accessibility options and fast, bouncy navigation.
-- **Safer recovery.** Stronger checks help protect saved chats and knowledge data, while model-loading and shutdown guards improve recovery from failed operations.
+Enable **Tool calling** in Settings and select only the skills you need in **Manage tool skills**. Tool and document-search setting changes apply to the **next message in the current chat**.
 
-[Read the full v6.0.0 release notes →](docs/releases/v6.0.0.md) · [See what's planned for v6.0.5 →](#roadmap)
+Skills include calculator, date/time, document search, hashes, text statistics, unit conversion, random selection, QR codes, learning and adventure prompts, mood tracking, reminders, calendar actions, maps, Wikipedia and email drafts. Custom prompt skills can also be added.
 
-Backups exclude model weights, access tokens and document indexes. Model compatibility and speed vary by file and phone.
+Tools require compatible model behavior and templates. A plausible answer is not proof that a tool ran: check the **Used tool** record. Many enabled schemas consume context and can increase prompt-processing time; small models may ignore tool requests.
 
-**Build validation:** [Android CI passed for commit `e9a01c0`](https://github.com/ShounakPatra/Solus/actions/runs/39578235174), including native tests, unit tests, lint, instrumentation-test compilation, debug/release builds and APK packaging checks. CI does not execute inference on a physical phone.
+**Thinking can remain enabled while tools are on**, including supported LiteRT vision conversations. Toggleable models follow the Think setting; model-controlled reasoning and unsupported models have different controls. A model need not return a separate reasoning block on every response.
 
-### Next patch: v6.0.1
+Wikipedia uses the network. Calendar/email actions can open another app or a review screen, and external services may need connectivity. Review actions before completing them.
 
-Patch source uses version code **10**. It improves backup-setting compatibility, unifies and encrypts Hugging Face token storage, makes larger touch targets opt-in on new installations, repairs the Settings background, removes the unused Firebase configuration, and adds SDK-install retries in CI. See the [v6.0.1 patch notes](docs/releases/v6.0.1.md). Download buttons above continue to identify the published **v6.0.0** APK until the patch is released.
+## Documents and sources
 
-![Local v6.0.1 signed build size: 39.86 MB (38.01 MiB)](https://img.shields.io/badge/v6.0.1_build_size-39.86_MB_(38.01_MiB)-0EA5E9?style=flat-square)
+Attach a document using **+ → Files (RAG)**, or select a library document through **Knowledge Base**. Document context is scoped to the current chat's uploads and explicitly selected library documents; a new chat should not silently search another chat's uploads.
 
-The signed v6.0.1 build is **39,857,525 bytes**. Focused host checks passed **70 Kotlin tests and 10 tooling tests**; physical-phone verification of the Settings layout and Keystore migration remains required before publishing the patch.
+Solus can use extracted text directly or retrieve relevant passages. **Sources** identifies retrieved context, not independent verification of every claim. An answer using directly attached text does not necessarily have a Sources chip.
 
----
+The optional **bge-small-en-v1.5** search model is approximately **33 MiB**, runs locally after download, and can be removed separately from your documents. Built-in local search is available without the neural model. Neural-model changes can require re-indexing.
 
-<details>
-<summary><b>🛠️ Built with Kotlin, Compose and local inference runtimes</b></summary>
+Text-based PDF and DOCX files are supported. **Scanned/image-only PDFs require OCR first**; password protection, damaged archives, unsupported layouts or extraction limits can prevent useful text extraction.
 
-<div align="center">
+## Model compatibility
 
-| Layer | Stack |
-|---|---|
-| Language | **Kotlin 2.4.20** & **C++17** |
-| UI Framework | **Jetpack Compose**, Material 3, Haze Glass Blur |
-| Inference Backends | **llama.cpp JNI (CPU + Vulkan)**, **LiteRT-LM 0.18.0**, **MediaPipe GenAI 0.10.35** |
-| Retrieval (RAG) | Local Vector Embeddings, Cosine Similarity, In-Memory Index |
-| Math Engine | `com.hrm.latex` |
-| Media & Audio | Android `AudioRecord` (16kHz PCM16 Mono), `MediaPlayer`, `PdfRenderer` |
-| Local State | **SharedPreferences** & Private File Storage |
+| Format | Runtime / scope | Required assets |
+| --- | --- | --- |
+| `.gguf` | llama.cpp CPU or qualified Vulkan backend | Complete split set and compatible projector when required |
+| `.litertlm` | LiteRT-LM **0.18.0** | A compatible packaged export; media/backend support is artifact-specific |
+| `.task` | MediaPipe GenAI | A compatible packaged task model |
+| `.onnx` | ONNX Runtime CPU; supported text and media tensor contracts | Configuration, processing/tokenizer files and any external data/component graphs |
+| `.safetensors` | Candle CPU; implemented architecture adapters | Configuration, tokenizer/processor assets and all indexed shards/components |
+| `.tflite` | TensorFlow Lite CPU; supported graph/task contracts | Supported embedded metadata or the export's required processing assets |
 
-</div>
+A **file extension is not a compatibility guarantee**. Recognizing a repository, filename or model family cannot supply a missing architecture adapter, custom operator, tokenizer or vision/audio pipeline.
 
-</details>
+- SafeTensors text adapters cover supported dense GPT-2, Qwen2/Qwen2.5, Llama, Mistral, original Gemma, Phi and Phi-3 layouts. Quantized checkpoints, MoE and other variants can require different adapters.
+- Portable media paths include supported classification, transcription, original PaLiGemma/fused vision and SD1/SD2 diffusion contracts. These are experimental CPU paths, not support for arbitrary vision or audio checkpoints.
+- Raw TFLite LLM exports with custom operations or unsupported external KV-cache interfaces may need the author's packaged `.task`/`.litertlm` version or a different runtime.
+- SafeTensors loading can use FP32 memory substantially larger than the file's disk size. Diffusion and multimodal pipelines can be especially demanding.
+- Importing or initializing successfully does not establish output quality, numerical correctness or acceptable performance.
 
----
+See the [portable-model contract guide](docs/portable-models.md) and [llama.cpp integration notes](docs/llama-upstream.md) for detailed limits.
 
-## 💬 Start with something useful
+### Import methods
 
-| Try this | Example prompt |
-|---|---|
-| **Learn something new** | “Explain quantum computing using a simple everyday analogy.” |
-| **Make a document easier to read** | Attach a document: “Summarise the key ideas and show the relevant source passages.” |
-| **Review your code** | Paste a snippet: “Find likely bugs and explain how you would fix them.” |
-| **Find the words** | “Turn these notes into a clear, friendly message.” |
-| **Explore a photo** | With a compatible vision model: “Describe what you can see in this image.” |
+**Hugging Face / URL:** Paste a repository, folder or file link. HF imports resolve an immutable revision, select bundle companions and check compatibility before full weight downloads. **Save files only** stores files without claiming inference support.
 
-Follow up, edit your prompt, or regenerate a reply to explore another answer.
+**Phone files:** Select a complete model bundle. A `.zip` or `.solusmodel` archive can preserve component folders. ZIP packaging does not add support for the model inside it.
 
----
+**Direct HTTP URLs:** Portable text exports need their configuration and tokenizer companions. Use a repository link or complete archive when metadata/components are in different folders.
 
-## 🎯 Model Compatibility Guide
+Keep phone-imported originals accessible; use **Relink files** after moving them or changing storage permissions. Unlinking a storage import preserves original files; deleting an app-managed download removes that managed bundle.
 
-<div align="center">
+## Privacy and offline use
 
-| Model format | Runtime | How to add it |
-|---|---|---|
-| **`.gguf`** | llama.cpp, with CPU and Vulkan options | Catalog, phone storage, Hugging Face or URL; supported bundles may include split shards and companion projectors. |
-| **`.litertlm`** | LiteRT-LM | Compatible catalog artifacts or phone/URL imports. |
-| **`.task`** | MediaPipe GenAI | Compatible catalog artifacts or phone/URL imports. |
+Model inference and document retrieval run locally after required assets are available. Solus does not automatically upload conversations or crash reports.
 
-</div>
+Network operations include model/search-model downloads, update checks, Wikipedia and external services you choose to use. Maps and other Android intents may hand information to another app.
 
-> GGUF is a container format, not a compatibility guarantee. Supported architectures and quantizations depend on the bundled llama.cpp integration, available RAM, device drivers and any required companion projector. Importing a file does not guarantee it will initialize successfully.
+- Temporary chats skip saved conversation history and memory extraction.
+- HF access tokens are encrypted using Android Keystore-backed storage and excluded from workspace backups.
+- Backups can contain private chats, memories and documents. They exclude model weights, access tokens and document indexes; restore or re-index source documents when needed.
+- Sharing a report, opening an external app or exporting a backup is a separate action. Review the destination and contents.
 
-Start with a smaller text model that fits your available RAM. Image and audio inputs require a compatible model and artifact; support is not implied by the file extension.
+Read the [security policy](SECURITY.md) for storage, credentials and reporting details.
 
----
+## Performance and recovery
 
-<details>
-<summary><b>📂 Explore the project structure</b></summary>
+Warm-up moves some one-time runtime work into model preparation. It can increase loading time and may be skipped on low-memory devices. A new conversation, long history, document context, tool schemas or media encoders can still make the next prompt expensive.
 
-```text
-Solus
-├── app/
-│   ├── src/main/
-│   │   ├── cpp/                # llama.cpp native sources & JNI bridge (CPU + Vulkan)
-│   │   ├── java/com/shounak/localmeshai/
-│   │   │   ├── ai/             # Inference managers (Chat, Vision, llama.cpp JNI)
-│   │   │   ├── models/         # Model catalog, downloaders & ratings
-│   │   │   ├── rag/            # Local RAG vector store, chunking & retrieval
-│   │   │   ├── ui/             # Compose screens, components, theme & viewmodels
-│   │   │   └── utils/          # AppUpdateManager, AudioUtils, AttachmentViewer, Glass
-│   │   └── res/                # XML layouts, file providers, icons, mipmaps
-│   └── build.gradle.kts
-├── gradle/libs.versions.toml
-└── README.md
-```
+**Tune speed** and backend qualification are device/model-specific. Auto may select CPU when no qualifying GPU result exists. GPU availability does not guarantee correctness or a speed improvement.
 
-</details>
+Prompt timeouts and Stop controls help recover from stalled work while preserving runtime ownership until native execution unwinds. They do not guarantee an immediate stop for every native operation. Reduce enabled skills, context or model size if a phone remains slow.
 
----
+## Build from source
 
-<details>
-<summary><b>🏗️ How local inference works</b></summary>
+Use the checked-in Gradle wrapper, a Gradle JVM supported by the configured Android Gradle Plugin, Android SDK **37**, NDK **28.2.13676358** and CMake **3.22.1**. Java/Kotlin bytecode targets Java 17. The wrapper is **Gradle 9.8.2**; the UI uses Kotlin **2.4.20** and Compose.
 
-Supported text, vision and audio inference and document retrieval run locally. Downloading models, checking updates and opening external links are separate network operations:
+Portable SafeTensors support also needs Rust and the `aarch64-linux-android` target. On Windows, [native tooling preparation](tools/prepare-native-tools.ps1) and the [Candle build helper](tools/build-candle.ps1) support the private ignored tool installations.
 
-```mermaid
-flowchart LR
-    A["📱 User Input"] --> B["📚 RAG and Local Tokenizer"]
-    B --> C["⚡ Vulkan, LiteRT, llama.cpp"]
-    C --> D["🧠 On-Device CPU / supported GPU backend"]
-    D --> E["💬 Streamed Response"]
-
-    style A fill:#0EA5E9,stroke:#0284C7,color:#ffffff
-    style B fill:#20C997,stroke:#0F766E,color:#ffffff
-    style C fill:#A970FF,stroke:#7E22CE,color:#ffffff
-    style D fill:#FF6B6B,stroke:#C53030,color:#ffffff
-    style E fill:#10B981,stroke:#047857,color:#ffffff
-```
-<p align="center">
-  <sub><b>Supported Inputs:</b> Text prompts · Microphone audio · Camera & images · Local documents (PDF, DOCX, TXT)</sub>
-</p>
-
-</details>
-
----
-
-<a id="build-from-source"></a>
-
-## 🛠️ Build from Source
-
-Solus is open source under Apache 2.0. Browse the code, report a reproducible issue, or help improve the Android experience.
-
-[Contributing guide](CONTRIBUTING.md) · [Report an issue](https://github.com/ShounakPatra/Solus/issues) · [Security policy](SECURITY.md)
-
-<details>
-<summary><b>Toolchain, build commands and APK locations</b></summary>
-
-**Requirements**: Android Studio compatible with the configured Android Gradle Plugin (**9.4.1**) · Android SDK **37** · NDK **28.2.13676358** · CMake **3.22.1**. Use Android Studio's bundled JBR for Gradle; Kotlin/Java bytecode targets Java 17. The project uses the checked-in **Gradle 9.8.2** wrapper.
-
-Keep `local.properties` and signing credentials local. Configure your own `keystore.properties` for a signed release; never commit private signing keys.
+Build and run the checks with the Gradle wrapper:
 
 ```bash
 git clone https://github.com/ShounakPatra/Solus.git
 cd Solus
+rustup target add aarch64-linux-android
 
-# Build debug APK
-./gradlew assembleDebug
-
-# Run all unit tests
 ./gradlew testDebugUnitTest
+./gradlew lintDebug
+./gradlew assembleDebug
+```
 
-# Build signed release APK
+On Windows, use `.\gradlew.bat`. Build parallelism can be adjusted to suit the available CPU and memory.
+
+Keep `local.properties`, `keystore.properties`, signing keys, model weights and diagnostics out of commits. A local signed release needs your signing configuration:
+
+```bash
 ./gradlew assembleRelease
 ```
 
-Release APK path: `app/build/outputs/apk/release/app-release.apk`  
-Debug APK path: `app/build/outputs/apk/debug/app-debug.apk`
+APK locations are `app/build/outputs/apk/debug/` and `app/build/outputs/apk/release/`. Inspect generated output metadata for the actual filename.
 
-</details>
+### Validation and production releases
 
----
+CI runs host native/Rust checks, unit tests, lint, instrumentation-test compilation, Android builds and APK packaging checks. **Compiling instrumentation tests does not run them on a phone.** Local tests and successful builds do not establish compatibility with every model.
 
-## 🔒 Your conversations stay on your device
+Before publication, verify the exact signed APK's package/version, Android minimum, signing certificate, DEX/native packaging, upgrade behavior and device smoke tests. Use [the release upload guide](docs/release-artifact-upload.md): production signing uses the approval-protected **release** environment and a successful matching CI run from `main`.
 
-Inference runs locally, so you can keep chatting without an internet connection once your model is available. Solus does not use analytics or tracking.
+## Contributors & community
 
-- **Choose what gets saved.** Keep conversation history and useful memories, or start a temporary chat that skips both.
-- **Choose what leaves your phone.** Export a backup or share content when you decide to.
-- **Keep download credentials separate.** Optional Hugging Face tokens are stored in app-private preferences and excluded from portable backups.
+- [Report a reproducible issue](https://github.com/ShounakPatra/Solus/issues): include the app version/code, model file/revision, runtime, device, enabled tools and relevant redacted logs.
+- [Contribute](CONTRIBUTING.md) · [Report a security issue privately](SECURITY.md).
+- Maintainer: **Shounak Patra** · [GitHub](https://github.com/ShounakPatra) · [Email](mailto:shounakpatra68@gmail.com).
 
-Model downloads, update checks and external links use the network. Models can live in app storage or user-selected locations; backups go to the location you choose. Read [SECURITY.md](SECURITY.md) for security details.
-
----
-
-## 💡 FAQ
-
-<details>
-<summary><b>Does Solus run fully offline?</b></summary>
-<br/>
-
-Yes! Once a model is downloaded to your device, you can completely turn off Wi-Fi and mobile data. All chat inference, document querying, and audio processing occur 100% locally.
-
-</details>
-
-<details>
-<summary><b>How does local Document RAG work?</b></summary>
-<br/>
-
-When you attach a file (PDF, TXT, DOCX, etc.), Solus splits the document into text chunks and generates on-device embeddings. When you ask a question, Solus performs cosine similarity matching to inject relevant document chunks directly into the model's context window.
-
-</details>
-
-<details>
-<summary><b>Which GGUF models are currently supported?</b></summary>
-<br/>
-
-Compatible GGUF models can be downloaded from the catalog or imported from phone storage, a direct URL or a Hugging Face repository. Support depends on the bundled runtime, model architecture, quantization, available memory and companion projectors. CPU and Vulkan options are available; GPU correctness and performance vary by device.
-
-</details>
-
-<details>
-<summary><b>How does the in-app updater work?</b></summary>
-<br/>
-
-Solus periodically checks the official GitHub repository releases API. When a new version is detected, you receive an in-app prompt with changelog details and can download and install the new APK directly.
-
-</details>
-
-<details>
-<summary><b>How do I access gated models like Gemma 3?</b></summary>
-<br/>
-
-Go to **Settings** → **Hugging Face Access Token** and enter your read token. You can use the built-in video tutorial guide button for assistance in generating one.
-
-</details>
-
----
-
-<a id="roadmap"></a>
-
-## 🗺️ Roadmap
-
-<div align="center">
-
-| Version | Status | Highlights |
-|---|:---:|---|
-| **v1.0.0 – v1.2.0** | ✅ Shipped | Core local chat, thinking controls, resumable downloads, directional tab motion |
-| **v1.5.0** | ✅ Shipped | Full Settings menu, dynamic model themes, auto-hide nav, high-tech downloading cards, telemetry guard |
-| **v2.0.0** | ✅ Shipped | **Vulkan GPU compute**, **Local RAG document search**, **Audio & Voice input**, **In-App GitHub Auto-Updater** |
-| **v3.0.0** | ✅ Shipped | Native packaging improvements, offline privacy, persistent memory and thinking controls |
-| **v5.0.0** | ✅ Shipped | Response finalization, transactional model management, resumable downloads, document extraction safety and signed-update verification |
-| **v6.0.0** | ✅ Shipped | Phone storage imports, split GGUF models and projectors, workspace backups, conversation tools, per-model profiles, and floating controls |
-| **v6.0.1** | 🛠️ In preparation | Backup compatibility, encrypted token migration, Settings backdrop, opt-in larger controls, Firebase cleanup and CI retries |
-| **v6.0.5** | 🔜 Planned | Runtime upgrades, faster GGUF responses, backend qualification and more responsive loading |
-
-</div>
-
-### Next release: v6.0.5
-
-The next planned release focuses on **faster GGUF responses, upgraded llama.cpp and LiteRT-LM runtimes, and smoother model loading**. The items below are targets, with no fixed delivery date. They remain planned until implementation and device testing are complete.
-
-<details>
-<summary><b>Explore the v6.0.5 implementation roadmap</b></summary>
-
-### Current baseline
-
-- App source: **6.0.1**, Android version code **10**; published download: **6.0.0**, version code **9**.
-- LiteRT-LM Android dependency: **0.18.0**, configured in `gradle/libs.versions.toml`.
-- llama.cpp integration declares upstream pin **5cdadfc326163ed1fa66cf609fb1761f7928900c** in `app/src/main/cpp/CMakeLists.txt`. This records the configured pin; it does not establish that the vendor tree is unmodified or that it is the newest upstream revision.
-- MediaPipe GenAI dependency: **0.10.35**.
-- Current features and repairs: [v6.0.0 release notes](docs/releases/v6.0.0.md).
-
-### Already implemented in v6.0.0 source
-
-- [x] CPU-only backend configuration disables GPU devices, GPU layers, KQV offload and operation offload, with runtime isolation inspection.
-- [x] Auto selection defaults to CPU unless numerical validation and a qualifying performance receipt permit Vulkan.
-- [x] A user-started CPU/GPU benchmark runs cold/warm inference and records latency and throughput results; it is not just a placeholder button.
-- [x] Performance receipts are keyed by model, native build, device and execution settings.
-- [x] Runtime ownership, handoff, shutdown guards and cancellation coordination are present.
-- [x] Loading stages and an elapsed-time ticker are present, including runtime waiting.
-- [x] Text GGUF generation supports prompt-prefix/KV reuse, with cache reset paths and reuse disabled for multimodal requests.
-- [x] Trace instrumentation and inference timing/metrics are present.
-
-These are source implementations. Their presence does not establish a speed improvement or complete device coverage for every model and phone.
-
-### v6.0.5: Upgrade inference runtimes
-
-- [ ] Evaluate a newer llama.cpp revision against the configured baseline, preserving local Android, JNI, Vulkan and multimodal repairs.
-- [ ] Evaluate a newer stable LiteRT-LM Android release against **0.18.0**, checking streaming, thinking, initialization, cache and native-library compatibility.
-- [ ] Revalidate MediaPipe interaction and 16 KB native-library compatibility after upgrades.
-- [ ] Record the selected pins, device results, known limitations and rollback options.
-
-### v6.0.5: Improve measured GGUF performance
-
-- [ ] Use the existing benchmark and profiling tools to establish reproducible physical-phone baselines for prompt processing, time to first token, decode speed, RAM and thermals.
-- [ ] Tune measured bottlenecks in thread counts, batching, context allocation and CPU/Vulkan overhead.
-- [ ] Evaluate further cache and execution-profile improvements beyond the prompt reuse already implemented.
-- [ ] Compare before/after runs with the same model, prompt, settings and thermal conditions, preserving correctness, responsiveness and cancellation.
-
-### v6.0.5: Strengthen validation and diagnostics
-
-- [ ] Audit CPU isolation across all initialization, validation and fallback paths and confirm it with physical-device traces.
-- [ ] Exercise existing runtime guards under rapid model switching, cancellation during native initialization, failed cleanup and stale completions.
-- [ ] Audit benchmark measurements and qualification thresholds. Distinguish token-callback intervals from actual UI frame timing before treating results as evidence of rendering responsiveness.
-- [ ] Expand device/model coverage for existing Auto selection and benchmark receipts.
-- [ ] Improve phase-specific timing and synchronized Logcat/Perfetto capture using the existing instrumentation.
-
-### Release validation
-
-- [ ] Run focused regressions for changed behavior and required release checks.
-- [ ] Verify the exact signed APK's identity, version, signature and DEX integrity.
-- [ ] Test startup/upgrade, imports, text/vision generation, thinking, Stop, model switching, temporary-chat privacy, backup/memory restore and deletion followed by restart.
-- [ ] Check large fonts, keyboard plus media menu, reduced motion and navigation on physical phones.
-- [ ] Publish measured improvements and tested combinations. No speed multiplier is promised before measurement.
-
-</details>
-
----
-
-## 👤 Author
-
-**Shounak Patra**  
-GitHub: [@ShounakPatra](https://github.com/ShounakPatra)  
-Email: [shounakpatra68@gmail.com](mailto:shounakpatra68@gmail.com)
-
----
-
-## 📄 License
-
-Solus is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) for details.
-
----
-
-<div align="center">
-
-**Take your next conversation offline.**
-
-<p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v6.0.0/app-release.apk" title="Download Solus v6.0.0 APK">
-    <img
-      src="docs/assets/download-solus-apk.svg"
-      alt="Download Solus APK — v6.0.0"
-      width="320"
-      height="64"
-    />
-  </a>
-</p>
-
-Enjoy using Solus? [Star the project](https://github.com/ShounakPatra/Solus) to help others discover it, or [share feedback](https://github.com/ShounakPatra/Solus/issues) to help shape what comes next.
-
-</div>
+Solus is licensed under [Apache 2.0](LICENSE). Imported models and third-party runtimes retain their own licenses.

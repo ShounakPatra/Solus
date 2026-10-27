@@ -17,7 +17,9 @@ data class DownloadResumeMetadata(
     val lastDownloadedBytes: Long = 0L,
     val isCompleted: Boolean = false,
     val updatedAt: Long = System.currentTimeMillis(),
-    val sourceIdentity: String? = null
+    val sourceIdentity: String? = null,
+    /** Failed attempts to publish this completed file; Resume downloads again once it is exhausted. */
+    val publishFailures: Int = 0
 ) {
     fun toJson(): String = JSONObject().apply {
         put("normalizedUrl", normalizedUrl)
@@ -29,6 +31,7 @@ data class DownloadResumeMetadata(
         put("isCompleted", isCompleted)
         put("updatedAt", updatedAt)
         put("sourceIdentity", sourceIdentity ?: JSONObject.NULL)
+        put("publishFailures", publishFailures)
     }.toString(2)
 
     companion object {
@@ -45,7 +48,8 @@ data class DownloadResumeMetadata(
                 lastDownloadedBytes = json.optLong("lastDownloadedBytes", 0L),
                 isCompleted = json.optBoolean("isCompleted", false),
                 updatedAt = json.optLong("updatedAt", System.currentTimeMillis()),
-                sourceIdentity = if (json.isNull("sourceIdentity") || !json.has("sourceIdentity")) null else json.getString("sourceIdentity")
+                sourceIdentity = if (json.isNull("sourceIdentity") || !json.has("sourceIdentity")) null else json.getString("sourceIdentity"),
+                publishFailures = json.optInt("publishFailures", 0).coerceAtLeast(0)
             )
         }
 

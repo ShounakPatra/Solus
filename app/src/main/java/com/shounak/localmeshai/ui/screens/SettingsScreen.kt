@@ -716,6 +716,8 @@ fun SettingsDialog(
                     val ragManager = remember { com.shounak.localmeshai.rag.RagManager.getInstance(context) }
                     var ragDocCount by remember { mutableStateOf(ragManager.indexedDocuments.size) }
                     var ragChunkCount by remember { mutableStateOf(ragManager.totalIndexedChunks) }
+                    val ragIndexNeedsRecovery by ragManager.indexNeedsRecovery.collectAsState()
+                    val ragClearScope = rememberCoroutineScope()
                     var showRagDialog by remember { mutableStateOf(false) }
 
                     if (showRagDialog) {
@@ -761,7 +763,7 @@ fun SettingsDialog(
                                 else -> if (neuralOn) {
                                     "On: ${neuralSpec.displayName}, fully offline. Finds passages by meaning, not just matching words"
                                 } else {
-                                    "Downloads a ${neuralSpec.downloadBytes / 1_000_000} MB English search model. Uses extra RAM while indexing and searching; unloads after a minute idle."
+                                    "Downloads a ${com.shounak.localmeshai.utils.ByteSizeLabel.wholeMib(neuralSpec.downloadBytes)} English search model. Uses extra RAM while indexing and searching; unloads after a minute idle."
                                 }
                             }
                             SettingsSwitchRow(
@@ -805,7 +807,11 @@ fun SettingsDialog(
                                         Spacer(modifier = Modifier.width(8.dp))
                                         val docSuffix = if (ragDocCount == 1) "doc" else "docs"
                                         val chunkSuffix = if (ragChunkCount == 1) "chunk" else "chunks"
-                                        val ragBadgeText = if (ragDocCount == 0) "0 docs • 0 chunks" else "$ragDocCount $docSuffix • $ragChunkCount $chunkSuffix"
+                                        val ragBadgeText = when {
+                                            ragIndexNeedsRecovery -> "Needs recovery"
+                                            ragDocCount == 0 -> "0 docs • 0 chunks"
+                                            else -> "$ragDocCount $docSuffix • $ragChunkCount $chunkSuffix"
+                                        }
                                         SuggestionChip(
                                             onClick = { showRagDialog = true },
                                             label = {
@@ -819,7 +825,11 @@ fun SettingsDialog(
                                             shape = RoundedCornerShape(10.dp),
                                             colors = SuggestionChipDefaults.suggestionChipColors(
                                                 containerColor = colors.surfaceContainer,
-                                                labelColor = if (ragDocCount > 0) colors.primary else colors.onSurfaceVariant
+                                                labelColor = when {
+                                                    ragIndexNeedsRecovery -> colors.error
+                                                    ragDocCount > 0 -> colors.primary
+                                                    else -> colors.onSurfaceVariant
+                                                }
                                             ),
                                             border = SuggestionChipDefaults.suggestionChipBorder(
                                                 enabled = true,
@@ -867,9 +877,18 @@ fun SettingsDialog(
                                     if (ragChunkCount > 0) {
                                         LiquidGlassButton(
                                             onClick = {
-                                                ragManager.clearKnowledgeBase()
-                                                ragDocCount = 0
-                                                ragChunkCount = 0
+                                                // Journal and store writes are disk I/O and may fail on a full disk.
+                                                ragClearScope.launch {
+                                                    val removal = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                        runCatching { ragManager.clearKnowledgeBase() }
+                                                            .getOrElse { com.shounak.localmeshai.rag.RagRemovalResult(false, it.message) }
+                                                    }
+                                                    ragDocCount = ragManager.indexedDocuments.size
+                                                    ragChunkCount = ragManager.totalIndexedChunks
+                                                    if (!removal.success) {
+                                                        Toast.makeText(context, "Could not clear documents: ${removal.message ?: "unknown error"}", Toast.LENGTH_LONG).show()
+                                                    }
+                                                }
                                             },
                                             hazeState = hazeState,
                                             modifier = Modifier

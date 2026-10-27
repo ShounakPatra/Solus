@@ -538,6 +538,9 @@ fun ChatScreen(
     val hasVisionHistory = visionMessages.isNotEmpty() || visionViewModel.imageChatSessions.isNotEmpty()
     val activeMessageCount = if (effectiveSupportsAttachments) visionMessages.size else textMessages.size
     val activeError = if (effectiveSupportsAttachments) visionError else error
+    val pendingTextLibraryDocument by chatViewModel.pendingLibraryDocument.collectAsState()
+    val pendingVisionLibraryDocument by visionViewModel.pendingLibraryDocument.collectAsState()
+    val pendingLibraryDocument = if (effectiveSupportsAttachments) pendingVisionLibraryDocument else pendingTextLibraryDocument
     val audioRecordLimitMs = 30_000L
 
     DisposableEffect(context, visionViewModel) {
@@ -656,6 +659,34 @@ fun ChatScreen(
         isRecordingAudio = false
         isRecordingPaused = false
         resetRecordingMeters()
+    }
+
+    /** Starts an empty chat and discards the composer's unsent media, including temp recordings and photos. */
+    fun startFreshChat() {
+        cancelMicRecording()
+        attachmentMenuExpanded = false
+        activeHistoryChatType = null
+        visionViewModel.startNewChat()
+        chatViewModel.startNewChat()
+        chatViewModel.clearDraftText()
+        selectedBitmap = null
+        selectedFileUri = null
+        selectedFileName = null
+        selectedAudioUri?.path?.let { p ->
+            val f = File(p)
+            if (f.exists() && f.parentFile?.name == "multimodal_inputs") {
+                runCatching { f.delete() }
+            }
+        }
+        selectedAudioUri = null
+        selectedAudioName = null
+        selectedAudioBytes = null
+        cameraTempFilePath?.let { path ->
+            val file = File(path)
+            com.shounak.localmeshai.utils.ActiveInputFiles.release(file)
+            file.delete()
+            cameraTempFilePath = null
+        }
     }
 
     fun stopAndSaveMicRecording() {
@@ -778,11 +809,17 @@ fun ChatScreen(
 
     val visibleTextModelPath = selectedModelPath.takeUnless { effectiveSupportsAttachments }
     val visibleVisionModelPath = selectedModelPath.takeIf { effectiveSupportsAttachments }
-    LaunchedEffect(visibleTextModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision) {
+    // Hopping between a text and a vision chat with the same multimodal model keeps a single runtime owner:
+    // the hidden chat keeps its loaded runtime, and a text chat opened while vision owns that model only selects
+    // it, so the coordinator hands the runtime over on the first text send. Vision still loads eagerly because
+    // its attachment buttons need the runtime's capabilities. Browsing history therefore never reloads the model.
+    LaunchedEffect(visibleTextModelPath, selectedModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision) {
         val shouldLoad = chatViewModel.automaticModelSelection.shouldLoad(
             visibleTextModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision)
         if (visibleTextModelPath == null) {
-            chatViewModel.uninitializeModel()
+            if (!com.shounak.localmeshai.ui.models.ChatModelHandoff.keepsHiddenRuntime(chatViewModel.selectedModelPath, selectedModelPath)) {
+                chatViewModel.uninitializeModel()
+            }
         } else if (shouldLoad) {
             visibleTextModelPath.let { path ->
                 chatViewModel.initModel(
@@ -793,17 +830,21 @@ fun ChatScreen(
                     contextWindowTokens = selectedModel?.effectiveContextWindowTokens,
                     supportsThinkingMode = selectedSupportsThinking,
                     allowUnsafeOverride = selectedUnsafeOverride,
-                    bundle = selectedModel?.bundle
+                    bundle = selectedModel?.bundle,
+                    deferLoad = com.shounak.localmeshai.ui.models.ChatModelHandoff.defersLoad(path,
+                        com.shounak.localmeshai.utils.ModelRuntimeCoordinator.getActiveModelPath(com.shounak.localmeshai.utils.ModelRuntimeOwner.Vision))
                 )
             }
         }
     }
 
-    LaunchedEffect(visibleVisionModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision) {
+    LaunchedEffect(visibleVisionModelPath, selectedModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision) {
         val shouldLoad = visionViewModel.automaticModelSelection.shouldLoad(
             visibleVisionModelPath, selectedModel?.id, selectedUnsafeOverride, selectedRetryRevision)
         if (visibleVisionModelPath == null) {
-            visionViewModel.uninitializeModel()
+            if (!com.shounak.localmeshai.ui.models.ChatModelHandoff.keepsHiddenRuntime(visionViewModel.selectedModelPath, selectedModelPath)) {
+                visionViewModel.uninitializeModel()
+            }
         } else if (shouldLoad) {
             visibleVisionModelPath.let { path ->
                 visionViewModel.initModel(
@@ -826,7 +867,8 @@ fun ChatScreen(
     DisposableEffect(scrollController) {
         onDispose { scrollController.cancelPendingScroll() }
     }
-    val effectiveSessionId = if (effectiveSupportsAttachments) visionCurrentSessionId else currentSessionId
+    // A text chat opened before its model is ready is pending, not absent: it still gets its own scroll position.
+    val effectiveSessionId = if (effectiveSupportsAttachments) visionCurrentSessionId else currentSessionId ?: pendingSessionId
     val currentModeKey = if (effectiveSupportsAttachments) "vision" else "text"
 
     LaunchedEffect(effectiveSessionId, currentModeKey) {
@@ -875,12 +917,19 @@ fun ChatScreen(
             onDismissRequest = { showKnowledgeBase = false },
             onDocumentSelected = { id ->
                 libraryScope.launch {
-                    val selected = if (effectiveSupportsAttachments) visionViewModel.useKnowledgeBaseDocument(id)
-                        else chatViewModel.useKnowledgeBaseDocument(id)
-                    if (selected) {
-                        showKnowledgeBase = false
-                        android.widget.Toast.makeText(context, "Document selected for the next message in this chat", android.widget.Toast.LENGTH_SHORT).show()
-                    } else android.widget.Toast.makeText(context, "Document unavailable. Refresh the library and try again.", android.widget.Toast.LENGTH_SHORT).show()
+                    // A file already in the composer would replace the library pick, so the two are not combined.
+                    val attachmentPending = selectedFileUri != null
+                    val result = if (effectiveSupportsAttachments) visionViewModel.useKnowledgeBaseDocument(id, attachmentPending)
+                        else chatViewModel.useKnowledgeBaseDocument(id, attachmentPending)
+                    val message = when (result) {
+                        com.shounak.localmeshai.rag.LibrarySelectionResult.Selected -> "Document selected for the next message in this chat"
+                        com.shounak.localmeshai.rag.LibrarySelectionResult.Busy -> "Wait for the current reply to finish, then choose the document again."
+                        com.shounak.localmeshai.rag.LibrarySelectionResult.TemporaryChat -> "Temporary chats can't use knowledge base documents."
+                        com.shounak.localmeshai.rag.LibrarySelectionResult.AttachmentPending -> "Remove the attached file first, or send it on its own."
+                        com.shounak.localmeshai.rag.LibrarySelectionResult.Unavailable -> "Document unavailable. Refresh the library and try again."
+                    }
+                    if (result == com.shounak.localmeshai.rag.LibrarySelectionResult.Selected) showKnowledgeBase = false
+                    android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
         )
@@ -931,30 +980,7 @@ fun ChatScreen(
                 showHistory = false
             },
             onNewChat = {
-                cancelMicRecording()
-                attachmentMenuExpanded = false
-                activeHistoryChatType = null
-                visionViewModel.startNewChat()
-                chatViewModel.startNewChat()
-                chatViewModel.clearDraftText()
-                selectedBitmap = null
-                selectedFileUri = null
-                selectedFileName = null
-                selectedAudioUri?.path?.let { p ->
-                    val f = File(p)
-                    if (f.exists() && f.parentFile?.name == "multimodal_inputs") {
-                        runCatching { f.delete() }
-                    }
-                }
-                selectedAudioUri = null
-                selectedAudioName = null
-                selectedAudioBytes = null
-                cameraTempFilePath?.let { path ->
-                    val file = File(path)
-                    com.shounak.localmeshai.utils.ActiveInputFiles.release(file)
-                    file.delete()
-                    cameraTempFilePath = null
-                }
+                startFreshChat()
                 showHistory = false
             },
             onDeleteTextSession = chatViewModel::deleteChatSession,
@@ -1077,20 +1103,7 @@ fun ChatScreen(
                     attachmentMenuExpanded = false
                     mainViewModel.tryModelAnyway(model.id)
                 },
-                onNewChat = {
-                    cancelMicRecording()
-                    attachmentMenuExpanded = false
-                    activeHistoryChatType = null
-                    visionViewModel.startNewChat()
-                    chatViewModel.startNewChat()
-                    chatViewModel.clearDraftText()
-                    selectedBitmap = null
-                    selectedFileUri = null
-                    selectedFileName = null
-                    selectedAudioUri = null
-                    selectedAudioName = null
-                    selectedAudioBytes = null
-                },
+                onNewChat = { startFreshChat() },
                 onHistory = { showHistory = true },
                 onSettings = if (appSettingsData.enableAutoHideBottomBar) ({ mainViewModel.openSettings(false) }) else null,
                 hazeState = hazeState
@@ -1768,6 +1781,66 @@ fun ChatScreen(
                                     contentPadding = PaddingValues(0.dp)
                                 ) {
                                     Icon(Icons.Default.Close, contentDescription = "Remove file", modifier = Modifier.size(13.dp))
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+
+                        pendingLibraryDocument?.let { libraryDocument ->
+                            Box(
+                                modifier = Modifier
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    .fluidReveal(initialScale = 0.94f, initialYOffset = 6.dp)
+                                    .glassEffect(
+                                        hazeState = hazeState,
+                                        shape = RoundedCornerShape(16.dp),
+                                        blurRadius = 14.dp,
+                                        tintColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                        borderAlpha = 0.28f
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.padding(end = 28.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.InsertDriveFile,
+                                        contentDescription = "Knowledge base document",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Column {
+                                        Text(
+                                            text = libraryDocument.name,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "From knowledge base, for the next message",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                                LiquidGlassButton(
+                                    onClick = {
+                                        if (effectiveSupportsAttachments) visionViewModel.clearPendingLibraryDocument()
+                                        else chatViewModel.clearPendingLibraryDocument()
+                                    },
+                                    hazeState = hazeState,
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .offset(x = 8.dp, y = (-8).dp)
+                                        .size(24.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.18f),
+                                    contentPadding = PaddingValues(0.dp)
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "Remove knowledge base document", modifier = Modifier.size(13.dp))
                                 }
                             }
                             Spacer(modifier = Modifier.height(8.dp))

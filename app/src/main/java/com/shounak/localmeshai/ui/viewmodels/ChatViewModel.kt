@@ -121,10 +121,22 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         com.shounak.localmeshai.data.ChatAttachmentStore(getApplication<Application>().cacheDir.resolve("temporary_chats/text"))
     }
     private val attachmentStoreForChat get() = if (_temporaryChat.value) temporaryAttachments else sessionRepository.attachmentStore
+    /** Knowledge-base document chosen for the next message; shown as a removable composer chip. */
+    private val _pendingLibraryDocument = MutableStateFlow<com.shounak.localmeshai.rag.LibraryDocumentSelection?>(null)
+    val pendingLibraryDocument = _pendingLibraryDocument.asStateFlow()
+    private var pendingRagDocumentId: String?
+        get() = _pendingLibraryDocument.value?.id
+        set(value) {
+            _pendingLibraryDocument.value = value?.let { id ->
+                com.shounak.localmeshai.rag.LibraryDocumentSelection(id,
+                    ragManager.indexedDocuments.firstOrNull { it.documentId == id }?.documentName ?: "Library document")
+            }
+        }
+    fun clearPendingLibraryDocument() { pendingRagDocumentId = null }
     fun setTemporaryChat(enabled: Boolean): Boolean = conversationPrivacy.setForNewChat(
         enabled, isNewChat = messages.isEmpty() && _currentSessionId.value == null && _pendingSessionId.value == null,
         busy = generationJob?.isActive == true || _isGenerating.value || _isStopping.value || _isInitializing.value || _isDeletingHistory.value
-    )
+    ).also { changed -> if (changed) pendingRagDocumentId = null }
     fun refreshHistory() { viewModelScope.launch { loadSessionsAsync() } }
     fun editAndRegenerate(userMessageId: String, replacement: String? = null) {
         if (generationJob?.isActive == true || _isInitializing.value) return
@@ -232,6 +244,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     val activeBackend = _activeBackend.asStateFlow()
 
     private var currentModelPath: String? = null
+    /** The model this chat is set to use, loaded or not. */
+    val selectedModelPath: String? get() = currentModelPath
     private var currentBundle: ModelBundle? = null
     private var currentModelId: String = ""
     private var currentModelName: String = ""
@@ -274,7 +288,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (_currentSessionId.value != sessionId) return
 
+        // Only the message that attached a file replays it. A follow-up that an older build stamped with the
+        // same path is retried as the follow-up it was, so it reads the upload only if the question asks for it.
+        val turnHistory = session.messages.map { it.toTurnDocumentEntry() }
         val docPath = userMsg.documentPath
+            ?.takeIf { com.shounak.localmeshai.rag.TurnDocumentPlanner.isOriginalUpload(turnHistory, userMsg.id) }
+        val retryLibraryDocumentId = if (docPath.isNullOrBlank())
+            com.shounak.localmeshai.rag.TurnDocumentPlanner.libraryDocumentId(turnHistory, userMsg.id) else null
+        val retryUploadId = if (docPath.isNullOrBlank()) null else userMsg.ragDocumentId
+            ?: if (_temporaryChat.value) null else com.shounak.localmeshai.rag.LegacyDocumentLink.repairId(docPath, null,
+                attachmentStoreForChat, com.shounak.localmeshai.data.ChatKind.Text, sessionId)
         if (!docPath.isNullOrBlank()) {
             val file = File(docPath)
             if (!file.exists()) {
@@ -357,13 +380,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             userText = userMsg.text,
             userMsgId = userMsg.id,
             documentUri = docPath?.let { Uri.fromFile(File(it)) },
-            documentName = userMsg.documentName,
-            documentPath = userMsg.documentPath,
+            documentName = if (docPath != null) userMsg.documentName else null,
+            documentPath = docPath,
             requestId = newRequestId,
             attemptId = nextAttempt,
             assistantIndex = actualAssistantIndex,
             targetSessionId = sessionId,
-            isRetry = true
+            isRetry = true,
+            ownUploadId = retryUploadId,
+            libraryDocumentId = retryLibraryDocumentId
         )
     }
 
@@ -594,14 +619,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private var pendingRagDocumentId: String? = null
-    suspend fun useKnowledgeBaseDocument(id: String): Boolean {
-        if (_isGenerating.value || _isStopping.value || _isDeletingHistory.value || ragManager.indexedDocuments.none { it.documentId == id }) return false
-        if (!ragManager.retainForLibrary(id)) return false
+    suspend fun useKnowledgeBaseDocument(id: String, attachmentPending: Boolean = false): com.shounak.localmeshai.rag.LibrarySelectionResult {
+        // A temporary chat is never saved, so it must not leave a permanent "retained" library record behind.
+        if (_temporaryChat.value) return com.shounak.localmeshai.rag.LibrarySelectionResult.TemporaryChat
+        if (_isGenerating.value || _isStopping.value || _isDeletingHistory.value || generationJob?.isActive == true)
+            return com.shounak.localmeshai.rag.LibrarySelectionResult.Busy
+        if (attachmentPending) return com.shounak.localmeshai.rag.LibrarySelectionResult.AttachmentPending
+        if (ragManager.indexedDocuments.none { it.documentId == id }) return com.shounak.localmeshai.rag.LibrarySelectionResult.Unavailable
+        if (!ragManager.retainForLibrary(id)) return com.shounak.localmeshai.rag.LibrarySelectionResult.Unavailable
         pendingRagDocumentId = id
         currentSessionDocumentId = id
         setRagActive(true)
-        return true
+        return com.shounak.localmeshai.rag.LibrarySelectionResult.Selected
     }
     var currentSessionDocumentId: String? = null
         private set
@@ -743,7 +772,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         supportsThinkingMode: Boolean = false,
         allowUnsafeOverride: Boolean = false,
         forceReload: Boolean = false,
-        bundle: ModelBundle? = null
+        bundle: ModelBundle? = null,
+        deferLoad: Boolean = false
     ) {
         defaultProfileContext = contextWindowTokens
         val configuredProfileContext = com.shounak.localmeshai.features.WorkspacePreferences.get(getApplication()).profile(modelId.ifBlank { bundle?.id ?: File(path).nameWithoutExtension }).contextTokens ?: contextWindowTokens
@@ -820,6 +850,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _runtimeCapabilities.value = null
         _isModelReady.value = false
         _error.value = null
+
+        if (deferLoad && !modelLoadController.isInitializing) {
+            // The other chat already holds this model: keep the selection and let the first send load it on
+            // demand, which hands the runtime over through the coordinator instead of reloading on every hop.
+            _isInitializing.value = false
+            return
+        }
 
         initJob = viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -1037,9 +1074,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         ensureCurrentSession(userText, documentName)
 
         val userMsgId = UUID.randomUUID().toString()
-        val selectedDocumentName = documentName ?: pendingRagDocumentId?.let { id -> ragManager.indexedDocuments.firstOrNull { it.documentId == id }?.documentName }
+        // A newly attached file wins over a pending library pick; the pick is consumed by this send either way.
+        val libraryDocument = _pendingLibraryDocument.value.takeIf { documentUri == null }
+        pendingRagDocumentId = null
+        val ownUploadId = if (documentUri != null) UUID.randomUUID().toString() else null
+        val selectedDocumentName = documentName ?: libraryDocument?.name
         val userMessage = ChatMessage(userText, true, id = userMsgId, documentName = selectedDocumentName, documentPath = documentPath,
-            ragDocumentId = if (documentUri != null) UUID.randomUUID().toString() else pendingRagDocumentId)
+            ragDocumentId = ownUploadId ?: libraryDocument?.id)
         messages.add(userMessage)
 
         val assistantIndex = messages.size
@@ -1069,7 +1110,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             requestId = requestId,
             attemptId = 1,
             assistantIndex = assistantIndex,
-            targetSessionId = targetSessionId
+            targetSessionId = targetSessionId,
+            ownUploadId = ownUploadId,
+            libraryDocumentId = libraryDocument?.id
         )
         return true
     }
@@ -1084,19 +1127,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         attemptId: Int,
         assistantIndex: Int,
         targetSessionId: String?,
-        isRetry: Boolean = false
+        isRetry: Boolean = false,
+        ownUploadId: String? = null,
+        libraryDocumentId: String? = null
     ) {
         val timing = InferenceTiming()
         _isGenerating.value = true
         autoUnloadJob?.cancel()
-        val savedDocument = messages.lastOrNull { it.isUser && !it.documentPath.isNullOrBlank() }
-            ?.takeIf { com.shounak.localmeshai.rag.ChatDocumentScope.isDocumentQuestion(userText, listOfNotNull(it.documentName)) }
-        val inputUri = documentUri ?: documentPath?.let { Uri.fromFile(File(it)) } ?: savedDocument?.documentPath?.let { Uri.fromFile(File(it)) }
-        val inputName = documentName ?: savedDocument?.documentName ?: "document"
-        val repairedUploadId = if (!_temporaryChat.value && appSettings.settings.value.enableRag && documentUri == null)
-            com.shounak.localmeshai.rag.LegacyDocumentLink.repairId(savedDocument?.documentPath, savedDocument?.ragDocumentId,
-                attachmentStoreForChat,
-                com.shounak.localmeshai.data.ChatKind.Text, targetSessionId) else null
+        val canRepair = !_temporaryChat.value && appSettings.settings.value.enableRag
+        val documentPlan = com.shounak.localmeshai.rag.TurnDocumentPlanner.plan(
+            history = messages.map { it.toTurnDocumentEntry() },
+            turnMessageId = userMsgId,
+            hasOwnAttachment = documentUri != null || !documentPath.isNullOrBlank(),
+            ownUploadId = ownUploadId,
+            libraryDocumentId = libraryDocumentId,
+            isDocumentQuestion = { com.shounak.localmeshai.rag.ChatDocumentScope.isDocumentQuestion(userText, listOfNotNull(it.name)) },
+            repair = { upload ->
+                if (!canRepair) null else com.shounak.localmeshai.rag.LegacyDocumentLink.repairId(upload.path, upload.ragDocumentId,
+                    attachmentStoreForChat, com.shounak.localmeshai.data.ChatKind.Text, targetSessionId,
+                    isIndexed = { id -> ragManager.indexedDocuments.any { it.documentId == id } })
+            }
+        )
+        val savedDocument = documentPlan.savedUpload
+        val indexTargetId = documentPlan.indexTargetId
+        val indexOwnerMessageId = documentPlan.indexOwnerMessageId
+        val inputUri = documentUri ?: documentPath?.let { Uri.fromFile(File(it)) } ?: savedDocument?.path?.let { Uri.fromFile(File(it)) }
+        val inputName = documentName ?: savedDocument?.name ?: "document"
         val preparation = inputUri?.let { documentPreparation.take(it, inputName) }
 
         timing.recordAcknowledged()
@@ -1156,17 +1212,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     documentPreparation.remember(durable)
-                    documentForIndex = if (documentUri != null || repairedUploadId != null) durable else null
+                    documentForIndex = if (indexTargetId != null) durable else null
                     resolvedDocPath = durable.durableFile?.absolutePath
                     resolvedDocName = durable.name
-                    withContext(Dispatchers.Main.immediate) {
+                    // Only a turn that attached this file is labelled with it; a follow-up that reads an
+                    // earlier upload keeps its own (empty) attachment fields.
+                    if (documentUri != null) withContext(Dispatchers.Main.immediate) {
                         if (!isCurrentRequest()) return@withContext
                         if (activeRequestId == requestId && _currentSessionId.value == targetSessionId) {
                             val userIdx = assistantIndex - 1
                             messages[userIdx] = messages[userIdx].copy(
-                                documentName = if (documentUri != null || repairedUploadId != null) resolvedDocName else messages[userIdx].documentName,
-                                documentPath = if (documentUri != null || repairedUploadId != null) resolvedDocPath else messages[userIdx].documentPath,
-                                ragDocumentId = messages[userIdx].ragDocumentId ?: repairedUploadId)
+                                documentName = resolvedDocName,
+                                documentPath = resolvedDocPath)
                         }
                     }
                     require(prepared.extractionError == null && !prepared.extractedText.isNullOrBlank()) {
@@ -1224,9 +1281,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 var ragChunkCount = 0
                 var ragTopMatchPct = 0
 
-                val chatDocumentIds = com.shounak.localmeshai.rag.ChatDocumentScope.ids(messages.map { it.isUser to it.ragDocumentId })
-                val targetDocId = (pendingRagDocumentId ?: currentSessionDocumentId)?.takeIf { it in chatDocumentIds }
-                pendingRagDocumentId = null
+                val chatDocumentIds = if (libraryDocumentId != null) documentPlan.ragScope
+                    else com.shounak.localmeshai.rag.ChatDocumentScope.ids(messages.map { it.isUser to it.ragDocumentId })
+                val targetDocId = (libraryDocumentId ?: currentSessionDocumentId)?.takeIf { it in chatDocumentIds }
                 val shouldQueryRag = _isRagActive.value && attachedContext.isBlank() && chatDocumentIds.isNotEmpty()
                 if (shouldQueryRag) {
                     val ragSettings = appSettings.settings.value
@@ -1372,18 +1429,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 liveUpdateJob.join()
                 if (execResult.status == RequestTerminalStatus.Completed && !_temporaryChat.value && appSettings.settings.value.enableRag) {
                     documentForIndex?.let { document ->
-                        val uploadId = messages.firstOrNull { it.id == userMsgId }?.ragDocumentId
+                        // Index only into the id this turn owns (its new upload or a repair of an owned upload),
+                        // never into whatever id the message happens to carry.
+                        val uploadId = indexTargetId
                         viewModelScope.launch(Dispatchers.Default) {
                             if (uploadId == null) return@launch
-                            val indexed = ragManager.ingestText(document.name, document.extractedText.orEmpty(), targetDocumentId = uploadId)
+                            val indexed = try {
+                                ragManager.ingestText(document.name, document.extractedText.orEmpty(), targetDocumentId = uploadId)
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                            catch (failure: Exception) {
+                                android.util.Log.w("ChatViewModel", "Could not index the attached document", failure)
+                                return@launch
+                            }
                             if (indexed.success) document.durableFile?.let { original ->
                                 try { ragManager.retainOriginalDocument(indexed.documentId, document.name, original) }
                                 catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                                 catch (failure: Exception) { android.util.Log.w("RagPreview", "Could not retain original upload", failure) }
                             }
-                            if (indexed.success && activeRequestId == requestId && _currentSessionId.value == targetSessionId) {
-                                currentSessionDocumentId = indexed.documentId
-                                refreshRagDocuments()
+                            if (indexed.success) withContext(Dispatchers.Main.immediate) {
+                                if (indexOwnerMessageId != null) stampUploadDocumentId(targetSessionId, indexOwnerMessageId, indexed.documentId)
+                                if (activeRequestId == requestId && _currentSessionId.value == targetSessionId) {
+                                    currentSessionDocumentId = indexed.documentId
+                                    refreshRagDocuments()
+                                }
                             }
                         }
                     }
@@ -1552,6 +1620,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     timing.formatMetricsSummary(m)
                 } ?: timing.detailedSummary(requestId, targetSessionId ?: "")
                 Log.i("ChatLatency", "backend=${inferenceManager.activeBackendDisplayName} $finalMetricsStr")
+                com.shounak.localmeshai.ai.TtftLog.d("chat request backend=${inferenceManager.activeBackendDisplayName.replace(' ', '_')} $finalMetricsStr")
                 liveUpdates.close()
                 liveUpdateJob.cancel()
                 preparedInput?.close()
@@ -1620,6 +1689,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         releaseModel(clearCoordinator = true, clearSelection = true)
     }
 
+    /** Records the index id on the message that attached the upload, once indexing under that id succeeded. */
+    private fun stampUploadDocumentId(sessionId: String?, messageId: String, documentId: String) {
+        if (sessionId == null) return
+        fun List<ChatMessage>.stamped() = map { if (it.id == messageId && it.ragDocumentId == null) it.copy(ragDocumentId = documentId) else it }
+        if (_currentSessionId.value == sessionId || _pendingSessionId.value == sessionId) {
+            val index = messages.indexOfFirst { it.id == messageId }
+            if (index >= 0 && messages[index].ragDocumentId == null) messages[index] = messages[index].copy(ragDocumentId = documentId)
+        }
+        val position = chatSessions.indexOfFirst { it.id == sessionId }
+        if (position >= 0) {
+            val updated = chatSessions[position].messages.stamped()
+            if (updated != chatSessions[position].messages) {
+                chatSessions[position] = chatSessions[position].copy(messages = updated)
+                persistSessions()
+            }
+        }
+    }
+
     fun startNewChat() {
         if (_temporaryChat.value) {
             val oldId = _currentSessionId.value
@@ -1659,6 +1746,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             stopGenerating()
         }
         saveCurrentSession()
+        // A library pick belongs to the chat it was made in.
+        pendingRagDocumentId = null
         messages.clear()
         messages.addAll(session.messages.map { msg ->
             val resolvedDocPath = if (!msg.documentPath.isNullOrBlank() && File(msg.documentPath).exists()) {
@@ -2203,3 +2292,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 }
+
+private fun ChatMessage.toTurnDocumentEntry() =
+    com.shounak.localmeshai.rag.TurnDocumentPlanner.Entry(id, isUser, documentName, documentPath, ragDocumentId)

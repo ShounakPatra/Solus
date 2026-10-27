@@ -10,6 +10,37 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PromptDeadlineTest {
+    @Test fun answerAfterToolResultDisarmsTheRearmedDeadline() = runBlocking {
+        val deadline = PromptDeadline(50)
+        val answer = deadline.run({ fail("Answer streaming after a tool is healthy") }) {
+            deadline.onProgress(RequestProgress.Generating)
+            deadline.onProgress(RequestProgress.UsingTools)
+            delay(10)
+            deadline.onProgress(RequestProgress.ProcessingPrompt)
+            deadline.onProgress(RequestProgress.Generating)
+            delay(100)
+            "answer"
+        }
+        assertEquals("answer", answer)
+    }
+
+    @Test fun stalledToolRoundAfterAPreambleStillTimesOut() = runBlocking {
+        val stopped = CompletableDeferred<Unit>()
+        val deadline = PromptDeadline(30)
+        try {
+            withTimeout(2_000) {
+                deadline.run({ stopped.complete(Unit) }) {
+                    deadline.onProgress(RequestProgress.Generating)
+                    delay(60) // A healthy visible preamble must not expire.
+                    deadline.onProgress(RequestProgress.UsingTools)
+                    stopped.await()
+                    ""
+                }
+            }
+            fail("Tool work must re-arm the deadline after a visible preamble")
+        } catch (_: PromptTimeoutException) { }
+    }
+
     @Test fun inputBudgetScalesAndIsBounded() {
         assertEquals(120_000L, PromptDeadline.budgetMillis(0))
         assertTrue(PromptDeadline.budgetMillis(8_000) > PromptDeadline.budgetMillis(1_000))

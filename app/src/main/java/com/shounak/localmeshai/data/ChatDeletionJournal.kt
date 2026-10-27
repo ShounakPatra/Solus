@@ -70,7 +70,7 @@ data class DeletionJournalEntry(
                 sessionId = obj.requiredJournalString("sessionId"),
                 ownedResourcePaths = paths,
                 createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
-                ownedRagDocumentIds = if (obj.has("ownedRagDocumentIds")) obj.getJSONArray("ownedRagDocumentIds").journalStrings() else emptySet()
+                ownedRagDocumentIds = if (obj.has("ownedRagDocumentIds")) obj.getJSONArray("ownedRagDocumentIds").journalStrings("ownedRagDocumentIds") else emptySet()
             )
         }
     }
@@ -84,11 +84,21 @@ internal data class JournalDocument(
     val retainedRagDocuments: Set<String> = emptySet()
 )
 
-private fun JSONArray.journalStrings(): Set<String> = (0 until length()).map { index ->
-    val value = get(index)
-    require(value is String && value.isNotBlank()) { "Document identity must be a nonblank string" }
-    value
-}.toSet()
+/**
+ * Document ids are opaque nonblank strings. An entry that is not one can never name an indexed
+ * document, so it is dropped with a warning: failing the whole journal for it would block chat
+ * deletion and hide every document, while ignoring it cannot resurrect anything.
+ */
+private fun JSONArray.journalStrings(field: String): Set<String> {
+    val ids = LinkedHashSet<String>()
+    var dropped = 0
+    for (index in 0 until length()) {
+        val value = opt(index)
+        if (value is String && value.isNotBlank()) ids.add(value) else dropped++
+    }
+    if (dropped > 0) android.util.Log.w("ChatDeletionJournal", "Ignored $dropped invalid document id(s) in $field")
+    return ids
+}
 
 class ChatDeletionJournal(
     val rootDir: File
@@ -106,9 +116,15 @@ class ChatDeletionJournal(
         replay = 1, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
     val documentChanges: kotlinx.coroutines.flow.SharedFlow<Set<String>> = _documentChanges
 
+    /**
+     * Document ids retired so far. Never throws: while [hasRecoveryError] is true the set may be
+     * incomplete, so callers that must not resurrect a deleted document check it and fail closed.
+     */
     fun deletedRagDocuments(): Set<String> {
-        if (!isLoaded) ensureLoaded()
-        check(!hasCorruptData) { "Document deletion journal requires recovery" }
+        if (!isLoaded) {
+            // An unexpected load failure means the retirements are unknown, not absent.
+            try { ensureLoaded() } catch (_: Exception) { hasCorruptData = true }
+        }
         return retiredRagDocuments
     }
 
@@ -325,8 +341,8 @@ class ChatDeletionJournal(
                 tombstoneList.add(JournalTombstone.fromJson(tombstonesArr.getJSONObject(i)))
             }
             return JournalDocument(version = ver, pending = pendingList, tombstones = tombstoneList,
-                deletedRagDocuments = if (ver >= 3) root.getJSONArray("deletedRagDocuments").journalStrings() else emptySet(),
-                retainedRagDocuments = if (ver >= 3) root.getJSONArray("retainedRagDocuments").journalStrings() else emptySet())
+                deletedRagDocuments = if (ver >= 3) root.getJSONArray("deletedRagDocuments").journalStrings("deletedRagDocuments") else emptySet(),
+                retainedRagDocuments = if (ver >= 3) root.getJSONArray("retainedRagDocuments").journalStrings("retainedRagDocuments") else emptySet())
         }
     }
 }
