@@ -1,5 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use candle_core::{DType, Device, Tensor};
+#[cfg(test)]
+mod zip_security_tests;
 use candle_nn::VarBuilder;
 mod gpt2;
 mod media_models;

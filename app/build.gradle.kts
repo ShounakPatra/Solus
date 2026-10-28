@@ -13,7 +13,7 @@ plugins {
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val nativeSourceDigest = MessageDigest.getInstance("SHA-256").apply {
     update("toolchain:ndk-28.2.13676358;cmake-3.22.1;platform:android-30;abi:arm64-v8a;c++17".toByteArray())
-    fileTree("src/main/rust") { include("src/**/*.rs", "Cargo.toml", "Cargo.lock") }
+    fileTree("src/main/rust") { include("src/**/*.rs", "Cargo.toml", "Cargo.lock", "vendor/**/*.rs", "vendor/**/Cargo.toml") }
         .files.sortedBy { it.relativeTo(projectDir).invariantSeparatorsPath }.forEach { source ->
             update(source.relativeTo(projectDir).invariantSeparatorsPath.toByteArray())
             update(source.readBytes())
@@ -308,6 +308,7 @@ android.sourceSets.getByName("main").jniLibs.srcDir(candleJniDirectory.get().asF
 val buildCandleAndroid = tasks.register<Exec>("buildCandleAndroid") {
     workingDir(rootDir)
     inputs.dir("src/main/rust/src")
+    inputs.dir("src/main/rust/vendor")
     inputs.file("src/main/rust/Cargo.toml")
     inputs.file("src/main/rust/Cargo.lock")
     inputs.file(rootProject.file("tools/build-candle.ps1"))

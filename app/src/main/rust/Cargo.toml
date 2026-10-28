@@ -17,6 +17,10 @@ rayon = "1"
 serde_json = "1"
 tokenizers = { version = "=0.21.1", default-features = false, features = ["onig"] }
 
+[patch.crates-io]
+# Keep Candle's model APIs stable while replacing its vulnerable ZIP dependency.
+candle-core = { path = "vendor/candle-core" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
