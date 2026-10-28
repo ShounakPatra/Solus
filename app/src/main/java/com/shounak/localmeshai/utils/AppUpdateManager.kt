@@ -14,6 +14,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
 import com.shounak.localmeshai.R
+import com.shounak.localmeshai.BuildConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,6 +33,7 @@ object AppUpdateManager {
     private const val RELEASES_API_URL =
         "https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest"
     const val GITHUB_REPO_URL = "https://github.com/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME"
+    const val FDROID_APP_URL = "https://f-droid.org/packages/com.shounak.localmeshai/"
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -67,6 +69,9 @@ object AppUpdateManager {
     }
 
     suspend fun checkForUpdates(currentVersionName: String, context: Context? = null): UpdateCheckResult = withContext(Dispatchers.IO) {
+        if (BuildConfig.FDROID_DISTRIBUTION) {
+            return@withContext UpdateCheckResult.Error("Updates for this installation are managed by F-Droid.")
+        }
         if (context != null && !NetworkUtils.isConnected(context)) {
             return@withContext UpdateCheckResult.Error("No internet connection. Please connect to Wi-Fi or mobile data to check for updates.")
         }
@@ -157,6 +162,9 @@ object AppUpdateManager {
         verifier: UpdateArtifactVerifier = UpdateArtifactVerifier(context),
         onProgress: ((Float) -> Unit)? = null
     ): Result<File> = withContext(Dispatchers.IO) {
+        if (BuildConfig.FDROID_DISTRIBUTION) {
+            return@withContext Result.failure(IllegalStateException("Install updates through F-Droid."))
+        }
         if (!NetworkUtils.isConnected(context)) {
             return@withContext Result.failure(IOException("No internet connection. Please connect to Wi-Fi or mobile data to download updates."))
         }
@@ -276,6 +284,7 @@ object AppUpdateManager {
         apkFile: File,
         verifier: UpdateArtifactVerifier = UpdateArtifactVerifier(context)
     ): Boolean {
+        if (BuildConfig.FDROID_DISTRIBUTION) return false
         return try {
             if (!apkFile.exists() || apkFile.length() == 0L) {
                 Log.w("AppUpdateManager", "APK file does not exist or is empty: ${apkFile.absolutePath}")
@@ -414,6 +423,10 @@ object AppUpdateManager {
      * @param force If true, cancels and reschedules even if already pending.
      */
     fun scheduleBackgroundUpdateCheck(context: Context, force: Boolean = false): Boolean {
+        if (BuildConfig.FDROID_DISTRIBUTION) {
+            cancelBackgroundUpdateCheck(context)
+            return false
+        }
         val jobScheduler = context.getSystemService(Context.JOB_SCHEDULER_SERVICE) as? JobScheduler
             ?: return false
 

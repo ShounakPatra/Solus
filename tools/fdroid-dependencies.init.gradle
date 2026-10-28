@@ -1,0 +1,22 @@
+import groovy.json.JsonOutput
+
+// Resolve the shipping runtime without compiling or changing the application.
+gradle.projectsEvaluated {
+    def app = gradle.rootProject.project(':app')
+    app.tasks.register('fdroidDependencyInventory') {
+        doLast {
+            def configuration = app.configurations.getByName('releaseRuntimeClasspath')
+            def artifacts = configuration.resolvedConfiguration.resolvedArtifacts.collect { artifact ->
+                [coordinate: artifact.moduleVersion.id.toString(),
+                 file: artifact.file.absolutePath,
+                 type: artifact.type,
+                 classifier: artifact.classifier]
+            }.sort { it.coordinate }
+            def target = new File(gradle.rootProject.projectDir,
+                    'build/reports/fdroid/runtime-dependencies.json')
+            target.parentFile.mkdirs()
+            target.text = JsonOutput.prettyPrint(JsonOutput.toJson(artifacts)) + '\n'
+            println "Wrote ${artifacts.size()} runtime artifacts to ${target}"
+        }
+    }
+}

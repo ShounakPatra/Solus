@@ -7,6 +7,7 @@ on:
       - 'app/build.gradle.kts'
       - 'app/src/main/cpp/CMakeLists.txt'
       - 'tools/build-candle.sh'
+      - 'tools/fdroid*'
       - 'fdroid/official/**'
       - '.github/workflows/fdroid-official-check.yml'
 permissions:
@@ -25,23 +26,29 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Fast F-Droid source preflight
         run: python3 tools/fdroid_preflight.py --verify-gradle
-      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
-        with:
-          distribution: temurin
-          java-version: '17'
       - name: Install pinned F-Droid tooling
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build glslang-tools libvulkan-dev
           python3 -m venv "$RUNNER_TEMP/fdroid-venv"
           "$RUNNER_TEMP/fdroid-venv/bin/pip" install \
             'git+https://gitlab.com/fdroid/fdroidserver.git@cdfdce835a8231996b02392bc79c1879e6bef501' \
             'git+https://gitlab.com/fdroid/gradlew-fdroid.git@ac23ffb5285c0c0961a677e310dd58ef90531057'
           echo "$RUNNER_TEMP/fdroid-venv/bin" >> "$GITHUB_PATH"
-          bash tools/install-android-sdk.sh "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;28.2.13676358' 'cmake;3.22.1'
-          rustup toolchain install 1.90.0 --profile minimal --target aarch64-linux-android
-          echo 'RUSTUP_TOOLCHAIN=1.90.0' >> "$GITHUB_ENV"
+      - name: Rehearse recipe system prerequisites
+        run: |
+          set -euo pipefail
+          # fdroid --test skips sudo. Execute that exact recipe block here;
+          # an official --server build executes it inside its disposable VM.
+          python - <<'PY'
+          import pathlib, subprocess, yaml
+          recipe = yaml.safe_load(pathlib.Path('fdroid/official/com.shounak.localmeshai.yml').read_text())
+          subprocess.run(['sudo', 'env', 'DEBIAN_FRONTEND=noninteractive', 'bash', '-euo', 'pipefail', '-c',
+                          '\n'.join(recipe['Builds'][0]['sudo'])], check=True)
+          PY
+          # fdroid --server installs the recipe's NDK automatically. The local
+          # rehearsal must supply it before fdroid validates ndk_path().
+          sdkmanager --sdk_root="$ANDROID_HOME" 'ndk;28.2.13676358'
+          echo 'JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64' >> "$GITHUB_ENV"
       - name: Verify Gradle support and launcher before building
         run: |
           set -euo pipefail
@@ -58,8 +65,9 @@ jobs:
       - name: Build recipe with scanning enabled
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/fdroid-data/metadata" "$RUNNER_TEMP/fdroid-data/build"
+          mkdir -p "$RUNNER_TEMP/fdroid-data/metadata" "$RUNNER_TEMP/fdroid-data/build" "$RUNNER_TEMP/fdroid-data/srclibs"
           cp fdroid/official/com.shounak.localmeshai.yml "$RUNNER_TEMP/fdroid-data/metadata/"
+          cp fdroid/official/srclibs/rustup.yml "$RUNNER_TEMP/fdroid-data/srclibs/"
           cd "$RUNNER_TEMP/fdroid-data"
           python - <<'PY'
           import os, pathlib, yaml
@@ -71,10 +79,26 @@ jobs:
           printf 'sdk_path: "%s"\ngradle: "%s"\nscan_binary: true\n' "$ANDROID_HOME" "$(command -v gradlew-fdroid)" > config.yml
           git clone https://github.com/ShounakPatra/Solus.git build/com.shounak.localmeshai
           git -C build/com.shounak.localmeshai checkout "$GITHUB_SHA"
+          fdroid readmeta
+          fdroid lint com.shounak.localmeshai
           fdroid build --verbose --test --latest com.shounak.localmeshai 2>&1 | tee fdroid-build.log
           if grep -Eq '([1-9][0-9]* build failed|ERROR:)' fdroid-build.log; then exit 1; fi
           test -s tmp/com.shounak.localmeshai_12.apk
           sha256sum tmp/com.shounak.localmeshai_12.apk > tmp/apk.sha256
+          "$ANDROID_HOME/build-tools/37.0.0/aapt" dump permissions tmp/com.shounak.localmeshai_12.apk > tmp/permissions.txt
+          if grep -q REQUEST_INSTALL_PACKAGES tmp/permissions.txt; then
+            echo 'F-Droid APK must not request APK installation permission.' >&2
+            exit 1
+          fi
+      - name: Record release dependency licenses
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/fdroid-data/build/com.shounak.localmeshai"
+          gradlew-fdroid --no-configuration-cache -PsolusFdroid=true testDebugUnitTest --tests '*FdroidDistributionTest'
+          gradlew-fdroid --no-configuration-cache -I tools/fdroid-dependencies.init.gradle :app:fdroidDependencyInventory
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo +1.90.0 metadata --locked --filter-platform aarch64-linux-android --format-version 1 --manifest-path app/src/main/rust/Cargo.toml > build/reports/fdroid/cargo-metadata.json
+          python tools/fdroid_dependency_audit.py --cargo-metadata build/reports/fdroid/cargo-metadata.json
       - name: Preserve evidence even on failure
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -86,5 +110,7 @@ jobs:
             ${{ runner.temp }}/fdroid-data/logs
             ${{ runner.temp }}/fdroid-data/tmp/*.apk
             ${{ runner.temp }}/fdroid-data/tmp/apk.sha256
+            ${{ runner.temp }}/fdroid-data/tmp/permissions.txt
+            ${{ runner.temp }}/fdroid-data/build/com.shounak.localmeshai/build/reports/fdroid
           if-no-files-found: warn
           retention-days: 14

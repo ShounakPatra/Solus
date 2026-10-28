@@ -1,4 +1,4 @@
-# Source-build candidate, not an accepted fdroiddata recipe.
+# Submission candidate, pending the official buildserver and maintainer review.
 # Official catalog candidate uses F-Droid's own app signing key.
 # CI resolves main to its exact checked-out SHA and saves that pinned recipe.
 Categories:
@@ -6,6 +6,17 @@ Categories:
 License: Apache-2.0
 SourceCode: https://github.com/ShounakPatra/Solus
 IssueTracker: https://github.com/ShounakPatra/Solus/issues
+Changelog: https://github.com/ShounakPatra/Solus/releases
+AutoName: Solus
+MaintainerNotes: |-
+  Uses F-Droid signing; no developer-signed reference APK is required.
+  The solusFdroid property disables the GitHub APK updater; prebuild also removes
+  its installation permission. Native llama.cpp and Candle are built from source.
+  Other native runtimes come from the declared FLOSS Google Maven/Maven Central
+  dependencies. License inventory and review are under fdroid/official/.
+  No model weights are bundled. Optional downloads include models with Gemma and
+  Llama licenses as well as permissively licensed models; please review any
+  necessary AntiFeatures. Local model imports do not require Hugging Face.
 RepoType: git
 Repo: https://github.com/ShounakPatra/Solus.git
 Builds:
@@ -13,7 +24,24 @@ Builds:
     versionCode: 12
     commit: main
     subdir: app
+    sudo:
+      - apt-get update
+      - apt-get install -y openjdk-21-jdk-headless build-essential cmake ninja-build glslang-tools libvulkan-dev pkg-config curl ca-certificates
     gradle:
       - 'yes'
+    srclibs:
+      - rustup@1.28.2
+    prebuild:
+      - rm -f ../gradle/gradle-daemon-jvm.properties
+      - sed -i '/android.permission.REQUEST_INSTALL_PACKAGES/d' src/main/AndroidManifest.xml
+      - sdkmanager --sdk_root=$$SDK$$ 'platforms;android-37' 'build-tools;37.0.0' 'cmake;3.22.1'
+      - bash $$rustup$$/rustup-init.sh -y --no-modify-path --profile minimal --default-toolchain 1.90.0 --target aarch64-linux-android
+    gradleprops:
+      - solusFdroid=true
+      - org.gradle.java.home=/usr/lib/jvm/java-21-openjdk-amd64
+      - org.gradle.java.installations.paths=/usr/lib/jvm/java-21-openjdk-amd64
+    ndk: 28.2.13676358
 AutoUpdateMode: None
 UpdateCheckMode: None
+CurrentVersion: 6.0.6
+CurrentVersionCode: 12

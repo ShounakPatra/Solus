@@ -14,6 +14,8 @@ export CC_aarch64_linux_android="$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"
 export AR_aarch64_linux_android="$task_bin/llvm-ar"
 export CARGO_BUILD_JOBS=4
 task_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+export PATH="$task_cargo_home/bin:$PATH"
+export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.90.0}"
 export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$task_root=/solus --remap-path-prefix=$task_cargo_home=/cargo"
 export CFLAGS_aarch64_linux_android="${CFLAGS_aarch64_linux_android:-} -ffile-prefix-map=$task_root=/solus -ffile-prefix-map=$task_cargo_home=/cargo"
 cargo build --locked --manifest-path "$task_root/app/src/main/rust/Cargo.toml" --target aarch64-linux-android --release

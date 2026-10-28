@@ -38,9 +38,12 @@ def check(root, verify_gradle=False):
     require(bool(re.fullmatch(r'[a-f0-9]{64}', props.get('distributionSha256Sum', ''))), 'Gradle distribution checksum missing')
     workflows = [read('.github/workflows/' + name) for name in ('android-ci.yml', 'fdroid-official-check.yml')]
     for workflow in workflows:
-        require('runs-on: ubuntu-24.04' in workflow, 'Both builders must use the same pinned Ubuntu release')
-        for tool in ('1.90.0', '28.2.13676358', '3.22.1'):
-            require(tool in workflow, f'Builder is missing toolchain pin {tool}')
+        require('runs-on: ubuntu-24.04' in workflow, 'Both cloud rehearsals must use the same pinned Ubuntu release')
+    for tool in ('1.90.0', '28.2.13676358', '3.22.1'):
+        require(tool in workflows[0], f'Android CI is missing toolchain pin {tool}')
+        require(tool in recipe, f'F-Droid recipe is missing toolchain pin {tool}')
+    require('rustup@1.28.2' in recipe and 'sudo:' in recipe and 'prebuild:' in recipe,
+            'F-Droid recipe must provision its own Rust and system prerequisites')
     require('ndkVersion = "28.2.13676358"' in app, 'App NDK does not match CI')
     if verify_gradle:
         with urllib.request.urlopen('https://gitlab.com/fdroid/gradle-transparency-log/-/raw/master/checksums.json', timeout=30) as response:
