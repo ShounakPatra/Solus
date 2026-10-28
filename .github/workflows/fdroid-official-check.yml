@@ -2,7 +2,11 @@ name: F-Droid source build candidate
 on:
   workflow_dispatch:
   push:
-    branches: [codex/fdroid-release-support]
+    branches: [main]
+    paths:
+      - 'app/build.gradle.kts'
+      - 'fdroid/official/**'
+      - '.github/workflows/fdroid-official-check.yml'
 permissions:
   contents: read
 jobs:
@@ -50,13 +54,20 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fdroid-data/metadata" "$RUNNER_TEMP/fdroid-data/build"
           cp fdroid/official/com.shounak.localmeshai.yml "$RUNNER_TEMP/fdroid-data/metadata/"
           cd "$RUNNER_TEMP/fdroid-data"
+          python - <<'PY'
+          import os, pathlib, yaml
+          path = pathlib.Path('metadata/com.shounak.localmeshai.yml')
+          recipe = yaml.safe_load(path.read_text())
+          recipe['Builds'][0]['commit'] = os.environ['GITHUB_SHA']
+          path.write_text(yaml.safe_dump(recipe, sort_keys=False))
+          PY
           printf 'sdk_path: "%s"\ngradle: "%s"\nscan_binary: true\n' "$ANDROID_HOME" "$(command -v gradlew-fdroid)" > config.yml
           git clone https://github.com/ShounakPatra/Solus.git build/com.shounak.localmeshai
-          git -C build/com.shounak.localmeshai checkout 07ef88e39b20b50fb18790b804291230e81be7ff
+          git -C build/com.shounak.localmeshai checkout "$GITHUB_SHA"
           fdroid build --verbose --test --latest com.shounak.localmeshai 2>&1 | tee fdroid-build.log
           if grep -Eq '([1-9][0-9]* build failed|ERROR:)' fdroid-build.log; then exit 1; fi
-          test -s tmp/com.shounak.localmeshai_11.apk
-          sha256sum tmp/com.shounak.localmeshai_11.apk > tmp/apk.sha256
+          test -s tmp/com.shounak.localmeshai_12.apk
+          sha256sum tmp/com.shounak.localmeshai_12.apk > tmp/apk.sha256
       - name: Preserve evidence even on failure
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -64,6 +75,7 @@ jobs:
           name: fdroid-source-build-evidence
           path: |
             ${{ runner.temp }}/fdroid-data/fdroid-build.log
+            ${{ runner.temp }}/fdroid-data/metadata/com.shounak.localmeshai.yml
             ${{ runner.temp }}/fdroid-data/logs
             ${{ runner.temp }}/fdroid-data/tmp/*.apk
             ${{ runner.temp }}/fdroid-data/tmp/apk.sha256

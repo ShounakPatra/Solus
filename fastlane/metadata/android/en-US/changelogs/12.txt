@@ -1,0 +1,1 @@
+Fix stray newline characters in model responses and render completed LaTeX formulas during generation. Preserve code examples and unfinished formulas while streaming.
