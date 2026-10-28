@@ -11,6 +11,49 @@ import org.junit.Test
 
 class MessagePresentationTest {
 
+    @Test
+    fun rendersScreenshotMathDelimitersWhileAnswerIsStreaming() {
+        val text = "Inline dollar: $" + "E = mc^2$ and $" + "x_1 + x_2$\n" +
+            "Inline paren: \\(a^2 + b^2 = c^2\\)\n" +
+            "Display brackets: \\[x = \\frac{1}{2}\\]\n" +
+            "Display dollars: $$\\int_0^1 x dx$$\nMore tokens"
+        val streaming = MessagePresentationCache.getOrCompute(text, false, true)
+        assertTrue(streaming.hasRichBlock)
+        assertEquals(2, streaming.segments.filterIsInstance<ModelAnswerSegment.DisplayMath>().size)
+        assertTrue(streaming.segments.filterIsInstance<ModelAnswerSegment.Text>().any { it.text.contains("E = mc²") })
+        val completed = MessagePresentationCache.getOrCompute(text, false, false)
+        assertEquals(completed.segments, streaming.segments)
+    }
+
+    @Test
+    fun streamingDoesNotCachePartialResponsesOrExposeReasoningAsAnswer() {
+        val text = "<think>Private working"
+        val presentation = MessagePresentationCache.getOrCompute(text, false, true)
+        assertEquals("", presentation.displayText)
+        assertEquals("Private working", presentation.reasoningText)
+        assertTrue(presentation.parsedThinking.isThinkingActive)
+        assertNull(MessagePresentationCache.getIfCached(MessagePresentationKey(text = text, isUser = false, isStreaming = true)))
+    }
+
+    @Test
+    fun streamingModernReasoningRemainsSeparateFromRenderedAnswer() {
+        val presentation = MessagePresentationCache.getOrCompute(
+            messageId = "modern", requestId = "req", attemptId = 1,
+            text = "\\[\\frac{1}{2}\\]", isUser = false, isStreaming = true,
+            reasoningText = "Working", isThinkingActive = true, responseFormatVersion = 1
+        )
+        assertEquals("Working", presentation.reasoningText)
+        assertTrue(presentation.parsedThinking.isThinkingActive)
+        assertTrue(presentation.hasRichBlock)
+    }
+
+    @Test
+    fun userCodeAndMathAreNotRewritten() {
+        val text = "Literal \\n**text** and $" + "x^2$"
+        val presentation = MessagePresentationCache.getOrCompute(text, true, false)
+        assertEquals(listOf(ModelAnswerSegment.Text(text)), presentation.segments)
+    }
+
     @Before
     fun setUp() {
         MessagePresentationCache.clear()

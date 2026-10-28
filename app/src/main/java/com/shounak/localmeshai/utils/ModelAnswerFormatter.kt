@@ -57,25 +57,25 @@ object ModelAnswerFormatter {
         '=' to '₌', '(' to '₍', ')' to '₎'
     )
 
-    fun parse(text: String): List<ModelAnswerSegment> {
+    fun parse(text: String, isStreaming: Boolean = false): List<ModelAnswerSegment> {
         val normalizedText = normalizeEscapedModelText(text)
         val result = mutableListOf<ModelAnswerSegment>()
         var cursor = 0
         while (cursor < normalizedText.length) {
             val fenceStart = normalizedText.indexOf("```", cursor)
             if (fenceStart < 0) {
-                appendRichText(normalizedText.substring(cursor), result)
+                appendRichText(normalizedText.substring(cursor), result, isStreaming)
                 break
             }
-            appendRichText(normalizedText.substring(cursor, fenceStart), result)
+            appendRichText(normalizedText.substring(cursor, fenceStart), result, isStreaming)
             val headerEnd = normalizedText.indexOf('\n', fenceStart + 3)
             if (headerEnd < 0) {
-                appendText(normalizedText.substring(fenceStart), result)
+                appendRawText(normalizedText.substring(fenceStart), result)
                 break
             }
             val fenceEnd = normalizedText.indexOf("```", headerEnd + 1)
             if (fenceEnd < 0) {
-                appendText(normalizedText.substring(fenceStart), result)
+                appendRawText(normalizedText.substring(fenceStart), result)
                 break
             }
             result += ModelAnswerSegment.Code(
@@ -88,14 +88,24 @@ object ModelAnswerFormatter {
     }
 
     /** Never allows malformed model formatting to crash composition. */
-    fun parseSafely(text: String): List<ModelAnswerSegment> =
-        runCatching { parse(text) }.getOrElse { listOf(ModelAnswerSegment.Text(text)) }
+    fun parseSafely(text: String, isStreaming: Boolean = false): List<ModelAnswerSegment> =
+        runCatching { parse(text, isStreaming) }.getOrElse { listOf(ModelAnswerSegment.Text(text)) }
 
     /** Decodes only unambiguous escaped line breaks and double-escaped LaTeX. */
     fun normalizeEscapedModelText(text: String): String {
         val output = StringBuilder()
         var cursor = 0
         while (cursor < text.length) {
+            // Literal escapes in code examples are data, not answer layout.
+            if (text[cursor] == '`') {
+                val markerEnd = (cursor until text.length).firstOrNull { text[it] != '`' } ?: text.length
+                val marker = text.substring(cursor, markerEnd)
+                val close = text.indexOf(marker, markerEnd)
+                val end = if (close < 0) text.length else close + marker.length
+                output.append(text.substring(cursor, end))
+                cursor = end
+                continue
+            }
             if (text.startsWith("\\r\\n", cursor)) {
                 output.append('\n')
                 cursor += 4
@@ -168,7 +178,11 @@ object ModelAnswerFormatter {
         return formatMath(value.substring(open + 1, close))
     }
 
-    private fun appendRichText(source: String, result: MutableList<ModelAnswerSegment>) {
+    private fun appendRichText(
+        source: String,
+        result: MutableList<ModelAnswerSegment>,
+        isStreaming: Boolean
+    ) {
         val prose = StringBuilder()
         var cursor = 0
         fun flushProse() {
@@ -178,7 +192,14 @@ object ModelAnswerFormatter {
             }
         }
         while (cursor < source.length) {
-            val listItem = readInlineMathListItemAt(source, cursor)
+            // Do not strip commands from the unfinished formula at the end of a
+            // streaming snapshot. Earlier complete formulas can already render.
+            if (isStreaming && startsMath(source, cursor) && readMathAt(source, cursor) == null) {
+                flushProse()
+                appendRawText(source.substring(cursor), result)
+                break
+            }
+            val listItem = readInlineMathListItemAt(source, cursor, isStreaming)
             if (listItem != null) {
                 flushProse()
                 result += ModelAnswerSegment.InlineMathListItem(listItem.parts)
@@ -227,6 +248,11 @@ object ModelAnswerFormatter {
         flushProse()
     }
 
+    private fun startsMath(source: String, start: Int): Boolean =
+        source[start] == '$' || source.startsWith("\\[", start) ||
+            source.startsWith("\\(", start) || source.startsWith("\\begin{", start) ||
+            source.startsWith("\\boxed{", start)
+
     private fun readMathAt(source: String, start: Int): ParsedMath? {
         fun bounded(prefix: String, suffix: String, inline: Boolean): ParsedMath? {
             if (!source.startsWith(prefix, start)) return null
@@ -268,16 +294,16 @@ object ModelAnswerFormatter {
         return null
     }
 
-    private fun readInlineMathListItemAt(source: String, start: Int): ParsedListItem? {
+    private fun readInlineMathListItemAt(source: String, start: Int, isStreaming: Boolean): ParsedListItem? {
         val markerEnd = markdownBulletEnd(source, start) ?: return null
         val lineEnd = source.indexOf('\n', markerEnd).let { if (it < 0) source.length else it }
-        val parts = parseListParts(source.substring(markerEnd, lineEnd))
+        val parts = parseListParts(source.substring(markerEnd, lineEnd), isStreaming)
         return if (parts.any { it is ModelAnswerListPart.Math || it is ModelAnswerListPart.Code }) {
             ParsedListItem(parts = parts, endExclusive = lineEnd)
         } else null
     }
 
-    private fun parseListParts(source: String): List<ModelAnswerListPart> {
+    private fun parseListParts(source: String, isStreaming: Boolean): List<ModelAnswerListPart> {
         val result = mutableListOf<ModelAnswerListPart>()
         val prose = StringBuilder()
         var cursor = 0
@@ -297,6 +323,11 @@ object ModelAnswerFormatter {
                 }
             }
             val math = readMathAt(source, cursor)
+            if (isStreaming && startsMath(source, cursor) && math == null) {
+                flushProse()
+                result += ModelAnswerListPart.Text(source.substring(cursor))
+                return result
+            }
             if (math != null) {
                 if (isRenderableMath(math.latex)) {
                     flushProse()
@@ -466,7 +497,7 @@ object ModelAnswerFormatter {
         if (nextIndex >= value.length) return true
         val next = value[nextIndex]
         return next == '\\' || next.isWhitespace() || next.isUpperCase() ||
-            next in ".,;:!?)]}"
+            next in ".,;:!?)]}*_#>-`$"
     }
 
     private fun isDoubleEscapedLatexStart(value: String, nextIndex: Int): Boolean {

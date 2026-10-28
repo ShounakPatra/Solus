@@ -7,6 +7,73 @@ import org.junit.Test
 
 class ModelAnswerFormatterTest {
     @Test
+    fun decodesScreenshotPoemNewlinesBeforeMarkdownWithoutLeavingLetterN() {
+        val source = """\n\n**A silent glide**\n\n**The engine hums low,**\n**A rhythmic beat, a steady flow.**"""
+        val text = ModelAnswerFormatter.parse(source)
+            .filterIsInstance<ModelAnswerSegment.Text>().joinToString("") { it.text }
+
+        assertEquals("\n\nA silent glide\n\nThe engine hums low,\nA rhythmic beat, a steady flow.", text)
+        assertEquals(text, ModelAnswerFormatter.parse(source, isStreaming = true)
+            .filterIsInstance<ModelAnswerSegment.Text>().joinToString("") { it.text })
+    }
+
+    @Test
+    fun preservesLiteralNewlineExamplesInCode() {
+        val source = "Use `\\n**bold**` literally.\n```text\n\\n**bold**\n```"
+        val normalized = ModelAnswerFormatter.normalizeEscapedModelText(source)
+        assertEquals(source, normalized)
+        val code = ModelAnswerFormatter.parse(source).filterIsInstance<ModelAnswerSegment.Code>().single()
+        assertEquals("\\n**bold**", code.code)
+    }
+
+    @Test
+    fun streamingRendersClosedFormulaAndPreservesUnfinishedTail() {
+        val source = "First: \\[\\frac{1}{2}\\] Next: \\[\\frac{3}{"
+        val segments = ModelAnswerFormatter.parse(source, isStreaming = true)
+        assertEquals("\\frac{1}{2}", segments.filterIsInstance<ModelAnswerSegment.DisplayMath>().single().latex)
+        assertTrue((segments.last() as ModelAnswerSegment.Text).text.endsWith("\\[\\frac{3}{"))
+        assertEquals(2, ModelAnswerFormatter.parse(source + "4}\\]", isStreaming = true)
+            .filterIsInstance<ModelAnswerSegment.DisplayMath>().size)
+    }
+
+    @Test
+    fun streamingIncompleteCodeRetainsItsLatexSource() {
+        val source = "```latex\n\\frac{1}{2}"
+        assertEquals(source, (ModelAnswerFormatter.parse(source, isStreaming = true).single() as ModelAnswerSegment.Text).text)
+    }
+
+    @Test
+    fun rendersEachDelimiterOnlyWhenItsClosingTokenArrives() {
+        val formulas = listOf(
+            "\\[\\frac{1}{2}\\]", "$$\\frac{1}{2}$$",
+            "\\(\\frac{1}{2}\\)", "$" + "\\frac{1}{2}$"
+        )
+        formulas.forEach { formula ->
+            for (length in 1 until formula.length) {
+                assertFalse("Unexpected formula at prefix $length of $formula",
+                    ModelAnswerFormatter.parse(formula.take(length), isStreaming = true)
+                        .any { it is ModelAnswerSegment.DisplayMath })
+            }
+            assertEquals("\\frac{1}{2}", ModelAnswerFormatter.parse(formula, isStreaming = true)
+                .filterIsInstance<ModelAnswerSegment.DisplayMath>().single().latex)
+        }
+    }
+
+    @Test
+    fun listKeepsCompletedMathAndTheNextIncompleteFormulaDuringStreaming() {
+        val item = ModelAnswerFormatter.parse("- \\(\\frac{1}{2}\\) then \\(\\sqrt{", isStreaming = true)
+            .filterIsInstance<ModelAnswerSegment.InlineMathListItem>().single()
+        assertEquals("\\frac{1}{2}", item.parts.filterIsInstance<ModelAnswerListPart.Math>().single().latex)
+        assertEquals("\\(\\sqrt{", (item.parts.last() as ModelAnswerListPart.Text).text)
+    }
+
+    @Test
+    fun newlineRepairPreservesLatexCommandsBeginningWithN() {
+        val source = """\nabla \nu \neq \notin"""
+        assertEquals(source, ModelAnswerFormatter.normalizeEscapedModelText(source))
+    }
+
+    @Test
     fun formatsScreenshotStyleInlineLatexWithoutCorruptingTimes() {
         val source = "So, \\(12.123 \\times 12.123 = 146.967129\\)."
 

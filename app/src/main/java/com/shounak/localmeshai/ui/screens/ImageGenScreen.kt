@@ -2591,15 +2591,7 @@ fun VisionChatBubble(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 } else {
-                    if (isStreaming) {
-                        Text(
-                            text = displayText.trim('\n'),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier
-                                .fillMaxWidth(),
-                            textAlign = TextAlign.Start
-                        )
-                    } else if (!isUser && terminalStatus == RequestTerminalStatus.Stopped && displayText.isBlank()) {
+                    if (!isUser && terminalStatus == RequestTerminalStatus.Stopped && displayText.isBlank()) {
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),

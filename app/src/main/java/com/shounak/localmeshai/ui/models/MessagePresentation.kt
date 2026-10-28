@@ -4,15 +4,16 @@ import androidx.collection.LruCache
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import com.shounak.localmeshai.utils.ModelAnswerFormatter
 import com.shounak.localmeshai.utils.ModelAnswerSegment
 import com.shounak.localmeshai.utils.ParsedThinkingContent
 import com.shounak.localmeshai.utils.ThinkingTextUtils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.withContext
 
 private val STREAMING_PLACEHOLDERS = setOf(
@@ -190,12 +191,6 @@ object MessagePresentationCache {
             completedCache.get(cacheKey)?.let { return it }
         }
 
-        // During streaming, show plain answer and separate plain reasoning section.
-        // Do not repeatedly parse Markdown, code blocks, or mathematics.
-        if (isStreaming) {
-            return getFastInitial(messageId, requestId, attemptId, revision, text, isUser, isStreaming, reasoningText, isThinkingActive, responseFormatVersion)
-        }
-
         val cleanReasoning = reasoningText?.trim()?.takeIf { it.isNotBlank() }
         val effectiveThinking = if (responseFormatVersion >= 1) {
             val sanitizedText = if (!isUser && !cleanReasoning.isNullOrBlank()) {
@@ -206,10 +201,10 @@ object MessagePresentationCache {
             ParsedThinkingContent(
                 thinkingText = cleanReasoning,
                 finalResponseText = sanitizedText,
-                isThinkingActive = false
+                isThinkingActive = isStreaming && isThinkingActive
             )
         } else {
-            val parsedThinking = ThinkingTextUtils.parse(text, allowActiveThinking = false)
+            val parsedThinking = ThinkingTextUtils.parse(text, allowActiveThinking = isStreaming)
             val parsedReasoning = parsedThinking.thinkingText?.trim()?.takeIf { it.isNotBlank() }
             if (parsedReasoning.isNullOrBlank() && !cleanReasoning.isNullOrBlank()) {
                 parsedThinking.copy(thinkingText = cleanReasoning)
@@ -224,8 +219,10 @@ object MessagePresentationCache {
         }
         val segments = if (rawDisplay.isBlank()) {
             emptyList()
+        } else if (isUser) {
+            listOf(ModelAnswerSegment.Text(rawDisplay))
         } else {
-            ModelAnswerFormatter.parseSafely(rawDisplay)
+            ModelAnswerFormatter.parseSafely(rawDisplay, isStreaming)
         }
         val hasRich = segments.any { it !is ModelAnswerSegment.Text }
         val presentation = MessagePresentation(
@@ -237,19 +234,20 @@ object MessagePresentationCache {
             displayText = rawDisplay,
             parsedSegments = segments,
             hasRichBlock = hasRich,
-            showStreamingDots = false,
+            showStreamingDots = isStreaming && isStreamingPlaceholder(rawDisplay),
             answerText = rawDisplay,
             reasoningText = effectiveThinking.thinkingText
         )
-        completedCache.put(cacheKey, presentation)
+        if (!isStreaming) completedCache.put(cacheKey, presentation)
         return presentation
     }
 }
 
 /**
  * Composable helper that resolves message presentation off the main Compose thread.
- * Streaming messages immediately return a lightweight plain presentation.
- * Terminal rich presentations are computed once on Dispatchers.Default and cached.
+ * Conflates fast token updates and parses at most one snapshot at a time off the
+ * main thread. Complete formulas render during generation; streaming snapshots
+ * never occupy the completed-message cache.
  */
 @Composable
 fun rememberMessagePresentation(
@@ -264,85 +262,56 @@ fun rememberMessagePresentation(
     isThinkingActive: Boolean = false,
     responseFormatVersion: Int = 0
 ): MessagePresentation {
-    if (isStreaming) {
-        return MessagePresentationCache.getFastInitial(
-            messageId = messageId,
-            requestId = requestId,
-            attemptId = attemptId,
-            revision = revision,
-            text = text,
-            isUser = isUser,
-            isStreaming = true,
-            reasoningText = reasoningText,
-            isThinkingActive = isThinkingActive,
-            responseFormatVersion = responseFormatVersion
-        )
-    }
-
     val cacheKey = MessagePresentationKey(
         messageId = messageId,
         requestId = requestId,
         attemptId = attemptId,
         text = text,
         isUser = isUser,
-        isStreaming = false,
+        isStreaming = isStreaming,
         revision = revision,
         reasoningText = reasoningText,
-        isThinkingActive = false,
+        isThinkingActive = isThinkingActive,
         responseFormatVersion = responseFormatVersion
     )
-    MessagePresentationCache.getIfCached(cacheKey)?.let { return it }
-
-    var lastValidPresentation by remember(messageId, attemptId) {
-        mutableStateOf<MessagePresentation?>(null)
-    }
-
-    val initial = if (lastValidPresentation?.messageId == messageId && lastValidPresentation?.attemptId == attemptId) {
-        lastValidPresentation!!
-    } else {
-        MessagePresentationCache.getFastInitial(
+    val latestKey by rememberUpdatedState(cacheKey)
+    return produceState(
+        initialValue = MessagePresentationCache.getIfCached(cacheKey) ?: MessagePresentationCache.getFastInitial(
             messageId = messageId,
             requestId = requestId,
             attemptId = attemptId,
             revision = revision,
             text = text,
             isUser = isUser,
-            isStreaming = false,
+            isStreaming = isStreaming,
             reasoningText = reasoningText,
+            isThinkingActive = isThinkingActive,
             responseFormatVersion = responseFormatVersion
-        )
-    }
-
-    return produceState(
-        initialValue = initial,
+        ),
         messageId,
         requestId,
         attemptId,
-        revision,
-        text,
-        reasoningText,
-        responseFormatVersion
+        isUser
     ) {
-        val presentation = withContext(Dispatchers.Default) {
-            MessagePresentationCache.getOrCompute(
-                messageId = messageId,
-                requestId = requestId,
-                attemptId = attemptId,
-                text = text,
-                isUser = isUser,
-                isStreaming = false,
-                revision = revision,
-                reasoningText = reasoningText,
-                responseFormatVersion = responseFormatVersion
-            )
-        }
-        if (presentation.messageId == messageId &&
-            presentation.requestId == requestId &&
-            presentation.attemptId == attemptId &&
-            presentation.revision == revision
-        ) {
+        snapshotFlow { latestKey }.conflate().collect { key ->
+            val presentation = withContext(Dispatchers.Default) {
+                MessagePresentationCache.getOrCompute(
+                    messageId = key.messageId,
+                    requestId = key.requestId,
+                    attemptId = key.attemptId,
+                    text = key.text,
+                    isUser = key.isUser,
+                    isStreaming = key.isStreaming,
+                    revision = key.revision,
+                    reasoningText = key.reasoningText,
+                    isThinkingActive = key.isThinkingActive,
+                    responseFormatVersion = key.responseFormatVersion
+                )
+            }
             value = presentation
-            lastValidPresentation = presentation
+            // Bound layout churn without restarting/cancelling parsing on every
+            // token. Conflation retains the latest snapshot, including completion.
+            if (key.isStreaming) delay(50)
         }
     }.value
 }
