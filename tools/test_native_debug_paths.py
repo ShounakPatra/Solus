@@ -19,7 +19,7 @@ class NativeDebugPathsTest(unittest.TestCase):
     def test_strip_does_not_leave_checkout_dependent_build_id(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
-            def build(name, normalize_build):
+            def build(name, normalize_build, omit_id=False):
                 root = base / name
                 build = root / 'app/.cxx' / name / 'arm64-v8a'
                 build.mkdir(parents=True)
@@ -30,6 +30,8 @@ class NativeDebugPathsTest(unittest.TestCase):
                 flags = [f'-ffile-prefix-map={root.as_posix()}=/solus']
                 if normalize_build:
                     flags += [f'-ffile-prefix-map={build.as_posix()}=/solus/native-build', '-fdebug-compilation-dir=/solus']
+                if omit_id:
+                    flags += ['-Wl,--build-id=none']
                 subprocess.run([str(CLANG), '--target=aarch64-linux-android30', '-shared', '-nostdlib',
                     '-g', '-O2', '-flto=thin', '-Wl,--build-id=sha1', '-I' + build.as_posix(),
                     *flags, source.as_posix(), '-o', output.as_posix()], cwd=build, check=True, capture_output=True)
@@ -37,3 +39,9 @@ class NativeDebugPathsTest(unittest.TestCase):
                 return output.read_bytes()
             self.assertNotEqual(build('old-ci', False), build('old-fdroid', False))
             self.assertEqual(build('new-ci', True), build('new-fdroid', True))
+            # Even a linked dependency's unnormalized debug paths must not leave
+            # a differing ID in the APK after the debug information is stripped.
+            ci = build('release-ci', False, omit_id=True)
+            fdroid = build('release-fdroid', False, omit_id=True)
+            self.assertEqual(ci, fdroid)
+            self.assertNotIn(b'.note.gnu.build-id', ci)

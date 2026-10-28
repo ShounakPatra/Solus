@@ -135,6 +135,8 @@ target_link_options(
     "-Wl,--version-script,${CMAKE_CURRENT_SOURCE_DIR}/solus-llama.map"
     "-Wl,--no-undefined-version"
     "-Wl,--gc-sections"
+    # Release APKs omit the linker ID, which hashes debug data before stripping.
+    "$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:-Wl,--build-id=none>"
 )
 
 set_target_properties(
