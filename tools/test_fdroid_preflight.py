@@ -16,7 +16,7 @@ class FDroidPreflightTest(unittest.TestCase):
         source = Path(__file__).resolve().parent.parent
         files = ['app/build.gradle.kts', 'fdroid/official/com.shounak.localmeshai.yml',
                  'LICENSE', 'gradle/wrapper/gradle-wrapper.properties',
-                 '.github/workflows/android-ci.yml', '.github/workflows/fdroid-official-check.yml']
+                 '.github/workflows/android-ci.yml']
         files += [str(p.relative_to(source)) for p in (source / 'fastlane').rglob('*') if p.is_file()]
         for name in files:
             target = self.root / name

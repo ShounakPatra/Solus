@@ -8,9 +8,9 @@
 
 Chat, write, code and explore documents with AI models running on your Android phone.
 
-**v6.0.5 · Android 11+ · ARM64-v8a**
+**v6.0.6 · Android 11+ · ARM64-v8a**
 
-<a href="https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/app-release.apk" title="Download Solus v6.0.5">
+<a href="https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/app-release.apk" title="Download Solus v6.0.6">
   <img src="docs/assets/download-solus-apk.svg" alt="Get the latest signed Solus APK from GitHub Releases" width="360" height="72" />
 </a>
 
@@ -21,11 +21,11 @@ Chat, write, code and explore documents with AI models running on your Android p
   <img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" alt="Add the Solus custom repository to F-Droid" height="80" />
 </a>
 
-<sub>Add the Solus custom repository to F-Droid to install the app. Official F-Droid catalog inclusion is under review.</sub>
+<sub>GitHub Releases is the download source for v6.0.6. The custom F-Droid repository is separate and may contain an older version.</sub>
 
 [![Android CI](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg)](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml)
-![Version 6.0.5](https://img.shields.io/badge/version-6.0.5-0EA5E9)
-![APK size 49.81 MB](https://img.shields.io/badge/APK-49.81%20MB-22C55E)
+![Version 6.0.6](https://img.shields.io/badge/version-6.0.6-0EA5E9)
+![Signed release APK](https://img.shields.io/badge/APK-signed%20release-22C55E)
 ![Android 11 or newer](https://img.shields.io/badge/Android-11%2B-3DDC84)
 ![ARM64](https://img.shields.io/badge/ABI-arm64--v8a-22C55E)
 ![Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-A970FF)
@@ -53,26 +53,22 @@ Chat, write, code and explore documents with AI models running on your Android p
 
 ## Get started
 
-1. **Install** the [v6.0.5 prerelease signed APK](https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/app-release.apk). It is **49.81 MB (47.50 MiB)** and requires **Android 11+** and an **ARM64-v8a** device. Verify it with the [matching SHA-256 checksum](https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/app-release.apk.sha256).
+1. **Install** the [v6.0.6 signed APK](https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/app-release.apk). It requires **Android 11+** and an **ARM64-v8a** device. Verify it with the [matching SHA-256 checksum](https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/app-release.apk.sha256).
 2. **Choose a model** in **Models**, or use **Add model** to import one from your phone, Hugging Face or a direct URL.
 3. **Start a chat** after the model finishes loading. A small model is a good place to start if your phone has limited RAM.
 4. **Add context** with a PDF or DOCX. Image and audio inputs require a compatible model and export.
 
 An existing installation can be updated without uninstalling when Android accepts the package and signing identity. Back up important chats first. Model weights need additional storage and are not included in workspace backups.
 
-## What's new in v6.0.5
+## What's new in v6.0.6
 
-Solus v6.0.5 expands supported model pipelines and improves the existing workspace:
+Solus v6.0.6 improves how model answers appear:
 
-- **More model formats:** architecture-specific ONNX, TensorFlow Lite and SafeTensors paths alongside GGUF, LiteRT-LM and MediaPipe.
-- **More complete imports:** companion configuration, tokenizer and weight files; preserved archive folders; checks for missing files and unsupported export contracts.
-- **A Hugging Face file browser:** select individual or multiple files, include required companions automatically, or save files without registering them as runnable models.
-- **Conversation skills:** tools for compatible text and vision models, saved tool-use records, and settings that apply to the next message in the current chat.
-- **Optional neural document search:** a small downloadable BGE model, local fallback search, re-indexing and clearer document management.
-- **Runtime preparation and diagnostics:** optional warm-up, backend/thread tuning, prompt/first-token timing, and improved thinking and cancellation handling.
-- **Reliability repairs:** document scoping and retained originals, history/deletion handling, download recovery, audio decoding and signed-update selection.
+- **Live math rendering:** completed LaTeX formulas render while the model is answering.
+- **Cleaner formatting:** escaped newlines around Markdown no longer leave stray `n` characters in responses.
+- **Streaming responses:** formatted text, lists, code and completed formulas update during generation; incomplete formulas stay readable until complete.
 
-History search and pinning, temporary chats, backups, document sources, per-model profiles and the glass interface already existed; they are retained and improved.
+The release retains expanded model imports, conversation tools, optional neural document search, history search and pinning, temporary chats, backups, per-model profiles and the glass interface.
 
 Read the release notes on [GitHub Releases](https://github.com/ShounakPatra/Solus/releases). Available features and performance depend on the model export, runtime and device; not every model supports every input or tool.
 
@@ -97,7 +93,7 @@ These projects have different goals. The table summarizes their publicly documen
 features; **Not verified** means the linked documentation did not establish the
 answer, not that the feature is absent. Model, version and device support vary.
 
-| Feature | Solus v6.0.5 | AI Edge Gallery | PocketPal AI | LM Playground | ChatterUI |
+| Feature | Solus v6.0.6 | AI Edge Gallery | PocketPal AI | LM Playground | ChatterUI |
 | --- | --- | --- | --- | --- | --- |
 | Local model formats | GGUF, LiteRT-LM, MediaPipe and selected portable exports | LiteRT | GGUF | GGUF | GGUF |
 | Import `.gguf`, `.litertlm` and `.task` | Supported exports | Not verified for all three | GGUF documented | GGUF documented | GGUF documented |

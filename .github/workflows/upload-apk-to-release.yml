@@ -97,6 +97,22 @@ jobs:
           ANDROID_SIGNING_CERT_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 }}
         run: python3 tools/prepare_release_apk.py --artifact-dir downloaded-apk --output-dir prepared-apk --kind signed-release --tag "$RELEASE_TAG" --run-id "$SOURCE_RUN_ID" --build-tools "$ANDROID_HOME/build-tools/36.0.0"
 
+      - name: Give the signed APK a stable download name
+        if: inputs.kind == 'signed-release'
+        shell: python
+        run: |
+          import hashlib
+          from pathlib import Path
+          folder = Path('prepared-apk')
+          apks = list(folder.glob('*.apk'))
+          checksums = list(folder.glob('*.sha256'))
+          assert len(apks) == len(checksums) == 1, 'Expected one signed APK and checksum'
+          apk = apks[0].rename(folder / 'app-release.apk')
+          checksums[0].unlink()
+          with apk.open('rb') as stream:
+              digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+          apk.with_suffix('.apk.sha256').write_text(f'{digest}  {apk.name}\n', encoding='ascii')
+
       - name: Attach APK and checksum to existing release
         shell: bash
         run: |

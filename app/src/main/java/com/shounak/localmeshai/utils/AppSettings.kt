@@ -18,7 +18,7 @@ data class AppSettingsData(
     val enableAutoHideBottomBar: Boolean = false,
     val autoUnloadMinutes: Int = 5,
     val huggingFaceToken: String = "",
-    val autoCheckUpdates: Boolean = !com.shounak.localmeshai.BuildConfig.FDROID_DISTRIBUTION,
+    val autoCheckUpdates: Boolean = true,
     val llamaBackendPreference: String = "AUTO",
     val enableToolCalling: Boolean = false,
     val warmupAfterLoading: Boolean = true,
@@ -57,7 +57,7 @@ class AppSettings internal constructor(
             enableAutoHideBottomBar = prefs.getBoolean(KEY_AUTO_HIDE_BOTTOM_BAR, false),
             autoUnloadMinutes = prefs.getInt(KEY_AUTO_UNLOAD_MINS, 5),
             huggingFaceToken = tokenStore.read(),
-            autoCheckUpdates = !com.shounak.localmeshai.BuildConfig.FDROID_DISTRIBUTION && prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true),
+            autoCheckUpdates = prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true),
             llamaBackendPreference = prefs.getString(KEY_LLAMA_BACKEND_PREF, "AUTO")?.let {
                 if (it.uppercase() in listOf("AUTO", "CPU", "VULKAN")) it.uppercase() else "AUTO"
             } ?: "AUTO",

@@ -1095,7 +1095,7 @@ fun SettingsDialog(
                     val isCheckingForUpdates by mainViewModel.isCheckingForUpdates.collectAsState()
 
                     SettingsCategory(
-                        title = if (BuildConfig.FDROID_DISTRIBUTION) "ℹ️ About Solus & F-Droid" else "ℹ️ About Solus & Updates",
+                        title = "ℹ️ About Solus & Updates",
                         hazeState = hazeState,
                         modifier = Modifier.onGloballyPositioned { aboutCoords ->
                             val container = scrollContainerCoordinates
@@ -1169,7 +1169,7 @@ fun SettingsDialog(
                             }
                         }
 
-                        if (!BuildConfig.FDROID_DISTRIBUTION) SettingsSwitchRow(
+                        SettingsSwitchRow(
                             title = "Automatic Check for Updates",
                             subtitle = "Periodically check for newer GitHub releases in background and send notifications",
                             checked = settingsData.autoCheckUpdates,
@@ -1186,13 +1186,7 @@ fun SettingsDialog(
                         )
 
                         LiquidGlassButton(
-                            onClick = {
-                                if (BuildConfig.FDROID_DISTRIBUTION) {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(AppUpdateManager.FDROID_APP_URL)))
-                                } else {
-                                    mainViewModel.checkForUpdates(silent = false)
-                                }
-                            },
+                            onClick = { mainViewModel.checkForUpdates(silent = false) },
                             enabled = !isCheckingForUpdates,
                             hazeState = hazeState,
                             modifier = Modifier
@@ -1221,27 +1215,19 @@ fun SettingsDialog(
                                 )
                             } else {
                                 Icon(
-                                    if (BuildConfig.FDROID_DISTRIBUTION) Icons.Default.OpenInBrowser else Icons.Default.Refresh,
+                                    Icons.Default.Refresh,
                                     contentDescription = null,
                                     modifier = Modifier.size(18.dp),
                                     tint = colors.primary
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    if (BuildConfig.FDROID_DISTRIBUTION) "Open in F-Droid" else "Check for Updates",
+                                    "Check for Updates",
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.SemiBold,
                                     color = colors.primary
                                 )
                             }
-                        }
-
-                        if (BuildConfig.FDROID_DISTRIBUTION) {
-                            Text(
-                                "App updates are managed by F-Droid.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colors.onSurfaceVariant
-                            )
                         }
 
                         when (val result = updateState) {

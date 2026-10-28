@@ -53,7 +53,6 @@ android {
         targetSdk = 37
         versionCode = 12
         versionName = "6.0.6"
-        buildConfigField("boolean", "FDROID_DISTRIBUTION", (providers.gradleProperty("solusFdroid").orNull == "true").toString())
         buildConfigField("String", "NATIVE_BUILD_ID", "\"$nativeSourceDigest\"")
         buildConfigField("String", "LITERT_RUNTIME_VERSION", "\"${libs.versions.litertLm.get()}\"")
 

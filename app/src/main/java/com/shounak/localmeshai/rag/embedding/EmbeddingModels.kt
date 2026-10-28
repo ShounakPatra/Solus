@@ -85,7 +85,7 @@ object EmbeddingModels {
             sha256 = "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
             mirrorName = "bge-small-en-v1.5-vocab.txt"
         ),
-        mirrorBaseUrl = "https://github.com/ShounakPatra/Solus/releases/download/v6.0.5"
+        mirrorBaseUrl = "https://github.com/ShounakPatra/Solus/releases/download/v6.0.6"
     )
 
     val all: List<Spec> = listOf(BGE_SMALL_EN_V15)

@@ -21,7 +21,11 @@ class EmbeddingModelsDownloadTest {
         }
         val modelDir = EmbeddingModels.directory(context, EmbeddingModels.BGE_SMALL_EN_V15).apply { mkdirs() }
         java.io.File(modelDir, "model.onnx.part").writeText("partial")
-        val manager = RagManager(context, vectorStore = com.shounak.localmeshai.rag.store.InMemoryRagVectorStore(null))
+        val manager = RagManager(
+            context,
+            vectorStore = com.shounak.localmeshai.rag.store.InMemoryRagVectorStore(null),
+            deletionJournal = com.shounak.localmeshai.data.ChatDeletionJournal(temp.root)
+        )
         val document = manager.ingestText("cars.txt", "The battery powers the vehicle.")
         manager.setEmbeddingModel(EmbeddingModels.LEXICAL_ID).getOrThrow()
         assertEquals(1, manager.embeddingFilesRevision.value)
@@ -144,7 +148,7 @@ class EmbeddingModelsDownloadTest {
         val urls = spec.urls(spec.model)
         assertEquals(2, urls.size)
         assertTrue(urls[0].startsWith("https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/"))
-        assertEquals("https://github.com/ShounakPatra/Solus/releases/download/v6.0.5/bge-small-en-v1.5-int8.onnx", urls[1])
+        assertEquals("https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/bge-small-en-v1.5-int8.onnx", urls[1])
     }
 
     @Test
