@@ -11,11 +11,21 @@ def compare(first, second):
     with zipfile.ZipFile(first) as a, zipfile.ZipFile(second) as b:
         left, right = set(a.namelist()), set(b.namelist())
         changed = sorted(name for name in left & right if a.read(name) != b.read(name))
+        native = {}
+        for name in changed:
+            if not name.endswith('.so'):
+                continue
+            x, y = a.read(name), b.read(name)
+            offsets = [i for i, (u, v) in enumerate(zip(x, y)) if u != v]
+            native[name] = dict(sizes=[len(x), len(y)],
+                                differing_bytes=len(offsets) + abs(len(x) - len(y)),
+                                first_offsets=offsets[:32])
     first_hash = digest(Path(first).read_bytes())
     second_hash = digest(Path(second).read_bytes())
     return dict(identical=first_hash == second_hash, ci_sha256=first_hash,
                 fdroid_sha256=second_hash, only_ci=sorted(left - right),
-                only_fdroid=sorted(right - left), different_entries=changed)
+                only_fdroid=sorted(right - left), different_entries=changed,
+                native_differences=native)
 
 
 if __name__ == '__main__':

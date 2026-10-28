@@ -5,6 +5,8 @@ project("solus_llama" C CXX)
 # Keep __FILE__ and debug paths independent of the CI/F-Droid checkout location.
 get_filename_component(SOLUS_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../.." ABSOLUTE)
 add_compile_options("-ffile-prefix-map=${SOLUS_SOURCE_ROOT}=/solus")
+add_compile_options("-ffile-prefix-map=${CMAKE_BINARY_DIR}=/solus/native-build"
+                    "-fdebug-compilation-dir=/solus")
 
 # Require 64-bit architecture - drop armeabi-v7a support
 if(ANDROID_ABI STREQUAL "armeabi-v7a" OR ANDROID_ABI STREQUAL "armeabi")
