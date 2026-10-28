@@ -2,7 +2,7 @@
 # Official catalog candidate uses F-Droid's own app signing key.
 # CI resolves main to its exact checked-out SHA and saves that pinned recipe.
 Categories:
-  - Internet
+  - AI Chat
 License: Apache-2.0
 SourceCode: https://github.com/ShounakPatra/Solus
 IssueTracker: https://github.com/ShounakPatra/Solus/issues

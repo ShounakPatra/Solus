@@ -65,9 +65,12 @@ jobs:
       - name: Build recipe with scanning enabled
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/fdroid-data/metadata" "$RUNNER_TEMP/fdroid-data/build" "$RUNNER_TEMP/fdroid-data/srclibs"
+          mkdir -p "$RUNNER_TEMP/fdroid-data/metadata" "$RUNNER_TEMP/fdroid-data/build" "$RUNNER_TEMP/fdroid-data/srclibs" "$RUNNER_TEMP/fdroid-data/config"
           cp fdroid/official/com.shounak.localmeshai.yml "$RUNNER_TEMP/fdroid-data/metadata/"
           cp fdroid/official/srclibs/rustup.yml "$RUNNER_TEMP/fdroid-data/srclibs/"
+          curl --fail --location --retry 3 \
+            'https://gitlab.com/fdroid/fdroiddata/-/raw/131e1a725ef2bd54ec45a19e281d561908c82cdc/config/categories.yml' \
+            -o "$RUNNER_TEMP/fdroid-data/config/categories.yml"
           cd "$RUNNER_TEMP/fdroid-data"
           python - <<'PY'
           import os, pathlib, yaml
@@ -79,6 +82,7 @@ jobs:
           printf 'sdk_path: "%s"\ngradle: "%s"\nscan_binary: true\n' "$ANDROID_HOME" "$(command -v gradlew-fdroid)" > config.yml
           git clone https://github.com/ShounakPatra/Solus.git build/com.shounak.localmeshai
           git -C build/com.shounak.localmeshai checkout "$GITHUB_SHA"
+          fdroid rewritemeta com.shounak.localmeshai
           fdroid readmeta
           fdroid lint com.shounak.localmeshai
           fdroid build --verbose --test --latest com.shounak.localmeshai 2>&1 | tee fdroid-build.log
