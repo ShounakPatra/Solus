@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.22.1)
 
 project("solus_llama" C CXX)
 
+# Keep __FILE__ and debug paths independent of the CI/F-Droid checkout location.
+get_filename_component(SOLUS_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../.." ABSOLUTE)
+add_compile_options("-ffile-prefix-map=${SOLUS_SOURCE_ROOT}=/solus")
+
 # Require 64-bit architecture - drop armeabi-v7a support
 if(ANDROID_ABI STREQUAL "armeabi-v7a" OR ANDROID_ABI STREQUAL "armeabi")
     message(FATAL_ERROR "armeabi-v7a (32-bit ARM) is not supported in Solus. On-device LLM inference strictly requires 64-bit architectures (arm64-v8a or x86_64).")

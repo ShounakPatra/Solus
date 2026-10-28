@@ -18,6 +18,8 @@ jobs:
     name: Test, lint, and build
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: '1.90.0'
 
     steps:
       - name: Check out source
@@ -53,7 +55,7 @@ jobs:
 
       - name: Prepare and test Candle runtime
         run: |
-          rustup target add aarch64-linux-android
+          rustup toolchain install 1.90.0 --profile minimal --target aarch64-linux-android
           cargo test --locked --jobs 4 --lib --manifest-path app/src/main/rust/Cargo.toml
 
       - name: Set up Gradle
