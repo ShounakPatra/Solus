@@ -41,3 +41,12 @@ class FDroidPreflightTest(unittest.TestCase):
             result = check(self.root, verify_gradle=True)
         self.assertFalse(result['source_checks_passed'])
         self.assertIn('Gradle version/checksum absent from F-Droid catalog', result['errors'])
+
+    def test_developer_signing_requirements_are_rejected(self):
+        path = self.root / 'fdroid/official/com.shounak.localmeshai.yml'
+        original = path.read_text()
+        for field in ('AllowedAPKSigningKeys: []', 'Binaries: https://example.invalid/app.apk',
+                      'binary: https://example.invalid/app.apk'):
+            with self.subTest(field=field):
+                path.write_text(original + '\n' + field + '\n')
+                self.assertFalse(check(self.root)['source_checks_passed'])

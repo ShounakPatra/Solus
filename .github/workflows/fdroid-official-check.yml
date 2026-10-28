@@ -11,11 +11,13 @@ on:
       - '.github/workflows/fdroid-official-check.yml'
 permissions:
   contents: read
-  actions: read
+concurrency:
+  group: fdroid-source-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   investigate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -86,25 +88,3 @@ jobs:
             ${{ runner.temp }}/fdroid-data/tmp/apk.sha256
           if-no-files-found: warn
           retention-days: 14
-      - name: Compare with Android CI from the same source
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          task_run=''
-          for task_attempt in $(seq 1 90); do
-            task_run=$(gh run list --workflow android-ci.yml --branch main --commit "$GITHUB_SHA" --event push --status success --json databaseId --jq '.[0].databaseId // empty')
-            if [ -n "$task_run" ]; then break; fi
-            sleep 30
-          done
-          test -n "$task_run" || { echo 'No successful Android CI for this source within 45 minutes'; exit 1; }
-          gh run download "$task_run" --name solus-release-apk --dir "$RUNNER_TEMP/comparison-ci"
-          task_ci=$(find "$RUNNER_TEMP/comparison-ci" -name '*.apk' -print -quit)
-          python tools/compare_release_apks.py "$task_ci" "$RUNNER_TEMP/fdroid-data/tmp/com.shounak.localmeshai_12.apk" --report "$RUNNER_TEMP/comparison.json"
-      - name: Save comparison
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: fdroid-ci-comparison
-          path: ${{ runner.temp }}/comparison.json
-          if-no-files-found: ignore

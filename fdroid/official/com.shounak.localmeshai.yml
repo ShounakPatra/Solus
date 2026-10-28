@@ -1,5 +1,5 @@
 # Source-build candidate, not an accepted fdroiddata recipe.
-# Add Binaries only when v6.0.6's tag and signed APK match this source.
+# Official catalog candidate uses F-Droid's own app signing key.
 # CI resolves main to its exact checked-out SHA and saves that pinned recipe.
 Categories:
   - Internet
@@ -8,8 +8,6 @@ SourceCode: https://github.com/ShounakPatra/Solus
 IssueTracker: https://github.com/ShounakPatra/Solus/issues
 RepoType: git
 Repo: https://github.com/ShounakPatra/Solus.git
-AllowedAPKSigningKeys:
-  - a188e072ab29759eaa1346a1a7056f1854c92d78ecb2a310ae560b8e5cb0ffc3
 Builds:
   - versionName: 6.0.6
     versionCode: 12
