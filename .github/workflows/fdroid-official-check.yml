@@ -1,0 +1,71 @@
+name: F-Droid source build candidate
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/fdroid-release-support]
+permissions:
+  contents: read
+jobs:
+  investigate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install pinned F-Droid tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build glslang-tools libvulkan-dev
+          python3 -m venv "$RUNNER_TEMP/fdroid-venv"
+          "$RUNNER_TEMP/fdroid-venv/bin/pip" install \
+            'git+https://gitlab.com/fdroid/fdroidserver.git@cdfdce835a8231996b02392bc79c1879e6bef501' \
+            'git+https://gitlab.com/fdroid/gradlew-fdroid.git@ac23ffb5285c0c0961a677e310dd58ef90531057'
+          echo "$RUNNER_TEMP/fdroid-venv/bin" >> "$GITHUB_PATH"
+          bash tools/install-android-sdk.sh "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'ndk;28.2.13676358' 'cmake;3.22.1'
+          rustup toolchain install 1.90.0 --profile minimal --target aarch64-linux-android
+          echo 'RUSTUP_TOOLCHAIN=1.90.0' >> "$GITHUB_ENV"
+      - name: Verify Gradle support and launcher before building
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib, urllib.request
+          props = dict(line.split('=', 1) for line in pathlib.Path('gradle/wrapper/gradle-wrapper.properties').read_text().splitlines() if '=' in line)
+          url = props['distributionUrl'].replace('\\:', ':')
+          catalog = json.load(urllib.request.urlopen('https://gitlab.com/fdroid/gradle-transparency-log/-/raw/master/checksums.json'))
+          assert any(entry.get('sha256') == props['distributionSha256Sum'] for entry in catalog.get(url, [])), 'Gradle absent from F-Droid catalog or checksum differs'
+          print('Confirmed F-Droid checksum support:', url)
+          PY
+          fdroid build --help
+          gradlew-fdroid --version
+      - name: Build recipe with scanning enabled
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fdroid-data/metadata" "$RUNNER_TEMP/fdroid-data/build"
+          cp fdroid/official/com.shounak.localmeshai.yml "$RUNNER_TEMP/fdroid-data/metadata/"
+          cd "$RUNNER_TEMP/fdroid-data"
+          printf 'sdk_path: "%s"\ngradle: "%s"\nscan_binary: true\n' "$ANDROID_HOME" "$(command -v gradlew-fdroid)" > config.yml
+          git clone https://github.com/ShounakPatra/Solus.git build/com.shounak.localmeshai
+          git -C build/com.shounak.localmeshai checkout 07ef88e39b20b50fb18790b804291230e81be7ff
+          fdroid build --verbose --test --latest com.shounak.localmeshai 2>&1 | tee fdroid-build.log
+          if grep -Eq '([1-9][0-9]* build failed|ERROR:)' fdroid-build.log; then exit 1; fi
+          test -s tmp/com.shounak.localmeshai_11.apk
+          sha256sum tmp/com.shounak.localmeshai_11.apk > tmp/apk.sha256
+      - name: Preserve evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: fdroid-source-build-evidence
+          path: |
+            ${{ runner.temp }}/fdroid-data/fdroid-build.log
+            ${{ runner.temp }}/fdroid-data/logs
+            ${{ runner.temp }}/fdroid-data/tmp/*.apk
+            ${{ runner.temp }}/fdroid-data/tmp/apk.sha256
+          if-no-files-found: warn
+          retention-days: 14

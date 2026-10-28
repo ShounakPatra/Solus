@@ -1,0 +1,20 @@
+# Source-build candidate, not an accepted fdroiddata recipe.
+# Add Binaries only when v6.0.5's tag and signed APK match this source.
+Categories:
+  - Internet
+License: Apache-2.0
+SourceCode: https://github.com/ShounakPatra/Solus
+IssueTracker: https://github.com/ShounakPatra/Solus/issues
+RepoType: git
+Repo: https://github.com/ShounakPatra/Solus.git
+AllowedAPKSigningKeys:
+  - a188e072ab29759eaa1346a1a7056f1854c92d78ecb2a310ae560b8e5cb0ffc3
+Builds:
+  - versionName: 6.0.5
+    versionCode: 11
+    commit: 07ef88e39b20b50fb18790b804291230e81be7ff
+    subdir: app
+    gradle:
+      - 'yes'
+AutoUpdateMode: None
+UpdateCheckMode: None
