@@ -66,6 +66,7 @@ Solus v6.0.6 improves how model answers appear:
 
 - **Live math rendering:** completed LaTeX formulas render while the model is answering.
 - **Cleaner formatting:** escaped newlines around Markdown no longer leave stray `n` characters in responses.
+- **Security update:** replaced the model runtime's vulnerable Rust ZIP dependency and added archive-header validation.
 - **Streaming responses:** formatted text, lists, code and completed formulas update during generation; incomplete formulas stay readable until complete.
 
 The release retains expanded model imports, conversation tools, optional neural document search, history search and pinning, temporary chats, backups, per-model profiles and the glass interface.
