@@ -25,6 +25,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # Upstream llama.cpp pin definition
 set(SOLUS_LLAMA_UPSTREAM_COMMIT "5cdadfc326163ed1fa66cf609fb1761f7928900c")
 add_compile_definitions(LLAMA_UPSTREAM_REVISION="${SOLUS_LLAMA_UPSTREAM_COMMIT}")
+# The vendored library's identity must not depend on Solus's clone depth.
+set(LLAMA_BUILD_NUMBER 0)
+set(LLAMA_BUILD_COMMIT "${SOLUS_LLAMA_UPSTREAM_COMMIT}")
 
 # Enable position-independent code globally for static libraries linked into the JNI shared library
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
