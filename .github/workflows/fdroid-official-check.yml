@@ -78,6 +78,14 @@ jobs:
           recipe = yaml.safe_load(path.read_text())
           recipe['Builds'][0]['commit'] = os.environ['GITHUB_SHA']
           path.write_text(yaml.safe_dump(recipe, sort_keys=False))
+          # Category icons are publishing assets, unused by this build/lint
+          # rehearsal. Keep the official category definitions without asking
+          # fdroid lint to copy icon files from the rest of fdroiddata.
+          path = pathlib.Path('config/categories.yml')
+          categories = yaml.safe_load(path.read_text())
+          for category in categories.values():
+              category.pop('icon', None)
+          path.write_text(yaml.safe_dump(categories, sort_keys=False))
           PY
           printf 'sdk_path: "%s"\ngradle: "%s"\nscan_binary: true\n' "$ANDROID_HOME" "$(command -v gradlew-fdroid)" > config.yml
           git clone https://github.com/ShounakPatra/Solus.git build/com.shounak.localmeshai
