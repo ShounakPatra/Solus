@@ -1,6 +1,6 @@
 # Submission candidate, pending the official buildserver and maintainer review.
 # Official catalog candidate uses F-Droid's own app signing key.
-# CI resolves main to its exact checked-out SHA and saves that pinned recipe.
+# CI tests its exact checked-out SHA before the release tag is created.
 Categories:
   - AI Chat
 License: Apache-2.0
@@ -22,7 +22,7 @@ Repo: https://github.com/ShounakPatra/Solus.git
 Builds:
   - versionName: 6.0.6
     versionCode: 12
-    commit: main
+    commit: v6.0.6
     subdir: app
     sudo:
       - apt-get update

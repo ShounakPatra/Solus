@@ -9,6 +9,7 @@
 *.yaml text eol=lf
 *.properties text eol=lf
 *.sh text eol=lf
+app/src/main/assets/licenses/bouncycastle-1.72.html text eol=lf
 *.bat text eol=crlf
 
 *.png binary
