@@ -21,7 +21,7 @@ Chat, write, code and explore documents with AI models running on your Android p
   <img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" alt="Add the Solus custom repository to F-Droid" height="80" />
 </a>
 
-<sub>GitHub Releases is the download source for v6.0.6. The custom F-Droid repository is separate and may contain an older version.</sub>
+<sub>Get v6.0.6 from GitHub or add the <a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC">Solus third-party F-Droid repository</a>. Both distribute the same maintainer-signed APK. Solus is not listed in the official F-Droid catalog.</sub>
 
 [![Android CI](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg)](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml)
 ![Version 6.0.6](https://img.shields.io/badge/version-6.0.6-0EA5E9)
@@ -29,6 +29,24 @@ Chat, write, code and explore documents with AI models running on your Android p
 ![Android 11 or newer](https://img.shields.io/badge/Android-11%2B-3DDC84)
 ![ARM64](https://img.shields.io/badge/ABI-arm64--v8a-22C55E)
 ![Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-A970FF)
+[![Total release downloads](https://img.shields.io/github/downloads/ShounakPatra/Solus/total?label=total%20release%20downloads&color=14B8A6)](https://github.com/ShounakPatra/Solus/releases)
+
+![C++](https://img.shields.io/badge/C%2B%2B-00599C?style=flat-square&logo=cplusplus&logoColor=white)
+![C](https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=white)
+![Kotlin](https://img.shields.io/badge/Kotlin-7F52FF?style=flat-square&logo=kotlin&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white)
+![CUDA](https://img.shields.io/badge/CUDA-76B900?style=flat-square&logo=nvidia&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
+![Svelte](https://img.shields.io/badge/Svelte-FF3E00?style=flat-square&logo=svelte&logoColor=white)
+![HTML](https://img.shields.io/badge/HTML-E34F26?style=flat-square&logo=html5&logoColor=white)
+![Metal](https://img.shields.io/badge/Metal-555555?style=flat-square&logo=apple&logoColor=white)
+![GLSL](https://img.shields.io/badge/GLSL-5586A4?style=flat-square&logo=opengl&logoColor=white)
+![CMake](https://img.shields.io/badge/CMake-064F8C?style=flat-square&logo=cmake&logoColor=white)
+![Shell](https://img.shields.io/badge/Shell-4EAA25?style=flat-square&logo=gnubash&logoColor=white)
+![Java](https://img.shields.io/badge/Java-ED8B00?style=flat-square)
+![Rust](https://img.shields.io/badge/Rust-DEA584?style=flat-square&logo=rust&logoColor=white)
+
+<sub>Language badges follow GitHub-reported code size, including bundled dependencies. Downloads count all assets on existing GitHub releases; third-party F-Droid downloads and deleted releases are not included.</sub>
 
 [Get started](#get-started) · [Features](#made-for-your-own-models) · [Compare apps](#compare-apps) · [Model compatibility](#model-compatibility) · [Build from source](#build-from-source)
 
@@ -53,7 +71,7 @@ Chat, write, code and explore documents with AI models running on your Android p
 
 ## Get started
 
-1. **Install** the [v6.0.6 signed APK](https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/app-release.apk). It requires **Android 11+** and an **ARM64-v8a** device. Verify it with the [matching SHA-256 checksum](https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/app-release.apk.sha256).
+1. **Install** through the [Solus third-party F-Droid repository](https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC) or download the [v6.0.6 signed APK](https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/app-release.apk). It requires **Android 11+** and an **ARM64-v8a** device. Verify it with the [matching SHA-256 checksum](https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/app-release.apk.sha256).
 2. **Choose a model** in **Models**, or use **Add model** to import one from your phone, Hugging Face or a direct URL.
 3. **Start a chat** after the model finishes loading. A small model is a good place to start if your phone has limited RAM.
 4. **Add context** with a PDF or DOCX. Image and audio inputs require a compatible model and export.
