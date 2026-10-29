@@ -6,47 +6,31 @@
 
 ### Your models. Your conversations. Your device.
 
-Chat, write, code and explore documents with AI models running on your Android phone.
+**Private chats · Multiple model formats · Document assistance**
 
 **v6.0.6 · Android 11+ · ARM64-v8a**
 
-<a href="https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/app-release.apk" title="Download Solus v6.0.6">
-  <img src="docs/assets/download-solus-apk.svg" alt="Get the latest signed Solus APK from GitHub Releases" width="360" height="72" />
-</a>
+<p>
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/app-release.apk" title="Download Solus v6.0.6 from GitHub">
+    <img src="docs/assets/download-solus-apk.svg" alt="Download the signed Solus APK from GitHub" width="300" height="60" />
+  </a>
+  &nbsp;
+  <a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC" title="Add the Solus third-party repository to F-Droid">
+    <img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" alt="Get Solus through its third-party F-Droid repository" height="60" />
+  </a>
+</p>
 
-<br />
-<img src="docs/assets/google-play-coming-soon.svg" alt="Coming soon on Google Play" width="239" height="71" />
-<br />
-<a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC" title="Add the Solus repository to F-Droid">
-  <img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" alt="Add the Solus custom repository to F-Droid" height="80" />
-</a>
+<img src="docs/assets/google-play-coming-soon.svg" alt="Coming soon on Google Play" width="180" height="53" />
 
 <sub>Get v6.0.6 from GitHub or add the <a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC">Solus third-party F-Droid repository</a>. Both distribute the same maintainer-signed APK. Solus is not listed in the official F-Droid catalog.</sub>
 
 [![Android CI](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg)](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml)
 ![Version 6.0.6](https://img.shields.io/badge/version-6.0.6-0EA5E9)
-![Signed release APK](https://img.shields.io/badge/APK-signed%20release-22C55E)
 ![Android 11 or newer](https://img.shields.io/badge/Android-11%2B-3DDC84)
-![ARM64](https://img.shields.io/badge/ABI-arm64--v8a-22C55E)
 ![Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-A970FF)
-[![Total release downloads](https://img.shields.io/github/downloads/ShounakPatra/Solus/total?label=total%20release%20downloads&color=14B8A6)](https://github.com/ShounakPatra/Solus/releases)
+[![Total downloads](https://img.shields.io/github/downloads/ShounakPatra/Solus/total?label=Total%20downloads&color=14B8A6)](https://github.com/ShounakPatra/Solus/releases)
 
-![C++](https://img.shields.io/badge/C%2B%2B-00599C?style=flat-square&logo=cplusplus&logoColor=white)
-![C](https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=white)
-![Kotlin](https://img.shields.io/badge/Kotlin-7F52FF?style=flat-square&logo=kotlin&logoColor=white)
-![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white)
-![CUDA](https://img.shields.io/badge/CUDA-76B900?style=flat-square&logo=nvidia&logoColor=white)
-![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white)
-![Svelte](https://img.shields.io/badge/Svelte-FF3E00?style=flat-square&logo=svelte&logoColor=white)
-![HTML](https://img.shields.io/badge/HTML-E34F26?style=flat-square&logo=html5&logoColor=white)
-![Metal](https://img.shields.io/badge/Metal-555555?style=flat-square&logo=apple&logoColor=white)
-![GLSL](https://img.shields.io/badge/GLSL-5586A4?style=flat-square&logo=opengl&logoColor=white)
-![CMake](https://img.shields.io/badge/CMake-064F8C?style=flat-square&logo=cmake&logoColor=white)
-![Shell](https://img.shields.io/badge/Shell-4EAA25?style=flat-square&logo=gnubash&logoColor=white)
-![Java](https://img.shields.io/badge/Java-ED8B00?style=flat-square)
-![Rust](https://img.shields.io/badge/Rust-DEA584?style=flat-square&logo=rust&logoColor=white)
-
-<sub>Language badges follow GitHub-reported code size, including bundled dependencies. Downloads count all assets on existing GitHub releases; third-party F-Droid downloads and deleted releases are not included.</sub>
+<sub>Downloads count all assets on existing GitHub releases; third-party F-Droid downloads and deleted releases are not included.</sub>
 
 [Get started](#get-started) · [Features](#made-for-your-own-models) · [Compare apps](#compare-apps) · [Model compatibility](#model-compatibility) · [Build from source](#build-from-source)
 
@@ -205,6 +189,18 @@ Warm-up moves some one-time runtime work into model preparation. It can increase
 Prompt timeouts and Stop controls help recover from stalled work while preserving runtime ownership until native execution unwinds. They do not guarantee an immediate stop for every native operation. Reduce enabled skills, context or model size if a phone remains slow.
 
 ## Build from source
+
+![C++](https://img.shields.io/badge/C%2B%2B-00599C?style=flat-square&logo=cplusplus&logoColor=white)
+![C](https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=white)
+![Kotlin](https://img.shields.io/badge/Kotlin-7F52FF?style=flat-square&logo=kotlin&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white)
+![CMake](https://img.shields.io/badge/CMake-064F8C?style=flat-square&logo=cmake&logoColor=white)
+![Shell](https://img.shields.io/badge/Shell-4EAA25?style=flat-square&logo=gnubash&logoColor=white)
+![Rust](https://img.shields.io/badge/Rust-DEA584?style=flat-square&logo=rust&logoColor=white)
+
+The Android interface uses Kotlin, with C/C++ and Rust native runtimes, Python tooling,
+and CMake/Shell build support. Bundled llama.cpp also contains GLSL Vulkan shaders;
+its Svelte web interface and Apple Metal backend are upstream components.
 
 Use the checked-in Gradle wrapper, a Gradle JVM supported by the configured Android Gradle Plugin, Android SDK **37**, NDK **28.2.13676358** and CMake **3.22.1**. Java/Kotlin bytecode targets Java 17. The wrapper is **Gradle 9.8.2**; the UI uses Kotlin **2.4.20** and Compose.
 
