@@ -64,7 +64,7 @@
   <!-- Primary label -->
   <text x="78" y="32" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="17" font-weight="700" fill="#FFFFFF" letter-spacing="0.3">Download Solus APK</text>
   <!-- Secondary label -->
-  <text x="78" y="50" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="11.5" font-weight="500" fill="#ECFEFF" fill-opacity="0.92" letter-spacing="0.8">SIGNED APK · GITHUB RELEASES</text>
+  <text x="78" y="50" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="11.5" font-weight="500" fill="#ECFEFF" fill-opacity="0.92" letter-spacing="0.8">ANDROID 11+ · ARM64 · v6.0.6</text>
 
   <!-- Right chevron badge -->
   <g transform="translate(318 35)">

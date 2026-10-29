@@ -218,7 +218,7 @@ APK locations are `app/build/outputs/apk/debug/` and `app/build/outputs/apk/rele
 
 CI runs host native/Rust checks, unit tests, lint, instrumentation-test compilation, Android builds and APK packaging checks. **Compiling instrumentation tests does not run them on a phone.** Local tests and successful builds do not establish compatibility with every model.
 
-Before publication, verify the exact signed APK's package/version, Android minimum, signing certificate, DEX/native packaging, upgrade behavior and device smoke tests. Use [the release upload guide](docs/release-artifact-upload.md): production signing uses the approval-protected **release** environment and a successful matching CI run from `main`.
+Before publication, verify the exact signed APK's package/version, Android minimum, signing certificate, DEX/native packaging, upgrade behavior and device smoke tests. The [cloud release upload workflow](docs/release-artifact-upload.md) uses the approval-protected **release** environment and a successful matching CI run from `main`. A locally built release can also be signed with the existing key and uploaded after local tests, lint, APK integrity, certificate and checksum verification.
 
 ## Contributors & community
 
