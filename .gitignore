@@ -55,6 +55,7 @@ traces/
 *.litertlm
 *.onnx
 *.safetensors
+!app/src/main/assets/models/tiny_voca.onnx
 /app/src/main/rust/target/
 /tools/solus-rust/
 
