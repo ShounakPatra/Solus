@@ -424,7 +424,13 @@ private fun AdaptiveMessageText(
                 val wordRegex = Regex("""[\p{L}\p{N}'-]+""")
                 val matches = wordRegex.findAll(rawText).toList()
                 if (matches.isNotEmpty() && highlightWordIndex in matches.indices) {
-                    val targetMatch = matches[highlightWordIndex]
+                    val targetMatch = if (!highlightWord.isNullOrBlank()) {
+                        val exactMatches = matches.filter { it.value.equals(highlightWord, ignoreCase = true) }
+                        exactMatches.minByOrNull { kotlin.math.abs(matches.indexOf(it) - highlightWordIndex) }
+                            ?: matches[highlightWordIndex]
+                    } else {
+                        matches[highlightWordIndex]
+                    }
                     addStyle(
                         style = SpanStyle(
                             background = highlightBg,
@@ -2009,7 +2015,7 @@ fun ChatScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .statusBarsPadding()
-                        .padding(horizontal = 16.dp)
+                        .padding(horizontal = 8.dp)
                         .padding(top = 6.dp)
                         .fluidReveal(
                             delayMillis = 35,
@@ -3238,7 +3244,7 @@ private fun ChatControlRow(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = 6.dp),
+                    .padding(horizontal = 4.dp),
                 contentAlignment = Alignment.Center
             ) {
                 centerContent()
@@ -3248,7 +3254,7 @@ private fun ChatControlRow(
         }
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             if (isChatStarted && canCompact) {
                 CompactChatButton(

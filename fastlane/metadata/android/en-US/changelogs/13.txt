@@ -1,0 +1,1 @@
+TinyVoca neural voice synthesis with live synchronized word highlighting, glassmorphic UI design, native JNI acceleration libraries, and performance benchmark improvements.

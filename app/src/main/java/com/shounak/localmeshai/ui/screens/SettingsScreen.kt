@@ -562,6 +562,7 @@ fun SettingsDialog(
                     } else {
                         AnimatedContent(
                             targetState = currentSubMenu,
+                            modifier = Modifier.fillMaxSize(),
                             transitionSpec = {
                                 if (targetState != null && initialState == null) {
                                     // Opening a submenu: slide in from right, fade in

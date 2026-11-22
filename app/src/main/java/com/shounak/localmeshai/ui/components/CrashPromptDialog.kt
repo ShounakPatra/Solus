@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,11 +50,14 @@ fun CrashPromptDialog(
         onDismissRequest = onCancel,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
+        val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+        val maxDialogHeight = (screenHeight - 56.dp).coerceAtLeast(320.dp)
+
         Card(
             modifier = Modifier
                 .fillMaxWidth(0.92f)
-                .heightIn(max = 620.dp)
-                .padding(vertical = 16.dp)
+                .heightIn(max = maxDialogHeight)
+                .padding(vertical = 12.dp)
                 .let { mod ->
                     if (hazeState != null) {
                         mod.glassEffect(
@@ -113,6 +117,7 @@ fun CrashPromptDialog(
                 // Scrollable Body (Adapts gracefully so action buttons never get pushed off)
                 Column(
                     modifier = Modifier
+                        .fillMaxWidth()
                         .weight(1f, fill = false)
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp)

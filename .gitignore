@@ -63,3 +63,4 @@ traces/
 # Firebase / Google services config (contains API keys)
 google-services.json
 app/google-services.json
+app/src/main/res_original_icons_backup/

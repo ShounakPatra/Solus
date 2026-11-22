@@ -5,6 +5,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -75,11 +76,12 @@ fun TinyVocaModelCard(
             // Header Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    modifier = Modifier.weight(1f, fill = false),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -98,7 +100,7 @@ fun TinyVocaModelCard(
                         )
                     }
 
-                    Column(modifier = Modifier.weight(1f, fill = false)) {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "TinyVoca Neural TTS",
                             style = MaterialTheme.typography.titleMedium,
@@ -117,8 +119,6 @@ fun TinyVocaModelCard(
                     }
                 }
 
-                Spacer(modifier = Modifier.width(8.dp))
-
                 if (isDownloaded) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
@@ -126,11 +126,11 @@ fun TinyVocaModelCard(
                         border = BorderStroke(0.8.dp, Color(0xFF10B981))
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(12.dp))
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(13.dp))
                             Text(
                                 text = if (isResidentInRam) "In RAM" else "Ready",
                                 style = MaterialTheme.typography.labelSmall,
@@ -150,7 +150,7 @@ fun TinyVocaModelCard(
                             text = "Not downloaded",
                             style = MaterialTheme.typography.labelSmall,
                             color = colors.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                             maxLines = 1,
                             softWrap = false
                         )
@@ -203,9 +203,12 @@ fun TinyVocaModelCard(
                             )
                         },
                         hazeState = hazeState,
-                        modifier = Modifier.weight(1f).height(38.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .border(1.dp, PurpleAccent.copy(alpha = 0.60f), RoundedCornerShape(10.dp)),
                         shape = RoundedCornerShape(10.dp),
-                        tintColor = PurpleAccent.copy(alpha = 0.28f),
+                        tintColor = PurpleAccent.copy(alpha = 0.35f),
                         contentPadding = PaddingValues(horizontal = 12.dp)
                     ) {
                         Icon(Icons.Default.Download, contentDescription = null, tint = PurpleAccent, modifier = Modifier.size(16.dp))

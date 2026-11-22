@@ -142,8 +142,8 @@ class TinyVocaManager private constructor(private val appContext: Context) {
                             val tokens = cachedTokensMap.getOrPut(utteranceId) { tokenizeSpokenWords(text) }
                             val speed = currentConfiguredSpeed
                             fallbackHighlightJob = scope.launch(Dispatchers.Main) {
-                                // Wait 750ms for the Android audio pipeline and synthesizer to begin sound playback
-                                val initialDelayMs = (750L / speed).toLong().coerceIn(450L, 1200L)
+                                // Wait for audio buffer & synthesizer pipeline to begin sound output before highlighting
+                                val initialDelayMs = (1350L / speed).toLong().coerceIn(1000L, 2200L)
                                 delay(initialDelayMs)
                                 if (!hasRangeStartFired && _isSpeaking.value && _currentSpeakingId.value == utteranceId) {
                                     for (i in tokens.indices) {
@@ -170,7 +170,7 @@ class TinyVocaManager private constructor(private val appContext: Context) {
                             fallbackHighlightJob?.cancel()
                             val text = spokenTextMap[utteranceId].orEmpty()
                             val tokens = cachedTokensMap.getOrPut(utteranceId) { tokenizeSpokenWords(text) }
-                            val matchingToken = tokens.firstOrNull { start in it.charStart until it.charEnd }
+                            val matchingToken = tokens.firstOrNull { start in it.charStart..it.charEnd }
                                 ?: tokens.firstOrNull { it.charStart >= start }
                                 ?: tokens.lastOrNull()
                             if (matchingToken != null) {
@@ -178,8 +178,8 @@ class TinyVocaManager private constructor(private val appContext: Context) {
                                     utteranceId = utteranceId,
                                     wordIndex = matchingToken.index,
                                     word = matchingToken.word,
-                                    charStart = start,
-                                    charEnd = end
+                                    charStart = matchingToken.charStart,
+                                    charEnd = matchingToken.charEnd
                                 )
                             }
                         }
@@ -519,20 +519,20 @@ class TinyVocaManager private constructor(private val appContext: Context) {
 
         fun calculateTokenDelay(token: SpokenWordToken, speed: Float): Long {
             val safeSpeed = speed.coerceIn(0.5f, 2.5f)
-            // Base duration: standard conversational speech is ~125 words/minute = ~480ms per word.
-            // Scale dynamically by character length (longer words have more syllables).
-            val baseDurationMs = 240L + (token.word.length * 42L).coerceAtMost(600L)
+            // Conversational reading at 1.0x speed is ~135 words/minute (~450ms per word + natural pauses).
+            // Word duration scales with character count (syllables).
+            val baseDurationMs = 320L + (token.word.length * 48L).coerceAtMost(700L)
 
             // Natural conversational pauses at punctuation boundaries:
             val pauseMs = when {
-                token.hasSentenceEnd -> 420L
-                token.hasClauseEnd -> 220L
-                token.hasLineBreak -> 260L
-                else -> 0L
+                token.hasSentenceEnd -> 500L
+                token.hasClauseEnd -> 280L
+                token.hasLineBreak -> 320L
+                else -> 90L // natural inter-word breathing and cadence gap
             }
 
             val totalMs = ((baseDurationMs + pauseMs) / safeSpeed).toLong()
-            return totalMs.coerceIn((160L / safeSpeed).toLong(), 2000L)
+            return totalMs.coerceIn((260L / safeSpeed).toLong(), 2500L)
         }
     }
 }

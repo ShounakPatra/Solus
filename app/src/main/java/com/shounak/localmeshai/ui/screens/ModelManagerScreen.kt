@@ -2758,14 +2758,16 @@ fun ModelItem(
                                                     },
                                                     hazeState = hazeState,
                                                     shape = RoundedCornerShape(12.dp),
-                                                    tintColor = colors.primary.copy(alpha = 0.35f),
-                                                    modifier = Modifier.height(42.dp),
+                                                    tintColor = colors.primary.copy(alpha = 0.45f),
+                                                    modifier = Modifier
+                                                        .height(44.dp)
+                                                        .border(1.dp, colors.primary.copy(alpha = 0.65f), RoundedCornerShape(12.dp)),
                                                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp)
                                                 ) {
                                                     Icon(
                                                         Icons.Default.PlayArrow,
                                                         contentDescription = null,
-                                                        tint = colors.primary,
+                                                        tint = Color.White,
                                                         modifier = Modifier.size(18.dp)
                                                     )
                                                     Spacer(modifier = Modifier.width(6.dp))
@@ -2782,8 +2784,10 @@ fun ModelItem(
                                                 onClick = { showBenchDialog = false },
                                                 hazeState = hazeState,
                                                 shape = RoundedCornerShape(12.dp),
-                                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.45f),
-                                                modifier = Modifier.height(42.dp),
+                                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.40f),
+                                                modifier = Modifier
+                                                    .height(44.dp)
+                                                    .border(0.8.dp, colors.outlineVariant.copy(alpha = 0.30f), RoundedCornerShape(12.dp)),
                                                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
                                             ) {
                                                 Text("Close", style = MaterialTheme.typography.labelLarge, color = colors.onSurface)
