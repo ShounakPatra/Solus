@@ -8,10 +8,10 @@
 
 **Private chats · Multiple model formats · Document assistance**
 
-**v6.0.6 · Android 11+ · ARM64-v8a**
+**v7.0.0 · Android 11+ · ARM64-v8a**
 
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/app-release.apk" title="Download Solus v6.0.6 from GitHub">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk" title="Download Solus v7.0.0 from GitHub">
     <img src="docs/assets/download-solus-apk.svg" alt="Download the signed Solus APK from GitHub" width="300" height="60" />
   </a>
   &nbsp;
@@ -22,10 +22,10 @@
 
 <img src="docs/assets/google-play-coming-soon.svg" alt="Coming soon on Google Play" width="180" height="53" />
 
-<sub>Get v6.0.6 from GitHub or add the <a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC">Solus third-party F-Droid repository</a>. Both distribute the same maintainer-signed APK. Solus is not listed in the official F-Droid catalog.</sub>
+<sub>Get v7.0.0 from GitHub or add the <a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC">Solus third-party F-Droid repository</a>. Both distribute the same maintainer-signed APK. Solus is not listed in the official F-Droid catalog.</sub>
 
 [![Android CI](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg)](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml)
-![Version 6.0.6](https://img.shields.io/badge/version-6.0.6-0EA5E9)
+![Version 7.0.0](https://img.shields.io/badge/version-7.0.0-0EA5E9)
 ![Android 11 or newer](https://img.shields.io/badge/Android-11%2B-3DDC84)
 ![Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-A970FF)
 [![Total downloads](https://img.shields.io/github/downloads/ShounakPatra/Solus/total?label=Total%20downloads&color=14B8A6)](https://github.com/ShounakPatra/Solus/releases)
@@ -55,21 +55,22 @@
 
 ## Get started
 
-1. **Install** through the [Solus third-party F-Droid repository](https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC) or download the [v6.0.6 signed APK](https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/app-release.apk). It requires **Android 11+** and an **ARM64-v8a** device. Verify it with the [matching SHA-256 checksum](https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/app-release.apk.sha256).
+1. **Install** through the [Solus third-party F-Droid repository](https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC) or download the [v7.0.0 signed APK](https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk). It requires **Android 11+** and an **ARM64-v8a** device. Verify it with the [matching SHA-256 checksum](https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk.sha256).
 2. **Choose a model** in **Models**, or use **Add model** to import one from your phone, Hugging Face or a direct URL.
 3. **Start a chat** after the model finishes loading. A small model is a good place to start if your phone has limited RAM.
 4. **Add context** with a PDF or DOCX. Image and audio inputs require a compatible model and export.
 
 An existing installation can be updated without uninstalling when Android accepts the package and signing identity. Back up important chats first. Model weights need additional storage and are not included in workspace backups.
 
-## What's new in v6.0.6
+## What's new in v7.0.0
 
-Solus v6.0.6 improves how model answers appear:
+Solus v7.0.0 introduces resident on-device neural voice reading and major glass UI refinements:
 
-- **Live math rendering:** completed LaTeX formulas render while the model is answering.
-- **Cleaner formatting:** escaped newlines around Markdown no longer leave stray `n` characters in responses.
-- **Security update:** replaced the model runtime's vulnerable Rust ZIP dependency and added archive-header validation.
-- **Streaming responses:** formatted text, lists, code and completed formulas update during generation; incomplete formulas stay readable until complete.
+- **TinyVoca Neural TTS:** ultra-lightweight 8.1 MB on-device neural voice model bundled in the APK and pre-warmed in RAM for offline voice reading with F2 (Female) and M2 (Male) voices.
+- **Synchronized live word highlighting:** reading aloud dynamically tracks and highlights words live as they are spoken, with syllable-aware pacing and natural punctuation pauses.
+- **Liquid-glass performance benchmark:** revamped performance benchmark dialog with high-contrast controls, cold/warm latency measurement, and synthetic input diagnostics.
+- **Discoverable voice models:** TinyVoca model card integrated directly into the Models tab and search.
+- **Model re-initialization fix:** models cleanly unload and can be re-initialized at any time from the selector.
 
 The release retains expanded model imports, conversation tools, optional neural document search, history search and pinning, temporary chats, backups, per-model profiles and the glass interface.
 
@@ -96,7 +97,7 @@ These projects have different goals. The table summarizes their publicly documen
 features; **Not verified** means the linked documentation did not establish the
 answer, not that the feature is absent. Model, version and device support vary.
 
-| Feature | Solus v6.0.6 | AI Edge Gallery | PocketPal AI | LM Playground | ChatterUI |
+| Feature | Solus v7.0.0 | AI Edge Gallery | PocketPal AI | LM Playground | ChatterUI |
 | --- | --- | --- | --- | --- | --- |
 | Local model formats | GGUF, LiteRT-LM, MediaPipe and selected portable exports | LiteRT | GGUF | GGUF | GGUF |
 | Import `.gguf`, `.litertlm` and `.task` | Supported exports | Not verified for all three | GGUF documented | GGUF documented | GGUF documented |
