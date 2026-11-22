@@ -8,7 +8,10 @@ import android.view.Display
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
 import androidx.activity.viewModels
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -55,6 +58,7 @@ import com.shounak.localmeshai.utils.AppCacheCleaner
 import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.GlassDispersionCard
 import com.shounak.localmeshai.utils.InitCrashGuard
+import com.shounak.localmeshai.utils.LiquidGlassButton
 import com.shounak.localmeshai.utils.LiteRtRuntimeCache
 import com.shounak.localmeshai.utils.LiquidGlassBackdrop
 import com.shounak.localmeshai.utils.LiquidGlassBox
@@ -282,12 +286,8 @@ fun MainNavigation(mainViewModel: MainViewModel) {
     val scrollToAboutRequested by mainViewModel.scrollToAboutRequested.collectAsState()
     val appSettingsData by mainViewModel.appSettingsData.collectAsState()
 
-    // Keep the resting dock inset independent of the bar's visibility animation.
-    // Chat combines this with the animated IME inset using max, so closing the
-    // keyboard never briefly drops the composer into the navigation bar's space.
-    val bottomContentInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
-        if (appSettingsData.enableAutoHideBottomBar) 0.dp
-        else BottomNavHeight + BottomNavVerticalPadding * 2
+    // Navigation bar removed completely; composer rests naturally with standard navigation bar padding.
+    val bottomContentInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
     var autoHideWasEnabledWhenSettingsOpened by remember { mutableStateOf(false) }
     var autoHideTurnedOnInSettings by remember { mutableStateOf(false) }
@@ -321,40 +321,7 @@ fun MainNavigation(mainViewModel: MainViewModel) {
 
     LiquidGlassBackdrop(hazeState = hazeState) {
         Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
-            bottomBar = {
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = !isKeyboardOpen && !appSettingsData.enableAutoHideBottomBar,
-                    enter = androidx.compose.animation.fadeIn(
-                        animationSpec = androidx.compose.animation.core.tween(180)
-                    ) + androidx.compose.animation.slideInVertically(
-                        initialOffsetY = { it / 2 },
-                        animationSpec = spring(dampingRatio = 0.82f, stiffness = 460f)
-                    ),
-                    exit = androidx.compose.animation.fadeOut(
-                        animationSpec = androidx.compose.animation.core.tween(120)
-                    ) + androidx.compose.animation.slideOutVertically(
-                        targetOffsetY = { it / 2 },
-                        animationSpec = spring(dampingRatio = 0.92f, stiffness = 620f)
-                    )
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
-                            .padding(horizontal = 20.dp, vertical = BottomNavVerticalPadding),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        LiquidBottomNav(
-                            items = items,
-                            selectedIndex = selectedIndex,
-                            selectionPosition = navigationPosition,
-                            hazeState = hazeState,
-                            onSelect = { index -> selectedIndex = index }
-                        )
-                    }
-                }
-            }
+            containerColor = MaterialTheme.colorScheme.background
         ) { innerPadding ->
             // Animate only the destination over an opaque background. The outgoing
             // page and its blur capture are disposed immediately, avoiding colour bleed.
@@ -410,22 +377,22 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                     ) {
                         when (page) {
                             0 -> pageState.SaveableStateProvider("chat") {
-                                ChatScreen(mainViewModel = mainViewModel, hazeState = hazeState,
-                                    bottomContentInset = bottomContentInset, retainedScrollController = chatScrollController)
-                            }
-                            1 -> Column(modifier = Modifier.fillMaxSize()) {
-                                LiquidTopBar(
-                                    title = Screen.Models.title,
-                                    hazeState = hazeState
+                                ChatScreen(
+                                    mainViewModel = mainViewModel,
+                                    hazeState = hazeState,
+                                    bottomContentInset = bottomContentInset,
+                                    retainedScrollController = chatScrollController,
+                                    onGoToModels = { selectedIndex = 1 }
                                 )
-                                Box(modifier = Modifier.weight(1f)) {
-                                    ModelManagerScreen(
-                                        mainViewModel = mainViewModel,
-                                        hazeState = hazeState,
-                                        bottomContentInset = bottomContentInset,
-                                        onGoToChat = { selectedIndex = 0 }
-                                    )
-                                }
+                            }
+                            1 -> Box(modifier = Modifier.fillMaxSize()) {
+                                BackHandler(enabled = true) { selectedIndex = 0 }
+                                ModelManagerScreen(
+                                    mainViewModel = mainViewModel,
+                                    hazeState = hazeState,
+                                    bottomContentInset = bottomContentInset,
+                                    onGoToChat = { selectedIndex = 0 }
+                                )
                             }
                         }
                     }
@@ -619,46 +586,7 @@ private fun LiquidBottomNav(
     }
 }
 
-@Composable
-private fun LiquidTopBar(
-    title: String,
-    hazeState: HazeState
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 8.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        LiquidGlassBox(
-            modifier = Modifier
-                .widthIn(max = 430.dp)
-                .fillMaxWidth()
-                .height(56.dp)
-                .fluidReveal(initialYOffset = 10.dp)
-                .animatedGlassHalo(shape = RoundedCornerShape(16.dp), alpha = 0.05f, durationMillis = 4_700),
-            hazeState = hazeState,
-            cornerRadius = 16.dp,
-            refractionHeight = 24.dp,
-            dispersion = 0.88f,
-            blurRadius = 30.dp,
-            animatedCaustics = true
-        ) {
-            androidx.compose.animation.Crossfade(
-                targetState = title,
-                animationSpec = androidx.compose.animation.core.tween(200),
-                label = "top_bar_title_crossfade"
-            ) { visibleTitle ->
-                Text(
-                    text = visibleTitle,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    style = MaterialTheme.typography.headlineSmall
-                )
-            }
-        }
-    }
-}
+
 
 @Composable
 private fun LiquidTabItem(

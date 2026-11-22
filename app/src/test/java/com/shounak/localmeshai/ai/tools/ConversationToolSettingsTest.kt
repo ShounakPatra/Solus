@@ -57,4 +57,15 @@ class ConversationToolSettingsTest {
         assertEquals(listOf("calculator"), LocalTools.forConversation(context, second) { false }.map { it.name })
     }
 
+    @Test fun webSearchWorksWithoutEnablingGeneralTools() {
+        val settings = AppSettingsData(enableToolCalling = false, enableWebSearch = true)
+        val toolSettings = ConversationToolSettings.from(settings)
+        assertTrue("Conversation tools must be enabled for web search even if general tools are off", toolSettings.enabled)
+        assertTrue("web_search skill must be present", "web_search" in toolSettings.skills)
+        assertFalse("document search must not be enabled", toolSettings.documentSearch)
+        val context = android.content.ContextWrapper(null)
+        val tools = LocalTools.forConversation(context, toolSettings) { false }
+        assertEquals(1, tools.size)
+        assertEquals("web_search", tools[0].name)
+    }
 }

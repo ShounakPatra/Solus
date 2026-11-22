@@ -24,6 +24,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import com.shounak.localmeshai.utils.glassEffect
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import com.shounak.localmeshai.utils.LiquidGlassButton
 import com.shounak.localmeshai.utils.GlassDispersionCard
 import com.shounak.localmeshai.ui.components.GlassActionButton
@@ -96,9 +97,9 @@ fun HistoryEntryActions(kind: String, id: String, defaultTitle: String, hazeStat
     var menu by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     Box {
-        LiquidGlassButton(onClick = { menu = true }, hazeState = hazeState, modifier = Modifier.size(34.dp),
-            shape = RoundedCornerShape(17.dp), contentPadding = PaddingValues(0.dp)) {
-            Icon(Icons.Default.MoreVert, contentDescription = "Conversation actions for $defaultTitle", modifier = Modifier.size(18.dp))
+        LiquidGlassButton(onClick = { menu = true }, hazeState = hazeState, modifier = Modifier.size(36.dp),
+            shape = CircleShape, contentPadding = PaddingValues(0.dp)) {
+            Icon(Icons.Default.MoreVert, contentDescription = "Conversation actions for $defaultTitle", modifier = Modifier.size(20.dp))
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false },
             modifier = Modifier.widthIn(min = 180.dp).glassEffect(hazeState = hazeState, shape = RoundedCornerShape(16.dp),

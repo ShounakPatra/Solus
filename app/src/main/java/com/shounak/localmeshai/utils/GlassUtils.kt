@@ -606,6 +606,7 @@ fun GlassDropdownMenu(
     onDismissRequest: () -> Unit,
     hazeState: HazeState? = null,
     modifier: Modifier = Modifier,
+    properties: PopupProperties = PopupProperties(focusable = false),
     content: @Composable ColumnScope.() -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
@@ -653,7 +654,7 @@ fun GlassDropdownMenu(
         containerColor = Color.Transparent,
         tonalElevation = 0.dp,
         shadowElevation = 14.dp,
-        properties = PopupProperties(focusable = true),
+        properties = properties,
         border = BorderStroke(
             0.8.dp,
             Brush.linearGradient(

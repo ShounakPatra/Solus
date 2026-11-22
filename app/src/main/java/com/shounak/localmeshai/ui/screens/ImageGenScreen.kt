@@ -26,6 +26,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.OutlinedButton
 import com.shounak.localmeshai.ai.RequestTerminalStatus
 import com.shounak.localmeshai.utils.CrashReportManager
@@ -390,42 +391,7 @@ fun ImageGenScreen(
 
                 (localImageError ?: visionError)?.let { ImageErrorCard(it) }
 
-                // Initialising / Analyzing / Stopping progress banner
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = isInitializing || isAnalyzing || isStopping,
-                    enter = androidx.compose.animation.fadeIn(tween(180)) +
-                        androidx.compose.animation.expandVertically(
-                            animationSpec = spring(dampingRatio = 0.82f, stiffness = 460f)
-                        ),
-                    exit = androidx.compose.animation.fadeOut(tween(130)) +
-                        androidx.compose.animation.shrinkVertically(
-                            animationSpec = spring(dampingRatio = 0.92f, stiffness = 620f)
-                        ),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                            .padding(bottom = 6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        VisionLiquidProgressBar(modifier = Modifier.fillMaxWidth())
-                        Text(
-                            text = when {
-                                isInitializing -> "Initialising image model safely…"
-                                isStopping -> "Stopping image model…"
-                                else -> "Reading input…"
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Center,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
+
 
                 // Middle area: large Answer area covering full upper part, matching Chats tab
                 Box(
@@ -1504,41 +1470,7 @@ private fun UniquePlusIcon(
     }
 }
 
-@Composable
-private fun VisionLiquidProgressBar(modifier: Modifier = Modifier) {
-    val shift = 0.5f
-    val shimmerStart = -1.2f + shift * 2.4f
-    val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-    val borderColor = MaterialTheme.colorScheme.outlineVariant
-    val accentColor = MaterialTheme.colorScheme.primary
 
-    Canvas(
-        modifier = modifier
-            .height(10.dp)
-            .clip(RoundedCornerShape(999.dp))
-            .background(trackColor)
-    ) {
-        val corner = CornerRadius(size.height / 2f, size.height / 2f)
-        drawRoundRect(
-            color = trackColor,
-            cornerRadius = corner
-        )
-        drawRoundRect(
-            brush = Brush.horizontalGradient(
-                colors = listOf(
-                    accentColor.copy(alpha = 0.30f),
-                    accentColor.copy(alpha = 0.78f),
-                    accentColor,
-                    accentColor.copy(alpha = 0.30f)
-                ),
-                startX = size.width * shimmerStart,
-                endX = size.width * (shimmerStart + 1.2f)
-            ),
-            cornerRadius = corner
-        )
-        drawRoundRect(color = borderColor, cornerRadius = corner, style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()))
-    }
-}
 
 @Composable
 private fun VisionComposerActions(
@@ -1850,10 +1782,49 @@ private fun Modifier.dropdownTriggerBounce(expanded: Boolean): Modifier {
 }
 
 @Composable
-private fun AdaptiveMessageText(text: String, color: Color, modifier: Modifier = Modifier) {
-    val annotatedText = remember(text) { text.toAsteriskEmphasisText() }
-    if (annotatedText.text.isNotEmpty()) Text(text = annotatedText, color = color,
-        modifier = modifier.fillMaxWidth(), textAlign = TextAlign.Start)
+private fun AdaptiveMessageText(
+    text: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+    highlightWordIndex: Int? = null,
+    highlightWord: String? = null
+) {
+    val highlightBg = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+    val highlightTextColor = MaterialTheme.colorScheme.primary
+
+    val annotatedText = remember(text, highlightWordIndex, highlightWord, highlightBg, highlightTextColor) {
+        val base = text.toAsteriskEmphasisText()
+        if (highlightWordIndex == null) {
+            base
+        } else {
+            buildAnnotatedString {
+                append(base)
+                val rawText = base.text
+                val wordRegex = Regex("""[\p{L}\p{N}'-]+""")
+                val matches = wordRegex.findAll(rawText).toList()
+                if (matches.isNotEmpty() && highlightWordIndex in matches.indices) {
+                    val targetMatch = matches[highlightWordIndex]
+                    addStyle(
+                        style = SpanStyle(
+                            background = highlightBg,
+                            color = highlightTextColor,
+                            fontWeight = FontWeight.ExtraBold
+                        ),
+                        start = targetMatch.range.first,
+                        end = targetMatch.range.last + 1
+                    )
+                }
+            }
+        }
+    }
+    if (annotatedText.text.isNotEmpty()) {
+        Text(
+            text = annotatedText,
+            color = color,
+            modifier = modifier.fillMaxWidth(),
+            textAlign = TextAlign.Start
+        )
+    }
 }
 
 @Composable
@@ -2403,6 +2374,12 @@ fun VisionChatBubble(
     val hasTopDoc = isUser && !documentName.isNullOrBlank()
     val entryValue = entryProgress.value
 
+    val ttsManager = remember { com.shounak.localmeshai.ai.tts.TinyVocaManager.getInstance(context) }
+    val currentHighlight by ttsManager.currentHighlight.collectAsState()
+    val isThisMessageSpeaking = !isUser && currentHighlight?.utteranceId == messageId
+    val appSettings = remember { com.shounak.localmeshai.utils.AppSettings.getInstance(context) }
+    val appSettingsData by appSettings.settings.collectAsState()
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -2618,14 +2595,27 @@ fun VisionChatBubble(
                     } else {
                         SelectionContainer {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                var cumulativeWordCount = 0
                                 segments.forEach { segment ->
                                     when (segment) {
                                         is ModelAnswerSegment.Text -> {
                                             if (segment.text.isNotBlank() && (!segment.text.startsWith("⚠️ Error:") || errorMessage != null)) {
+                                                val segmentText = segment.text.trim('\n')
+                                                val segmentWords = Regex("""[\p{L}\p{N}'-]+""").findAll(segmentText).count()
+                                                val localHighlightIndex = if (isThisMessageSpeaking && currentHighlight != null && appSettingsData.enableVoiceLiveHighlight) {
+                                                    val globalIdx = currentHighlight!!.wordIndex
+                                                    if (globalIdx in cumulativeWordCount until (cumulativeWordCount + segmentWords)) {
+                                                        globalIdx - cumulativeWordCount
+                                                    } else null
+                                                } else null
+
                                                 AdaptiveMessageText(
-                                                    text = segment.text.trim('\n'),
-                                                    color = MaterialTheme.colorScheme.onSurface
+                                                    text = segmentText,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    highlightWordIndex = localHighlightIndex,
+                                                    highlightWord = if (localHighlightIndex != null) currentHighlight?.word else null
                                                 )
+                                                cumulativeWordCount += segmentWords
                                             }
                                         }
                                         is ModelAnswerSegment.Code -> {
@@ -2753,6 +2743,32 @@ fun VisionChatBubble(
             ) {
                 com.shounak.localmeshai.features.MessageRevisionActions(text, onEditPrompt, onRegenerate, hazeState)
                 if (!isUser) {
+                    val ttsManager = remember { com.shounak.localmeshai.ai.tts.TinyVocaManager.getInstance(context) }
+                    val isSpeaking by ttsManager.isSpeaking.collectAsState()
+                    val speakingId by ttsManager.currentSpeakingId.collectAsState()
+                    val isThisSpeaking = isSpeaking && speakingId == messageId
+                    val appSettings = remember { com.shounak.localmeshai.utils.AppSettings.getInstance(context) }
+                    val currentSettings by appSettings.settings.collectAsState()
+
+                    MessageToolButton(
+                        icon = if (isThisSpeaking) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
+                        contentDescription = if (isThisSpeaking) "Stop reading" else "Read aloud",
+                        hazeState = hazeState,
+                        tintColor = if (isThisSpeaking) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        onClick = {
+                            if (isThisSpeaking) {
+                                ttsManager.stop()
+                            } else {
+                                val clean = com.shounak.localmeshai.ai.tts.TinyVocaManager.cleanTextForSpeech(text)
+                                ttsManager.speak(
+                                    text = clean,
+                                    id = messageId,
+                                    voice = currentSettings.ttsVoice,
+                                    speed = currentSettings.ttsSpeed
+                                )
+                            }
+                        }
+                    )
                     MessageToolButton(
                         icon = Icons.Default.Fullscreen,
                         contentDescription = "Fullscreen message",

@@ -48,9 +48,9 @@ fun InferenceTelemetryBar(
             modifier = Modifier
                 .wrapContentWidth()
                 .clip(RoundedCornerShape(20.dp))
-                .background(Color(0xFF0F172A).copy(alpha = 0.90f))
+                .background(Color(0xFF0F172A).copy(alpha = 0.65f))
                 .border(1.dp, accentColor.copy(alpha = 0.45f), RoundedCornerShape(20.dp))
-                .padding(horizontal = 14.dp, vertical = 6.dp)
+                .padding(horizontal = 12.dp, vertical = 6.dp)
                 .horizontalScroll(rememberScrollState()),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)

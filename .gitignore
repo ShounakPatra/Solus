@@ -29,6 +29,8 @@ signing.properties
 release.apk
 app-release*.apk
 app/release/
+*.so
+/app/src/main/jniLibs/
 
 # Temporary UI inspection screenshots / exports
 /*.png

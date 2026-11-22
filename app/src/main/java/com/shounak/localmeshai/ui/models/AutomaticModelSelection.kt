@@ -10,4 +10,8 @@ class AutomaticModelSelection {
         previous = selection
         return selection != null
     }
+
+    fun clear() {
+        previous = null
+    }
 }

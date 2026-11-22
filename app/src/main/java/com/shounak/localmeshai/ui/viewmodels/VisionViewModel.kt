@@ -34,6 +34,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -58,6 +59,7 @@ import java.util.UUID
 import com.shounak.localmeshai.rag.RagManager
 import com.shounak.localmeshai.rag.RagIngestionResult
 import com.shounak.localmeshai.utils.AttachmentViewerUtils
+import com.shounak.localmeshai.models.state.InferenceSessionState
 import com.shounak.localmeshai.memory.PersistentMemoryManager
 import com.shounak.localmeshai.memory.MemoryEntry
 import com.shounak.localmeshai.memory.MemoryCategory
@@ -264,6 +266,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _isModelReady = MutableStateFlow(false)
     val isModelReady = _isModelReady.asStateFlow()
+
+    private val _sessionState = MutableStateFlow<InferenceSessionState>(InferenceSessionState.Idle())
+    val sessionState: StateFlow<InferenceSessionState> = _sessionState.asStateFlow()
 
     private val _activeBackend = MutableStateFlow<String?>(null)
     val activeBackend = _activeBackend.asStateFlow()
@@ -786,6 +791,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         // Synchronous UI state updates BEFORE launching background work so
         // the spinner shows up immediately and Ask is disabled right away.
         _isInitializing.value = true
+        _sessionState.value = InferenceSessionState.Preparing(modelId = currentModelId)
         _isAnalyzing.value = false
         _isStopping.value = false
         _runtimeCapabilities.value = null
@@ -839,6 +845,17 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             resetRuntimeConversationBeforeNextAsk = true
                             _activeBackend.value = inferenceManager.activeBackendDisplayName
                             _isModelReady.value = inferenceManager.isReady
+                            _sessionState.value = if (inferenceManager.isReady) {
+                                InferenceSessionState.Ready(
+                                    modelId = currentModelId,
+                                    backendDisplayName = inferenceManager.activeBackendDisplayName
+                                )
+                            } else {
+                                InferenceSessionState.Failed(
+                                    modelId = currentModelId,
+                                    reason = com.shounak.localmeshai.ai.ModelLoadFailureReason.InitializationFailure("Multimodal runtime not ready")
+                                )
+                            }
                         } catch (exception: Exception) {
                             if (exception is CancellationException) throw exception
                             if (myGen != initGeneration) return@withLock
@@ -851,6 +868,10 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
                             _runtimeCapabilities.value = null
                             _isModelReady.value = false
+                            _sessionState.value = InferenceSessionState.Failed(
+                                modelId = currentModelId,
+                                reason = com.shounak.localmeshai.ai.ModelLoadFailureReason.InitializationFailure(_error.value ?: "Failed to load multimodal model.")
+                            )
                         }
                     }
                 }
@@ -868,6 +889,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
                 _runtimeCapabilities.value = null
                 _isModelReady.value = false
+                _sessionState.value = InferenceSessionState.Idle()
+                automaticModelSelection.clear()
             } finally {
                 if (myGen == initGeneration) {
                     _isInitializing.value = false
@@ -1256,6 +1279,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         _isAnalyzing.value = true
+        _sessionState.value = InferenceSessionState.Generating(
+            modelId = currentModelId,
+            requestId = requestId,
+            tokensPerSecond = _tokensPerSecond.value,
+            isThinking = _thinkingMode.value
+        )
         timing.recordAcknowledged()
         val requestThinkingPreference = thinkingMode
         val capability = currentResolvedThinkingCapability.takeIf { it != ThinkingCapability.Unknown } ?: currentBundle?.capabilities?.thinking ?: ThinkingCapability.Unknown
@@ -1503,7 +1532,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 } else {
                     ""
                 }).let { memory ->
-                    val system = com.shounak.localmeshai.features.WorkspacePreferences.get(getApplication()).profile(currentModelId).systemPrompt
+                    val userSystem = com.shounak.localmeshai.features.WorkspacePreferences.get(getApplication()).profile(currentModelId).systemPrompt
+                    val personaPrompt = com.shounak.localmeshai.ui.components.defaultPersonas
+                        .firstOrNull { it.id == appSettings.settings.value.selectedPersonaId }
+                        ?.systemPrompt
+                        .orEmpty()
+                    val system = listOf(personaPrompt, userSystem).filter { it.isNotBlank() }.joinToString("\n\n")
                     timing.recordPromptBlocks(systemChars = system.length, memoryChars = memory.length, ragChars = ragAugmentedContext?.length ?: 0)
                     listOf(system, memory)
                         .filter { it.isNotBlank() }.joinToString("\n\n")
@@ -1897,6 +1931,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     if (activeRequestId == requestId) {
                         _isAnalyzing.value = false
                         _isStopping.value = false
+                        _sessionState.value = if (_isModelReady.value) {
+                            InferenceSessionState.Ready(modelId = currentModelId, backendDisplayName = _activeBackend.value ?: "")
+                        } else {
+                            InferenceSessionState.Idle()
+                        }
                         resetAutoUnloadTimer()
                     }
                 }
@@ -1982,6 +2021,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         jobToCancel?.cancel()
         _isAnalyzing.value = false
         _isStopping.value = false
+        _sessionState.value = if (_isModelReady.value) {
+            InferenceSessionState.Ready(modelId = currentModelId, backendDisplayName = _activeBackend.value ?: "")
+        } else {
+            InferenceSessionState.Idle()
+        }
 
         // Immediately update UI state on the main thread so "Reading input..." changes to stopped card
         val assistantIndex = messages.indexOfLast { !it.isUser }
@@ -2007,6 +2051,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun uninitializeModel() {
+        automaticModelSelection.clear()
         releaseModel(clearCoordinator = true, clearSelection = true)
     }
     /** Records the index id on the message that attached the upload, once indexing under that id succeeded. */
@@ -2867,7 +2912,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
             }
-            if (initGeneration != releaseGeneration) return@launch
             currentModelEpoch++
             withContext(Dispatchers.Main.immediate) {
                 activeRequestId = null
@@ -2879,16 +2923,11 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             }
             lastShutdownResult = result
             if (!result.isSuccess) {
-                Log.e("VisionViewModel", "Model shutdown failed: $result")
-                withContext(Dispatchers.Main.immediate) {
-                    _isStopping.value = false
-                }
-                return@launch
+                Log.w("VisionViewModel", "Model shutdown notice (continuing unload): $result")
             }
             if (clearCoordinator) ModelRuntimeCoordinator.clear(ModelRuntimeOwner.Vision)
             activeLoadOperationId = null
             withContext(Dispatchers.Main.immediate) {
-                if (initGeneration != releaseGeneration) return@withContext
                 currentRequestedIdentity = null
                 currentLoadedIdentity = null
                 currentResolvedThinkingCapability = ThinkingCapability.Unknown
@@ -2913,6 +2952,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 _isStopping.value = false
                 _runtimeCapabilities.value = null
                 _isModelReady.value = false
+                _sessionState.value = InferenceSessionState.Idle()
+                automaticModelSelection.clear()
             }
         }
     }

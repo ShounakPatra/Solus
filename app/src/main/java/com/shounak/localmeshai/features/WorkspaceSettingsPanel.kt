@@ -39,22 +39,25 @@ import kotlinx.coroutines.withContext
 
 @Composable
 fun WorkspaceSettingsPanel(models: List<ModelInfo>, hazeState: HazeState) {
+    WorkspaceBackupSection(hazeState = hazeState)
+    WorkspaceProfilesSection(models = models, hazeState = hazeState)
+    WorkspaceStorageSection(hazeState = hazeState)
+    WorkspaceAccessibilitySection(hazeState = hazeState)
+}
+
+@Composable
+fun WorkspaceBackupSection(hazeState: HazeState) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val preferences = remember(context) { WorkspacePreferences.get(context) }
-    val revision by preferences.revision.collectAsState()
     val runtimeBusy by ModelRuntimeCoordinator.isRuntimeBusy.collectAsState()
     var working by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
-    var storageOperation by remember { mutableStateOf(false) }
     var includeAttachments by remember { mutableStateOf(false) }
     var restoreUri by remember { mutableStateOf<Uri?>(null) }
-    var profileDialog by remember { mutableStateOf(false) }
-    var storage by remember { mutableStateOf<StorageSnapshot?>(null) }
-    fun runOperation(inStorage: Boolean = false, block: suspend () -> String) {
+
+    fun runOperation(block: suspend () -> String) {
         if (working) return
         working = true
-        storageOperation = inStorage
         status = null
         scope.launch {
             try { status = block() }
@@ -63,72 +66,181 @@ fun WorkspaceSettingsPanel(models: List<ModelInfo>, hazeState: HazeState) {
             finally { working = false }
         }
     }
+
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
         if (uri != null) runOperation { WorkspaceBackup(context).export(uri, includeAttachments) }
     }
     val restore = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> restoreUri = uri }
-    SettingsCategory(title = "🗂 Data", hazeState = hazeState) {
+    val appSettings = com.shounak.localmeshai.utils.AppSettings.getInstance(context)
+    val settingsData by appSettings.settings.collectAsState()
+
+    SettingsCategory(title = "🗂 Backup & Import", hazeState = hazeState) {
         Text("Back up chats, memories and settings. Model weights, access tokens and document indexes are excluded.", style = MaterialTheme.typography.bodySmall)
         Text("Backups contain private conversations. Choose a location you trust.", style = MaterialTheme.typography.bodySmall)
-        SettingsSwitchRow(title = "Include available attachments", subtitle = "Add available photos, audio and documents to the backup",
-            checked = includeAttachments, onCheckedChange = { includeAttachments = it }, enabled = !working)
+        SettingsSwitchRow(
+            title = "Automatic Chat Backup",
+            subtitle = "Automatically back up chats and restore them automatically when the app is reinstalled",
+            checked = settingsData.enableAutoChatBackup,
+            onCheckedChange = { enabled ->
+                appSettings.updateSettings { it.copy(enableAutoChatBackup = enabled) }
+            },
+            enabled = !working
+        )
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-        SettingsGlassAction("Export backup", Icons.Default.FileUpload, hazeState, enabled = !working && !runtimeBusy,
-            onClick = { export.launch("Solus-backup.zip") })
-        SettingsGlassAction("Restore backup", Icons.Default.FileDownload, hazeState, enabled = !working && !runtimeBusy,
-            onClick = { restore.launch(arrayOf("application/zip", "application/octet-stream")) })
+        SettingsSwitchRow(
+            title = "Include available attachments",
+            subtitle = "Add available photos, audio and documents to the backup",
+            checked = includeAttachments,
+            onCheckedChange = { includeAttachments = it },
+            enabled = !working
+        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+        SettingsGlassAction(
+            "Export backup",
+            Icons.Default.FileUpload,
+            hazeState,
+            enabled = !working && !runtimeBusy,
+            onClick = { export.launch("Solus-backup.zip") }
+        )
+        SettingsGlassAction(
+            "Restore backup",
+            Icons.Default.FileDownload,
+            hazeState,
+            enabled = !working && !runtimeBusy,
+            onClick = { restore.launch(arrayOf("application/zip", "application/octet-stream")) }
+        )
         if (runtimeBusy) Text("Finish the active model operation to export or restore.", style = MaterialTheme.typography.bodySmall)
-        if (!storageOperation) {
-            if (working) LinearProgressIndicator(Modifier.fillMaxWidth())
-            status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        if (working) LinearProgressIndicator(Modifier.fillMaxWidth())
+        status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    }
+
+    restoreUri?.let { uri ->
+        GlassActionDialog(
+            hazeState = hazeState,
+            onDismiss = { restoreUri = null },
+            title = "Restore this backup?",
+            confirmLabel = "Restore",
+            confirmEnabled = !runtimeBusy && !working,
+            onConfirm = { restoreUri = null; runOperation { WorkspaceBackup(context).restore(uri) } }
+        ) {
+            Text("Chats and saved memories will be added. Existing data will be preserved, and duplicate memories will be skipped. Portable app settings will be applied. Restoring the same backup again will skip already imported data.")
         }
     }
-    SettingsCategory(title = "🧠 Models", hazeState = hazeState) {
+}
+
+@Composable
+fun WorkspaceProfilesSection(models: List<ModelInfo>, hazeState: HazeState) {
+    val runtimeBusy by ModelRuntimeCoordinator.isRuntimeBusy.collectAsState()
+    var profileDialog by remember { mutableStateOf(false) }
+
+    SettingsCategory(title = "🧠 Model Profiles", hazeState = hazeState) {
         Text("Save custom instructions, context limits and supported sampling settings for each model.", style = MaterialTheme.typography.bodySmall)
-        SettingsGlassAction("Per-model profiles", Icons.Default.Tune, hazeState,
-            enabled = !working && !runtimeBusy && models.isNotEmpty(), onClick = { profileDialog = true })
+        SettingsGlassAction(
+            "Per-model profiles",
+            Icons.Default.Tune,
+            hazeState,
+            enabled = !runtimeBusy && models.isNotEmpty(),
+            onClick = { profileDialog = true }
+        )
         if (runtimeBusy) Text("Finish the active model operation to change profiles.", style = MaterialTheme.typography.bodySmall)
     }
+
+    if (profileDialog) {
+        ModelProfilesDialog(models, hazeState, onDismiss = { profileDialog = false })
+    }
+}
+
+@Composable
+fun WorkspaceStorageSection(hazeState: HazeState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val runtimeBusy by ModelRuntimeCoordinator.isRuntimeBusy.collectAsState()
+    var working by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var storage by remember { mutableStateOf<StorageSnapshot?>(null) }
+
+    LaunchedEffect(Unit) {
+        storage = withContext(Dispatchers.IO) { StorageDashboard.inspect(context) }
+    }
+
+    fun runOperation(block: suspend () -> String) {
+        if (working) return
+        working = true
+        status = null
+        scope.launch {
+            try { status = block() }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (error: Exception) { status = error.message ?: "Operation failed; existing data was preserved" }
+            finally { working = false }
+        }
+    }
+
     SettingsCategory(title = "💾 Storage", hazeState = hazeState) {
         storage?.let { values ->
-            listOf("Models" to values.models, "Chat attachments" to values.attachments, "Knowledge base" to values.knowledge,
-                "Cache (including temporary attachments)" to values.cache, "Available on internal storage" to values.available).forEach { (label, bytes) ->
+            listOf(
+                "Models" to values.models,
+                "Chat attachments" to values.attachments,
+                "Knowledge base" to values.knowledge,
+                "Cache (including temporary attachments)" to values.cache,
+                "Available on internal storage" to values.available
+            ).forEach { (label, bytes) ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(label, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                     Text(StorageDashboard.format(bytes), style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
-        SettingsGlassAction("Refresh storage", Icons.Default.Refresh, hazeState, enabled = !working, onClick = {
-            runOperation(inStorage = true) { storage = withContext(Dispatchers.IO) { StorageDashboard.inspect(context) }; "Storage usage refreshed" }
-        })
-        SettingsGlassAction("Clear unused cache", Icons.Default.DeleteSweep, hazeState, enabled = !working && !runtimeBusy, onClick = {
-            runOperation(inStorage = true) {
-                val result = withContext(Dispatchers.IO) { CacheCleanupCoordinator.getInstance(context).executeCleanupNow(CleanupReason.Explicit) }
-                storage = withContext(Dispatchers.IO) { StorageDashboard.inspect(context) }
-                "Removed ${result.deletedFilesCount} unused cache items. Active resources were preserved; ${result.failuresCount} cleanup failures."
+        SettingsGlassAction(
+            "Refresh storage",
+            Icons.Default.Refresh,
+            hazeState,
+            enabled = !working,
+            onClick = {
+                runOperation {
+                    storage = withContext(Dispatchers.IO) { StorageDashboard.inspect(context) }
+                    "Storage usage refreshed"
+                }
             }
-        })
-        if (storageOperation) {
-            if (working) LinearProgressIndicator(Modifier.fillMaxWidth())
-            status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-        }
+        )
+        SettingsGlassAction(
+            "Clear unused cache",
+            Icons.Default.DeleteSweep,
+            hazeState,
+            enabled = !working && !runtimeBusy,
+            onClick = {
+                runOperation {
+                    val result = withContext(Dispatchers.IO) { CacheCleanupCoordinator.getInstance(context).executeCleanupNow(CleanupReason.Explicit) }
+                    storage = withContext(Dispatchers.IO) { StorageDashboard.inspect(context) }
+                    "Removed ${result.deletedFilesCount} unused cache items. Active resources were preserved; ${result.failuresCount} cleanup failures."
+                }
+            }
+        )
+        if (working) LinearProgressIndicator(Modifier.fillMaxWidth())
+        status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
+}
+
+@Composable
+fun WorkspaceAccessibilitySection(hazeState: HazeState) {
+    val context = LocalContext.current
+    val preferences = remember(context) { WorkspacePreferences.get(context) }
+    val revision by preferences.revision.collectAsState()
+
     SettingsCategory(title = "♿ Accessibility", hazeState = hazeState) {
-        SettingsSwitchRow(title = "Reduce decorative motion", subtitle = "Limit decorative movement and animated transitions",
-            checked = remember(revision) { preferences.reduceMotion }, onCheckedChange = preferences::setReduceMotion)
+        SettingsSwitchRow(
+            title = "Reduce decorative motion",
+            subtitle = "Limit decorative movement and animated transitions",
+            checked = remember(revision) { preferences.reduceMotion },
+            onCheckedChange = preferences::setReduceMotion
+        )
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-        SettingsSwitchRow(title = "Larger touch targets", subtitle = "Make supported buttons easier to tap",
-            checked = remember(revision) { preferences.largeControls }, onCheckedChange = preferences::setLargeControls)
+        SettingsSwitchRow(
+            title = "Larger touch targets",
+            subtitle = "Make supported buttons easier to tap",
+            checked = remember(revision) { preferences.largeControls },
+            onCheckedChange = preferences::setLargeControls
+        )
     }
-    restoreUri?.let { uri ->
-        GlassActionDialog(hazeState = hazeState, onDismiss = { restoreUri = null },
-            title = "Restore this backup?", confirmLabel = "Restore", confirmEnabled = !runtimeBusy && !working,
-            onConfirm = { restoreUri = null; runOperation { WorkspaceBackup(context).restore(uri) } }) {
-            Text("Chats and saved memories will be added. Existing data will be preserved, and duplicate memories will be skipped. Portable app settings will be applied. Restoring the same backup again will skip already imported data.")
-        }
-    }
-    if (profileDialog) ModelProfilesDialog(models, hazeState, onDismiss = { profileDialog = false })
 }
 
 @Composable

@@ -17,6 +17,16 @@ class AppSettingsAutoUnloadRegressionTest {
         assertEquals(5, AppSettings(prefs).settings.value.autoUnloadMinutes)
     }
 
+    @Test fun voiceLiveHighlightDefaultsOnAndCanBeToggledOff() {
+        val prefs = createFakePrefs()
+        val settings = AppSettings(prefs)
+        assertEquals(true, settings.settings.value.enableVoiceLiveHighlight)
+        settings.setEnableVoiceLiveHighlight(false)
+        assertEquals(false, AppSettings(prefs).settings.value.enableVoiceLiveHighlight)
+        settings.setEnableVoiceLiveHighlight(true)
+        assertEquals(true, AppSettings(prefs).settings.value.enableVoiceLiveHighlight)
+    }
+
     private fun createFakePrefs(initialValues: Map<String, Any?> = emptyMap()): SharedPreferences {
         val map = initialValues.toMutableMap()
         val editorHandler = object : InvocationHandler {

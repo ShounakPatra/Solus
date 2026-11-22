@@ -59,6 +59,7 @@ fun RagKnowledgeBaseDialog(
 
     var documents by remember { mutableStateOf(ragManager.indexedDocuments) }
     var totalChunks by remember { mutableIntStateOf(ragManager.totalIndexedChunks) }
+    var ingestionState by remember { mutableStateOf<com.shounak.localmeshai.models.state.RagIngestionState>(com.shounak.localmeshai.models.state.RagIngestionState.Idle) }
     var isIngesting by remember { mutableStateOf(false) }
     var ingestingDocName by remember { mutableStateOf("") }
     var showAddTextDialog by remember { mutableStateOf(false) }
@@ -78,27 +79,36 @@ fun RagKnowledgeBaseDialog(
         val mimeType = context.contentResolver.getType(uri) ?: ""
         isIngesting = true
         ingestingDocName = fileName
+        ingestionState = com.shounak.localmeshai.models.state.RagIngestionState.Reading(fileName)
         scope.launch {
             try {
                 val result = ragManager.ingestDocument(uri, fileName, mimeType)
                 refresh()
                 if (result.success) {
+                    ingestionState = com.shounak.localmeshai.models.state.RagIngestionState.Success(fileName, result.chunkCount)
                     Toast.makeText(context, "Indexed ${result.chunkCount} chunks into RAG", Toast.LENGTH_SHORT).show()
                 } else {
+                    ingestionState = com.shounak.localmeshai.models.state.RagIngestionState.Failed(fileName, result.message)
                     Toast.makeText(context, "Indexing failed: ${result.message}", Toast.LENGTH_LONG).show()
                 }
             } catch (t: Throwable) {
+                ingestionState = com.shounak.localmeshai.models.state.RagIngestionState.Failed(fileName, t.message ?: "Unknown error")
                 Toast.makeText(context, "Error: ${t.message}", Toast.LENGTH_SHORT).show()
             } finally {
                 isIngesting = false
                 ingestingDocName = ""
+                ingestionState = com.shounak.localmeshai.models.state.RagIngestionState.Idle
             }
         }
     }
 
     Dialog(
         onDismissRequest = onDismissRequest,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true
+        )
     ) {
         val dialogShape = RoundedCornerShape(24.dp)
         Box(
@@ -119,13 +129,13 @@ fun RagKnowledgeBaseDialog(
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // Header
+                // Header with prominent glass close button
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                         Text(
                             text = "📚 RAG Knowledge Base",
                             style = MaterialTheme.typography.titleLarge,
@@ -141,16 +151,16 @@ fun RagKnowledgeBaseDialog(
                     LiquidGlassButton(
                         onClick = onDismissRequest,
                         hazeState = hazeState,
-                        modifier = Modifier.size(36.dp),
-                        shape = RoundedCornerShape(18.dp),
-                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                        modifier = Modifier.size(38.dp),
+                        shape = CircleShape,
+                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.50f),
                         contentPadding = PaddingValues(0.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
-                            contentDescription = "Close",
-                            tint = colors.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
+                            contentDescription = "Close RAG menu",
+                            tint = colors.onSurface,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
@@ -282,8 +292,15 @@ fun RagKnowledgeBaseDialog(
                                 strokeWidth = 2.dp,
                                 color = colors.primary
                             )
+                            val statusDescription = when (val state = ingestionState) {
+                                is com.shounak.localmeshai.models.state.RagIngestionState.Reading -> "Reading \"${state.fileName}\"..."
+                                is com.shounak.localmeshai.models.state.RagIngestionState.Chunking -> "Chunking \"${state.fileName}\"..."
+                                is com.shounak.localmeshai.models.state.RagIngestionState.GeneratingEmbeddings -> "Embedding \"${state.fileName}\" (${state.completedChunks}/${state.totalChunks})..."
+                                is com.shounak.localmeshai.models.state.RagIngestionState.Storing -> "Storing \"${state.fileName}\" in vector store..."
+                                else -> "Indexing \"$ingestingDocName\" into vector store..."
+                            }
                             Text(
-                                text = "Indexing \"$ingestingDocName\" into vector store...",
+                                text = statusDescription,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.onPrimaryContainer
                             )

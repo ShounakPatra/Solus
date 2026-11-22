@@ -37,6 +37,35 @@ class CurrentDateTimeTool(private val clock: Clock? = null) : ChatTool {
     }
 }
 
+class WebSearchTool(
+    private val context: android.content.Context? = null,
+    private val isCancelled: () -> Boolean = { false }
+) : ChatTool {
+    override val name: String = "web_search"
+    override fun getToolDescriptionJsonString(): String = """{"name":"web_search","description":"Search the web to look up recent news, live data, facts, or information.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"The search query terms to find on the web"}},"required":["query"],"additionalProperties":false}}"""
+    override fun execute(paramsJsonString: String): String = try {
+        if (isCancelled()) "Error: cancelled"
+        else {
+            val params = JSONObject(paramsJsonString)
+            val query = params.optString("query").trim()
+            if (query.isBlank()) "Error: query cannot be blank"
+            else kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+                val settings = context?.let { com.shounak.localmeshai.utils.AppSettings.getInstance(it).settings.value }
+                val provider = settings?.webSearchProvider ?: "Auto"
+                val braveKey = settings?.braveApiKey ?: ""
+                val tavilyKey = settings?.tavilyApiKey ?: ""
+                DuckDuckGoSearchEngine.searchWithProvider(
+                    query = query,
+                    provider = provider,
+                    braveApiKey = braveKey,
+                    tavilyApiKey = tavilyKey
+                ).toJsonString()
+            }
+        }
+    } catch (_: org.json.JSONException) { "Error: Invalid JSON arguments" }
+    catch (e: Exception) { "Error: Web search failed: ${e.message?.take(180) ?: "Unknown error"}" }
+}
+
 /**
  * SDK callbacks can execute on worker threads. Snapshot copies never expose mutable state.
  *

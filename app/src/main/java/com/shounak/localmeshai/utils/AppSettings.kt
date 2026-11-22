@@ -32,7 +32,25 @@ data class AppSettingsData(
     /** User chose "Later" on the Model Manager's document-search model card. */
     val embeddingModelPromptSkipped: Boolean = false,
     val enablePersistentMemory: Boolean = true,
-    val autoExtractMemories: Boolean = true
+    val autoExtractMemories: Boolean = true,
+    val selectedPersonaId: String = "default",
+    // Web Search
+    val enableWebSearch: Boolean = false,
+    val webSearchProvider: String = "DuckDuckGo",
+    val braveApiKey: String = "",
+    val tavilyApiKey: String = "",
+    // Chat Defaults
+    val defaultTemperature: Float = 0.7f,
+    val defaultTopP: Float = 0.90f,
+    val defaultTopK: Int = 40,
+    val defaultMaxLength: Int = 0, // 0 = Auto
+    val compactAutomaticallyAt: Int = 0, // 0 = Off
+    val readEveryAnswerAloud: Boolean = false,
+    val ttsVoice: String = "F2", // "F2" (Female) or "M2" (Male)
+    val ttsSpeed: Float = 1.0f, // 1.0x, 1.25x, 1.5x
+    val enableVoiceLiveHighlight: Boolean = true,
+    // Automatic Chat Backup
+    val enableAutoChatBackup: Boolean = true
 )
 
 class AppSettings internal constructor(
@@ -75,7 +93,22 @@ class AppSettings internal constructor(
             ragEmbeddingModel = prefs.getString(KEY_RAG_EMBEDDING_MODEL, null) ?: "universal-fnv1a-384",
             embeddingModelPromptSkipped = prefs.getBoolean(KEY_EMBEDDING_PROMPT_SKIPPED, false),
             enablePersistentMemory = prefs.getBoolean(KEY_ENABLE_PERSISTENT_MEMORY, true),
-            autoExtractMemories = prefs.getBoolean(KEY_AUTO_EXTRACT_MEMORIES, true)
+            autoExtractMemories = prefs.getBoolean(KEY_AUTO_EXTRACT_MEMORIES, true),
+            selectedPersonaId = prefs.getString(KEY_SELECTED_PERSONA, "default") ?: "default",
+            enableWebSearch = prefs.getBoolean(KEY_ENABLE_WEB_SEARCH, false),
+            webSearchProvider = prefs.getString(KEY_WEB_SEARCH_PROVIDER, "DuckDuckGo") ?: "DuckDuckGo",
+            braveApiKey = prefs.getString(KEY_BRAVE_API_KEY, "") ?: "",
+            tavilyApiKey = prefs.getString(KEY_TAVILY_API_KEY, "") ?: "",
+            defaultTemperature = prefs.getFloat(KEY_DEFAULT_TEMPERATURE, 0.7f),
+            defaultTopP = prefs.getFloat(KEY_DEFAULT_TOP_P, 0.90f),
+            defaultTopK = prefs.getInt(KEY_DEFAULT_TOP_K, 40),
+            defaultMaxLength = prefs.getInt(KEY_DEFAULT_MAX_LENGTH, 0),
+            compactAutomaticallyAt = prefs.getInt(KEY_COMPACT_AUTOMATICALLY_AT, 0),
+            readEveryAnswerAloud = prefs.getBoolean(KEY_READ_EVERY_ANSWER_ALOUD, false),
+            ttsVoice = prefs.getString(KEY_TTS_VOICE, "F2") ?: "F2",
+            ttsSpeed = prefs.getFloat(KEY_TTS_SPEED, 1.0f),
+            enableVoiceLiveHighlight = prefs.getBoolean(KEY_ENABLE_VOICE_LIVE_HIGHLIGHT, true),
+            enableAutoChatBackup = prefs.getBoolean(KEY_ENABLE_AUTO_CHAT_BACKUP, true)
         )
     }
 
@@ -108,8 +141,27 @@ class AppSettings internal constructor(
             .putBoolean(KEY_EMBEDDING_PROMPT_SKIPPED, updated.embeddingModelPromptSkipped)
             .putBoolean(KEY_ENABLE_PERSISTENT_MEMORY, updated.enablePersistentMemory)
             .putBoolean(KEY_AUTO_EXTRACT_MEMORIES, updated.autoExtractMemories)
+            .putString(KEY_SELECTED_PERSONA, updated.selectedPersonaId)
+            .putBoolean(KEY_ENABLE_WEB_SEARCH, updated.enableWebSearch)
+            .putString(KEY_WEB_SEARCH_PROVIDER, updated.webSearchProvider)
+            .putString(KEY_BRAVE_API_KEY, updated.braveApiKey)
+            .putString(KEY_TAVILY_API_KEY, updated.tavilyApiKey)
+            .putFloat(KEY_DEFAULT_TEMPERATURE, updated.defaultTemperature)
+            .putFloat(KEY_DEFAULT_TOP_P, updated.defaultTopP)
+            .putInt(KEY_DEFAULT_TOP_K, updated.defaultTopK)
+            .putInt(KEY_DEFAULT_MAX_LENGTH, updated.defaultMaxLength)
+            .putInt(KEY_COMPACT_AUTOMATICALLY_AT, updated.compactAutomaticallyAt)
+            .putBoolean(KEY_READ_EVERY_ANSWER_ALOUD, updated.readEveryAnswerAloud)
+            .putString(KEY_TTS_VOICE, updated.ttsVoice)
+            .putFloat(KEY_TTS_SPEED, updated.ttsSpeed)
+            .putBoolean(KEY_ENABLE_VOICE_LIVE_HIGHLIGHT, updated.enableVoiceLiveHighlight)
+            .putBoolean(KEY_ENABLE_AUTO_CHAT_BACKUP, updated.enableAutoChatBackup)
             .apply()
         _settings.value = updated
+    }
+
+    fun setEnableVoiceLiveHighlight(enabled: Boolean) {
+        updateSettings { it.copy(enableVoiceLiveHighlight = enabled) }
     }
 
     /** Called off the UI thread before retiring the previous persisted RAG index. */
@@ -144,6 +196,21 @@ class AppSettings internal constructor(
         private const val KEY_EMBEDDING_PROMPT_SKIPPED = "embedding_model_prompt_skipped"
         private const val KEY_ENABLE_PERSISTENT_MEMORY = "enable_persistent_memory"
         private const val KEY_AUTO_EXTRACT_MEMORIES = "auto_extract_memories"
+        private const val KEY_SELECTED_PERSONA = "selected_persona"
+        private const val KEY_ENABLE_WEB_SEARCH = "enable_web_search"
+        private const val KEY_WEB_SEARCH_PROVIDER = "web_search_provider"
+        private const val KEY_BRAVE_API_KEY = "brave_api_key"
+        private const val KEY_TAVILY_API_KEY = "tavily_api_key"
+        private const val KEY_DEFAULT_TEMPERATURE = "default_temperature"
+        private const val KEY_DEFAULT_TOP_P = "default_top_p"
+        private const val KEY_DEFAULT_TOP_K = "default_top_k"
+        private const val KEY_DEFAULT_MAX_LENGTH = "default_max_length"
+        private const val KEY_COMPACT_AUTOMATICALLY_AT = "compact_automatically_at"
+        private const val KEY_READ_EVERY_ANSWER_ALOUD = "read_every_answer_aloud"
+        private const val KEY_TTS_VOICE = "tts_voice"
+        private const val KEY_TTS_SPEED = "tts_speed"
+        private const val KEY_ENABLE_VOICE_LIVE_HIGHLIGHT = "enable_voice_live_highlight"
+        private const val KEY_ENABLE_AUTO_CHAT_BACKUP = "enable_auto_chat_backup"
 
         @Volatile
         private var INSTANCE: AppSettings? = null

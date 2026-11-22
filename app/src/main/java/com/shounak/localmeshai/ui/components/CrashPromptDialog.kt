@@ -25,10 +25,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.shounak.localmeshai.utils.CrashReport
+import com.shounak.localmeshai.utils.LiquidGlassButton
 import com.shounak.localmeshai.utils.glassEffect
 import dev.chrisbanes.haze.HazeState
 
@@ -50,15 +52,15 @@ fun CrashPromptDialog(
         Card(
             modifier = Modifier
                 .fillMaxWidth(0.92f)
-                .wrapContentHeight()
-                .padding(vertical = 24.dp)
+                .heightIn(max = 620.dp)
+                .padding(vertical = 16.dp)
                 .let { mod ->
                     if (hazeState != null) {
                         mod.glassEffect(
                             hazeState = hazeState,
                             shape = dialogShape,
                             blurRadius = 24.dp,
-                            tintColor = colors.surfaceContainerHigh,
+                            tintColor = colors.surfaceContainerHigh.copy(alpha = 0.85f),
                             borderAlpha = 0.45f
                         )
                     } else {
@@ -74,7 +76,7 @@ fun CrashPromptDialog(
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // Header with Bug Icon and Title
+                // Header with Bug Icon and Title (Pinned)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -108,128 +110,167 @@ fun CrashPromptDialog(
                     }
                 }
 
-                // Prompt description
-                Text(
-                    text = "Solus captured the full crash debug log (logcat) and complete device hardware specs. Would you like to send this full report to our GitHub repo to help fix the issue?",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = colors.onSurfaceVariant
-                )
-
-                // Error summary card
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = colors.surfaceContainerLow,
-                    border = BorderStroke(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f)),
-                    modifier = Modifier.fillMaxWidth()
+                // Scrollable Body (Adapts gracefully so action buttons never get pushed off)
+                Column(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    // Prompt description
+                    Text(
+                        text = "Solus captured the full crash debug log (logcat) and complete device hardware specs. Would you like to send this full report to our GitHub repo to help fix the issue?",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onSurfaceVariant
+                    )
+
+                    // Error summary card
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = colors.surfaceContainerLow.copy(alpha = 0.70f),
+                        border = BorderStroke(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f)),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(
-                                text = report.title,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = colors.error,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = if (report.isNativeCrash) colors.error.copy(alpha = 0.15f) else colors.primary.copy(alpha = 0.15f)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = if (report.isNativeCrash) "NATIVE" else "JVM",
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (report.isNativeCrash) colors.error else colors.primary
+                                    text = report.title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colors.error,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 8,
+                                    overflow = TextOverflow.Ellipsis
                                 )
-                            }
-                        }
-
-                        // Toggle debug details preview
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { showDetails = !showDetails }
-                                .padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = if (showDetails) "Hide Debug Log & Device Info" else "View Full Debug Log & Device Info",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = colors.primary
-                            )
-                            Icon(
-                                imageVector = if (showDetails) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = null,
-                                tint = colors.primary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-
-                        AnimatedVisibility(
-                            visible = showDetails,
-                            enter = fadeIn() + expandVertically(),
-                            exit = fadeOut() + shrinkVertically()
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = colors.surfaceContainerHighest.copy(alpha = 0.50f),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 200.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .verticalScroll(rememberScrollState())
-                                        .padding(10.dp)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (report.isNativeCrash) colors.error.copy(alpha = 0.15f) else colors.primary.copy(alpha = 0.15f)
                                 ) {
                                     Text(
-                                        text = report.details,
-                                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                                        color = colors.onSurfaceVariant
+                                        text = if (report.isNativeCrash) "NATIVE" else "JVM",
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (report.isNativeCrash) colors.error else colors.primary
                                     )
+                                }
+                            }
+
+                            // Toggle debug details preview
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { showDetails = !showDetails }
+                                    .padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (showDetails) "Hide Debug Log & Device Info" else "View Full Debug Log & Device Info",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = colors.primary
+                                )
+                                Icon(
+                                    imageVector = if (showDetails) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                    tint = colors.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+
+                            AnimatedVisibility(
+                                visible = showDetails,
+                                enter = fadeIn() + expandVertically(),
+                                exit = fadeOut() + shrinkVertically()
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = colors.surfaceContainerHighest.copy(alpha = 0.50f),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 200.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .verticalScroll(rememberScrollState())
+                                            .padding(10.dp)
+                                    ) {
+                                        Text(
+                                            text = report.details,
+                                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                                            color = colors.onSurfaceVariant
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                // Action buttons: Cancel and Send to GitHub Repo
+                // Action buttons: Cancel and Send to GitHub Repo (Pinned at bottom, always fully visible)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    OutlinedButton(
-                        onClick = onCancel,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(44.dp)
-                    ) {
-                        Text("Cancel", style = MaterialTheme.typography.labelLarge)
-                    }
+                    if (hazeState != null) {
+                        LiquidGlassButton(
+                            onClick = onCancel,
+                            hazeState = hazeState,
+                            shape = RoundedCornerShape(12.dp),
+                            tintColor = colors.surfaceContainerHighest.copy(alpha = 0.50f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp)
+                        ) {
+                            Text("Cancel", style = MaterialTheme.typography.labelLarge, color = colors.onSurface)
+                        }
 
-                    Button(
-                        onClick = onSend,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = colors.primary),
-                        modifier = Modifier
-                            .weight(1.4f)
-                            .height(44.dp)
-                    ) {
-                        Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Send to Repo", style = MaterialTheme.typography.labelLarge)
+                        LiquidGlassButton(
+                            onClick = onSend,
+                            hazeState = hazeState,
+                            shape = RoundedCornerShape(12.dp),
+                            tintColor = colors.primary.copy(alpha = 0.85f),
+                            modifier = Modifier
+                                .weight(1.4f)
+                                .height(44.dp)
+                        ) {
+                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, tint = colors.onPrimary, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Send to Repo", style = MaterialTheme.typography.labelLarge, color = colors.onPrimary)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = onCancel,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp)
+                        ) {
+                            Text("Cancel", style = MaterialTheme.typography.labelLarge)
+                        }
+
+                        Button(
+                            onClick = onSend,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.primary),
+                            modifier = Modifier
+                                .weight(1.4f)
+                                .height(44.dp)
+                        ) {
+                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Send to Repo", style = MaterialTheme.typography.labelLarge)
+                        }
                     }
                 }
             }

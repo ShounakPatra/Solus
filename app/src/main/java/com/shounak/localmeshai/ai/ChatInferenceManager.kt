@@ -77,6 +77,10 @@ class ChatInferenceManager(context: Context) {
     }
     private var lastToolsRequestId = ""
     fun toolsUsedForRequest(requestId: String): List<ToolUse> = if (requestId == lastToolsRequestId) lastToolsUsed else emptyList()
+    private val _toolTurnState = kotlinx.coroutines.flow.MutableStateFlow<com.shounak.localmeshai.models.state.ToolTurnState>(
+        com.shounak.localmeshai.models.state.ToolTurnState.Idle
+    )
+    val toolTurnState: kotlinx.coroutines.flow.StateFlow<com.shounak.localmeshai.models.state.ToolTurnState> = _toolTurnState.asStateFlow()
     private var liteRtToolsDisabledForLoad = false
     private var retryToolsNextTurn = false
     @Volatile private var documentSearchDocumentIds: Set<String> = emptySet()
@@ -88,7 +92,14 @@ class ChatInferenceManager(context: Context) {
     private var profileModelId: String = ""
     private fun profileSampling(): LlamaSamplingParams {
         val profile = com.shounak.localmeshai.features.WorkspacePreferences.get(context).profile(profileModelId)
-        return LlamaSamplingParams(temperature = profile.temperature ?: 0.7f, topP = profile.topP ?: 0.95f, topK = profile.topK ?: 40)
+        val appData = AppSettings.getInstance(context).settings.value
+        val maxTokens = if (appData.defaultMaxLength > 0) appData.defaultMaxLength else 1024
+        return LlamaSamplingParams(
+            temperature = profile.temperature ?: appData.defaultTemperature,
+            topP = profile.topP ?: appData.defaultTopP,
+            topK = profile.topK ?: appData.defaultTopK,
+            maxTokens = maxTokens
+        )
     }
 
     private var runtime = RuntimeKind.None
@@ -1312,7 +1323,8 @@ class ChatInferenceManager(context: Context) {
                         checkActive = {
                             if (stopRequested || isBeingClosed) throw CancellationException("Generation cancelled")
                         },
-                        onToolStart = { onProgress?.invoke(RequestProgress.UsingTools) }
+                        onToolStart = { onProgress?.invoke(RequestProgress.UsingTools) },
+                        onStateChange = { _toolTurnState.value = it }
                     ) { request ->
                         var parsed: String? = null
                         onProgress?.invoke(RequestProgress.ProcessingPrompt)

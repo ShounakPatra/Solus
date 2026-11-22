@@ -67,6 +67,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckCircle
@@ -80,6 +81,7 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
@@ -115,6 +117,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.shounak.localmeshai.models.ModelInfo
@@ -566,17 +569,52 @@ fun ModelManagerScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-        item(key = "title_header") {
+        item(key = "top_nav_bar") {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    "Model Manager",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
+                LiquidGlassButton(
+                    onClick = { onGoToChat?.invoke() },
+                    hazeState = hazeState,
+                    modifier = Modifier.size(42.dp),
+                    shape = RoundedCornerShape(21.dp),
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .height(42.dp)
+                        .glassEffect(
+                            hazeState = hazeState,
+                            shape = RoundedCornerShape(21.dp),
+                            blurRadius = 20.dp,
+                            tintColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.40f),
+                            borderAlpha = 0.35f
+                        )
+                        .padding(horizontal = 20.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Model Manager",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            letterSpacing = 0.3.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
                 LiquidGlassButton(
                     onClick = { mainViewModel.openSettings(false) },
                     hazeState = hazeState,
@@ -610,9 +648,14 @@ fun ModelManagerScreen(
         }
 
         if (!isSearching) {
+            item(key = "tiny_voca_neural_tts") {
+                com.shounak.localmeshai.ui.components.TinyVocaModelCard(hazeState = hazeState)
+            }
+
             item(key = "document_search_model") {
                 com.shounak.localmeshai.ui.components.DocumentSearchModelCard(hazeState = hazeState)
             }
+
 
             item(key = "storage_summary") {
                 // Storage usage summary
@@ -2378,6 +2421,7 @@ fun ModelItem(
 
                 var showBenchDialog by remember { mutableStateOf(false) }
                 var benchAudioInput by remember { mutableStateOf(false) }
+                var benchmarkState by remember { mutableStateOf<com.shounak.localmeshai.models.state.ModelBenchmarkState>(com.shounak.localmeshai.models.state.ModelBenchmarkState.Idle) }
                 var isRunningBench by remember { mutableStateOf(false) }
                 var isStoppingBench by remember { mutableStateOf(false) }
                 var benchProgress by remember { mutableStateOf<BenchmarkProgress?>(null) }
@@ -2387,202 +2431,369 @@ fun ModelItem(
                 val benchScope = rememberCoroutineScope()
 
                 if (showBenchDialog) {
-                    AlertDialog(
+                    val colors = MaterialTheme.colorScheme
+                    val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
+                    val titleText = if (isGguf) "CPU / GPU Performance Check" else "Performance Benchmark"
+
+                    Dialog(
                         onDismissRequest = {
                             if (!isRunningBench && !isStoppingBench) {
                                 showBenchDialog = false
                             }
                         },
-                        title = {
-                            val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
-                            Text(if (isGguf) "⚡ CPU / GPU Performance Check" else "⚡ Performance Benchmark")
-                        },
-                        text = {
-                            Column(
+                        properties = DialogProperties(usePlatformDefaultWidth = false)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            GlassDispersionCard(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .verticalScroll(rememberScrollState()),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    .wrapContentHeight()
+                                    .widthIn(max = 520.dp)
+                                    .fluidReveal(initialScale = 0.90f, initialYOffset = 16.dp)
+                                    .animatedGlassHalo(alpha = 0.08f, durationMillis = 4_800),
+                                hazeState = hazeState,
+                                cornerRadius = 24.dp,
+                                blurRadius = 32.dp,
+                                refractionStrength = 0.18f,
+                                dispersionAmount = 0.034f,
+                                tintColor = colors.surfaceContainerHigh.copy(alpha = 0.75f),
+                                borderAlpha = 0.45f,
+                                contentPadding = PaddingValues(20.dp),
+                                animatedCaustics = true
                             ) {
-                                Text("Model: ${model.name}", style = MaterialTheme.typography.titleSmall)
-                                Text("Backend: ${model.displayBackend}", style = MaterialTheme.typography.bodySmall)
-                                if (model.supportsVision && model.supportsAudio && !isRunningBench && !isStoppingBench) {
-                                    Row {
-                                        TextButton(onClick = { benchAudioInput = false; benchResult = null }) { Text(if (!benchAudioInput) "Image ✓" else "Image") }
-                                        TextButton(onClick = { benchAudioInput = true; benchResult = null }) { Text(if (benchAudioInput) "Audio ✓" else "Audio") }
-                                    }
-                                }
-
-                                if (isRunningBench || isStoppingBench) {
-                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        LinearProgressIndicator(
-                                            progress = {
-                                                val p = benchProgress
-                                                if (p != null && p.totalSteps > 0) p.currentStep.toFloat() / p.totalSteps.toFloat() else 0f
-                                            },
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-                                        Text(
-                                            if (isStoppingBench) "Stopping benchmark..." else (benchProgress?.phase ?: "Starting benchmark..."),
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                        if (!benchProgress?.detail.isNullOrBlank()) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    // Header with Bolt Icon and Title
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = colors.primary.copy(alpha = 0.18f),
+                                            modifier = Modifier.size(42.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    Icons.Default.Tune,
+                                                    contentDescription = null,
+                                                    tint = colors.primary,
+                                                    modifier = Modifier.size(24.dp)
+                                                )
+                                            }
+                                        }
+                                        Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                benchProgress!!.detail,
+                                                text = titleText,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = colors.onSurface
+                                            )
+                                            Text(
+                                                text = "${model.name} • ${model.displayBackend}",
                                                 style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                color = colors.onSurfaceVariant
                                             )
                                         }
                                     }
-                                } else if (benchError != null) {
-                                    Text(
-                                        "❌ Benchmark Error: $benchError",
-                                        color = MaterialTheme.colorScheme.error,
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                } else if (benchResult != null) {
-                                    val r = benchResult!!
-                                    val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
-                                    Text(
-                                        if (isGguf) {
-                                            if (r.qualifiesVulkan) "✅ Vulkan Qualified" else "ℹ️ CPU Preferred"
-                                        } else {
-                                            "⚡ Benchmark Completed"
-                                        },
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isGguf && r.qualifiesVulkan) MaterialTheme.colorScheme.primary else if (!isGguf) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
-                                    )
-                                    Text(r.summary, style = MaterialTheme.typography.bodySmall)
-                                    HorizontalDivider()
-                                    if (r.taskLatencyMedianMs != null) {
-                                        Text("• Warm task latency: ${r.taskLatencyMedianMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
-                                        Text("• Cold load + task: ${r.cpuColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
-                                    } else if (isGguf) {
-                                        Text("• Warm TTFT: CPU ${r.cpuWarmTtftMedianMs.toInt()} ms vs GPU ${r.vulkanWarmTtftMedianMs.toInt()} ms (${String.format(Locale.US, "%.1f", r.warmTtftImprovementPercent)}% diff)", style = MaterialTheme.typography.bodySmall)
-                                        Text("• Cold Load + First Token: CPU ${r.cpuColdLoadFtMs.toInt()} ms vs GPU ${r.vulkanColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
-                                        Text("• Sustained Decode: CPU ${String.format(Locale.US, "%.1f", r.cpuDecodeTokPerSec)} t/s vs GPU ${String.format(Locale.US, "%.1f", r.vulkanDecodeTokPerSec)} t/s", style = MaterialTheme.typography.bodySmall)
-                                        Text("• Frame Time p95: CPU ${String.format(Locale.US, "%.1f", r.cpuFrameP95Ms)} ms vs GPU ${String.format(Locale.US, "%.1f", r.vulkanFrameP95Ms)} ms", style = MaterialTheme.typography.bodySmall)
-                                    } else {
-                                        Text("• Warm TTFT: ${r.cpuWarmTtftMedianMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
-                                        Text("• Cold Load + First Token: ${r.cpuColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
-                                        Text("• Sustained Decode: ${String.format(Locale.US, "%.1f", r.cpuDecodeTokPerSec)} t/s", style = MaterialTheme.typography.bodySmall)
-                                        if (r.uiFramesMeasured) Text("• Frame Time p95: ${String.format(Locale.US, "%.1f", r.cpuFrameP95Ms)} ms", style = MaterialTheme.typography.bodySmall)
-                                    }
-                                    if (r.uiFramesMeasured) Text("• Max UI Render Stall: ${r.maxRenderStallMs} ms", style = MaterialTheme.typography.bodySmall)
-                                } else {
-                                    val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
-                                    if (model.supportsVision || model.supportsAudio || model.bundle?.capabilities?.task == com.shounak.localmeshai.models.ModelTask.ImageGeneration) {
-                                        Text("Runs one cold and three warm tasks with synthetic inputs. Measures completion latency, not output quality.", style = MaterialTheme.typography.bodySmall)
-                                    } else if (isGguf && (model.localPath != null || model.bundle != null)) {
-                                        Text(
-                                            "Runs 5 cold samples and 20 warm samples across CPU and Vulkan to verify if Vulkan improves latency by >= 10% without frame stalls or regressions.",
-                                            style = MaterialTheme.typography.bodySmall
-                                        )
-                                    } else if (model.localPath != null || model.bundle != null) {
-                                        Text(
-                                            "Runs cold load and warm prompt evaluations to measure Time to First Token (TTFT), sustained decode throughput (t/s), and UI frame smoothness.",
-                                            style = MaterialTheme.typography.bodySmall
-                                        )
-                                    } else {
-                                        Text(
-                                            "Status: ${model.status}\nContext: ${model.contextWindowTokens ?: 2048} tokens",
-                                            style = MaterialTheme.typography.bodySmall
-                                        )
-                                    }
-                                }
-                            }
-                        },
-                        confirmButton = {
-                            if (isRunningBench || isStoppingBench) {
-                                TextButton(
-                                    enabled = !isStoppingBench,
-                                    onClick = {
-                                        isStoppingBench = true
-                                        benchJob?.cancel()
-                                    }
-                                ) {
-                                    Text(if (isStoppingBench) "Stopping..." else "Cancel")
-                                }
-                            } else {
-                                if (benchResult == null && (model.localPath != null || model.bundle != null)) {
-                                    TextButton(
-                                        enabled = !isRunningBench && !isStoppingBench && benchJob?.isActive != true,
-                                        onClick = {
-                                            isRunningBench = true
-                                            benchResult = null
-                                            benchError = null
-                                            benchJob = benchScope.launch {
-                                                try {
-                                                    val isGguf = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
-                                                    val res = if (model.supportsVision || model.supportsAudio || model.bundle?.capabilities?.task == com.shounak.localmeshai.models.ModelTask.ImageGeneration) {
-                                                        com.shounak.localmeshai.ai.MediaBenchmarkRunner.run(context, model, { p -> benchProgress = p }, useAudio = benchAudioInput)
-                                                    } else if (isGguf) {
-                                                        if (model.bundle != null) {
-                                                            GgufBenchmarkRunner.runBenchmark(
-                                                                context = context,
-                                                                bundle = model.bundle,
-                                                                onProgress = { p -> benchProgress = p }
-                                                            )
-                                                        } else {
-                                                            val localPath = model.localPath ?: return@launch
-                                                            val sha = GgufGpuValidator.resolveModelSha256(
-                                                                modelPath = localPath,
-                                                                modelId = model.id,
-                                                                context = context
-                                                            )
-                                                            GgufBenchmarkRunner.runBenchmark(
-                                                                context = context,
-                                                                modelPath = localPath,
-                                                                modelSha256 = sha,
-                                                                onProgress = { p -> benchProgress = p }
-                                                            )
-                                                        }
-                                                    } else {
-                                                        NonGgufBenchmarkRunner.runBenchmark(
-                                                            context = context,
-                                                            modelPath = model.localPath ?: model.bundle?.mainArtifacts?.firstOrNull()?.source?.location ?: "",
-                                                            modelId = model.id,
-                                                            onProgress = { p -> benchProgress = p }
-                                                        )
-                                                    }
-                                                    benchResult = res
-                                                } catch (t: Throwable) {
-                                                    if (t !is CancellationException) {
-                                                        Log.e("ModelManagerScreen", "Benchmark failed", t)
-                                                        benchError = t.message ?: "Benchmark failed: ${t.javaClass.simpleName}"
-                                                    }
-                                                } finally {
-                                                    isRunningBench = false
-                                                    isStoppingBench = false
-                                                    benchProgress = null
+
+                                    // Scrollable content area
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 380.dp)
+                                            .verticalScroll(rememberScrollState()),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        if (model.supportsVision && model.supportsAudio && !isRunningBench && !isStoppingBench) {
+                                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                LiquidGlassButton(
+                                                    onClick = { benchAudioInput = false; benchResult = null },
+                                                    hazeState = hazeState,
+                                                    modifier = Modifier.height(34.dp),
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    tintColor = if (!benchAudioInput) colors.primary.copy(alpha = 0.30f) else colors.surfaceContainerHighest,
+                                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                                ) {
+                                                    Text(if (!benchAudioInput) "Image ✓" else "Image", style = MaterialTheme.typography.labelMedium)
+                                                }
+                                                LiquidGlassButton(
+                                                    onClick = { benchAudioInput = true; benchResult = null },
+                                                    hazeState = hazeState,
+                                                    modifier = Modifier.height(34.dp),
+                                                    shape = RoundedCornerShape(10.dp),
+                                                    tintColor = if (benchAudioInput) colors.primary.copy(alpha = 0.30f) else colors.surfaceContainerHighest,
+                                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+                                                ) {
+                                                    Text(if (benchAudioInput) "Audio ✓" else "Audio", style = MaterialTheme.typography.labelMedium)
                                                 }
                                             }
                                         }
+
+                                        if (isRunningBench || isStoppingBench) {
+                                            Surface(
+                                                shape = RoundedCornerShape(14.dp),
+                                                color = colors.surfaceContainerLow.copy(alpha = 0.60f),
+                                                border = BorderStroke(0.8.dp, colors.outlineVariant.copy(alpha = 0.40f)),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                    LinearProgressIndicator(
+                                                        progress = {
+                                                            val p = benchProgress
+                                                            if (p != null && p.totalSteps > 0) p.currentStep.toFloat() / p.totalSteps.toFloat() else 0f
+                                                        },
+                                                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp))
+                                                    )
+                                                    Text(
+                                                        if (isStoppingBench) "Stopping benchmark..." else (benchProgress?.phase ?: "Starting benchmark..."),
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = colors.onSurface
+                                                    )
+                                                    if (!benchProgress?.detail.isNullOrBlank()) {
+                                                        Text(
+                                                            benchProgress!!.detail,
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = colors.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        } else if (benchError != null) {
+                                            Surface(
+                                                shape = RoundedCornerShape(14.dp),
+                                                color = colors.error.copy(alpha = 0.12f),
+                                                border = BorderStroke(0.8.dp, colors.error.copy(alpha = 0.40f)),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text(
+                                                    "❌ Benchmark Error: $benchError",
+                                                    color = colors.error,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    modifier = Modifier.padding(12.dp)
+                                                )
+                                            }
+                                        } else if (benchResult != null) {
+                                            val r = benchResult!!
+                                            Surface(
+                                                shape = RoundedCornerShape(14.dp),
+                                                color = colors.surfaceContainerLow.copy(alpha = 0.60f),
+                                                border = BorderStroke(0.8.dp, colors.outlineVariant.copy(alpha = 0.40f)),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    Text(
+                                                        if (isGguf) {
+                                                            if (r.qualifiesVulkan) "✅ Vulkan Qualified" else "ℹ️ CPU Preferred"
+                                                        } else {
+                                                            "⚡ Benchmark Completed"
+                                                        },
+                                                        style = MaterialTheme.typography.titleMedium,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (isGguf && r.qualifiesVulkan) colors.primary else if (!isGguf) colors.primary else colors.tertiary
+                                                    )
+                                                    Text(r.summary, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                                    HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.35f))
+                                                    if (r.taskLatencyMedianMs != null) {
+                                                        Text("• Warm task latency: ${r.taskLatencyMedianMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+                                                        Text("• Cold load + task: ${r.cpuColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+                                                    } else if (isGguf) {
+                                                        Text("• Warm TTFT: CPU ${r.cpuWarmTtftMedianMs.toInt()} ms vs GPU ${r.vulkanWarmTtftMedianMs.toInt()} ms (${String.format(Locale.US, "%.1f", r.warmTtftImprovementPercent)}% diff)", style = MaterialTheme.typography.bodySmall)
+                                                        Text("• Cold Load + First Token: CPU ${r.cpuColdLoadFtMs.toInt()} ms vs GPU ${r.vulkanColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+                                                        Text("• Sustained Decode: CPU ${String.format(Locale.US, "%.1f", r.cpuDecodeTokPerSec)} t/s vs GPU ${String.format(Locale.US, "%.1f", r.vulkanDecodeTokPerSec)} t/s", style = MaterialTheme.typography.bodySmall)
+                                                        Text("• Frame Time p95: CPU ${String.format(Locale.US, "%.1f", r.cpuFrameP95Ms)} ms vs GPU ${String.format(Locale.US, "%.1f", r.vulkanFrameP95Ms)} ms", style = MaterialTheme.typography.bodySmall)
+                                                    } else {
+                                                        Text("• Warm TTFT: ${r.cpuWarmTtftMedianMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+                                                        Text("• Cold Load + First Token: ${r.cpuColdLoadFtMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+                                                        Text("• Sustained Decode: ${String.format(Locale.US, "%.1f", r.cpuDecodeTokPerSec)} t/s", style = MaterialTheme.typography.bodySmall)
+                                                        if (r.uiFramesMeasured) Text("• Frame Time p95: ${String.format(Locale.US, "%.1f", r.cpuFrameP95Ms)} ms", style = MaterialTheme.typography.bodySmall)
+                                                    }
+                                                    if (r.uiFramesMeasured) Text("• Max UI Render Stall: ${r.maxRenderStallMs} ms", style = MaterialTheme.typography.bodySmall)
+                                                }
+                                            }
+                                        } else {
+                                            Surface(
+                                                shape = RoundedCornerShape(14.dp),
+                                                color = colors.surfaceContainerLow.copy(alpha = 0.50f),
+                                                border = BorderStroke(0.8.dp, colors.outlineVariant.copy(alpha = 0.35f)),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Column(modifier = Modifier.padding(12.dp)) {
+                                                    if (model.supportsVision || model.supportsAudio || model.bundle?.capabilities?.task == com.shounak.localmeshai.models.ModelTask.ImageGeneration) {
+                                                        Text("Runs one cold and three warm tasks with synthetic inputs. Measures completion latency, not output quality.", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                                    } else if (isGguf && (model.localPath != null || model.bundle != null)) {
+                                                        Text(
+                                                            "Runs 5 cold samples and 20 warm samples across CPU and Vulkan to verify if Vulkan improves latency by >= 10% without frame stalls or regressions.",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = colors.onSurfaceVariant
+                                                        )
+                                                    } else if (model.localPath != null || model.bundle != null) {
+                                                        Text(
+                                                            "Runs cold load and warm prompt evaluations to measure Time to First Token (TTFT), sustained decode throughput (t/s), and UI frame smoothness.",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = colors.onSurfaceVariant
+                                                        )
+                                                    } else {
+                                                        Text(
+                                                            "Status: ${model.status}\nContext: ${model.contextWindowTokens ?: 2048} tokens",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = colors.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Action buttons with LiquidGlassButton
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text("Run Check")
+                                        if (isRunningBench || isStoppingBench) {
+                                            LiquidGlassButton(
+                                                enabled = !isStoppingBench,
+                                                onClick = {
+                                                    isStoppingBench = true
+                                                    benchJob?.cancel()
+                                                },
+                                                hazeState = hazeState,
+                                                shape = RoundedCornerShape(12.dp),
+                                                tintColor = colors.error.copy(alpha = 0.35f),
+                                                modifier = Modifier.height(42.dp),
+                                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
+                                            ) {
+                                                Text(if (isStoppingBench) "Stopping..." else "Cancel", style = MaterialTheme.typography.labelLarge)
+                                            }
+                                        } else {
+                                            if (benchResult != null) {
+                                                LiquidGlassButton(
+                                                    onClick = {
+                                                        benchResult = null
+                                                        benchError = null
+                                                    },
+                                                    hazeState = hazeState,
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    tintColor = colors.surfaceContainerHighest,
+                                                    modifier = Modifier.height(42.dp),
+                                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
+                                                ) {
+                                                    Text("Re-test", style = MaterialTheme.typography.labelLarge)
+                                                }
+                                            }
+
+                                            if (benchResult == null && (model.localPath != null || model.bundle != null)) {
+                                                LiquidGlassButton(
+                                                    enabled = !isRunningBench && !isStoppingBench && benchJob?.isActive != true,
+                                                    onClick = {
+                                                        isRunningBench = true
+                                                        benchmarkState = com.shounak.localmeshai.models.state.ModelBenchmarkState.Preparing(model.id, "")
+                                                        benchResult = null
+                                                        benchError = null
+                                                        benchJob = benchScope.launch {
+                                                            try {
+                                                                benchmarkState = com.shounak.localmeshai.models.state.ModelBenchmarkState.Running(model.id, 0, 1)
+                                                                val isGgufBench = (model.bundle?.isGguf ?: ChatRuntimePolicy.isGgufModel(model.fileName)) && !model.supportsVision && !model.supportsAudio
+                                                                val res = if (model.supportsVision || model.supportsAudio || model.bundle?.capabilities?.task == com.shounak.localmeshai.models.ModelTask.ImageGeneration) {
+                                                                    com.shounak.localmeshai.ai.MediaBenchmarkRunner.run(context, model, { p -> benchProgress = p }, useAudio = benchAudioInput)
+                                                                } else if (isGgufBench) {
+                                                                    if (model.bundle != null) {
+                                                                        GgufBenchmarkRunner.runBenchmark(
+                                                                            context = context,
+                                                                            bundle = model.bundle,
+                                                                            onProgress = { p -> benchProgress = p }
+                                                                        )
+                                                                    } else {
+                                                                        val localPath = model.localPath ?: return@launch
+                                                                        val sha = GgufGpuValidator.resolveModelSha256(
+                                                                            modelPath = localPath,
+                                                                            modelId = model.id,
+                                                                            context = context
+                                                                        )
+                                                                        GgufBenchmarkRunner.runBenchmark(
+                                                                            context = context,
+                                                                            modelPath = localPath,
+                                                                            modelSha256 = sha,
+                                                                            onProgress = { p -> benchProgress = p }
+                                                                        )
+                                                                    }
+                                                                } else {
+                                                                    NonGgufBenchmarkRunner.runBenchmark(
+                                                                        context = context,
+                                                                        modelPath = model.localPath ?: model.bundle?.mainArtifacts?.firstOrNull()?.source?.location ?: "",
+                                                                        modelId = model.id,
+                                                                        onProgress = { p -> benchProgress = p }
+                                                                    )
+                                                                }
+                                                                benchResult = res
+                                                                benchmarkState = com.shounak.localmeshai.models.state.ModelBenchmarkState.Completed(
+                                                                    modelId = model.id,
+                                                                    summary = res.summary
+                                                                )
+                                                            } catch (t: Throwable) {
+                                                                if (t !is CancellationException) {
+                                                                    Log.e("ModelManagerScreen", "Benchmark failed", t)
+                                                                    benchError = t.message ?: "Benchmark failed: ${t.javaClass.simpleName}"
+                                                                    benchmarkState = com.shounak.localmeshai.models.state.ModelBenchmarkState.Failed(
+                                                                        modelId = model.id,
+                                                                        errorMessage = benchError ?: "Unknown error"
+                                                                    )
+                                                                }
+                                                            } finally {
+                                                                isRunningBench = false
+                                                                isStoppingBench = false
+                                                                benchProgress = null
+                                                                benchmarkState = com.shounak.localmeshai.models.state.ModelBenchmarkState.Idle
+                                                            }
+                                                        }
+                                                    },
+                                                    hazeState = hazeState,
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    tintColor = colors.primary.copy(alpha = 0.35f),
+                                                    modifier = Modifier.height(42.dp),
+                                                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.PlayArrow,
+                                                        contentDescription = null,
+                                                        tint = colors.primary,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(
+                                                        "Run Check",
+                                                        style = MaterialTheme.typography.labelLarge,
+                                                        color = Color.White,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                            }
+
+                                            LiquidGlassButton(
+                                                onClick = { showBenchDialog = false },
+                                                hazeState = hazeState,
+                                                shape = RoundedCornerShape(12.dp),
+                                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.45f),
+                                                modifier = Modifier.height(42.dp),
+                                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
+                                            ) {
+                                                Text("Close", style = MaterialTheme.typography.labelLarge, color = colors.onSurface)
+                                            }
+                                        }
                                     }
-                                } else {
-                                    TextButton(onClick = { showBenchDialog = false }) {
-                                        Text("Close")
-                                    }
-                                }
-                            }
-                        },
-                        dismissButton = {
-                            if (!isRunningBench && !isStoppingBench && benchResult != null) {
-                                TextButton(
-                                    onClick = {
-                                        benchResult = null
-                                        benchError = null
-                                    }
-                                ) {
-                                    Text("Re-test")
                                 }
                             }
                         }
-                    )
+                    }
                 }
 
                 if (model.status == ModelStatus.Available) {

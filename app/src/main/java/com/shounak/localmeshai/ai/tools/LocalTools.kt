@@ -19,6 +19,7 @@ internal object LocalTools {
         documentIds: () -> Set<String> = { emptySet() }, isCancelled: () -> Boolean): List<ChatTool> = buildList {
         if ("calculator" in settings.skills) add(CalculatorTool())
         if ("get_current_datetime" in settings.skills) add(CurrentDateTimeTool())
+        if ("web_search" in settings.skills) add(WebSearchTool(context, isCancelled))
         if (settings.documentSearch && "search_documents" in settings.skills) {
             add(DocumentSearchTool(isCancelled = isCancelled) search@ { query ->
                 val scope = documentIds().toSet()

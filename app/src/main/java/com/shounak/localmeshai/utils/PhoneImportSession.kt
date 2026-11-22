@@ -40,6 +40,9 @@ internal class PhoneImportSession(
     private var currentDraftResult: LocalModelImporter.ImportResult? = null
     private var currentDraftUris = emptySet<String>()
 
+    var sessionState: com.shounak.localmeshai.models.state.PhoneImportSessionState = com.shounak.localmeshai.models.state.PhoneImportSessionState.Idle
+        private set
+
     var isInspecting: Boolean = false
         private set
 
@@ -63,6 +66,7 @@ internal class PhoneImportSession(
      */
     suspend fun startTeardown() = mutex.withLock {
         isTeardownStarted = true
+        sessionState = com.shounak.localmeshai.models.state.PhoneImportSessionState.TeardownPending(currentDraftResult)
     }
 
     /**
@@ -71,6 +75,7 @@ internal class PhoneImportSession(
     suspend fun startInspection(): Boolean = mutex.withLock {
         if (isInspecting || isRegistering || isDisposed || isTeardownStarted) return false
         isInspecting = true
+        sessionState = com.shounak.localmeshai.models.state.PhoneImportSessionState.Inspecting()
         return true
     }
 
@@ -106,6 +111,7 @@ internal class PhoneImportSession(
                 currentDraftResult = draft
                 replaceGrantsInternal(uris)
                 currentDraftUris = uris
+                sessionState = com.shounak.localmeshai.models.state.PhoneImportSessionState.DraftReady(draft, uris)
             }
         }
         if (oldDraftToClean != null) {
@@ -157,6 +163,7 @@ internal class PhoneImportSession(
                 currentDraftResult = draft
                 replaceGrantsInternal(uris)
                 currentDraftUris = uris
+                sessionState = com.shounak.localmeshai.models.state.PhoneImportSessionState.DraftReady(draft, uris)
             }
         }
         if (oldDraftToClean != null) {
@@ -322,6 +329,7 @@ internal class PhoneImportSession(
             isDisposed = true
             isTeardownStarted = true
             isInspecting = false
+            sessionState = com.shounak.localmeshai.models.state.PhoneImportSessionState.Disposed
             if (isRegistering) {
                 // Defer cleanup while registration remains active
                 return

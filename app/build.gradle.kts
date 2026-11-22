@@ -18,6 +18,16 @@ val nativeSourceDigest = MessageDigest.getInstance("SHA-256").apply {
             update(source.relativeTo(projectDir).invariantSeparatorsPath.toByteArray())
             update(source.readBytes())
         }
+    fileTree("../solus-core-logic/rust/solus-rag-rs") { include("src/**/*.rs", "Cargo.toml", "Cargo.lock") }
+        .files.sortedBy { it.relativeTo(projectDir).invariantSeparatorsPath }.forEach { source ->
+            update(source.relativeTo(projectDir).invariantSeparatorsPath.toByteArray())
+            update(source.readBytes())
+        }
+    fileTree("../solus-ai-logic/rust/solus-ai-rs") { include("src/**/*.rs", "Cargo.toml", "Cargo.lock") }
+        .files.sortedBy { it.relativeTo(projectDir).invariantSeparatorsPath }.forEach { source ->
+            update(source.relativeTo(projectDir).invariantSeparatorsPath.toByteArray())
+            update(source.readBytes())
+        }
     fileTree("src/main/cpp") {
         include(
             "**/*.c", "**/*.cpp", "**/*.h", "**/*.hpp",
@@ -147,6 +157,11 @@ android {
     }
 
     packaging {
+        resources {
+            excludes += listOf(
+                "org/bouncycastle/pqc/**"
+            )
+        }
         jniLibs {
             useLegacyPackaging = true
             excludes += listOf(

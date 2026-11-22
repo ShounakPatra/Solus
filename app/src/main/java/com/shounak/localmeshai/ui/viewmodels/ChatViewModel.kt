@@ -26,6 +26,7 @@ import com.shounak.localmeshai.models.ModelBundle
 import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.ai.ModelActualConfiguration
 import com.shounak.localmeshai.ai.GgufExecutionProfile
+import com.shounak.localmeshai.models.state.InferenceSessionState
 import com.shounak.localmeshai.utils.DeviceUtils
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -186,6 +187,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isModelReady = MutableStateFlow(false)
     val isModelReady = _isModelReady.asStateFlow()
+
+    private val _sessionState = MutableStateFlow<InferenceSessionState>(InferenceSessionState.Idle())
+    val sessionState: StateFlow<InferenceSessionState> = _sessionState.asStateFlow()
+    val toolTurnState: StateFlow<com.shounak.localmeshai.models.state.ToolTurnState> = inferenceManager.toolTurnState
 
     private val _error = MutableStateFlow<String?>(null)
     val error = _error.asStateFlow()
@@ -470,33 +475,60 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         publishRuntimeCapabilities()
                         _isInitializing.value = false
                         _isModelReady.value = inferenceManager.isReady
+                        _sessionState.value = InferenceSessionState.Ready(
+                            modelId = currentModelId,
+                            backendDisplayName = _activeBackend.value ?: "",
+                            configuration = state.actualConfiguration
+                        )
                     }
                     is ModelLoadState.Loading -> {
                         _isInitializing.value = true
                         _runtimeCapabilities.value = null
                         _isModelReady.value = false
+                        _sessionState.value = InferenceSessionState.Preparing(
+                            modelId = currentModelId,
+                            stage = state.stage,
+                            progressFraction = state.progressFraction,
+                            elapsedMs = state.elapsedMs
+                        )
                     }
                     is ModelLoadState.Stopping -> {
                         _isInitializing.value = true
                         _runtimeCapabilities.value = null
                         _isModelReady.value = false
+                        _sessionState.value = InferenceSessionState.Stopping(
+                            modelId = currentModelId,
+                            requestId = activeRequestId ?: "",
+                            targetState = "unloaded"
+                        )
                     }
                     is ModelLoadState.Failed -> {
                         _isInitializing.value = false
                         _runtimeCapabilities.value = null
                         _isModelReady.value = false
                         _error.value = state.typedError
+                        _sessionState.value = InferenceSessionState.Failed(
+                            modelId = currentModelId,
+                            reason = state.reason,
+                            canRetry = true
+                        )
                     }
                     is ModelLoadState.ShutdownStalled -> {
                         _isInitializing.value = false
                         _runtimeCapabilities.value = null
                         _isModelReady.value = false
                         _error.value = "Native runtime shutdown stalled. Please restart the app."
+                        _sessionState.value = InferenceSessionState.Failed(
+                            modelId = currentModelId,
+                            reason = com.shounak.localmeshai.ai.ModelLoadFailureReason.StalledShutdown(30_000L),
+                            canRetry = false
+                        )
                     }
                     is ModelLoadState.Unloaded -> {
                         _isInitializing.value = false
                         _runtimeCapabilities.value = null
                         _isModelReady.value = false
+                        _sessionState.value = InferenceSessionState.Idle()
                     }
                 }
             }
@@ -750,6 +782,57 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setThinkingMode(enabled: Boolean) {
         _thinkingMode.value = enabled
+    }
+
+    fun compactCurrentChat(onComplete: ((Boolean, String) -> Unit)? = null) {
+        if (_isGenerating.value || _isStopping.value || _isInitializing.value) {
+            onComplete?.invoke(false, "Cannot compact while generating.")
+            return
+        }
+        val currentMessages = messages.toList()
+        if (currentMessages.size < 2) {
+            onComplete?.invoke(false, "Chat is too short to compact.")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val keepCount = if (currentMessages.size > 2) 2 else 1
+                val olderMessages = currentMessages.dropLast(keepCount)
+                val recentMessages = currentMessages.takeLast(keepCount)
+
+                val summaryLines = mutableListOf<String>()
+                for (msg in olderMessages) {
+                    val role = if (msg.isUser) "User" else "Assistant"
+                    val clean = msg.text.trim().take(180).replace("\n", " ")
+                    if (clean.isNotBlank()) {
+                        summaryLines.add("• $role: $clean")
+                    }
+                }
+
+                val summaryContent = if (summaryLines.isNotEmpty()) {
+                    "📋 **Compacted Conversation Summary:**\n" + summaryLines.joinToString("\n")
+                } else {
+                    "📋 **Compacted Conversation Summary:** Previous conversation context summarized to save memory."
+                }
+
+                val summaryMessage = ChatMessage(
+                    id = java.util.UUID.randomUUID().toString(),
+                    text = summaryContent,
+                    isUser = false
+                )
+
+                withContext(Dispatchers.Main.immediate) {
+                    messages.clear()
+                    messages.add(summaryMessage)
+                    messages.addAll(recentMessages)
+                    saveCurrentSession()
+                }
+                onComplete?.invoke(true, "Chat compacted successfully.")
+            } catch (e: Exception) {
+                onComplete?.invoke(false, "Failed to compact chat: ${e.message}")
+            }
+        }
     }
 
     fun setDraftText(text: String) {
@@ -1133,6 +1216,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         val timing = InferenceTiming()
         _isGenerating.value = true
+        _sessionState.value = InferenceSessionState.Generating(
+            modelId = currentModelId,
+            requestId = requestId,
+            tokensPerSecond = _tokensPerSecond.value,
+            isThinking = _thinkingMode.value
+        )
         autoUnloadJob?.cancel()
         val canRepair = !_temporaryChat.value && appSettings.settings.value.enableRag
         val documentPlan = com.shounak.localmeshai.rag.TurnDocumentPlanner.plan(
@@ -1629,6 +1718,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     generationJob = null
                     _isGenerating.value = false
                     _isStopping.value = false
+                    _sessionState.value = if (_isModelReady.value) {
+                        InferenceSessionState.Ready(modelId = currentModelId, backendDisplayName = _activeBackend.value ?: "")
+                    } else {
+                        InferenceSessionState.Idle()
+                    }
                     resetAutoUnloadTimer()
                 }
             }
@@ -1659,6 +1753,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (!wasGenerating) return
         _isStopping.value = true
+        _sessionState.value = InferenceSessionState.Stopping(
+            modelId = currentModelId,
+            requestId = activeRequestId ?: ""
+        )
         val jobToCancel = generationJob
         generationJob = null
         jobToCancel?.cancel()
@@ -2179,6 +2277,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         generationJob = null
         jobToCancel?.cancel()
         inferenceManager.cancelGeneration()
+        modelLoadController.clearReadiness(null)
         initGeneration++
         val releaseGeneration = initGeneration
         val releasedOperationId = modelLoadController.activeOperationId
@@ -2198,7 +2297,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
-            if (initGeneration != releaseGeneration) return@launch
             currentModelEpoch++
             withContext(Dispatchers.Main.immediate) {
                 activeRequestId = null
@@ -2209,36 +2307,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 res
             }
             lastShutdownResult = closeResult
-            if (closeResult.isSuccess) {
-                if (clearCoordinator) ModelRuntimeCoordinator.clear(ModelRuntimeOwner.Chat)
+            if (clearCoordinator) {
+                ModelRuntimeCoordinator.clear(ModelRuntimeOwner.Chat)
             }
             withContext(Dispatchers.Main.immediate) {
-                if (initGeneration != releaseGeneration) return@withContext
-                if (closeResult.isSuccess) {
-                    currentRequestedIdentity = null
-                    currentLoadedIdentity = null
-                    currentResolvedThinkingCapability = ThinkingCapability.Unknown
-                    if (pendingClearSelection) {
-                        pendingClearSelection = false
-                        currentModelPath = null
-                        currentBundle = null
-                        currentModelId = ""
-                        currentModelName = ""
-                        currentModelSize = ""
-                        currentAllowUnsafeOverride = false
-                    }
-                    _isInitializing.value = false
-                    _isGenerating.value = false
-                    _isStopping.value = false
-                    _runtimeCapabilities.value = null
-                    _isModelReady.value = false
-                    releasedOperationId?.let { modelLoadController.resetToUnloaded(targetOperationId = it) }
-                } else {
-                    _isInitializing.value = false
-                    _isStopping.value = false
-                    _isModelReady.value = inferenceManager.isReady
-                    _error.value = "Failed to cleanly unload chat model: ${if (closeResult is com.shounak.localmeshai.ai.ShutdownResult.Failed) (closeResult.error.message ?: closeResult.error.toString()) else "Timeout"}"
+                currentRequestedIdentity = null
+                currentLoadedIdentity = null
+                currentResolvedThinkingCapability = ThinkingCapability.Unknown
+                if (pendingClearSelection) {
+                    pendingClearSelection = false
+                    currentModelPath = null
+                    currentBundle = null
+                    currentModelId = ""
+                    currentModelName = ""
+                    currentModelSize = ""
+                    currentAllowUnsafeOverride = false
                 }
+                _isGenerating.value = false
+                _isStopping.value = false
+                _runtimeCapabilities.value = null
+                _isModelReady.value = false
+                modelLoadController.clearReadiness(null)
+                releasedOperationId?.let { modelLoadController.resetToUnloaded(targetOperationId = it) }
             }
         }
         lastLoadedBackendPreference = null
