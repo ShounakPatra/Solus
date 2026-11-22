@@ -40,4 +40,59 @@ class TinyVocaManagerTest {
         val cleaned = TinyVocaManager.cleanTextForSpeech(input)
         assertTrue(cleaned.isBlank())
     }
+
+    @Test
+    fun testEstimateSyllables() {
+        assertEquals(1, TinyVocaManager.estimateSyllables("a"))
+        assertEquals(1, TinyVocaManager.estimateSyllables("is"))
+        assertEquals(2, TinyVocaManager.estimateSyllables("Gemma"))
+        assertEquals(2, TinyVocaManager.estimateSyllables("Model"))
+        assertEquals(3, TinyVocaManager.estimateSyllables("developed"))
+        assertEquals(4, TinyVocaManager.estimateSyllables("concentration"))
+        assertEquals(8, TinyVocaManager.estimateSyllables("internationalization"))
+    }
+
+    @Test
+    fun testCalculateTokenDelay_dynamicScaling_fromOneToInfiniteLetters() {
+        val words = listOf(
+            "a",                      // 1 letter
+            "is",                     // 2 letters
+            "model",                  // 5 letters
+            "developed",              // 9 letters
+            "concentration",          // 13 letters
+            "internationalization",   // 20 letters
+            "pneumonoultramicroscopicsilicovolcanoconiosis" // 45 letters
+        )
+
+        val delays = words.mapIndexed { idx, word ->
+            TinyVocaManager.calculateTokenDelay(SpokenWordToken(idx, word, 0, word.length), 1.0f)
+        }
+
+        // Each longer word must take strictly more time than shorter words
+        for (i in 0 until delays.size - 1) {
+            assertTrue("Word '${words[i+1]}' (${delays[i+1]}ms) must be longer than '${words[i]}' (${delays[i]}ms)",
+                delays[i + 1] > delays[i])
+        }
+
+        // "concentration" should take more than 3x the duration of "is"
+        assertTrue(delays[4] > delays[1] * 3)
+    }
+
+    @Test
+    fun testCalculateTokenDelay_proportionalSpeedScaling() {
+        val token = SpokenWordToken(0, "concentration", 0, 13)
+
+        val delay100 = TinyVocaManager.calculateTokenDelay(token, 1.0f)
+        val delay125 = TinyVocaManager.calculateTokenDelay(token, 1.25f)
+        val delay150 = TinyVocaManager.calculateTokenDelay(token, 1.5f)
+
+        assertTrue(delay100 > delay125)
+        assertTrue(delay125 > delay150)
+
+        // Check proportionality within 5% tolerance
+        val ratio125 = delay100.toDouble() / delay125.toDouble()
+        val ratio150 = delay100.toDouble() / delay150.toDouble()
+        assertTrue(kotlin.math.abs(ratio125 - 1.25) < 0.1)
+        assertTrue(kotlin.math.abs(ratio150 - 1.5) < 0.1)
+    }
 }

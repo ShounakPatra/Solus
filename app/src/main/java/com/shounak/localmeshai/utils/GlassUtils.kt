@@ -63,6 +63,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.PopupProperties
@@ -606,6 +607,7 @@ fun GlassDropdownMenu(
     onDismissRequest: () -> Unit,
     hazeState: HazeState? = null,
     modifier: Modifier = Modifier,
+    offset: DpOffset = DpOffset(0.dp, 0.dp),
     properties: PopupProperties = PopupProperties(focusable = false),
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -654,6 +656,7 @@ fun GlassDropdownMenu(
         containerColor = Color.Transparent,
         tonalElevation = 0.dp,
         shadowElevation = 14.dp,
+        offset = offset,
         properties = properties,
         border = BorderStroke(
             0.8.dp,

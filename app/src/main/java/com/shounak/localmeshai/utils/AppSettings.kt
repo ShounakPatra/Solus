@@ -48,7 +48,7 @@ data class AppSettingsData(
     val readEveryAnswerAloud: Boolean = false,
     val ttsVoice: String = "F2", // "F2" (Female) or "M2" (Male)
     val ttsSpeed: Float = 1.0f, // 1.0x, 1.25x, 1.5x
-    val enableVoiceLiveHighlight: Boolean = true,
+    val enableVoiceLiveHighlight: Boolean = false,
     // Automatic Chat Backup
     val enableAutoChatBackup: Boolean = true
 )
@@ -107,7 +107,7 @@ class AppSettings internal constructor(
             readEveryAnswerAloud = prefs.getBoolean(KEY_READ_EVERY_ANSWER_ALOUD, false),
             ttsVoice = prefs.getString(KEY_TTS_VOICE, "F2") ?: "F2",
             ttsSpeed = prefs.getFloat(KEY_TTS_SPEED, 1.0f),
-            enableVoiceLiveHighlight = prefs.getBoolean(KEY_ENABLE_VOICE_LIVE_HIGHLIGHT, true),
+            enableVoiceLiveHighlight = prefs.getBoolean(KEY_ENABLE_VOICE_LIVE_HIGHLIGHT, false),
             enableAutoChatBackup = prefs.getBoolean(KEY_ENABLE_AUTO_CHAT_BACKUP, true)
         )
     }

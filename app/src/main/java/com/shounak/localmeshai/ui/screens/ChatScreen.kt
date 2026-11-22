@@ -2077,7 +2077,7 @@ fun ChatScreen(
                         },
                         canCompact = activeMessageCount >= 2 && !isBusyWithInference,
                         hazeState = hazeState,
-                        centerContent = if (selectedModelPath != null && appSettingsData.enableTelemetryBar) {
+                        centerContent = if (appSettingsData.enableTelemetryBar) {
                             {
                                 InferenceTelemetryBar(
                                     tokensPerSecond = effectiveTokensPerSecond,
@@ -3371,12 +3371,13 @@ private fun ComposerModelPicker(
     hazeState: HazeState
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var lastDismissTime by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
     var blockedModelForDetails by remember { mutableStateOf<ModelInfo?>(null) }
     var failedModelForDetails by remember { mutableStateOf<ModelInfo?>(null) }
     val selected = models.firstOrNull { it.id == selectedPath || it.localPath == selectedPath }
     val selectedName = selected?.name ?: "Select model"
     val configuration = LocalConfiguration.current
-    val popupWidth = minOf(300.dp, (configuration.screenWidthDp.dp - 32.dp).coerceAtLeast(1.dp))
+    val popupWidth = minOf(255.dp, (configuration.screenWidthDp.dp - 48.dp).coerceAtLeast(200.dp))
     val popupHeight = minOf(420.dp, configuration.screenHeightDp.dp / 2)
 
     val arrowRotation by animateFloatAsState(
@@ -3391,7 +3392,10 @@ private fun ComposerModelPicker(
     Box(modifier = modifier) {
         LiquidGlassButton(
             onClick = {
-                expanded = !expanded
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - lastDismissTime > 250L) {
+                    expanded = !expanded
+                }
             },
             hazeState = hazeState,
             modifier = Modifier
@@ -3437,8 +3441,12 @@ private fun ComposerModelPicker(
 
         GlassDropdownMenu(
             expanded = expanded,
-            onDismissRequest = { expanded = false },
+            onDismissRequest = {
+                expanded = false
+                lastDismissTime = android.os.SystemClock.uptimeMillis()
+            },
             hazeState = hazeState,
+            offset = androidx.compose.ui.unit.DpOffset(0.dp, (-4).dp),
             modifier = Modifier
                 .width(popupWidth)
                 .heightIn(max = popupHeight)
@@ -4018,11 +4026,10 @@ private fun EmptyState(title: String, subtitle: String, hazeState: HazeState, to
     GlassDispersionCard(
         hazeState = hazeState,
         modifier = Modifier
+            .padding(horizontal = 16.dp)
             .fillMaxWidth()
             .heightIn(min = 230.dp)
-            .fluidReveal(delayMillis = 70, initialYOffset = 16.dp)
-            .animatedGlassHalo(shape = RoundedCornerShape(28.dp), alpha = 0.04f, durationMillis = 4_900)
-            .padding(horizontal = 16.dp),
+            .fluidReveal(delayMillis = 70, initialYOffset = 16.dp),
         cornerRadius = 28.dp,
         tintColor = cardTint,
         animatedCaustics = true
@@ -4897,6 +4904,46 @@ private fun DrawerShortcutRow(
             color = contentColor
         )
     }
+}
+
+@Composable
+internal fun ChatHistoryDialog(
+    textSessions: List<ChatSession>,
+    visionSessions: List<VisionChatSession>,
+    currentTextSessionId: String?,
+    currentVisionSessionId: String?,
+    isVisionModeActive: Boolean,
+    onSelectTextSession: (String) -> Unit,
+    onSelectVisionSession: (String) -> Unit,
+    onNewChat: () -> Unit,
+    onDeleteTextSession: (String) -> Unit,
+    onDeleteVisionSession: (String) -> Unit,
+    onClearAll: () -> Unit,
+    onDismiss: () -> Unit,
+    hazeState: HazeState,
+    onSettings: (() -> Unit)? = null,
+    onGoToModels: (() -> Unit)? = null,
+    onOpenKnowledgeBase: (() -> Unit)? = null
+) {
+    ChatHistoryDrawer(
+        visible = true,
+        textSessions = textSessions,
+        visionSessions = visionSessions,
+        currentTextSessionId = currentTextSessionId,
+        currentVisionSessionId = currentVisionSessionId,
+        isVisionModeActive = isVisionModeActive,
+        onSelectTextSession = onSelectTextSession,
+        onSelectVisionSession = onSelectVisionSession,
+        onNewChat = onNewChat,
+        onDeleteTextSession = onDeleteTextSession,
+        onDeleteVisionSession = onDeleteVisionSession,
+        onClearAll = onClearAll,
+        onDismiss = onDismiss,
+        hazeState = hazeState,
+        onSettings = onSettings,
+        onGoToModels = onGoToModels,
+        onOpenKnowledgeBase = onOpenKnowledgeBase
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)

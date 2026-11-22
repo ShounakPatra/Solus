@@ -32,9 +32,9 @@ data class SpokenWordToken(
     val word: String,
     val charStart: Int,
     val charEnd: Int,
-    val hasSentenceEnd: Boolean,
-    val hasClauseEnd: Boolean,
-    val hasLineBreak: Boolean
+    val hasSentenceEnd: Boolean = false,
+    val hasClauseEnd: Boolean = false,
+    val hasLineBreak: Boolean = false
 )
 
 /**
@@ -143,7 +143,7 @@ class TinyVocaManager private constructor(private val appContext: Context) {
                             val speed = currentConfiguredSpeed
                             fallbackHighlightJob = scope.launch(Dispatchers.Main) {
                                 // Wait for audio buffer & synthesizer pipeline to begin sound output before highlighting
-                                val initialDelayMs = (1350L / speed).toLong().coerceIn(1000L, 2200L)
+                                val initialDelayMs = (240L / speed).toLong().coerceIn(120L, 400L)
                                 delay(initialDelayMs)
                                 if (!hasRangeStartFired && _isSpeaking.value && _currentSpeakingId.value == utteranceId) {
                                     for (i in tokens.indices) {
@@ -196,7 +196,12 @@ class TinyVocaManager private constructor(private val appContext: Context) {
                         }
                     }
 
+                    @Deprecated("Deprecated in Java", ReplaceWith("onError(utteranceId, -1)"))
                     override fun onError(utteranceId: String?) {
+                        onError(utteranceId, -1)
+                    }
+
+                    override fun onError(utteranceId: String?, errorCode: Int) {
                         fallbackHighlightJob?.cancel()
                         _isSpeaking.value = false
                         _currentSpeakingId.value = null
@@ -257,7 +262,7 @@ class TinyVocaManager private constructor(private val appContext: Context) {
                     if (!response.isSuccessful) {
                         throw IllegalStateException("HTTP ${response.code}: ${response.message}")
                     }
-                    val body = response.body ?: throw IllegalStateException("Empty response body")
+                    val body = response.body
                     val totalBytes = body.contentLength().takeIf { it > 0 } ?: 21_400_000L
                     var downloadedBytes = 0L
 
@@ -517,22 +522,57 @@ class TinyVocaManager private constructor(private val appContext: Context) {
             }
         }
 
+        fun estimateSyllables(word: String): Int {
+            val clean = word.lowercase().filter { it in 'a'..'z' }
+            if (clean.isEmpty()) return 1
+
+            val vowelRegex = Regex("""[aeiouy]+""")
+            var count = vowelRegex.findAll(clean).count()
+
+            // Adjust for silent 'e' at end (e.g. "make", "language")
+            if (clean.endsWith("e") && !clean.endsWith("le") && !clean.endsWith("ee") && count > 1) {
+                count--
+            }
+
+            // Adjust for past tense '-ed' where 'e' is silent (e.g. "developed")
+            if (clean.endsWith("ed") && count > 1 && !clean.endsWith("ted") && !clean.endsWith("ded")) {
+                count--
+            }
+
+            // For words without standard vowels (e.g. acronyms/initialisms like "SDK", "HTML", "TTS"),
+            // estimate pronunciation syllables where consonants are articulated
+            if (count <= 0) {
+                count = (clean.length / 2).coerceAtLeast(1)
+            }
+
+            return count.coerceAtLeast(1)
+        }
+
         fun calculateTokenDelay(token: SpokenWordToken, speed: Float): Long {
             val safeSpeed = speed.coerceIn(0.5f, 2.5f)
-            // Conversational reading at 1.0x speed is ~135 words/minute (~450ms per word + natural pauses).
-            // Word duration scales with character count (syllables).
-            val baseDurationMs = 320L + (token.word.length * 48L).coerceAtMost(700L)
+            val wordLength = token.word.length.coerceAtLeast(1)
+            val syllables = estimateSyllables(token.word)
+
+            // Dynamic acoustic scaling from 1 character to infinite characters:
+            // - Onset vocalization baseline: 120ms
+            // - Syllable nucleus duration: 170ms per syllable
+            // - Continuous character articulation: 35ms per character
+            val wordDurationMs = 120L + (syllables * 170L) + (wordLength * 35L)
 
             // Natural conversational pauses at punctuation boundaries:
             val pauseMs = when {
-                token.hasSentenceEnd -> 500L
-                token.hasClauseEnd -> 280L
-                token.hasLineBreak -> 320L
-                else -> 90L // natural inter-word breathing and cadence gap
+                token.hasSentenceEnd -> 420L
+                token.hasClauseEnd -> 220L
+                token.hasLineBreak -> 260L
+                else -> 60L // inter-word breathing and cadence gap
             }
 
-            val totalMs = ((baseDurationMs + pauseMs) / safeSpeed).toLong()
-            return totalMs.coerceIn((260L / safeSpeed).toLong(), 2500L)
+            // Proportional scaling with the selected speech speed (1.0x / 1.25x / 1.5x)
+            val totalUnscaledMs = wordDurationMs + pauseMs
+            val totalScaledMs = (totalUnscaledMs / safeSpeed).toLong()
+
+            val minDuration = (140L / safeSpeed).toLong()
+            return totalScaledMs.coerceAtLeast(minDuration)
         }
     }
 }

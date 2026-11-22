@@ -364,12 +364,29 @@ fun VoiceSettingsSection(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                        Text(
-                            text = "Live Text Highlight",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = colors.onSurface
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Live Text Highlight",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.onSurface
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                            ) {
+                                Text(
+                                    text = "BETA",
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
                         Text(
                             text = "Highlight words in real time as the voice model reads aloud",
                             style = MaterialTheme.typography.bodySmall,
