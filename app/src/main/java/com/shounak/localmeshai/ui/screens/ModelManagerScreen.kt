@@ -1896,6 +1896,7 @@ fun ModelItem(
     onRelinkBundle: ((LocalModelImporter.ImportResult) -> Result<Unit>)? = null,
     isHfTokenBlank: Boolean = false,
     onOpenSettings: (() -> Unit)? = null,
+    onOpenSettingsWithTarget: ((String) -> Unit)? = null,
     enableDynamicThemes: Boolean = true,
     hazeState: HazeState,
     modifier: Modifier = Modifier,

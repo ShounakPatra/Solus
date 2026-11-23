@@ -97,19 +97,12 @@ enum class SettingsSubMenu(val title: String, val subtitle: String) {
     ABOUT("About Solus", "App version, developer and update checks")
 }
 
-data class SearchableSetting(
-    val title: String,
-    val subtitle: String,
-    val keywords: String,
-    val category: String,
-    val targetSubMenu: SettingsSubMenu
-)
-
 @Composable
 fun SettingsDialog(
     mainViewModel: MainViewModel,
     hazeState: HazeState,
     scrollToAbout: Boolean = false,
+    initialSubMenu: String? = null,
     onDismissRequest: () -> Unit,
     onAutoHideToggleChanged: ((Boolean) -> Unit)? = null
 ) {
@@ -127,7 +120,13 @@ fun SettingsDialog(
     if (showToolSkills) ToolSkillsDialog(hazeState = hazeState, onDismiss = { showToolSkills = false })
 
     // Navigation and search states
-    var currentSubMenu by rememberSaveable { mutableStateOf<SettingsSubMenu?>(null) }
+    var currentSubMenu by rememberSaveable {
+        mutableStateOf<SettingsSubMenu?>(
+            initialSubMenu?.let { name ->
+                try { SettingsSubMenu.valueOf(name) } catch (e: Exception) { null }
+            }
+        )
+    }
     val mainSettingsScrollState = rememberScrollState()
     var isSearchActive by rememberSaveable { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
@@ -142,8 +141,15 @@ fun SettingsDialog(
         }
     }
 
-    LaunchedEffect(scrollToAbout) {
-        if (scrollToAbout) {
+    LaunchedEffect(scrollToAbout, initialSubMenu) {
+        if (initialSubMenu != null) {
+            currentSubMenu = try {
+                SettingsSubMenu.valueOf(initialSubMenu)
+            } catch (e: Exception) {
+                null
+            }
+            mainViewModel.clearInitialSettingsSubMenu()
+        } else if (scrollToAbout) {
             currentSubMenu = SettingsSubMenu.ABOUT
             mainViewModel.onScrolledToAbout()
         }
@@ -216,60 +222,18 @@ fun SettingsDialog(
         )
     }
 
-    // Search dictionary
-    val searchableSettings = remember {
-        listOf(
-            SearchableSetting("Dark Mode", "Toggle dark and light visual themes", "appearance theme color style dark light mode", "APP > Appearance", SettingsSubMenu.APPEARANCE),
-            SearchableSetting("Dynamic Themes", "Model accent colors for DeepSeek, Gemma, Qwen, Llama", "accent colors deepseek gemma qwen llama theme", "APP > Appearance", SettingsSubMenu.APPEARANCE),
-            SearchableSetting("Warm up after loading", "Prepare prefill and decode token before ready", "warmup speed prefill decode loading startup", "APP > Chat Defaults", SettingsSubMenu.CHAT_DEFAULTS),
-            SearchableSetting("Quick Suggestion Pills", "Show empty chat prompt suggestion chips", "starter prompts suggestions pills chips chat empty", "APP > Chat Defaults", SettingsSubMenu.CHAT_DEFAULTS),
-            SearchableSetting("Auto-Unload Timer", "Unload inactive models from RAM to save memory and battery", "unload timer battery ram sleep timeout minutes", "APP > Chat Defaults", SettingsSubMenu.CHAT_DEFAULTS),
-            SearchableSetting("Voice Switcher", "Toggle between F2 (female) and M2 (male) voice", "voice speech tts female male f2 m2 audio tinyvoca", "APP > Voice & Speech", SettingsSubMenu.VOICE),
-            SearchableSetting("Speech Speed", "1.0x / 1.25x / 1.5x speed multiplier slider", "speed rate multiplier voice tts speech 1.0x 1.25x 1.5x", "APP > Voice & Speech", SettingsSubMenu.VOICE),
-            SearchableSetting("TinyVoca Neural TTS", "Download and manage the on-device 8.7 MB TinyVoca model", "tinyvoca voca tts model download onnx neural speech voice", "APP > Voice & Speech", SettingsSubMenu.VOICE),
-            SearchableSetting("Live Text Highlight (Beta)", "Turn on or off real-time text word highlighting when voice model speaks", "live text highlight voice speech word karaoke reading read aloud tts beta", "APP > Voice & Speech", SettingsSubMenu.VOICE),
-            SearchableSetting("Personas", "Code Auditor, ELI5, Proofreader, Translator system prompts", "personas persona presets coder eli5 proofreader translator instructions prompt", "APP > Personas", SettingsSubMenu.PERSONAS),
-            SearchableSetting("Persistent Memory", "Remember user identity, preferences, facts across chats", "memory remember recall facts long term identity persistent", "APP > Memory", SettingsSubMenu.MEMORY),
-            SearchableSetting("Auto-Extract Memories", "Automatically detect and save facts when you say 'Remember that...'", "memory extract auto save facts", "APP > Memory", SettingsSubMenu.MEMORY),
-            SearchableSetting("Reduce Decorative Motion", "Limit movement and animated transitions", "accessibility motion animation reduce decorative", "APP > Accessibility", SettingsSubMenu.ACCESSIBILITY),
-            SearchableSetting("Larger Touch Targets", "Make buttons easier to tap", "accessibility touch targets buttons large comfortable", "APP > Accessibility", SettingsSubMenu.ACCESSIBILITY),
-            SearchableSetting("Tool Calling (Experimental)", "Calculator, local date/time, and document search tools", "tools tool calling calculator time function calling agent capabilities", "AGENT > Agent & Tools", SettingsSubMenu.AGENT_TOOLS),
-            SearchableSetting("Workflows (Upcoming)", "Automated multi-step pipelines and autonomous agent tasks", "workflows automation pipelines multi-step agent autonomous chain upcoming", "AGENT > Workflows", SettingsSubMenu.WORKFLOWS),
-            SearchableSetting("Web Search", "DuckDuckGo web search provider and API keys", "web search duckduckgo brave tavily internet browsing online", "AGENT > Web search", SettingsSubMenu.WEB_SEARCH),
-            SearchableSetting("Tool Skills", "Manage tool skills and capabilities", "skills capabilities plugins agent extensions", "AGENT > Agent & Tools", SettingsSubMenu.AGENT_TOOLS),
-            SearchableSetting("RAG Knowledge Base", "Semantically search indexed documents and inject context", "rag knowledge base documents pdf search semantic index context", "AGENT > Knowledge Base (RAG)", SettingsSubMenu.RAG),
-            SearchableSetting("Neural Semantic Search", "BGE-small neural embedding search offline", "neural embeddings bge search semantic rag vector small", "AGENT > Knowledge Base (RAG)", SettingsSubMenu.RAG),
-            SearchableSetting("Performance Telemetry Bar", "Show tokens per second (t/s) and latency pill", "telemetry speed tokens per second latency fps stats header pill", "AGENT > Telemetry & Thermal Guard", SettingsSubMenu.TELEMETRY),
-            SearchableSetting("Battery Temperature Guard", "Display live battery thermal reading in telemetry bar", "thermal temperature battery heat celsius guard monitor", "AGENT > Telemetry & Thermal Guard", SettingsSubMenu.TELEMETRY),
-            SearchableSetting("System Memory (RAM) Guard", "Display free system RAM indicator", "ram memory free gigabytes indicator telemetry guard hardware", "AGENT > Telemetry & Thermal Guard", SettingsSubMenu.TELEMETRY),
-            SearchableSetting("Solus Bench Rating", "Device performance benchmark button on model cards", "bench benchmark rating speed score test solusbench", "AGENT > Telemetry & Thermal Guard", SettingsSubMenu.TELEMETRY),
-            SearchableSetting("Inference Backend (GPU/CPU)", "Choose Auto, Vulkan GPU accelerator, or CPU safe mode", "backend vulkan gpu cpu acceleration hardware litert gguf", "MODELS > On-Device Engine", SettingsSubMenu.ENGINE),
-            SearchableSetting("Runtime Speed Tuner", "Measure and tune CPU threads and GPU probe speeds", "tune speed benchmark threads probe optimize latency measurement", "MODELS > On-Device Engine", SettingsSubMenu.ENGINE),
-            SearchableSetting("Hugging Face Access Token", "Enter personal access token for gated models", "token hugging face hf api key gated download login auth secret", "MODELS > Providers & API", SettingsSubMenu.PROVIDERS),
-            SearchableSetting("Per-Model Profiles", "Save custom instructions, context limits, sampling per model", "profiles per model context limit temperature top p top k prompt sampling", "MODELS > Model Profiles", SettingsSubMenu.MODEL_PROFILES),
-            SearchableSetting("Storage Usage & Breakdown", "Inspect model, attachment, and knowledge base storage", "storage size disk space usage bytes cache clean cleanup gigabytes", "MODELS > Storage & Downloads", SettingsSubMenu.STORAGE),
-            SearchableSetting("Clear Unused Cache", "Delete temporary attachments and cache files", "cache clear cleanup delete free disk space temporary files", "MODELS > Storage & Downloads", SettingsSubMenu.STORAGE),
-            SearchableSetting("Export Backup", "Export chat history, memories, and portable settings to ZIP", "backup export save zip transfer archive portable", "DATA > Backup & Import", SettingsSubMenu.BACKUP),
-            SearchableSetting("Restore Backup", "Import saved chats, memories, and portable settings from ZIP", "restore import backup zip data load import", "DATA > Backup & Import", SettingsSubMenu.BACKUP),
-            SearchableSetting("Privacy & Architecture", "100% offline, local-only AI security architecture", "privacy security offline safety local encryption tracking telemetry", "DATA > Privacy & Architecture", SettingsSubMenu.PRIVACY),
-            SearchableSetting("Crash Reports & Logs", "Inspect JVM and native engine crash logs", "crash reports logs bugs error stacktrace debug exception", "HELP > Troubleshooting & Diagnostics", SettingsSubMenu.TROUBLESHOOTING),
-            SearchableSetting("Report Issue to GitHub", "Open issue report or bug report on repository", "report bug github issue feedback support repo submit", "HELP > Troubleshooting & Diagnostics", SettingsSubMenu.TROUBLESHOOTING),
-            SearchableSetting("About Solus & Updates", "Version info, developer, GitHub repository and update checks", "about version update release git github author developer", "HELP > About Solus", SettingsSubMenu.ABOUT),
-            SearchableSetting("Check for Updates", "Check for newer Solus releases on GitHub", "update check release download upgrade new version github releases", "HELP > About Solus", SettingsSubMenu.ABOUT)
-        )
+    // Automatically synchronize settings search index upon opening settings
+    LaunchedEffect(Unit) {
+        SettingsSearchIndex.ensureIndexSynchronized(context)
     }
 
-    val searchResults = remember(searchQuery) {
-        val q = searchQuery.trim().lowercase()
-        if (q.isEmpty()) emptyList()
-        else {
-            searchableSettings.filter { item ->
-                item.title.lowercase().contains(q) ||
-                item.subtitle.lowercase().contains(q) ||
-                item.keywords.lowercase().contains(q) ||
-                item.category.lowercase().contains(q)
-            }
-        }
+    LaunchedEffect(mainViewModel.availableModels) {
+        SettingsSearchIndex.syncAvailableModels(mainViewModel.availableModels.toList())
+    }
+
+    // Dynamic, ranked multi-token search results from SettingsSearchIndex
+    val searchResults = remember(searchQuery, mainViewModel.availableModels.size) {
+        SettingsSearchIndex.search(searchQuery)
     }
 
     Dialog(

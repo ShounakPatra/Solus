@@ -927,6 +927,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _scrollToAboutRequested = MutableStateFlow(false)
     val scrollToAboutRequested = _scrollToAboutRequested.asStateFlow()
 
+    private val _initialSettingsSubMenu = MutableStateFlow<String?>(null)
+    val initialSettingsSubMenu = _initialSettingsSubMenu.asStateFlow()
+
     init {
         viewModelScope.launch {
             InitCrashGuard.recoveredModels.collect { id ->
@@ -1097,18 +1100,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _updateDownloadStatus.value = UpdateDownloadStatus.Idle
     }
 
-    fun openSettings(scrollToAbout: Boolean = false) {
+    fun openSettings(scrollToAbout: Boolean = false, targetSubMenu: String? = null) {
         _settingsDialogVisible.value = true
         _scrollToAboutRequested.value = scrollToAbout
+        _initialSettingsSubMenu.value = targetSubMenu
     }
 
     fun dismissSettings() {
         _settingsDialogVisible.value = false
         _scrollToAboutRequested.value = false
+        _initialSettingsSubMenu.value = null
     }
 
     fun onScrolledToAbout() {
         _scrollToAboutRequested.value = false
+    }
+
+    fun clearInitialSettingsSubMenu() {
+        _initialSettingsSubMenu.value = null
     }
 
     fun setUpdateAvailable(updateInfo: com.shounak.localmeshai.utils.AppUpdateManager.UpdateInfo) {

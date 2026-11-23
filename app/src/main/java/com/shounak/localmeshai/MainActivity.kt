@@ -284,6 +284,7 @@ fun MainNavigation(mainViewModel: MainViewModel) {
 
     val settingsDialogVisible by mainViewModel.settingsDialogVisible.collectAsState()
     val scrollToAboutRequested by mainViewModel.scrollToAboutRequested.collectAsState()
+    val initialSettingsSubMenu by mainViewModel.initialSettingsSubMenu.collectAsState()
     val appSettingsData by mainViewModel.appSettingsData.collectAsState()
 
     // Navigation bar removed completely; composer rests naturally with standard navigation bar padding.
@@ -305,6 +306,7 @@ fun MainNavigation(mainViewModel: MainViewModel) {
             // Settings must not sample the underlying Chat/Models capture.
             hazeState = remember { HazeState() },
             scrollToAbout = scrollToAboutRequested,
+            initialSubMenu = initialSettingsSubMenu,
             onDismissRequest = {
                 val shouldGoToChat = (autoHideTurnedOnInSettings || !autoHideWasEnabledWhenSettingsOpened) &&
                     appSettingsData.enableAutoHideBottomBar
