@@ -65,6 +65,7 @@ import com.shounak.localmeshai.utils.AppUpdateManager
 import com.shounak.localmeshai.utils.CrashReport
 import com.shounak.localmeshai.utils.CrashReportManager
 import com.shounak.localmeshai.utils.DeviceUtils
+import com.shounak.localmeshai.utils.GlassDispersionCard
 import com.shounak.localmeshai.utils.LiquidGlassButton
 import com.shounak.localmeshai.utils.glassEffect
 import dev.chrisbanes.haze.HazeState
@@ -201,6 +202,16 @@ fun SettingsDialog(
                 CrashReportManager.sendToGitHub(context, report.details, report.title)
             },
             hazeState = hazeState
+        )
+    }
+
+    var activeAboutDialog by remember { mutableStateOf<Pair<String, String>?>(null) }
+    activeAboutDialog?.let { (title, content) ->
+        AboutInfoDialog(
+            title = title,
+            content = content,
+            hazeState = hazeState,
+            onDismiss = { activeAboutDialog = null }
         )
     }
 
@@ -1673,29 +1684,54 @@ fun SettingsDialog(
 
                                 SettingsSubMenu.TROUBLESHOOTING -> {
                                     SettingsCategory(title = "Diagnostics & Crash Reports", hazeState = hazeState) {
-                                        Surface(
-                                            shape = RoundedCornerShape(16.dp),
-                                            color = colors.surfaceContainerLow,
-                                            border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.40f)),
-                                            modifier = Modifier.fillMaxWidth()
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .glassEffect(
+                                                    hazeState = hazeState,
+                                                    shape = RoundedCornerShape(20.dp),
+                                                    blurRadius = 24.dp,
+                                                    tintColor = colors.surfaceContainerHigh.copy(alpha = 0.55f),
+                                                    borderAlpha = 0.35f
+                                                )
+                                                .padding(18.dp)
                                         ) {
-                                            Column(
-                                                modifier = Modifier.padding(14.dp),
-                                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                                            ) {
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    Icon(
-                                                        imageVector = if (crashReports.isEmpty()) Icons.Default.CheckCircle else Icons.Default.BugReport,
-                                                        contentDescription = null,
-                                                        tint = if (crashReports.isEmpty()) colors.primary else colors.error,
-                                                        modifier = Modifier.size(22.dp)
-                                                    )
-                                                    Spacer(modifier = Modifier.width(10.dp))
-                                                    Column {
+                                            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(46.dp)
+                                                            .clip(RoundedCornerShape(14.dp))
+                                                            .background(
+                                                                if (crashReports.isEmpty()) colors.primary.copy(alpha = 0.14f)
+                                                                else colors.error.copy(alpha = 0.16f)
+                                                            )
+                                                            .border(
+                                                                1.dp,
+                                                                if (crashReports.isEmpty()) colors.primary.copy(alpha = 0.40f)
+                                                                else colors.error.copy(alpha = 0.40f),
+                                                                RoundedCornerShape(14.dp)
+                                                            ),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = if (crashReports.isEmpty()) Icons.Default.CheckCircle else Icons.Default.BugReport,
+                                                            contentDescription = null,
+                                                            tint = if (crashReports.isEmpty()) colors.primary else colors.error,
+                                                            modifier = Modifier.size(24.dp)
+                                                        )
+                                                    }
+                                                    Column(
+                                                        modifier = Modifier.weight(1f),
+                                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                                    ) {
                                                         Text(
                                                             text = if (crashReports.isEmpty()) "All systems operational ✓" else "${crashReports.size} crash report(s) saved",
-                                                            style = MaterialTheme.typography.titleSmall,
-                                                            fontWeight = FontWeight.SemiBold,
+                                                            style = MaterialTheme.typography.titleMedium,
+                                                            fontWeight = FontWeight.Bold,
                                                             color = colors.onSurface
                                                         )
                                                         Text(
@@ -1706,54 +1742,79 @@ fun SettingsDialog(
                                                     }
                                                 }
 
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                                ) {
-                                                    if (crashReports.isNotEmpty()) {
-                                                        LiquidGlassButton(
-                                                            onClick = { showCrashDialog = true },
-                                                            hazeState = hazeState,
-                                                            modifier = Modifier.weight(1f).height(42.dp).border(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f), RoundedCornerShape(12.dp)),
-                                                            shape = RoundedCornerShape(12.dp),
-                                                            tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f)
-                                                        ) {
-                                                            Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.onSurfaceVariant)
-                                                            Spacer(modifier = Modifier.width(6.dp))
-                                                            Text("See Reports", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-                                                        }
-                                                        LiquidGlassButton(
-                                                            onClick = {
-                                                                val latest = crashReports.first()
-                                                                CrashReportManager.sendToGitHub(context, latest.details, latest.title)
-                                                            },
-                                                            hazeState = hazeState,
-                                                            modifier = Modifier.weight(1f).height(42.dp).border(0.9.dp, colors.error.copy(alpha = 0.50f), RoundedCornerShape(12.dp)),
-                                                            shape = RoundedCornerShape(12.dp),
-                                                            tintColor = colors.error.copy(alpha = 0.22f)
-                                                        ) {
-                                                            Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.error)
-                                                            Spacer(modifier = Modifier.width(6.dp))
-                                                            Text("Send to Repo", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.error)
-                                                        }
-                                                    } else {
-                                                        LiquidGlassButton(
-                                                            onClick = {
-                                                                CrashReportManager.openNewIssue(
-                                                                    context,
-                                                                    title = "[Report / Feedback] Solus Issue",
-                                                                    body = "### Description\n(Describe your issue or feedback here)\n\n### Complete Device Specifications\n${DeviceUtils.formatFullDeviceDiagnostics(context)}"
-                                                                )
-                                                            },
-                                                            hazeState = hazeState,
-                                                            modifier = Modifier.fillMaxWidth().height(42.dp).border(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f), RoundedCornerShape(12.dp)),
-                                                            shape = RoundedCornerShape(12.dp),
-                                                            tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f)
-                                                        ) {
-                                                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.onSurfaceVariant)
-                                                            Spacer(modifier = Modifier.width(8.dp))
-                                                            Text("Report Bug / Issue to Repo", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-                                                        }
+                                                HorizontalDivider(
+                                                    color = colors.outlineVariant.copy(alpha = 0.25f),
+                                                    thickness = 0.8.dp
+                                                )
+
+                                                if (crashReports.isNotEmpty()) {
+                                                    LiquidGlassButton(
+                                                        onClick = {
+                                                            val latest = crashReports.first()
+                                                            CrashReportManager.sendToGitHub(context, latest.details, latest.title)
+                                                        },
+                                                        hazeState = hazeState,
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .height(44.dp)
+                                                            .border(1.dp, colors.error.copy(alpha = 0.55f), RoundedCornerShape(12.dp)),
+                                                        shape = RoundedCornerShape(12.dp),
+                                                        tintColor = colors.error.copy(alpha = 0.22f)
+                                                    ) {
+                                                        Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(18.dp), tint = colors.error)
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text(
+                                                            "Send Latest Crash to Repo",
+                                                            style = MaterialTheme.typography.labelMedium,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                            color = colors.error
+                                                        )
+                                                    }
+
+                                                    LiquidGlassButton(
+                                                        onClick = { showCrashDialog = true },
+                                                        hazeState = hazeState,
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .height(44.dp)
+                                                            .border(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f), RoundedCornerShape(12.dp)),
+                                                        shape = RoundedCornerShape(12.dp),
+                                                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f)
+                                                    ) {
+                                                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp), tint = colors.onSurfaceVariant)
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text(
+                                                            "View Saved Crash Reports (${crashReports.size})",
+                                                            style = MaterialTheme.typography.labelMedium,
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = colors.onSurfaceVariant
+                                                        )
+                                                    }
+                                                } else {
+                                                    LiquidGlassButton(
+                                                        onClick = {
+                                                            CrashReportManager.openNewIssue(
+                                                                context,
+                                                                title = "[Report / Feedback] Solus Issue",
+                                                                body = "### Description\n(Describe your issue or feedback here)\n\n### Complete Device Specifications\n${DeviceUtils.formatFullDeviceDiagnostics(context)}"
+                                                            )
+                                                        },
+                                                        hazeState = hazeState,
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .height(44.dp)
+                                                            .border(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f), RoundedCornerShape(12.dp)),
+                                                        shape = RoundedCornerShape(12.dp),
+                                                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f)
+                                                    ) {
+                                                        Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(18.dp), tint = colors.onSurfaceVariant)
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text(
+                                                            "Report Bug / Issue to Repo",
+                                                            style = MaterialTheme.typography.labelMedium,
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = colors.onSurfaceVariant
+                                                        )
                                                     }
                                                 }
                                             }
@@ -1766,138 +1827,395 @@ fun SettingsDialog(
                                     val updateDownloadStatus by mainViewModel.updateDownloadStatus.collectAsState()
                                     val isCheckingForUpdates by mainViewModel.isCheckingForUpdates.collectAsState()
 
-                                    SettingsCategory(title = "About Solus", hazeState = hazeState) {
-                                        Surface(
-                                            shape = RoundedCornerShape(16.dp),
-                                            color = colors.surfaceContainerLow,
-                                            border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.40f)),
-                                            modifier = Modifier.fillMaxWidth()
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                                    ) {
+                                        // Hero Branding Header: Centered Logo + App Name + Tagline
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 12.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            Column(
-                                                modifier = Modifier.padding(14.dp),
-                                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(76.dp)
+                                                    .glassEffect(
+                                                        hazeState = hazeState,
+                                                        shape = RoundedCornerShape(22.dp),
+                                                        blurRadius = 24.dp,
+                                                        tintColor = colors.surfaceContainerHigh.copy(alpha = 0.50f),
+                                                        borderAlpha = 0.40f
+                                                    )
+                                                    .border(
+                                                        1.2.dp,
+                                                        colors.outlineVariant.copy(alpha = 0.45f),
+                                                        RoundedCornerShape(22.dp)
+                                                    ),
+                                                contentAlignment = Alignment.Center
                                             ) {
-                                                Text(
-                                                    text = "Solus — Private On-Device AI",
-                                                    style = MaterialTheme.typography.titleSmall,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = colors.onSurface
+                                                Image(
+                                                    painter = painterResource(id = R.drawable.splash_logo),
+                                                    contentDescription = "Solus Logo",
+                                                    modifier = Modifier
+                                                        .size(54.dp)
+                                                        .clip(RoundedCornerShape(14.dp))
                                                 )
-                                                Text(
-                                                    text = "Version: ${BuildConfig.VERSION_NAME}",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = colors.onSurfaceVariant.copy(alpha = 0.82f)
+                                            }
+
+                                            Text(
+                                                text = "Private AI on your phone.",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = colors.onSurfaceVariant.copy(alpha = 0.85f)
+                                            )
+                                        }
+
+                                        // Card 1: Version & Build
+                                        Card(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .glassEffect(
+                                                    hazeState = hazeState,
+                                                    shape = RoundedCornerShape(20.dp),
+                                                    blurRadius = 20.dp,
+                                                    tintColor = colors.surfaceContainer.copy(alpha = 0.52f),
+                                                    borderAlpha = 0.35f
+                                                ),
+                                            shape = RoundedCornerShape(20.dp),
+                                            colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+                                        ) {
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = "Version",
+                                                        style = MaterialTheme.typography.bodyLarge,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = colors.onSurface
+                                                    )
+                                                    Text(
+                                                        text = "${BuildConfig.VERSION_NAME} (Android)",
+                                                        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                                                        fontWeight = FontWeight.Medium,
+                                                        color = colors.onSurfaceVariant
+                                                    )
+                                                }
+                                                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.20f), thickness = 0.6.dp)
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = "Build",
+                                                        style = MaterialTheme.typography.bodyLarge,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = colors.onSurface
+                                                    )
+                                                    Text(
+                                                        text = if (BuildConfig.DEBUG) "Debug build" else "Release build",
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        color = colors.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        // Card 2: Discovery & Information
+                                        Card(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .glassEffect(
+                                                    hazeState = hazeState,
+                                                    shape = RoundedCornerShape(20.dp),
+                                                    blurRadius = 20.dp,
+                                                    tintColor = colors.surfaceContainer.copy(alpha = 0.52f),
+                                                    borderAlpha = 0.35f
+                                                ),
+                                            shape = RoundedCornerShape(20.dp),
+                                            colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+                                        ) {
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                AboutRowAction(
+                                                    icon = Icons.Default.AutoAwesome,
+                                                    title = "What is new",
+                                                    onClick = {
+                                                        activeAboutDialog = Pair(
+                                                            "What is New in Solus",
+                                                            "• Autonomous Workflows (Preview): Chain models, prompts, documents, and tools into automated multi-step pipelines.\n\n" +
+                                                            "• Refined Liquid Glass Design: Upgraded frosted dispersion cards, caustics, and reactive light buttons.\n\n" +
+                                                            "• Instant Crash Diagnostics & Repo Integration: One-tap reporting with safe URL parameters and full hardware diagnostics.\n\n" +
+                                                            "• Persistent Local Memory: Retain facts and context across chats without remote network calls.\n\n" +
+                                                            "• Engine & Model Profile Overrides: Per-model system instructions, sampling params, and hardware acceleration."
+                                                        )
+                                                    }
                                                 )
-                                                Text(
-                                                    text = "Developer: Shounak Patra",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = colors.onSurfaceVariant.copy(alpha = 0.82f)
+                                                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.20f), thickness = 0.6.dp)
+                                                AboutRowAction(
+                                                    icon = Icons.AutoMirrored.Filled.Article,
+                                                    title = "Licenses",
+                                                    onClick = {
+                                                        activeAboutDialog = Pair(
+                                                            "Open Source Licenses",
+                                                            "Solus is free open-source software licensed under the Apache License, Version 2.0.\n\n" +
+                                                            "Key Open Source Components:\n" +
+                                                            "• llama.cpp — MIT License (Georgi Gerganov)\n" +
+                                                            "• LiteRT-LM & MediaPipe — Apache 2.0 (Google LLC)\n" +
+                                                            "• Jetpack Compose & AndroidX — Apache 2.0 (Google LLC)\n" +
+                                                            "• Haze & LiquidGlass — Chris Banes / Solus Project\n" +
+                                                            "• ONNX Runtime — MIT License (Microsoft Corp)\n" +
+                                                            "• Kotlin & Coroutines — Apache 2.0 (JetBrains)"
+                                                        )
+                                                    }
                                                 )
-                                                Spacer(modifier = Modifier.height(4.dp))
-                                                LiquidGlassButton(
+                                                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.20f), thickness = 0.6.dp)
+                                                AboutRowAction(
+                                                    icon = Icons.Default.Language,
+                                                    title = "Website",
+                                                    subtitle = "Opens github.com/ShounakPatra/Solus in your browser",
                                                     onClick = {
                                                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AppUpdateManager.GITHUB_REPO_URL))
                                                         context.startActivity(intent)
-                                                    },
-                                                    hazeState = hazeState,
-                                                    modifier = Modifier.fillMaxWidth().height(42.dp).border(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f), RoundedCornerShape(12.dp)),
-                                                    shape = RoundedCornerShape(12.dp),
-                                                    tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f)
-                                                ) {
-                                                    Icon(Icons.Default.PlayCircle, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.onSurfaceVariant)
-                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                    Text("GitHub: ShounakPatra/Solus", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-                                                }
+                                                    }
+                                                )
+                                                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.20f), thickness = 0.6.dp)
+                                                AboutRowAction(
+                                                    icon = Icons.Default.Code,
+                                                    title = "Source code",
+                                                    subtitle = "Opens github.com in your browser",
+                                                    onClick = {
+                                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AppUpdateManager.GITHUB_REPO_URL))
+                                                        context.startActivity(intent)
+                                                    }
+                                                )
                                             }
                                         }
 
-                                        SettingsSwitchRow(
-                                            title = "Automatic Check for Updates",
-                                            subtitle = "Periodically check for newer GitHub releases in background and send notifications",
-                                            checked = settingsData.autoCheckUpdates,
-                                            onCheckedChange = { isEnabled ->
-                                                appSettings.updateSettings { it.copy(autoCheckUpdates = isEnabled) }
-                                                if (isEnabled) {
-                                                    AppUpdateManager.scheduleBackgroundUpdateCheck(context, force = true)
-                                                    mainViewModel.checkForUpdates(silent = true)
-                                                } else {
-                                                    AppUpdateManager.cancelBackgroundUpdateCheck(context)
-                                                    AppUpdateManager.cancelUpdateNotification(context)
-                                                }
-                                            }
+                                        // Section: CONTACT
+                                        Text(
+                                            text = "CONTACT",
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp,
+                                                letterSpacing = 1.2.sp
+                                            ),
+                                            color = colors.onSurfaceVariant.copy(alpha = 0.75f),
+                                            modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 0.dp)
                                         )
 
-                                        LiquidGlassButton(
-                                            onClick = { mainViewModel.checkForUpdates(silent = false) },
-                                            enabled = !isCheckingForUpdates,
-                                            hazeState = hazeState,
-                                            modifier = Modifier.fillMaxWidth().height(42.dp).border(1.dp, colors.primary.copy(alpha = 0.50f), RoundedCornerShape(12.dp)),
-                                            shape = RoundedCornerShape(12.dp),
-                                            tintColor = colors.primary.copy(alpha = 0.20f)
+                                        // Card 3: Contact & Legal
+                                        Card(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .glassEffect(
+                                                    hazeState = hazeState,
+                                                    shape = RoundedCornerShape(20.dp),
+                                                    blurRadius = 20.dp,
+                                                    tintColor = colors.surfaceContainer.copy(alpha = 0.52f),
+                                                    borderAlpha = 0.35f
+                                                ),
+                                            shape = RoundedCornerShape(20.dp),
+                                            colors = CardDefaults.cardColors(containerColor = Color.Transparent)
                                         ) {
-                                            if (isCheckingForUpdates) {
-                                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = colors.primary)
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Text("Checking for updates…", style = MaterialTheme.typography.labelMedium, color = colors.primary)
-                                            } else {
-                                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.primary)
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Text("Check for Updates Now", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.primary)
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                AboutRowAction(
+                                                    icon = Icons.Default.Email,
+                                                    title = "Contact support",
+                                                    subtitle = "shounakpatra12@gmail.com",
+                                                    showChevron = true,
+                                                    onClick = {
+                                                        try {
+                                                            val intent = Intent(Intent.ACTION_SENDTO).apply {
+                                                                data = Uri.parse("mailto:shounakpatra12@gmail.com")
+                                                                putExtra(Intent.EXTRA_SUBJECT, "[Solus App Support] v${BuildConfig.VERSION_NAME}")
+                                                            }
+                                                            context.startActivity(intent)
+                                                        } catch (e: Exception) {
+                                                            Toast.makeText(context, "No email app found: shounakpatra12@gmail.com", Toast.LENGTH_LONG).show()
+                                                        }
+                                                    }
+                                                )
+                                                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.20f), thickness = 0.6.dp)
+                                                AboutRowAction(
+                                                    icon = Icons.Default.ContentCopy,
+                                                    title = "Copy address",
+                                                    subtitle = "For any mail app or messenger",
+                                                    showChevron = false,
+                                                    onClick = {
+                                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                                        val clip = ClipData.newPlainText("Support Email", "shounakpatra12@gmail.com")
+                                                        clipboard?.setPrimaryClip(clip)
+                                                        Toast.makeText(context, "Support email copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                )
+                                                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.20f), thickness = 0.6.dp)
+                                                AboutRowAction(
+                                                    icon = Icons.Default.Shield,
+                                                    title = "Privacy policy",
+                                                    subtitle = "100% on-device & private: no data leaves device",
+                                                    onClick = {
+                                                        activeAboutDialog = Pair(
+                                                            "Privacy Policy",
+                                                            "Solus is built with a zero-telemetry, 100% offline-first architecture:\n\n" +
+                                                            "• Local Processing: All AI inference, neural embeddings, document indexing, and speech synthesis occur strictly on your physical device hardware.\n\n" +
+                                                            "• Zero Data Collection: We do not collect, transmit, or monetize your chats, prompts, documents, or personal data.\n\n" +
+                                                            "• No External Trackers: Solus contains zero third-party telemetry, ad frameworks, or tracking SDKs.\n\n" +
+                                                            "• Diagnostic Reports: Crash logs are created only upon application errors and are never sent automatically — they are only submitted when you explicitly tap 'Send to Repo'."
+                                                        )
+                                                    }
+                                                )
+                                                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.20f), thickness = 0.6.dp)
+                                                AboutRowAction(
+                                                    icon = Icons.Default.Gavel,
+                                                    title = "Terms of use",
+                                                    subtitle = "Apache 2.0 Open Source License",
+                                                    onClick = {
+                                                        activeAboutDialog = Pair(
+                                                            "Terms of Use",
+                                                            "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this file except in compliance with the License.\n\n" +
+                                                            "Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n\n" +
+                                                            "See the License for the specific language governing permissions and limitations under the License."
+                                                        )
+                                                    }
+                                                )
                                             }
                                         }
 
-                                        // Update state banner
-                                        when (val result = updateState) {
-                                            is AppUpdateManager.UpdateCheckResult.UpdateAvailable -> {
-                                                Surface(
-                                                    shape = RoundedCornerShape(14.dp),
-                                                    color = colors.primary.copy(alpha = 0.12f),
-                                                    border = BorderStroke(1.dp, colors.primary.copy(alpha = 0.40f)),
-                                                    modifier = Modifier.fillMaxWidth()
+                                        // Section: UPDATES
+                                        Text(
+                                            text = "UPDATES",
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp,
+                                                letterSpacing = 1.2.sp
+                                            ),
+                                            color = colors.onSurfaceVariant.copy(alpha = 0.75f),
+                                            modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 0.dp)
+                                        )
+
+                                        // Card 4: Updates & Settings
+                                        Card(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .glassEffect(
+                                                    hazeState = hazeState,
+                                                    shape = RoundedCornerShape(20.dp),
+                                                    blurRadius = 20.dp,
+                                                    tintColor = colors.surfaceContainer.copy(alpha = 0.52f),
+                                                    borderAlpha = 0.35f
+                                                ),
+                                            shape = RoundedCornerShape(20.dp),
+                                            colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+                                        ) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(14.dp),
+                                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                SettingsSwitchRow(
+                                                    title = "Automatic Check for Updates",
+                                                    subtitle = "Periodically check for newer GitHub releases in background and send notifications",
+                                                    checked = settingsData.autoCheckUpdates,
+                                                    onCheckedChange = { isEnabled ->
+                                                        appSettings.updateSettings { it.copy(autoCheckUpdates = isEnabled) }
+                                                        if (isEnabled) {
+                                                            AppUpdateManager.scheduleBackgroundUpdateCheck(context, force = true)
+                                                            mainViewModel.checkForUpdates(silent = true)
+                                                        } else {
+                                                            AppUpdateManager.cancelBackgroundUpdateCheck(context)
+                                                            AppUpdateManager.cancelUpdateNotification(context)
+                                                        }
+                                                    }
+                                                )
+
+                                                LiquidGlassButton(
+                                                    onClick = { mainViewModel.checkForUpdates(silent = false) },
+                                                    enabled = !isCheckingForUpdates,
+                                                    hazeState = hazeState,
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .height(44.dp)
+                                                        .border(1.dp, colors.primary.copy(alpha = 0.50f), RoundedCornerShape(12.dp)),
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    tintColor = colors.primary.copy(alpha = 0.20f)
                                                 ) {
-                                                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                        Text("Update Available: v${result.updateInfo.latestVersion}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = colors.primary)
-                                                        Text(result.updateInfo.releaseNotes.take(180) + if (result.updateInfo.releaseNotes.length > 180) "…" else "", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-                                                        Row(
-                                                            modifier = Modifier.fillMaxWidth(),
-                                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    if (isCheckingForUpdates) {
+                                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = colors.primary)
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text("Checking for updates…", style = MaterialTheme.typography.labelMedium, color = colors.primary)
+                                                    } else {
+                                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.primary)
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text("Check for Updates Now", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.primary)
+                                                    }
+                                                }
+
+                                                // Update state banner
+                                                when (val result = updateState) {
+                                                    is AppUpdateManager.UpdateCheckResult.UpdateAvailable -> {
+                                                        Surface(
+                                                            shape = RoundedCornerShape(14.dp),
+                                                            color = colors.primary.copy(alpha = 0.12f),
+                                                            border = BorderStroke(1.dp, colors.primary.copy(alpha = 0.40f)),
+                                                            modifier = Modifier.fillMaxWidth()
                                                         ) {
-                                                            LiquidGlassButton(
-                                                                onClick = {
-                                                                    val url = result.updateInfo.downloadUrl ?: result.updateInfo.htmlUrl
-                                                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                                                    context.startActivity(intent)
-                                                                },
-                                                                hazeState = hazeState,
-                                                                modifier = Modifier.weight(1f).height(40.dp),
-                                                                shape = RoundedCornerShape(10.dp),
-                                                                tintColor = colors.primary.copy(alpha = 0.35f)
-                                                            ) {
-                                                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                                                Spacer(modifier = Modifier.width(6.dp))
-                                                                Text("Download")
-                                                            }
-                                                            LiquidGlassButton(
-                                                                onClick = { mainViewModel.dismissUpdateState() },
-                                                                hazeState = hazeState,
-                                                                modifier = Modifier.height(40.dp),
-                                                                shape = RoundedCornerShape(10.dp),
-                                                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f)
-                                                            ) {
-                                                                Text("Dismiss")
+                                                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                                Text("Update Available: v${result.updateInfo.latestVersion}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = colors.primary)
+                                                                Text(result.updateInfo.releaseNotes.take(180) + if (result.updateInfo.releaseNotes.length > 180) "…" else "", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                                                                Row(
+                                                                    modifier = Modifier.fillMaxWidth(),
+                                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                                ) {
+                                                                    LiquidGlassButton(
+                                                                        onClick = {
+                                                                            val url = result.updateInfo.downloadUrl ?: result.updateInfo.htmlUrl
+                                                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                                                            context.startActivity(intent)
+                                                                        },
+                                                                        hazeState = hazeState,
+                                                                        modifier = Modifier.weight(1f).height(40.dp),
+                                                                        shape = RoundedCornerShape(10.dp),
+                                                                        tintColor = colors.primary.copy(alpha = 0.35f)
+                                                                    ) {
+                                                                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                                        Text("Download")
+                                                                    }
+                                                                    LiquidGlassButton(
+                                                                        onClick = { mainViewModel.dismissUpdateState() },
+                                                                        hazeState = hazeState,
+                                                                        modifier = Modifier.height(40.dp),
+                                                                        shape = RoundedCornerShape(10.dp),
+                                                                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f)
+                                                                    ) {
+                                                                        Text("Dismiss")
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
+                                                    is AppUpdateManager.UpdateCheckResult.UpToDate -> {
+                                                        Text("✓ Solus is up to date (${result.currentVersion})", style = MaterialTheme.typography.bodySmall, color = colors.primary)
+                                                    }
+                                                    is AppUpdateManager.UpdateCheckResult.Error -> {
+                                                        Text("Update check failed: ${result.message}", style = MaterialTheme.typography.bodySmall, color = colors.error)
+                                                    }
+                                                    null -> {}
                                                 }
                                             }
-                                            is AppUpdateManager.UpdateCheckResult.UpToDate -> {
-                                                Text("✓ Solus is up to date (${result.currentVersion})", style = MaterialTheme.typography.bodySmall, color = colors.primary)
-                                            }
-                                            is AppUpdateManager.UpdateCheckResult.Error -> {
-                                                Text("Update check failed: ${result.message}", style = MaterialTheme.typography.bodySmall, color = colors.error)
-                                            }
-                                            null -> {}
                                         }
+
+                                        Spacer(modifier = Modifier.height(24.dp))
                                     }
                                 }
                             }
@@ -2350,14 +2668,14 @@ private fun CrashReportsDialog(
                                 modifier = Modifier
                                     .weight(1.3f)
                                     .height(42.dp)
-                                    .border(1.dp, colors.primary.copy(alpha = 0.60f), RoundedCornerShape(12.dp)),
+                                    .border(1.dp, colors.error.copy(alpha = 0.55f), RoundedCornerShape(12.dp)),
                                 shape = RoundedCornerShape(12.dp),
-                                tintColor = colors.primary.copy(alpha = 0.25f),
+                                tintColor = colors.error.copy(alpha = 0.22f),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                             ) {
-                                Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.primary)
+                                Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.error)
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Send to Repo", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.primary)
+                                Text("Send to Repo", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.error)
                             }
                         }
                     }
@@ -2382,6 +2700,202 @@ private fun CrashReportsDialog(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Clear All Crash Reports", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.error)
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AboutRowAction(
+    icon: ImageVector,
+    title: String,
+    subtitle: String? = null,
+    onClick: () -> Unit,
+    showChevron: Boolean = true,
+    accentColor: Color? = null
+) {
+    val colors = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        val iconTint = accentColor ?: colors.primary
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(iconTint.copy(alpha = 0.12f))
+                .border(0.8.dp, iconTint.copy(alpha = 0.25f), RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = iconTint,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onSurface
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                    color = colors.onSurfaceVariant.copy(alpha = 0.75f)
+                )
+            }
+        }
+        if (showChevron) {
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = colors.onSurfaceVariant.copy(alpha = 0.45f),
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun AboutFeatureItem(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    accentColor: Color? = null
+) {
+    val colors = MaterialTheme.colorScheme
+    val tint = accentColor ?: colors.primary
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(tint.copy(alpha = 0.14f))
+                .border(0.8.dp, tint.copy(alpha = 0.35f), RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.onSurface
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurfaceVariant.copy(alpha = 0.85f),
+                lineHeight = 18.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun AboutInfoDialog(
+    title: String,
+    content: String,
+    hazeState: HazeState,
+    onDismiss: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        GlassDispersionCard(
+            hazeState = hazeState,
+            modifier = Modifier
+                .widthIn(max = 480.dp)
+                .fillMaxWidth(0.90f),
+            cornerRadius = 24.dp,
+            blurRadius = 30.dp,
+            tintColor = colors.surfaceContainerHigh.copy(alpha = 0.60f),
+            borderAlpha = 0.45f,
+            contentPadding = PaddingValues(20.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.onSurface
+                    )
+                    LiquidGlassButton(
+                        onClick = onDismiss,
+                        hazeState = hazeState,
+                        modifier = Modifier.size(32.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Clear,
+                            contentDescription = "Close",
+                            modifier = Modifier.size(16.dp),
+                            tint = colors.onSurfaceVariant
+                        )
+                    }
+                }
+                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.30f), thickness = 0.8.dp)
+                Text(
+                    text = content,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onSurfaceVariant,
+                    lineHeight = 22.sp
+                )
+                LiquidGlassButton(
+                    onClick = onDismiss,
+                    hazeState = hazeState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(42.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    tintColor = colors.primary.copy(alpha = 0.25f)
+                ) {
+                    Text(
+                        "Close",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.primary
+                    )
                 }
             }
         }
