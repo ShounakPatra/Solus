@@ -356,19 +356,28 @@ object CrashReportManager {
 
         // 2. Open GitHub issue with pre-filled title and structured markdown body
         try {
-            val issueTitle = (titleHint ?: "[Crash Report] Solus Issue").take(100)
+            val issueTitle = (titleHint ?: "[Crash Report] Solus Issue").take(90)
 
-            // Safe budget for Android Intent URL query parameters (~4000 characters)
-            val maxUrlLength = 4000
-            val safeBody = if (reportText.length > maxUrlLength) {
-                val banner = "> [!IMPORTANT]\n" +
-                    "> 📋 **The complete crash debug log, system logcat, and complete device specs were copied to your clipboard.**\n" +
-                    "> *Please paste (Ctrl+V / Long-press -> Paste) in this issue box below to ensure all details are included.*\n\n"
-                val budget = maxUrlLength - banner.length - 200
-                val snippet = reportText.take(budget.coerceAtLeast(600))
-                banner + snippet + "\n\n... *(Log truncated for URL query limit. Paste clipboard here for the full log)*"
-            } else {
-                reportText
+            // Keep the GET query parameter strictly under 400 characters so that even after
+            // double URL-encoding by GitHub's login return_to redirect, the URL remains < 1200 bytes,
+            // preventing HTTP 414 / "Whoops, something went wrong" errors.
+            val errorSummary = reportText.lineSequence()
+                .filter { it.isNotBlank() && !it.startsWith("---") && !it.startsWith("===") }
+                .take(3)
+                .joinToString("\n")
+                .take(180)
+
+            val safeBody = buildString {
+                appendLine("### Description")
+                appendLine("*(Describe what you were doing when the crash occurred)*\n")
+                appendLine("> [!IMPORTANT]")
+                appendLine("> 📋 **The complete crash log & device specifications have been copied to your clipboard.**")
+                appendLine("> Please **paste** (Ctrl+V / Long-press -> Paste) below:\n")
+                if (errorSummary.isNotBlank()) {
+                    appendLine("```")
+                    appendLine(errorSummary)
+                    appendLine("```")
+                }
             }
 
             val encodedTitle = URLEncoder.encode(issueTitle, "UTF-8")

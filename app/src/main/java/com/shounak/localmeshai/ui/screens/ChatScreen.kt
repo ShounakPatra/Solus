@@ -131,6 +131,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -5073,6 +5074,7 @@ internal fun ChatHistoryDrawer(
                         .fillMaxSize()
                         .statusBarsPadding()
                         .navigationBarsPadding()
+                        .imePadding()
                 ) {
                     // Header: Solus Title + Clear All + Search
                     Row(
@@ -5141,8 +5143,20 @@ internal fun ChatHistoryDrawer(
                         OutlinedTextField(
                             value = historyQuery,
                             onValueChange = { historyQuery = it },
-                            placeholder = { Text("Search conversations...") },
+                            placeholder = {
+                                Text(
+                                    "Search conversations...",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            },
                             singleLine = true,
+                            maxLines = 1,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurface
+                            ),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                             leadingIcon = {
                                 Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(20.dp))
                             },

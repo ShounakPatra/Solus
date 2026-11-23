@@ -11,6 +11,7 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -38,6 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -50,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.shounak.localmeshai.BuildConfig
+import com.shounak.localmeshai.R
 import com.shounak.localmeshai.ai.ChatInferenceManager
 import com.shounak.localmeshai.ai.LlamaCppEngine
 import com.shounak.localmeshai.features.WorkspaceAccessibilitySection
@@ -79,6 +82,7 @@ enum class SettingsSubMenu(val title: String, val subtitle: String) {
     MEMORY("Persistent Memory", "Long-term memories and facts across chats"),
     ACCESSIBILITY("Accessibility", "Motion reduction and touch targets"),
     AGENT_TOOLS("Agent & Tools", "Experimental tool calling and skills"),
+    WORKFLOWS("Workflows (Upcoming)", "Automated multi-step pipelines and autonomous agent tasks"),
     RAG("Knowledge Base (RAG)", "Offline document search and neural embeddings"),
     TELEMETRY("Telemetry & Thermal Guard", "Generation speed, battery temp and RAM free"),
     ENGINE("On-Device Engine", "Hardware backend, GPU acceleration and speed tuning"),
@@ -218,6 +222,7 @@ fun SettingsDialog(
             SearchableSetting("Reduce Decorative Motion", "Limit movement and animated transitions", "accessibility motion animation reduce decorative", "APP > Accessibility", SettingsSubMenu.ACCESSIBILITY),
             SearchableSetting("Larger Touch Targets", "Make buttons easier to tap", "accessibility touch targets buttons large comfortable", "APP > Accessibility", SettingsSubMenu.ACCESSIBILITY),
             SearchableSetting("Tool Calling (Experimental)", "Calculator, local date/time, and document search tools", "tools tool calling calculator time function calling agent capabilities", "AGENT > Agent & Tools", SettingsSubMenu.AGENT_TOOLS),
+            SearchableSetting("Workflows (Upcoming)", "Automated multi-step pipelines and autonomous agent tasks", "workflows automation pipelines multi-step agent autonomous chain upcoming", "AGENT > Workflows", SettingsSubMenu.WORKFLOWS),
             SearchableSetting("Web Search", "DuckDuckGo web search provider and API keys", "web search duckduckgo brave tavily internet browsing online", "AGENT > Web search", SettingsSubMenu.WEB_SEARCH),
             SearchableSetting("Tool Skills", "Manage tool skills and capabilities", "skills capabilities plugins agent extensions", "AGENT > Agent & Tools", SettingsSubMenu.AGENT_TOOLS),
             SearchableSetting("RAG Knowledge Base", "Semantically search indexed documents and inject context", "rag knowledge base documents pdf search semantic index context", "AGENT > Knowledge Base (RAG)", SettingsSubMenu.RAG),
@@ -726,6 +731,15 @@ fun SettingsDialog(
                                 )
                                 HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.20f), thickness = 0.6.dp)
                                 SettingsNavRow(
+                                    title = "Workflows",
+                                    subtitle = "Multi-step autonomous agent pipelines",
+                                    trailingValue = "Upcoming",
+                                    icon = Icons.Default.AccountTree,
+                                    iconTint = Color(0xFFAB47BC),
+                                    onClick = { currentSubMenu = SettingsSubMenu.WORKFLOWS }
+                                )
+                                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.20f), thickness = 0.6.dp)
+                                SettingsNavRow(
                                     title = "Telemetry & Thermal Guard",
                                     trailingValue = if (settingsData.enableTelemetryBar) "On" else "Off",
                                     icon = Icons.Default.Speed,
@@ -1058,6 +1072,175 @@ fun SettingsDialog(
                                         OutlinedButton(onClick = { showToolSkills = true }, modifier = Modifier.fillMaxWidth()) {
                                             Text("Manage tool skills")
                                         }
+                                    }
+                                }
+
+                                SettingsSubMenu.WORKFLOWS -> {
+                                    val workflowPurple = Color(0xFFAB47BC)
+                                    val lightPurple = Color(0xFFE1BEE7)
+                                    SettingsCategory(title = "Workflows & Automations", hazeState = hazeState) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .glassEffect(
+                                                    hazeState = hazeState,
+                                                    shape = RoundedCornerShape(20.dp),
+                                                    blurRadius = 24.dp,
+                                                    tintColor = colors.surfaceContainerHigh.copy(alpha = 0.55f),
+                                                    borderAlpha = 0.35f
+                                                )
+                                                .padding(18.dp)
+                                        ) {
+                                            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(46.dp)
+                                                            .clip(RoundedCornerShape(14.dp))
+                                                            .background(workflowPurple.copy(alpha = 0.16f))
+                                                            .border(
+                                                                1.dp,
+                                                                workflowPurple.copy(alpha = 0.40f),
+                                                                RoundedCornerShape(14.dp)
+                                                            ),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.AccountTree,
+                                                            contentDescription = null,
+                                                            tint = Color(0xFFCE93D8),
+                                                            modifier = Modifier.size(24.dp)
+                                                        )
+                                                    }
+
+                                                    Column(
+                                                        modifier = Modifier.weight(1f),
+                                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.SpaceBetween
+                                                        ) {
+                                                            Text(
+                                                                text = "Workflows",
+                                                                style = MaterialTheme.typography.titleMedium,
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = colors.onSurface,
+                                                                maxLines = 1,
+                                                                overflow = TextOverflow.Ellipsis,
+                                                                modifier = Modifier.weight(1f, fill = false)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(8.dp))
+                                                            Surface(
+                                                                shape = RoundedCornerShape(6.dp),
+                                                                color = workflowPurple.copy(alpha = 0.22f),
+                                                                border = BorderStroke(0.8.dp, workflowPurple.copy(alpha = 0.50f))
+                                                            ) {
+                                                                Text(
+                                                                    text = "UPCOMING",
+                                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                                        fontSize = 10.sp,
+                                                                        letterSpacing = 0.8.sp
+                                                                    ),
+                                                                    color = lightPurple,
+                                                                    fontWeight = FontWeight.Bold,
+                                                                    softWrap = false,
+                                                                    maxLines = 1
+                                                                )
+                                                            }
+                                                        }
+                                                        Text(
+                                                            text = "Chain models, prompts, documents, and tools into automated multi-step pipelines.",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = colors.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+
+                                                HorizontalDivider(
+                                                    color = colors.outlineVariant.copy(alpha = 0.25f),
+                                                    thickness = 0.8.dp
+                                                )
+
+                                                Text(
+                                                    text = "What's in Development:",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = colors.onSurface
+                                                )
+
+                                                AboutFeatureItem(
+                                                    icon = Icons.Default.LinearScale,
+                                                    title = "Chained Model Execution",
+                                                    description = "Pipe inputs and outputs across multiple on-device models — such as extracting structured data with Gemma 4, then elaborating with a deep reasoning model.",
+                                                    accentColor = workflowPurple
+                                                )
+
+                                                AboutFeatureItem(
+                                                    icon = Icons.Default.FolderOpen,
+                                                    title = "Batch Document Automations",
+                                                    description = "Ingest entire directories of PDFs or notes to summarize, classify, cross-reference, and index into your local Knowledge Base.",
+                                                    accentColor = workflowPurple
+                                                )
+
+                                                AboutFeatureItem(
+                                                    icon = Icons.Default.AutoMode,
+                                                    title = "Multi-Tool Agent Pipelines",
+                                                    description = "Orchestrate multi-step tasks with Python/JSON recipes, automatic web research validation, calculator routines, and persistent memory updates.",
+                                                    accentColor = workflowPurple
+                                                )
+
+                                                AboutFeatureItem(
+                                                    icon = Icons.Default.Schedule,
+                                                    title = "Scheduled & Conditional Triggers",
+                                                    description = "Run maintenance, memory consolidation, or news aggregation workflows automatically on schedule or when charging.",
+                                                    accentColor = workflowPurple
+                                                )
+
+                                                HorizontalDivider(
+                                                    color = colors.outlineVariant.copy(alpha = 0.25f),
+                                                    thickness = 0.8.dp
+                                                )
+
+                                                LiquidGlassButton(
+                                                    onClick = {
+                                                        CrashReportManager.openNewIssue(
+                                                            context,
+                                                            title = "[Feature Request] Workflows Pipeline Proposal",
+                                                            body = "### Proposed Workflow Use-Case\n(Describe the multi-step workflow or automation you would love to see in Solus)\n\n### Pipeline Steps\n1. \n2. \n3. "
+                                                        )
+                                                    },
+                                                    hazeState = hazeState,
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .height(44.dp)
+                                                        .border(0.9.dp, workflowPurple.copy(alpha = 0.50f), RoundedCornerShape(12.dp)),
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    tintColor = workflowPurple.copy(alpha = 0.20f)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.AddComment,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp),
+                                                        tint = lightPurple
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text(
+                                                        "Suggest a Workflow / Automation",
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = lightPurple
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(24.dp))
                                     }
                                 }
 

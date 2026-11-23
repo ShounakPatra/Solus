@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -244,14 +245,15 @@ fun CrashPromptDialog(
                             onClick = onSend,
                             hazeState = hazeState,
                             shape = RoundedCornerShape(12.dp),
-                            tintColor = colors.primary.copy(alpha = 0.85f),
+                            tintColor = colors.error.copy(alpha = 0.22f),
                             modifier = Modifier
                                 .weight(1.4f)
                                 .height(44.dp)
+                                .border(1.dp, colors.error.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
                         ) {
-                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, tint = colors.onPrimary, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.BugReport, contentDescription = null, tint = colors.error, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Send to Repo", style = MaterialTheme.typography.labelLarge, color = colors.onPrimary)
+                            Text("Send to Repo", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = colors.error)
                         }
                     } else {
                         OutlinedButton(
@@ -267,14 +269,14 @@ fun CrashPromptDialog(
                         Button(
                             onClick = onSend,
                             shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = colors.primary),
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.error),
                             modifier = Modifier
                                 .weight(1.4f)
                                 .height(44.dp)
                         ) {
-                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.BugReport, contentDescription = null, tint = colors.onError, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Send to Repo", style = MaterialTheme.typography.labelLarge)
+                            Text("Send to Repo", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = colors.onError)
                         }
                     }
                 }

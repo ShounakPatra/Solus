@@ -25,6 +25,13 @@ import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.material.icons.filled.Clear
+import com.shounak.localmeshai.utils.GlassDispersionCard
+import com.shounak.localmeshai.utils.glassEffect
 import com.shounak.localmeshai.utils.LiquidGlassButton
 import com.shounak.localmeshai.ui.screens.SettingsSwitchRow
 import com.shounak.localmeshai.ui.screens.SettingsCategory
@@ -257,33 +264,229 @@ private fun ModelProfilesDialog(models: List<ModelInfo>, hazeState: HazeState, o
     var error by remember { mutableStateOf<String?>(null) }
     val busy by ModelRuntimeCoordinator.isRuntimeBusy.collectAsState()
     val gguf = selected.bundle?.isGguf ?: selected.fileName.endsWith(".gguf", true)
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("Model profile") }, text = {
-        Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Box {
-                SettingsGlassAction(selected.name, Icons.Default.ExpandMore, hazeState, onClick = { menu = true })
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.heightIn(max = 260.dp)) {
-                    models.sortedBy { it.name }.forEach { model -> DropdownMenuItem(text = { Text(model.name) }, onClick = { selectedId = model.id; menu = false; error = null }) }
+    val colors = MaterialTheme.colorScheme
+    val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.85f).dp
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        GlassDispersionCard(
+            hazeState = hazeState,
+            modifier = Modifier
+                .widthIn(max = 520.dp)
+                .fillMaxWidth(0.92f),
+            cornerRadius = 24.dp,
+            blurRadius = 30.dp,
+            tintColor = colors.surfaceContainerHigh.copy(alpha = 0.55f),
+            borderAlpha = 0.45f,
+            contentPadding = PaddingValues(20.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxHeight)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Model profile",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.onSurface
+                    )
+                    LiquidGlassButton(
+                        onClick = onDismiss,
+                        hazeState = hazeState,
+                        modifier = Modifier.size(34.dp),
+                        shape = RoundedCornerShape(17.dp),
+                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Clear,
+                            contentDescription = "Close",
+                            modifier = Modifier.size(16.dp),
+                            tint = colors.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // Model Selector Button with Dropdown
+                Box {
+                    SettingsGlassAction(
+                        label = selected.name,
+                        icon = Icons.Default.ExpandMore,
+                        hazeState = hazeState,
+                        onClick = { menu = true }
+                    )
+                    DropdownMenu(
+                        expanded = menu,
+                        onDismissRequest = { menu = false },
+                        modifier = Modifier
+                            .heightIn(max = 260.dp)
+                            .glassEffect(
+                                hazeState = hazeState,
+                                shape = RoundedCornerShape(16.dp),
+                                blurRadius = 24.dp,
+                                tintColor = colors.surfaceContainerHigh.copy(alpha = 0.85f),
+                                borderAlpha = 0.40f
+                            )
+                    ) {
+                        models.sortedBy { it.name }.forEach { model ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        model.name,
+                                        fontWeight = if (model.id == selectedId) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (model.id == selectedId) colors.primary else colors.onSurface
+                                    )
+                                },
+                                onClick = {
+                                    selectedId = model.id
+                                    menu = false
+                                    error = null
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = "Blank fields use model defaults. Saving reloads this model if it is currently selected. Runtime context limits and RAM/device safety checks still apply.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant.copy(alpha = 0.85f)
+                )
+
+                // Input fields styled with glass container colors and smooth rounded corners
+                val fieldColors = OutlinedTextFieldDefaults.colors(
+                    unfocusedContainerColor = colors.surfaceContainerHighest.copy(alpha = 0.28f),
+                    focusedContainerColor = colors.surfaceContainerHighest.copy(alpha = 0.45f),
+                    unfocusedBorderColor = colors.outlineVariant.copy(alpha = 0.35f),
+                    focusedBorderColor = colors.primary.copy(alpha = 0.70f),
+                    unfocusedLabelColor = colors.onSurfaceVariant,
+                    focusedLabelColor = colors.primary
+                )
+                val fieldShape = RoundedCornerShape(14.dp)
+
+                OutlinedTextField(
+                    value = system,
+                    onValueChange = { system = it },
+                    label = { Text("Custom system instructions") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    shape = fieldShape,
+                    colors = fieldColors
+                )
+
+                OutlinedTextField(
+                    value = context,
+                    onValueChange = { context = it },
+                    label = { Text("Context limit (tokens)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = fieldShape,
+                    colors = fieldColors
+                )
+
+                if (gguf) {
+                    OutlinedTextField(
+                        value = temperature,
+                        onValueChange = { temperature = it },
+                        label = { Text("Temperature (0–2)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = fieldShape,
+                        colors = fieldColors
+                    )
+                    OutlinedTextField(
+                        value = topP,
+                        onValueChange = { topP = it },
+                        label = { Text("Top P (0.01–1)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = fieldShape,
+                        colors = fieldColors
+                    )
+                    OutlinedTextField(
+                        value = topK,
+                        onValueChange = { topK = it },
+                        label = { Text("Top K (1–200)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = fieldShape,
+                        colors = fieldColors
+                    )
+                } else {
+                    Text(
+                        text = "Sampling overrides are available for GGUF models. This runtime uses its own sampling defaults.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant.copy(alpha = 0.75f)
+                    )
+                }
+
+                error?.let {
+                    Text(it, color = colors.error, style = MaterialTheme.typography.bodySmall)
+                }
+
+                // Buttons
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    LiquidGlassButton(
+                        onClick = onDismiss,
+                        hazeState = hazeState,
+                        modifier = Modifier.height(44.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f)
+                    ) {
+                        Text("Cancel", style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
+                    }
+
+                    LiquidGlassButton(
+                        onClick = {
+                            try {
+                                fun integer(value: String) = if (value.isBlank()) null else value.toIntOrNull() ?: error("Enter a whole number")
+                                fun decimal(value: String) = if (value.isBlank()) null else value.toFloatOrNull() ?: error("Enter a valid number")
+                                preferences.setProfile(
+                                    selectedId,
+                                    ModelProfile(
+                                        system.trim(),
+                                        integer(context),
+                                        if (gguf) decimal(temperature) else null,
+                                        if (gguf) decimal(topP) else null,
+                                        if (gguf) integer(topK) else null
+                                    )
+                                )
+                                onDismiss()
+                            } catch (problem: Exception) {
+                                error = problem.message
+                            }
+                        },
+                        enabled = !busy,
+                        hazeState = hazeState,
+                        modifier = Modifier
+                            .height(44.dp)
+                            .border(0.9.dp, colors.primary.copy(alpha = 0.55f), RoundedCornerShape(12.dp)),
+                        shape = RoundedCornerShape(12.dp),
+                        tintColor = colors.primary.copy(alpha = 0.25f)
+                    ) {
+                        Text("Save profile", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = colors.primary)
+                    }
                 }
             }
-            Text("Blank fields use model defaults. Saving reloads this model if it is currently selected. Runtime context limits and RAM/device safety checks still apply.", style = MaterialTheme.typography.bodySmall)
-            OutlinedTextField(system, { system = it }, label = { Text("Custom system instructions") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
-            OutlinedTextField(context, { context = it }, label = { Text("Context limit (tokens)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            if (gguf) {
-                OutlinedTextField(temperature, { temperature = it }, label = { Text("Temperature (0–2)") }, singleLine = true)
-                OutlinedTextField(topP, { topP = it }, label = { Text("Top P (0.01–1)") }, singleLine = true)
-                OutlinedTextField(topK, { topK = it }, label = { Text("Top K (1–200)") }, singleLine = true)
-            } else Text("Sampling overrides are available for GGUF models. This runtime uses its own sampling defaults.", style = MaterialTheme.typography.bodySmall)
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         }
-    }, confirmButton = { TextButton(enabled = !busy, onClick = {
-        try {
-            fun integer(value: String) = if (value.isBlank()) null else value.toIntOrNull() ?: error("Enter a whole number")
-            fun decimal(value: String) = if (value.isBlank()) null else value.toFloatOrNull() ?: error("Enter a valid number")
-            preferences.setProfile(selectedId, ModelProfile(system.trim(), integer(context), if (gguf) decimal(temperature) else null,
-                if (gguf) decimal(topP) else null, if (gguf) integer(topK) else null))
-            onDismiss()
-        } catch (problem: Exception) { error = problem.message }
-    }) { Text("Save profile") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+    }
 }
 
 @Composable
@@ -297,6 +500,6 @@ private fun SettingsGlassAction(label: String, icon: ImageVector, hazeState: Haz
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)) {
         Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.primary)
         Spacer(Modifier.width(8.dp))
-        Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.primary)
+        Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
