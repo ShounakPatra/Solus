@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -149,30 +150,34 @@ fun ChatDefaultsSubmenu(
                             appSettings.updateSettings { it.copy(compactAutomaticallyAt = next) }
                         },
                         hazeState = hazeState,
-                        modifier = Modifier.size(44.dp),
+                        modifier = Modifier
+                            .size(42.dp)
+                            .border(1.dp, colors.primary.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
                         shape = RoundedCornerShape(12.dp),
+                        tintColor = colors.primary.copy(alpha = 0.12f),
                         contentPadding = PaddingValues(0.dp)
                     ) {
-                        Text("—", color = colors.onSurface, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text("—", color = colors.primary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     }
 
                     Box(
                         modifier = Modifier
-                            .height(44.dp)
-                            .widthIn(min = 60.dp)
+                            .height(42.dp)
+                            .widthIn(min = 68.dp)
                             .glassEffect(
                                 hazeState = hazeState,
                                 shape = RoundedCornerShape(12.dp),
-                                blurRadius = 14.dp,
-                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.40f),
-                                borderAlpha = 0.25f
+                                blurRadius = 16.dp,
+                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.30f),
+                                borderAlpha = 0.35f
                             )
+                            .border(0.8.dp, colors.outlineVariant.copy(alpha = 0.40f), RoundedCornerShape(12.dp))
                             .padding(horizontal = 14.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = "${settingsData.compactAutomaticallyAt}",
-                            style = MaterialTheme.typography.titleMedium,
+                            style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
                             fontWeight = FontWeight.Bold,
                             color = colors.onSurface
                         )
@@ -184,19 +189,29 @@ fun ChatDefaultsSubmenu(
                             appSettings.updateSettings { it.copy(compactAutomaticallyAt = next) }
                         },
                         hazeState = hazeState,
-                        modifier = Modifier.size(44.dp),
+                        modifier = Modifier
+                            .size(42.dp)
+                            .border(1.dp, colors.primary.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
                         shape = RoundedCornerShape(12.dp),
+                        tintColor = colors.primary.copy(alpha = 0.12f),
                         contentPadding = PaddingValues(0.dp)
                     ) {
-                        Text("+", color = colors.onSurface, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                        Text("+", color = colors.primary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                     }
 
-                    Text(
-                        text = if (settingsData.compactAutomaticallyAt <= 0) "Off" else "${settingsData.compactAutomaticallyAt}%",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = if (settingsData.compactAutomaticallyAt <= 0) colors.onSurfaceVariant else colors.primary
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (settingsData.compactAutomaticallyAt <= 0) colors.surfaceContainerHigh.copy(alpha = 0.5f) else colors.primary.copy(alpha = 0.14f),
+                        border = BorderStroke(0.8.dp, if (settingsData.compactAutomaticallyAt <= 0) colors.outlineVariant.copy(alpha = 0.35f) else colors.primary.copy(alpha = 0.35f))
+                    ) {
+                        Text(
+                            text = if (settingsData.compactAutomaticallyAt <= 0) "Off" else "${settingsData.compactAutomaticallyAt}%",
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (settingsData.compactAutomaticallyAt <= 0) colors.onSurfaceVariant else colors.primary
+                        )
+                    }
                 }
 
                 Text(
@@ -426,18 +441,18 @@ private fun ChatDefaultSliderRow(
             .fillMaxWidth()
             .glassEffect(
                 hazeState = hazeState,
-                shape = RoundedCornerShape(18.dp),
-                blurRadius = 20.dp,
-                tintColor = colors.surfaceContainer.copy(alpha = 0.50f),
-                borderAlpha = 0.35f
+                shape = RoundedCornerShape(20.dp),
+                blurRadius = 24.dp,
+                tintColor = colors.surfaceContainerHigh.copy(alpha = 0.52f),
+                borderAlpha = 0.40f
             ),
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
@@ -451,18 +466,27 @@ private fun ChatDefaultSliderRow(
                     fontWeight = FontWeight.SemiBold,
                     color = colors.onSurface
                 )
-                Text(
-                    text = valueText,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = colors.primary
-                )
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = colors.primary.copy(alpha = 0.14f),
+                    border = BorderStroke(0.8.dp, colors.primary.copy(alpha = 0.35f))
+                ) {
+                    Text(
+                        text = valueText,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace),
+                        fontWeight = FontWeight.Bold,
+                        color = colors.primary
+                    )
+                }
             }
 
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 LiquidGlassButton(
                     onClick = {
@@ -470,24 +494,47 @@ private fun ChatDefaultSliderRow(
                         onValueChange(updated)
                     },
                     hazeState = hazeState,
-                    modifier = Modifier.size(40.dp),
+                    modifier = Modifier
+                        .size(42.dp)
+                        .border(1.dp, colors.primary.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
                     shape = RoundedCornerShape(12.dp),
+                    tintColor = colors.primary.copy(alpha = 0.12f),
                     contentPadding = PaddingValues(0.dp)
                 ) {
-                    Text("—", color = colors.onSurface, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("—", color = colors.primary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
 
-                Slider(
-                    value = value.coerceIn(valueRange.start, valueRange.endInclusive),
-                    onValueChange = onValueChange,
-                    valueRange = valueRange,
-                    modifier = Modifier.weight(1f),
-                    colors = SliderDefaults.colors(
-                        thumbColor = colors.primary,
-                        activeTrackColor = colors.primary,
-                        inactiveTrackColor = colors.surfaceContainerHighest.copy(alpha = 0.60f)
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp)
+                        .glassEffect(
+                            hazeState = hazeState,
+                            shape = RoundedCornerShape(19.dp),
+                            blurRadius = 16.dp,
+                            tintColor = colors.surfaceContainerHighest.copy(alpha = 0.28f),
+                            borderAlpha = 0.30f
+                        )
+                        .border(
+                            0.8.dp,
+                            colors.outlineVariant.copy(alpha = 0.35f),
+                            RoundedCornerShape(19.dp)
+                        )
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Slider(
+                        value = value.coerceIn(valueRange.start, valueRange.endInclusive),
+                        onValueChange = onValueChange,
+                        valueRange = valueRange,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = SliderDefaults.colors(
+                            thumbColor = colors.primary,
+                            activeTrackColor = colors.primary,
+                            inactiveTrackColor = colors.onSurface.copy(alpha = 0.15f)
+                        )
                     )
-                )
+                }
 
                 LiquidGlassButton(
                     onClick = {
@@ -495,11 +542,14 @@ private fun ChatDefaultSliderRow(
                         onValueChange(updated)
                     },
                     hazeState = hazeState,
-                    modifier = Modifier.size(40.dp),
+                    modifier = Modifier
+                        .size(42.dp)
+                        .border(1.dp, colors.primary.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
                     shape = RoundedCornerShape(12.dp),
+                    tintColor = colors.primary.copy(alpha = 0.12f),
                     contentPadding = PaddingValues(0.dp)
                 ) {
-                    Text("+", color = colors.onSurface, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Text("+", color = colors.primary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -507,7 +557,7 @@ private fun ChatDefaultSliderRow(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = colors.onSurfaceVariant
+                    color = colors.onSurfaceVariant.copy(alpha = 0.82f)
                 )
             }
         }

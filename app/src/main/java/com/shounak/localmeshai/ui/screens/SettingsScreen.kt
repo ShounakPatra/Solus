@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
@@ -1951,11 +1952,12 @@ fun SettingsDialog(
                                                     onClick = {
                                                         activeAboutDialog = Pair(
                                                             "What is New in Solus",
+                                                            "• Completely Rebuilt with Rust & Candle: Core model inference, tensor computation, and low-level JNI bindings have been rewritten in Rust for lightning-fast speeds, zero-cost abstractions, memory safety, and minimal battery impact.\n\n" +
+                                                            "• Complete Visual Refreshment: Fluid Liquid Glass design across all menus and dialogs, frosted dispersion cards, dynamic caustics, and responsive haptic interactions.\n\n" +
                                                             "• Autonomous Workflows (Preview): Chain models, prompts, documents, and tools into automated multi-step pipelines.\n\n" +
-                                                            "• Refined Liquid Glass Design: Upgraded frosted dispersion cards, caustics, and reactive light buttons.\n\n" +
                                                             "• Instant Crash Diagnostics & Repo Integration: One-tap reporting with safe URL parameters and full hardware diagnostics.\n\n" +
                                                             "• Persistent Local Memory: Retain facts and context across chats without remote network calls.\n\n" +
-                                                            "• Engine & Model Profile Overrides: Per-model system instructions, sampling params, and hardware acceleration."
+                                                            "• Engine & Model Profile Overrides: Per-model custom system instructions, context limits, and sampling defaults."
                                                         )
                                                     }
                                                 )
@@ -1994,6 +1996,61 @@ fun SettingsDialog(
                                                     subtitle = "Opens github.com in your browser",
                                                     onClick = {
                                                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AppUpdateManager.GITHUB_REPO_URL))
+                                                        context.startActivity(intent)
+                                                    }
+                                                )
+                                            }
+                                        }
+
+                                        // Section: OTHER WORKS
+                                        Text(
+                                            text = "OTHER WORKS BY SHOUNAK",
+                                            style = MaterialTheme.typography.labelMedium.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 12.sp,
+                                                letterSpacing = 1.2.sp
+                                            ),
+                                            color = colors.onSurfaceVariant.copy(alpha = 0.75f),
+                                            modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 0.dp)
+                                        )
+
+                                        // Card: Other Works (Hugging Face)
+                                        Card(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .glassEffect(
+                                                    hazeState = hazeState,
+                                                    shape = RoundedCornerShape(20.dp),
+                                                    blurRadius = 20.dp,
+                                                    tintColor = colors.surfaceContainer.copy(alpha = 0.52f),
+                                                    borderAlpha = 0.35f
+                                                ),
+                                            shape = RoundedCornerShape(20.dp),
+                                            colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+                                        ) {
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                AboutRowAction(
+                                                    icon = Icons.Default.Psychology,
+                                                    title = "Llama-3.1-8B-Refined-Codex-5.5",
+                                                    subtitle = "Fine-tuned coding & reasoning LLM on Hugging Face",
+                                                    onClick = {
+                                                        val intent = Intent(
+                                                            Intent.ACTION_VIEW,
+                                                            Uri.parse("https://huggingface.co/shounakpatra/Llama-3.1-8B-Refined-Codex-5.5")
+                                                        )
+                                                        context.startActivity(intent)
+                                                    }
+                                                )
+                                                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.20f), thickness = 0.6.dp)
+                                                AboutRowAction(
+                                                    icon = Icons.Default.SmartToy,
+                                                    title = "Hugging Face Profile",
+                                                    subtitle = "Explore models & datasets at huggingface.co/shounakpatra",
+                                                    onClick = {
+                                                        val intent = Intent(
+                                                            Intent.ACTION_VIEW,
+                                                            Uri.parse("https://huggingface.co/shounakpatra")
+                                                        )
                                                         context.startActivity(intent)
                                                     }
                                                 )
@@ -2826,6 +2883,8 @@ private fun AboutInfoDialog(
     onDismiss: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
+    val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.82f).dp
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -2833,8 +2892,9 @@ private fun AboutInfoDialog(
         GlassDispersionCard(
             hazeState = hazeState,
             modifier = Modifier
-                .widthIn(max = 480.dp)
-                .fillMaxWidth(0.90f),
+                .widthIn(max = 500.dp)
+                .fillMaxWidth(0.92f)
+                .heightIn(max = maxHeight),
             cornerRadius = 24.dp,
             blurRadius = 30.dp,
             tintColor = colors.surfaceContainerHigh.copy(alpha = 0.60f),
@@ -2842,11 +2902,10 @@ private fun AboutInfoDialog(
             contentPadding = PaddingValues(20.dp)
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // Header (Pinned)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -2861,8 +2920,8 @@ private fun AboutInfoDialog(
                     LiquidGlassButton(
                         onClick = onDismiss,
                         hazeState = hazeState,
-                        modifier = Modifier.size(32.dp),
-                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.size(34.dp),
+                        shape = RoundedCornerShape(17.dp),
                         tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
                         contentPadding = PaddingValues(0.dp)
                     ) {
@@ -2875,18 +2934,37 @@ private fun AboutInfoDialog(
                     }
                 }
                 HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.30f), thickness = 0.8.dp)
-                Text(
-                    text = content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = colors.onSurfaceVariant,
-                    lineHeight = 22.sp
-                )
+
+                // Scrollable Content
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = content,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.onSurfaceVariant,
+                            lineHeight = 22.sp
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.20f), thickness = 0.6.dp)
+
+                // Close Button (Pinned)
                 LiquidGlassButton(
                     onClick = onDismiss,
                     hazeState = hazeState,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(42.dp),
+                        .height(44.dp),
                     shape = RoundedCornerShape(12.dp),
                     tintColor = colors.primary.copy(alpha = 0.25f)
                 ) {
