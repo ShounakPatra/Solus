@@ -2030,17 +2030,17 @@ fun SettingsDialog(
                                                 AboutRowAction(
                                                     icon = Icons.Default.Email,
                                                     title = "Contact support",
-                                                    subtitle = "shounakpatra12@gmail.com",
+                                                    subtitle = "shounakpatra68@gmail.com",
                                                     showChevron = true,
                                                     onClick = {
                                                         try {
                                                             val intent = Intent(Intent.ACTION_SENDTO).apply {
-                                                                data = Uri.parse("mailto:shounakpatra12@gmail.com")
+                                                                data = Uri.parse("mailto:shounakpatra68@gmail.com")
                                                                 putExtra(Intent.EXTRA_SUBJECT, "[Solus App Support] v${BuildConfig.VERSION_NAME}")
                                                             }
                                                             context.startActivity(intent)
                                                         } catch (e: Exception) {
-                                                            Toast.makeText(context, "No email app found: shounakpatra12@gmail.com", Toast.LENGTH_LONG).show()
+                                                            Toast.makeText(context, "No email app found: shounakpatra68@gmail.com", Toast.LENGTH_LONG).show()
                                                         }
                                                     }
                                                 )
@@ -2052,7 +2052,7 @@ fun SettingsDialog(
                                                     showChevron = false,
                                                     onClick = {
                                                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                                                        val clip = ClipData.newPlainText("Support Email", "shounakpatra12@gmail.com")
+                                                        val clip = ClipData.newPlainText("Support Email", "shounakpatra68@gmail.com")
                                                         clipboard?.setPrimaryClip(clip)
                                                         Toast.makeText(context, "Support email copied to clipboard!", Toast.LENGTH_SHORT).show()
                                                     }
