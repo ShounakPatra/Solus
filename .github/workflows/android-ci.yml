@@ -136,3 +136,23 @@ jobs:
           path: app/build/outputs/native-debug-symbols/release/
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Send Browser Notification
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            curl -s \
+              -d "Test, lint, and build passed successfully!" \
+              -H "Title: Solus CI: Succeeded ✅" \
+              -H "Tags: white_check_mark" \
+              -H "Click: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              https://ntfy.sh/solus-ci-patra
+          else
+            curl -s \
+              -d "Test, lint, and build failed. Click to view logs." \
+              -H "Title: Solus CI: Failed ❌" \
+              -H "Tags: x" \
+              -H "Priority: high" \
+              -H "Click: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              https://ntfy.sh/solus-ci-patra
+          fi
