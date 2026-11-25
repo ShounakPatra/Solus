@@ -316,6 +316,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private var analysisGeneration: Int = 0
     private var analysisJob: Job? = null
     private var autoUnloadJob: Job? = null
+    private var chatDefaultsReloadJob: Job? = null
     private var lastAttachedFileName: String? = null
     @Volatile private var resetRuntimeConversationBeforeNextAsk = false
     private var coordinatorToken: RegistrationToken? = null
@@ -634,6 +635,37 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             forceReload = true,
                             bundle = currentBundle
                         )
+                    }
+                }
+        }
+        // Reinitialize active vision model if user modifies chat defaults in settings
+        viewModelScope.launch {
+            appSettings.settings
+                .map {
+                    "${it.defaultTemperature}_${it.defaultTopP}_${it.defaultTopK}_${it.defaultMaxLength}"
+                }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect {
+                    chatDefaultsReloadJob?.cancel()
+                    chatDefaultsReloadJob = viewModelScope.launch {
+                        delay(350L)
+                        val path = currentModelPath
+                        if (path != null && _isModelReady.value) {
+                            Log.i("VisionViewModel", "Chat defaults changed, reloading vision model: $path")
+                            initModel(
+                                path = path,
+                                modelId = currentModelId,
+                                modelName = currentModelName,
+                                modelSize = currentModelSize,
+                                contextWindowTokens = defaultProfileContext,
+                                supportsAudioInput = currentSupportsAudioInput,
+                                supportsThinkingMode = currentSupportsThinkingMode,
+                                allowUnsafeOverride = currentAllowUnsafeOverride,
+                                forceReload = true,
+                                bundle = currentBundle
+                            )
+                        }
                     }
                 }
         }

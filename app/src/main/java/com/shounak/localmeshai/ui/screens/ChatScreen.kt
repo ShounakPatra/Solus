@@ -115,6 +115,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -140,9 +141,11 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.lazy.LazyColumn
@@ -150,10 +153,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.unit.lerp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
@@ -215,6 +223,7 @@ import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.SuggestionChipDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.State
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -278,6 +287,7 @@ import java.io.File
 import java.util.Locale
 import java.util.zip.ZipFile
 import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 enum class HistorySessionType {
@@ -711,15 +721,19 @@ fun ChatScreen(
     }
 
     var attachmentMenuExpanded by rememberSaveable { mutableStateOf(false) }
-    var composerBounds by remember { mutableStateOf(Rect.Zero) }
-    var rootCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
-    var cardCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val composerCoordsHolder = remember {
+        object {
+            var root: LayoutCoordinates? = null
+            var card: LayoutCoordinates? = null
+            var bounds: Rect = Rect.Zero
+        }
+    }
 
     fun updateComposerBounds() {
-        val root = rootCoordinates
-        val card = cardCoordinates
+        val root = composerCoordsHolder.root
+        val card = composerCoordsHolder.card
         if (root != null && card != null && root.isAttached && card.isAttached) {
-            composerBounds = root.localBoundingBoxOf(card)
+            composerCoordsHolder.bounds = root.localBoundingBoxOf(card)
         }
     }
 
@@ -773,52 +787,70 @@ fun ChatScreen(
 
     val onSelectModelAction: (ModelInfo) -> Unit = { model ->
         attachmentMenuExpanded = false
-        val isVisionTarget = model.isMultimodal
-        activeHistoryChatType = null
-        val target = model.localPath ?: model.id
-        if (isVisionTarget) {
-            mainViewModel.selectVisionModel(target)
-            visionViewModel.automaticModelSelection.clear()
-            if (!isVisionModelReady) {
-                val unsafeOverride = mainViewModel.unsafeInitOverrideIds.contains(model.id) || InitCrashGuard.hasSuccessfulRetry(context, model.id)
-                visionViewModel.initModel(
-                    path = target,
-                    modelId = model.id,
-                    modelName = model.name,
-                    modelSize = model.size,
-                    contextWindowTokens = model.effectiveContextWindowTokens,
-                    supportsAudioInput = model.supportsAudio,
-                    supportsThinkingMode = model.thinkingCapability in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled),
-                    allowUnsafeOverride = unsafeOverride,
-                    forceReload = true,
-                    bundle = model.bundle
-                )
+        val isAlreadySelected = selectedModelPath != null &&
+            (model.id == selectedModelPath || model.localPath == selectedModelPath)
+        val isAlreadyInitializedOrBusy = isAlreadySelected &&
+            (isCurrentModelReady || isCurrentModelBusy)
+        if (isAlreadyInitializedOrBusy) {
+            if (isCurrentModelResponding) {
+                Toast.makeText(context, "Stop generating before uninitialising the model", Toast.LENGTH_SHORT).show()
+            } else {
+                mainViewModel.unloadModel(model.id)
+                selectedBitmap = null
+                selectedFileUri = null
+                selectedFileName = null
+                selectedAudioUri = null
+                selectedAudioName = null
+                selectedAudioBytes = null
             }
         } else {
-            mainViewModel.selectTextModel(target)
-            chatViewModel.automaticModelSelection.clear()
-            if (!isModelReady) {
-                val unsafeOverride = mainViewModel.unsafeInitOverrideIds.contains(model.id) || InitCrashGuard.hasSuccessfulRetry(context, model.id)
-                chatViewModel.initModel(
-                    path = target,
-                    modelId = model.id,
-                    modelName = model.name,
-                    modelSize = model.size,
-                    contextWindowTokens = model.effectiveContextWindowTokens,
-                    supportsThinkingMode = model.thinkingCapability in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled),
-                    allowUnsafeOverride = unsafeOverride,
-                    bundle = model.bundle,
-                    deferLoad = false,
-                    forceReload = true
-                )
+            val isVisionTarget = model.isMultimodal
+            activeHistoryChatType = null
+            val target = model.localPath ?: model.id
+            if (isVisionTarget) {
+                mainViewModel.selectVisionModel(target)
+                visionViewModel.automaticModelSelection.clear()
+                if (!isVisionModelReady) {
+                    val unsafeOverride = mainViewModel.unsafeInitOverrideIds.contains(model.id) || InitCrashGuard.hasSuccessfulRetry(context, model.id)
+                    visionViewModel.initModel(
+                        path = target,
+                        modelId = model.id,
+                        modelName = model.name,
+                        modelSize = model.size,
+                        contextWindowTokens = model.effectiveContextWindowTokens,
+                        supportsAudioInput = model.supportsAudio,
+                        supportsThinkingMode = model.thinkingCapability in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled),
+                        allowUnsafeOverride = unsafeOverride,
+                        forceReload = true,
+                        bundle = model.bundle
+                    )
+                }
+            } else {
+                mainViewModel.selectTextModel(target)
+                chatViewModel.automaticModelSelection.clear()
+                if (!isModelReady) {
+                    val unsafeOverride = mainViewModel.unsafeInitOverrideIds.contains(model.id) || InitCrashGuard.hasSuccessfulRetry(context, model.id)
+                    chatViewModel.initModel(
+                        path = target,
+                        modelId = model.id,
+                        modelName = model.name,
+                        modelSize = model.size,
+                        contextWindowTokens = model.effectiveContextWindowTokens,
+                        supportsThinkingMode = model.thinkingCapability in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled),
+                        allowUnsafeOverride = unsafeOverride,
+                        bundle = model.bundle,
+                        deferLoad = false,
+                        forceReload = true
+                    )
+                }
             }
+            selectedBitmap = null
+            selectedFileUri = null
+            selectedFileName = null
+            selectedAudioUri = null
+            selectedAudioName = null
+            selectedAudioBytes = null
         }
-        selectedBitmap = null
-        selectedFileUri = null
-        selectedFileName = null
-        selectedAudioUri = null
-        selectedAudioName = null
-        selectedAudioBytes = null
     }
 
     val onTryAnywayAction: (ModelInfo) -> Unit = { model ->
@@ -1114,10 +1146,11 @@ fun ChatScreen(
     )
     val topControlsDensity = LocalDensity.current
     var topControlsHeight by remember { mutableStateOf(84.dp) }
-    var floatingDockHeight by remember { mutableStateOf(220.dp) }
+    var floatingDockHeight by remember { mutableStateOf(64.dp) }
     val floatingDockDensity = LocalDensity.current
     val floatingBottomInset = floatingDockHeight + 8.dp
-    val hideComposerShortcuts = isKeyboardOpen && attachmentMenuExpanded
+    val restingEmptyStateBottomInset = 68.dp
+    val hideComposerShortcuts = isKeyboardOpen
     val isTemporaryChat = if (effectiveSupportsAttachments) temporaryVision else temporaryText
     val activeSessionState = if (effectiveSupportsAttachments) visionSessionState else chatSessionState
     val isBusyWithInference = activeSessionState.isBusy || isDeletingTextHistory || isDeletingVisionHistory
@@ -1130,47 +1163,72 @@ fun ChatScreen(
         selectedModelPath == null &&
         textMessages.isEmpty()
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                // Chat owns an opaque, full-size background from its first frame.
-                // This prevents window/pager surfaces from showing through while its
-                // model and reveal animations initialise.
-                .background(chatBackground)
-                // A single inset follows the IME animation and never falls below the
-                // floating navigation bar's resting space. Do not add dock padding too.
-                .windowInsetsPadding(WindowInsets.ime.union(WindowInsets(bottom = bottomContentInset)))
-                .onGloballyPositioned {
-                    rootCoordinates = it
-                    updateComposerBounds()
-                }
-                .pointerInput(attachmentMenuExpanded) {
-                    if (!attachmentMenuExpanded) return@pointerInput
-                    awaitPointerEventScope {
-                        while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                            val isTouchDown = event.type == PointerEventType.Press ||
-                                event.changes.any { it.pressed && !it.previousPressed }
-                            if (isTouchDown) {
-                                val change = event.changes.firstOrNull() ?: continue
-                                updateComposerBounds()
-                                if (composerBounds != Rect.Zero && !composerBounds.contains(change.position)) {
-                                    attachmentMenuExpanded = false
-                                    change.consume()
-                                }
+    val showLiveAurora = !hasMessagesInChat && !isPendingChatHold
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned {
+                composerCoordsHolder.root = it
+            }
+            .pointerInput(attachmentMenuExpanded) {
+                if (!attachmentMenuExpanded) return@pointerInput
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val isTouchDown = event.type == PointerEventType.Press ||
+                            event.changes.any { it.pressed && !it.previousPressed }
+                        if (isTouchDown) {
+                            val change = event.changes.firstOrNull() ?: continue
+                            updateComposerBounds()
+                            val bounds = composerCoordsHolder.bounds
+                            if (bounds != Rect.Zero && !bounds.contains(change.position)) {
+                                attachmentMenuExpanded = false
+                                change.consume()
                             }
                         }
                     }
                 }
+            }
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize()
         ) {
-            // LAYER 1: Full-height chat messages & floating composer dock
+            // LAYER 1: Full-bleed haze source (canvas + live aurora + scrollable content)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 16.dp)
             ) {
                 Box(Modifier.fillMaxSize().hazeSource(state = hazeState)) {
+                    // Chat owns an opaque, full-size background from its first frame.
+                    // Placed inside hazeSource so floating Haze controls always blur real pixels.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(chatBackground)
+                    )
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = showLiveAurora,
+                        enter = fadeIn(tween(450)),
+                        exit = fadeOut(tween(300)),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        com.shounak.localmeshai.ui.components.LiveAuroraBackground(
+                            accentColor = if (selectedModelPath != null && appSettingsData.enableDynamicThemes) {
+                                ModelTheme.getAccentColor(selectedModel?.id)
+                            } else null,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            // A single inset follows the IME animation and never falls below the
+                            // floating navigation bar's resting space. Do not add dock padding too.
+                            .windowInsetsPadding(WindowInsets.ime.union(WindowInsets(bottom = bottomContentInset)))
+                            .padding(horizontal = 16.dp)
+                    ) {
                     when {
                         // 1. Prioritise showing messages if they exist (history with no model active).
                         (effectiveSupportsAttachments && visionMessages.isNotEmpty()) ||
@@ -1179,7 +1237,7 @@ fun ChatScreen(
                                 state = listState,
                                 modifier = Modifier
                                     .fillMaxSize(),
-                                contentPadding = PaddingValues(top = topControlsHeight + 8.dp, bottom = floatingBottomInset + 8.dp),
+                                contentPadding = PaddingValues(top = topControlsHeight + 8.dp, bottom = floatingBottomInset + 20.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 if (effectiveSupportsAttachments) {
@@ -1308,7 +1366,7 @@ fun ChatScreen(
                                 subtitle = "Initialise a model to continue",
                                 hazeState = hazeState,
                                 topInset = topControlsHeight,
-                                bottomInset = floatingBottomInset
+                                bottomInset = restingEmptyStateBottomInset
                             )
                         }
                         selectedModelPath == null -> {
@@ -1317,11 +1375,15 @@ fun ChatScreen(
                                 subtitle = if (downloadedChatModels.none { it.status == ModelStatus.Available }) {
                                     "Open Models and download a phone-ready model."
                                 } else {
-                                    "Choose a model above to begin."
-                                },
+                                    "Pick a local model to start private offline chat."
+                                } ,
                                 hazeState = hazeState,
                                 topInset = topControlsHeight,
-                                bottomInset = floatingBottomInset
+                                bottomInset = restingEmptyStateBottomInset,
+                                actionLabel = if (downloadedChatModels.none { it.status == ModelStatus.Available }) "Open Models" else "Select model",
+                                onActionClick = {
+                                    onGoToModels?.invoke()
+                                }
                             )
                         }
                         !canShowChatMessages -> {
@@ -1330,7 +1392,7 @@ fun ChatScreen(
                                 subtitle = if (isCurrentModelBusy) "This usually takes a moment." else "Send a message to load the selected model.",
                                 hazeState = hazeState,
                                 topInset = topControlsHeight,
-                                bottomInset = floatingBottomInset
+                                bottomInset = restingEmptyStateBottomInset
                             )
                         }
                         effectiveSupportsAttachments && visionMessages.isEmpty() -> {
@@ -1339,7 +1401,7 @@ fun ChatScreen(
                                 subtitle = "Use the + inside the chat box to add camera, photos, or files.",
                                 hazeState = hazeState,
                                 topInset = topControlsHeight,
-                                bottomInset = floatingBottomInset
+                                bottomInset = restingEmptyStateBottomInset
                             )
                         }
                         else -> {
@@ -1347,7 +1409,7 @@ fun ChatScreen(
                             StarterPrompts(
                                 hazeState = hazeState,
                                 topInset = topControlsHeight,
-                                bottomInset = floatingBottomInset,
+                                bottomInset = restingEmptyStateBottomInset,
                                 onPromptSelected = { prompt ->
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     chatViewModel.sendMessage(prompt)
@@ -1357,7 +1419,14 @@ fun ChatScreen(
                     }
 
                     }
+                }
 
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.ime.union(WindowInsets(bottom = bottomContentInset)))
+                        .padding(horizontal = 16.dp)
+                ) {
                     // ── Stacked scroll FABs (BottomEnd, BoxScope) ─────────────────
                     // Placed here — outside the when{} branches — so that .align()
                     // is called directly inside BoxScope where it is valid.
@@ -1381,27 +1450,70 @@ fun ChatScreen(
                             },
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)
-                                .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = floatingBottomInset + 8.dp)
+                                .padding(start = 8.dp, end = 12.dp, top = 8.dp, bottom = floatingBottomInset + 18.dp)
                         )
+                    }
+
+                    // ── Chat input box with integrated morphing action row ──
+                    // Collapses to a single compact pill at rest and morphs smoothly into a 2-row
+                    // composer (revealing Model Selector & Thinking) when focused or active.
+                    var isComposerFocused by remember { mutableStateOf(false) }
+                    var isModelMenuOpen by remember { mutableStateOf(false) }
+                    var wasKeyboardOpen by remember { mutableStateOf(false) }
+                    LaunchedEffect(isKeyboardOpen) {
+                        if (wasKeyboardOpen && !isKeyboardOpen && isComposerFocused && !isModelMenuOpen && !attachmentMenuExpanded) {
+                            focusManager.clearFocus()
+                        }
+                        wasKeyboardOpen = isKeyboardOpen
+                    }
+                    val isComposerExpanded = isKeyboardOpen ||
+                        isComposerFocused ||
+                        isModelMenuOpen ||
+                        attachmentMenuExpanded ||
+                        isRecordingAudio ||
+                        hasVisionAttachment ||
+                        pendingLibraryDocument != null ||
+                        isIngestingDocument ||
+                        isDecodingAudioFile ||
+                        textState.contains('\n') ||
+                        textState.length > 32
+                    val composerReduceMotion = com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion
+                    val expandProgressState = animateFloatAsState(
+                        targetValue = if (isComposerExpanded) 1f else 0f,
+                        animationSpec = if (composerReduceMotion) {
+                            androidx.compose.animation.core.snap()
+                        } else {
+                            spring(
+                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                stiffness = 300f,
+                                visibilityThreshold = 0.0005f
+                            )
+                        },
+                        label = "chat_composer_expand_progress"
+                    )
+                    val latestDockHeightHolder = remember { object { var value = floatingDockHeight } }
+                    LaunchedEffect(expandProgressState) {
+                        snapshotFlow { expandProgressState.value }
+                            .collect { p ->
+                                if (p <= 0.001f || p >= 0.999f) {
+                                    floatingDockHeight = latestDockHeightHolder.value
+                                }
+                            }
                     }
 
                     // One transparent dock overlays the scrollable content. Only its individual
                     // controls and the rounded composer paint a surface.
                     Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                        .onSizeChanged { floatingDockHeight = with(floatingDockDensity) { it.height.toDp() } },
+                        .onSizeChanged {
+                            val measured = with(floatingDockDensity) { it.height.toDp() }
+                            latestDockHeightHolder.value = measured
+                            val p = expandProgressState.value
+                            if (p <= 0.001f || p >= 0.999f) {
+                                floatingDockHeight = measured
+                            }
+                        },
                         verticalArrangement = Arrangement.spacedBy(2.dp)) {
 
-
-
-
-                // ── Chat input box with integrated thinking toggle ──
-                // Root IME insets keep this floating dock above the keyboard.
-                // Blur the content behind the rounded floating composer.
-                val composerCorner by animateDpAsState(
-                    targetValue = if (isKeyboardOpen) 28.dp else 30.dp,
-                    animationSpec = spring(dampingRatio = 0.88f, stiffness = 520f),
-                    label = "chat_composer_corner"
-                )
                 val composerMaxHeight by animateDpAsState(
                     targetValue = when {
                         isRecordingAudio -> 240.dp
@@ -1410,11 +1522,20 @@ fun ChatScreen(
                         hasVisionAttachment -> if (isKeyboardOpen) 320.dp else 380.dp
                         else -> 280.dp
                     },
-                    animationSpec = spring(dampingRatio = 0.86f, stiffness = 420f),
+                    animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 320f),
                     label = "chat_composer_max_height"
                 )
                 val composerTint = MaterialTheme.colorScheme.surfaceContainerHigh
-                val composerShape = RoundedCornerShape(composerCorner)
+                val composerShape = remember(expandProgressState) {
+                    RoundedCornerShape(
+                        object : CornerSize {
+                            override fun toPx(shapeSize: Size, density: androidx.compose.ui.unit.Density): Float {
+                                val t = expandProgressState.value.coerceIn(0f, 1f)
+                                return with(density) { lerp(26.dp, 22.dp, t).toPx() }
+                            }
+                        }
+                    )
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1426,15 +1547,14 @@ fun ChatScreen(
                             initialXOffset = 8.dp,
                             initialRotationZ = 0.55f
                         )
-                        .padding(bottom = if (isKeyboardOpen) 2.dp else 4.dp)
+                        .padding(bottom = 4.dp)
                         .clip(composerShape)
                         // Register the whole panel for hit testing so blank glass areas
                         // cannot activate prompt suggestions underneath. Children keep
                         // handling their own taps, text selection and scrolling.
                         .pointerInput(Unit) { detectTapGestures(onTap = {}) }
                         .onGloballyPositioned {
-                            cardCoordinates = it
-                            updateComposerBounds()
+                            composerCoordsHolder.card = it
                         }
                 ) {
                     // Keep the backdrop separate from the text field and animated controls.
@@ -1444,13 +1564,13 @@ fun ChatScreen(
                             .clip(composerShape)
                             .hazeEffect(state = hazeState, style = HazeStyle(
                                 backgroundColor = MaterialTheme.colorScheme.surface,
-                                blurRadius = 28.dp,
-                                tint = HazeTint(composerTint.copy(alpha = 0.28f)),
-                                noiseFactor = 0.04f
+                                blurRadius = 30.dp,
+                                tint = HazeTint(composerTint.copy(alpha = 0.22f)),
+                                noiseFactor = 0.06f
                             ))
-                            .border(0.8.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.48f), composerShape)
+                            .border(0.9.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.48f), composerShape)
                     )
-                    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp)) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
                         if (selectedBitmap != null && selectedBitmap?.isRecycled == false) {
                             var previewTilted by remember(selectedBitmap) { mutableStateOf(false) }
                             LaunchedEffect(selectedBitmap) {
@@ -1783,179 +1903,213 @@ fun ChatScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                         }
 
-                        if (isRecordingAudio) {
-                            RecordingComposerPanel(
-                                loudnessHistory = recordingLoudnessHistory,
-                                elapsedMs = recordingElapsedMs,
-                                limitMs = audioRecordLimitMs,
-                                isPaused = isRecordingPaused,
-                                onTogglePause = { togglePauseMicRecording() },
-                                onCancel = { cancelMicRecording() },
-                                onDone = { stopAndSaveMicRecording() }
-                            )
-                        } else {
-                            val charCount = textState.length
-
-                            OutlinedTextField(
-                                value = textState,
-                                onValueChange = chatViewModel::setDraftText,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 52.dp, max = 160.dp),
-                                placeholder = {
-                                    Text(
-                                        text = if (selectedSupportsAttachments) {
-                                            "Ask about an image, file, or audio…"
-                                        } else {
-                                            "Ask something…"
-                                        },
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                },
-                                enabled = canEditDraft,
-                                minLines = 1,
-                                maxLines = 6,
-                                shape = RoundedCornerShape(12.dp),
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-                                textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                    color = MaterialTheme.colorScheme.onSurface
-                                ),
-                                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                                    unfocusedBorderColor = androidx.compose.ui.graphics.Color.Transparent,
-                                    focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
-                                    unfocusedContainerColor = Color.Transparent,
-                                    focusedContainerColor = Color.Transparent,
-                                    focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                                    unfocusedTextColor = MaterialTheme.colorScheme.onSurface
-                                ),
-                                supportingText = if (charCount > 300) ({
-                                    Text(
-                                        "$charCount chars",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }) else null
-                            )
-
-                            Spacer(modifier = Modifier.height(4.dp))
-
-                            ChatComposerActions(
-                                models = downloadedChatModels,
-                                validationStates = validationStates,
-                                selectedModelPath = selectedModelPath,
-                                isModelReady = isCurrentModelReady,
-                                isInitializing = if (effectiveSupportsAttachments) isVisionInitializing else isInitializing,
-                                onSelectModel = onSelectModelAction,
-                                onTryAnyway = onTryAnywayAction,
-                                onGoToModels = onGoToModels,
-                                modifier = if (hideComposerShortcuts) Modifier.weight(1f, fill = false) else Modifier,
-                                compactAttachmentMenu = hideComposerShortcuts,
-                                thinkingMode = thinkingMode,
-                                thinkingCapability = selectedThinkingCapability,
-                                isCheckingThinking = isCheckingThinking,
-                                canSend = !isDeletingTextHistory && !isDeletingVisionHistory && selectedModelPath != null &&
-                                    !isCurrentModelResponding &&
-                                    !isDecodingAudioFile &&
-                                    (hasVisionAttachment || textState.isNotBlank()),
-                                isGenerating = if (effectiveSupportsAttachments) isVisionAnalyzing else (isGenerating || isInitializing),
-                                canThink = isCurrentModelReady && runtimeSnapshot != null && selectedSupportsThinking && !isCurrentModelResponding,
-                                supportsAttachments = selectedModelPath != null,
-                                hasAttachment = hasVisionAttachment,
-                                supportsVision = effectiveSupportsAttachments && runtimeSnapshot?.capabilities?.supportsVision == true,
-                                supportsAudioInput = effectiveSupportsAttachments && selectedSupportsAudio,
-                                visionDisabledReason = when {
-                                    selectedModel == null -> "Select a model"
-                                    !effectiveSupportsAttachments -> "Start a multimodal chat to use images or audio"
-                                    !isCurrentModelReady -> "Initialize the model to use images"
-                                    runtimeSnapshot?.capabilities?.supportsVision != true -> "Image input unavailable in this runtime"
-                                    else -> null
-                                },
-                                hazeState = hazeState,
-                                attachmentMenuExpanded = attachmentMenuExpanded,
-                                onToggleAttachmentMenu = { attachmentMenuExpanded = it },
-                                onToggleThinking = { enabled ->
-                                    chatViewModel.setThinkingMode(enabled)
-                                    visionViewModel.setThinkingMode(enabled)
-                                },
-                                onCameraSelect = {
-                                    val request = createCameraCaptureRequest(context)
-                                    cameraTempFilePath = request.file.absolutePath
-                                    cameraLauncher.launch(request.uri)
-                                },
-                                onPhotosSelect = { imagePicker.launch("image/*") },
-                                onAudioSelect = { audioFilePicker.launch(arrayOf("audio/*", "application/ogg")) },
-                                onFilesSelect = { filePicker.launch(arrayOf("*/*")) },
-                                onKnowledgeBaseSelect = { showKnowledgeBase = true },
-                                onMicRecord = {
-                                    if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                                        startMicRecording()
-                                    } else {
-                                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                    }
-                                },
-                                onMicUnavailable = {
-                                    chatViewModel.setDraftText(textState.ifBlank {
-                                        when {
-                                            selectedModelPath == null -> "Choose an audio-capable multimodal model first."
-                                            selectedModel?.type != ModelType.Vision -> "${selectedModel?.name ?: "Selected model"} is a text-only model. Raw audio input needs a multimodal model with audio encoders, such as Gemma 4 or Gemma 3n."
-                                            else -> "${selectedModel.name} does not include audio encoder assets in this downloaded bundle."
-                                        }
-                                    })
-                                },
-                                onSend = send@ {
-                                    if (!effectiveSupportsAttachments && (selectedBitmap != null || selectedAudioUri != null || selectedAudioBytes?.isNotEmpty() == true)) {
-                                        android.widget.Toast.makeText(context, "Start a multimodal chat to send the image or audio. Your draft was kept.", android.widget.Toast.LENGTH_LONG).show()
-                                        return@send
-                                    }
-                                    attachmentMenuExpanded = false
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    val documentUri = selectedFileUri
-                                    val documentName = selectedFileName ?: "document"
-                                    val accepted = if (effectiveSupportsAttachments) {
-                                        visionViewModel.ask(
-                                            bitmap = selectedBitmap,
-                                            question = textState.trim(),
-                                            fileUri = documentUri,
-                                            fileName = if (documentUri != null) documentName else null,
-                                            audioUri = selectedAudioUri,
-                                            audioName = selectedAudioName,
-                                            audioBytes = selectedAudioBytes,
-                                            thinkingMode = thinkingMode)
-                                    } else {
-                                        chatViewModel.sendMessage(
-                                            text = textState.trim(), documentUri = documentUri,
-                                            documentName = if (documentUri != null) documentName else null)
-                                    }
-                                    if (accepted) {
-                                        scrollController.onUserMessageSent()
-                                        selectedBitmap = null
-                                        selectedFileUri = null
-                                        selectedFileName = null
-                                        selectedAudioUri = null
-                                        selectedAudioName = null
-                                        selectedAudioBytes = null
-                                        chatViewModel.clearDraftText()
-                                    }
-                                },
-                                onStop = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    if (effectiveSupportsAttachments) {
-                                        visionViewModel.stopAnalyzing()
-                                    } else {
-                                        chatViewModel.stopGenerating()
-                                    }
-                                }
-                            )
+                        val charCount = textState.length
+                        val canSendMessage = !isDeletingTextHistory && !isDeletingVisionHistory && selectedModelPath != null &&
+                            !isCurrentModelResponding &&
+                            !isDecodingAudioFile &&
+                            (hasVisionAttachment || textState.isNotBlank())
+                        val composerGenerating = if (effectiveSupportsAttachments) isVisionAnalyzing else (isGenerating || isInitializing)
+                        val composerCanThink = isCurrentModelReady && runtimeSnapshot != null && selectedSupportsThinking && !isCurrentModelResponding
+                        val composerSupportsVision = effectiveSupportsAttachments && runtimeSnapshot?.capabilities?.supportsVision == true
+                        val composerSupportsAudioInput = effectiveSupportsAttachments && selectedSupportsAudio
+                        val composerVisionDisabledReason = when {
+                            selectedModel == null -> "Select a model"
+                            !effectiveSupportsAttachments -> "Start a multimodal chat to use images or audio"
+                            !isCurrentModelReady -> "Initialize the model to use images"
+                            runtimeSnapshot?.capabilities?.supportsVision != true -> "Image input unavailable in this runtime"
+                            else -> null
                         }
+
+                        MorphingChatComposer(
+                            expandProgressState = expandProgressState,
+                            isRecordingAudio = isRecordingAudio,
+                            inputSlot = {
+                                if (isRecordingAudio) {
+                                    RecordingComposerPanel(
+                                        loudnessHistory = recordingLoudnessHistory,
+                                        elapsedMs = recordingElapsedMs,
+                                        limitMs = audioRecordLimitMs,
+                                        isPaused = isRecordingPaused,
+                                        onTogglePause = { togglePauseMicRecording() },
+                                        onCancel = { cancelMicRecording() },
+                                        onDone = { stopAndSaveMicRecording() }
+                                    )
+                                } else {
+                                    BasicTextField(
+                                        value = textState,
+                                        onValueChange = chatViewModel::setDraftText,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .onFocusChanged { isComposerFocused = it.isFocused },
+                                        enabled = canEditDraft,
+                                        minLines = 1,
+                                        maxLines = 6,
+                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        ),
+                                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                        decorationBox = { innerTextField ->
+                                            Column(modifier = Modifier.fillMaxWidth()) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .heightIn(min = 40.dp, max = 160.dp)
+                                                        .padding(horizontal = 4.dp, vertical = 8.dp),
+                                                    contentAlignment = Alignment.CenterStart
+                                                ) {
+                                                    if (textState.isEmpty()) {
+                                                        Text(
+                                                            text = when {
+                                                                selectedModelPath == null -> "Select a model to start chatting..."
+                                                                selectedSupportsAttachments -> "Ask about an image, file, or audio…"
+                                                                else -> "Ask something…"
+                                                            },
+                                                            style = MaterialTheme.typography.bodyLarge,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    }
+                                                    innerTextField()
+                                                }
+                                                if (charCount > 300) {
+                                                    Text(
+                                                        "$charCount chars",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        modifier = Modifier.padding(start = 4.dp, bottom = 2.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    )
+                                }
+                            },
+                            models = downloadedChatModels,
+                            validationStates = validationStates,
+                            selectedModelPath = selectedModelPath,
+                            isModelReady = isCurrentModelReady,
+                            isInitializing = if (effectiveSupportsAttachments) isVisionInitializing else isInitializing,
+                            onSelectModel = onSelectModelAction,
+                            onTryAnyway = onTryAnywayAction,
+                            onGoToModels = onGoToModels,
+                            onModelMenuExpandedChange = { isModelMenuOpen = it },
+                            compactAttachmentMenu = hideComposerShortcuts,
+                            thinkingMode = thinkingMode,
+                            thinkingCapability = selectedThinkingCapability,
+                            isCheckingThinking = isCheckingThinking,
+                            canSend = canSendMessage,
+                            isGenerating = composerGenerating,
+                            canThink = composerCanThink,
+                            supportsAttachments = selectedModelPath != null,
+                            hasAttachment = hasVisionAttachment,
+                            supportsVision = composerSupportsVision,
+                            supportsAudioInput = composerSupportsAudioInput,
+                            visionDisabledReason = composerVisionDisabledReason,
+                            hazeState = hazeState,
+                            attachmentMenuExpanded = attachmentMenuExpanded,
+                            onToggleAttachmentMenu = { attachmentMenuExpanded = it },
+                            onToggleThinking = { enabled ->
+                                chatViewModel.setThinkingMode(enabled)
+                                visionViewModel.setThinkingMode(enabled)
+                            },
+                            onCameraSelect = {
+                                val request = createCameraCaptureRequest(context)
+                                cameraTempFilePath = request.file.absolutePath
+                                cameraLauncher.launch(request.uri)
+                            },
+                            onPhotosSelect = { imagePicker.launch("image/*") },
+                            onAudioSelect = { audioFilePicker.launch(arrayOf("audio/*", "application/ogg")) },
+                            onFilesSelect = { filePicker.launch(arrayOf("*/*")) },
+                            onKnowledgeBaseSelect = { showKnowledgeBase = true },
+                            onMicRecord = {
+                                if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                    startMicRecording()
+                                } else {
+                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            },
+                            onMicUnavailable = {
+                                chatViewModel.setDraftText(textState.ifBlank {
+                                    when {
+                                        selectedModelPath == null -> "Choose an audio-capable multimodal model first."
+                                        selectedModel?.type != ModelType.Vision -> "${selectedModel?.name ?: "Selected model"} is a text-only model. Raw audio input needs a multimodal model with audio encoders, such as Gemma 4 or Gemma 3n."
+                                        else -> "${selectedModel.name} does not include audio encoder assets in this downloaded bundle."
+                                    }
+                                })
+                            },
+                            onSend = send@{
+                                if (!effectiveSupportsAttachments && (selectedBitmap != null || selectedAudioUri != null || selectedAudioBytes?.isNotEmpty() == true)) {
+                                    Toast.makeText(context, "Start a multimodal chat to send the image or audio. Your draft was kept.", Toast.LENGTH_LONG).show()
+                                    return@send
+                                }
+                                attachmentMenuExpanded = false
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                val documentUri = selectedFileUri
+                                val documentName = selectedFileName ?: "document"
+                                val accepted = if (effectiveSupportsAttachments) {
+                                    visionViewModel.ask(
+                                        bitmap = selectedBitmap,
+                                        question = textState.trim(),
+                                        fileUri = documentUri,
+                                        fileName = if (documentUri != null) documentName else null,
+                                        audioUri = selectedAudioUri,
+                                        audioName = selectedAudioName,
+                                        audioBytes = selectedAudioBytes,
+                                        thinkingMode = thinkingMode
+                                    )
+                                } else {
+                                    chatViewModel.sendMessage(
+                                        text = textState.trim(),
+                                        documentUri = documentUri,
+                                        documentName = if (documentUri != null) documentName else null
+                                    )
+                                }
+                                if (accepted) {
+                                    scrollController.onUserMessageSent()
+                                    selectedBitmap = null
+                                    selectedFileUri = null
+                                    selectedFileName = null
+                                    selectedAudioUri = null
+                                    selectedAudioName = null
+                                    selectedAudioBytes = null
+                                    chatViewModel.clearDraftText()
+                                }
+                            },
+                            onStop = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                if (effectiveSupportsAttachments) {
+                                    visionViewModel.stopAnalyzing()
+                                } else {
+                                    chatViewModel.stopGenerating()
+                                }
+                            }
+                        )
                     }
+                }
                 }
             }
 
             // LAYER 2: Floating top controls (aligned at TopCenter over message list)
+            val topScrimTopAlpha by animateFloatAsState(
+                targetValue = if (hasMessagesInChat) 0.94f else 0f,
+                animationSpec = tween(280),
+                label = "chat_top_scrim_alpha"
+            )
             Column(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            colors = listOf(
+                                MaterialTheme.colorScheme.background.copy(alpha = topScrimTopAlpha),
+                                MaterialTheme.colorScheme.background.copy(alpha = topScrimTopAlpha * 0.72f),
+                                Color.Transparent
+                            )
+                        )
+                    )
                     .onSizeChanged { topControlsHeight = with(topControlsDensity) { it.height.toDp() } },
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -2003,7 +2157,7 @@ fun ChatScreen(
                 }
 
                 val activeModelPath = if (effectiveSupportsAttachments) selectedVisionModelPath else selectedTextModelPath
-                val runtimeStatus = if (activeModelPath == null) "Not loaded" else when (activeSessionState) {
+                val runtimeStatus = if (activeModelPath == null) "No model" else when (activeSessionState) {
                     is InferenceSessionState.Idle -> "Not loaded"
                     is InferenceSessionState.Preparing -> "Preparing…"
                     is InferenceSessionState.Ready -> "Ready"
@@ -2088,6 +2242,7 @@ fun ChatScreen(
                                     batteryTempC = batteryTempC,
                                     availableRamMb = availableRamMb,
                                     accentColor = modelAccentColor,
+                                    hazeState = hazeState,
                                     contextIndicator = if (showContextIndicator) {
                                         { com.shounak.localmeshai.features.ContextUsageIndicator(contextBudget) }
                                     } else null
@@ -2382,16 +2537,27 @@ private fun StarterPrompts(hazeState: HazeState, topInset: Dp = 0.dp, bottomInse
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = topInset + 16.dp, bottom = 16.dp + bottomInset),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically)
     ) {
-        item(key = "starter_title") {
-            Text("Start a private conversation", style = MaterialTheme.typography.titleMedium,
-                textAlign = TextAlign.Center)
-        }
-        item(key = "starter_description") {
-            Text("Everything runs on-device. Nothing leaves your phone.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        item(key = "starter_header") {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.padding(bottom = 6.dp)
+            ) {
+                Text(
+                    text = "Start a private conversation",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = "Everything runs on-device. Nothing leaves your phone.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
         }
         items(prompts.size, key = { prompts[it] }) { index ->
             val prompt = prompts[index]
@@ -2417,7 +2583,10 @@ private fun StarterPrompts(hazeState: HazeState, topInset: Dp = 0.dp, bottomInse
 }
 
 @Composable
-private fun ChatComposerActions(
+private fun MorphingChatComposer(
+    expandProgressState: State<Float>,
+    isRecordingAudio: Boolean,
+    inputSlot: @Composable () -> Unit,
     models: List<ModelInfo>,
     validationStates: Map<String, ModelValidationState>,
     selectedModelPath: String?,
@@ -2426,6 +2595,7 @@ private fun ChatComposerActions(
     onSelectModel: (ModelInfo) -> Unit,
     onTryAnyway: (ModelInfo) -> Unit,
     onGoToModels: (() -> Unit)? = null,
+    onModelMenuExpandedChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
     compactAttachmentMenu: Boolean = false,
     thinkingMode: Boolean,
@@ -2455,7 +2625,6 @@ private fun ChatComposerActions(
 ) {
     val sendAnimationScope = rememberCoroutineScope()
     val rocketFlight = remember { Animatable(0f) }
-    var isRocketFlying by remember { mutableStateOf(false) }
     val sendAnimationDensity = LocalDensity.current
     val attachmentMenuOpen = attachmentMenuExpanded
     LaunchedEffect(supportsAttachments) {
@@ -2482,17 +2651,12 @@ private fun ChatComposerActions(
         isToggleable -> thinkingMode
         else -> false
     }
-    val thinkButtonText = when {
-        isModelControlled -> "Thinking"
-        isUnknown || isUnsupported -> "Think"
-        thinkActive -> "Think on"
-        else -> "Think off"
-    }
     val thinkContentColor = when {
         isUnknown || isUnsupported -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
         thinkActive -> MaterialTheme.colorScheme.onPrimaryContainer
         else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.86f)
     }
+
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -2500,262 +2664,332 @@ private fun ChatComposerActions(
         androidx.compose.animation.AnimatedVisibility(
             visible = attachmentMenuOpen,
             modifier = if (compactAttachmentMenu) Modifier.weight(1f, fill = false) else Modifier,
-            enter = androidx.compose.animation.fadeIn(animationSpec = tween(120)) +
-                androidx.compose.animation.scaleIn(
-                    initialScale = 0.82f,
+            enter = androidx.compose.animation.fadeIn(animationSpec = tween(150)) +
+                androidx.compose.animation.expandVertically(
+                    expandFrom = Alignment.Bottom,
                     animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioLowBouncy,
-                        stiffness = Spring.StiffnessMedium
-                    )
-                ) +
-                androidx.compose.animation.slideInVertically(
-                    initialOffsetY = { -it / 2 },
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioLowBouncy,
-                        stiffness = Spring.StiffnessMediumLow
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = 340f
                     )
                 ),
-            exit = androidx.compose.animation.fadeOut(animationSpec = tween(100)) +
-                androidx.compose.animation.scaleOut(
-                    targetScale = 0.88f,
+            exit = androidx.compose.animation.fadeOut(animationSpec = tween(130)) +
+                androidx.compose.animation.shrinkVertically(
+                    shrinkTowards = Alignment.Bottom,
                     animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessMedium
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = 360f
                     )
                 )
         ) {
             Box(Modifier.verticalScroll(rememberScrollState())) {
-            AttachmentInlineMenu(
-                hazeState = hazeState,
-                supportsVision = supportsVision,
-                supportsAudio = supportsAudioInput,
-                visionDisabledReason = visionDisabledReason,
-                onCameraSelect = {
-                    onToggleAttachmentMenu(false)
-                    onCameraSelect()
-                },
-                onPhotosSelect = {
-                    onToggleAttachmentMenu(false)
-                    onPhotosSelect()
-                },
-                onAudioSelect = {
-                    onToggleAttachmentMenu(false)
-                    onAudioSelect()
-                },
-                onFilesSelect = {
-                    onToggleAttachmentMenu(false)
-                    onFilesSelect()
-                },
-                onKnowledgeBaseSelect = {
-                    onToggleAttachmentMenu(false)
-                    onKnowledgeBaseSelect()
-                }
-            )
+                AttachmentInlineMenu(
+                    hazeState = hazeState,
+                    supportsVision = supportsVision,
+                    supportsAudio = supportsAudioInput,
+                    visionDisabledReason = visionDisabledReason,
+                    onCameraSelect = {
+                        onToggleAttachmentMenu(false)
+                        onCameraSelect()
+                    },
+                    onPhotosSelect = {
+                        onToggleAttachmentMenu(false)
+                        onPhotosSelect()
+                    },
+                    onAudioSelect = {
+                        onToggleAttachmentMenu(false)
+                        onAudioSelect()
+                    },
+                    onFilesSelect = {
+                        onToggleAttachmentMenu(false)
+                        onFilesSelect()
+                    },
+                    onKnowledgeBaseSelect = {
+                        onToggleAttachmentMenu(false)
+                        onKnowledgeBaseSelect()
+                    }
+                )
+            }
         }
-        }
-        Row(
+
+        val showSendButton = canSend || isGenerating
+        val canRecordAudio = supportsAttachments && supportsAudioInput
+
+        Layout(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            // Attachment Button (+)
-            Box {
-                LiquidGlassButton(
-                    onClick = {
-                        onToggleAttachmentMenu(!attachmentMenuExpanded)
-                    },
-                    hazeState = hazeState,
-                    enabled = supportsAttachments,
-                    modifier = Modifier
-                        .size(40.dp)
-                        .dropdownTriggerBounce(attachmentMenuOpen),
-                    shape = CircleShape,
-                    tintColor = when {
-                        hasAttachment || attachmentMenuOpen -> MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
-                        else -> MaterialTheme.colorScheme.surfaceContainerHighest
-                    },
-                    contentPadding = PaddingValues(0.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = if (attachmentMenuOpen) {
-                            "Close attachments"
-                        } else if (supportsAttachments) {
-                            "Add image, audio, or file"
-                        } else {
-                            "Selected model does not support attachments"
-                        },
-                        modifier = Modifier
-                            .size(22.dp)
-                            .rotate(attachmentIconRotation),
-                        tint = if (supportsAttachments) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.48f)
-                    )
+            content = {
+                // Slot 0: Input field (stays mounted at fixed tree index to preserve IME focus)
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    inputSlot()
                 }
-            }
 
-            // Model Selector Pill (Positioned right inside composer action row)
-            ComposerModelPicker(
-                models = models,
-                selectedPath = selectedModelPath,
-                isModelReady = isModelReady,
-                isInitializing = isInitializing,
-                onSelect = onSelectModel,
-                validationStates = validationStates,
-                onTryAnyway = onTryAnyway,
-                onGoToModels = onGoToModels,
-                hazeState = hazeState
-            )
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            // Thinking Mode Toggle (if available)
-            if (canThink && (isToggleable || isModelControlled)) {
-                LiquidGlassButton(
-                    onClick = {
-                        if (thinkButtonEnabled) {
-                            onToggleThinking(!thinkingMode)
-                        }
-                    },
-                    hazeState = hazeState,
-                    enabled = thinkButtonEnabled,
-                    modifier = Modifier
-                        .height(38.dp)
-                        .dropdownTriggerBounce(thinkActive),
-                    shape = RoundedCornerShape(19.dp),
-                    tintColor = when {
-                        thinkActive -> MaterialTheme.colorScheme.primaryContainer
-                        thinkButtonEnabled -> MaterialTheme.colorScheme.surfaceContainerHighest
-                        else -> MaterialTheme.colorScheme.surfaceContainerLow
-                    },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Psychology,
-                        contentDescription = when {
-                            isModelControlled -> "Model-controlled thinking"
-                            isUnknown && isCheckingThinking -> "Checking thinking capability"
-                            isUnknown -> "Thinking capability has not been verified"
-                            isUnsupported -> "Selected model does not support thinking mode"
-                            thinkActive -> "Disable thinking mode"
-                            else -> "Enable thinking mode"
-                        },
-                        tint = thinkContentColor,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    if (thinkActive) {
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            text = "Think",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = thinkContentColor,
-                            maxLines = 1
-                        )
-                    }
-                }
-            }
-
-            // Record Voice or Send Button: Smoothly replaced when typing or ready to send
-            val showSendButton = canSend || isGenerating
-            val canRecordAudio = supportsAttachments && supportsAudioInput
-
-            AnimatedContent(
-                targetState = showSendButton,
-                transitionSpec = {
-                    (fadeIn(tween(180)) + scaleIn(initialScale = 0.85f)) togetherWith
-                    (fadeOut(tween(130)) + scaleOut(targetScale = 0.85f))
-                },
-                label = "composer_action_mic_or_send"
-            ) { isSend ->
-                if (isSend) {
+                // Slot 1: Attachment (+) button
+                Box {
                     LiquidGlassButton(
                         onClick = {
-                            when {
-                                isGenerating -> onStop()
-                                canSend -> {
-                                    onSend()
-                                    sendAnimationScope.launch {
-                                        rocketFlight.snapTo(0f)
-                                        rocketFlight.animateTo(
-                                            targetValue = 1f,
-                                            animationSpec = tween(durationMillis = 190)
-                                        )
-                                        rocketFlight.animateTo(
-                                            targetValue = 0f,
-                                            animationSpec = spring(
-                                                dampingRatio = Spring.DampingRatioLowBouncy,
-                                                stiffness = Spring.StiffnessMediumLow
-                                            )
-                                        )
-                                    }
-                                }
-                            }
+                            onToggleAttachmentMenu(!attachmentMenuExpanded)
                         },
                         hazeState = hazeState,
-                        enabled = isGenerating || canSend,
+                        enabled = supportsAttachments,
                         modifier = Modifier
-                            .size(42.dp)
-                            .graphicsLayer {
-                                val flight = rocketFlight.value
-                                translationX = with(sendAnimationDensity) { (flight * 8f).dp.toPx() }
-                                translationY = with(sendAnimationDensity) { (-flight * 36f).dp.toPx() }
-                                rotationZ = flight * 12f
-                                scaleX = 1f - flight * 0.16f
-                                scaleY = 1f - flight * 0.16f
-                            },
+                            .size(40.dp)
+                            .dropdownTriggerBounce(attachmentMenuOpen),
                         shape = CircleShape,
-                        tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        androidx.compose.animation.Crossfade(
-                            targetState = isGenerating,
-                            animationSpec = tween(180),
-                            label = "chat_send_stop_icon"
-                        ) { generating ->
-                            if (generating) {
-                                Icon(Icons.Default.Stop, contentDescription = "Stop responding", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-                            } else {
-                                Icon(
-                                    Icons.Default.RocketLaunch,
-                                    contentDescription = "Send",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier
-                                        .size(20.dp)
-                                        .graphicsLayer {
-                                            val flight = rocketFlight.value
-                                            translationY = with(sendAnimationDensity) { (-flight * 8f).dp.toPx() }
-                                            rotationZ = flight * 10f
-                                        }
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    LiquidGlassButton(
-                        onClick = {
-                            if (canRecordAudio) {
-                                onMicRecord()
-                            } else {
-                                onMicUnavailable()
-                            }
-                        },
-                        hazeState = hazeState,
-                        enabled = !isGenerating,
-                        modifier = Modifier.size(42.dp),
-                        shape = CircleShape,
-                        tintColor = if (canRecordAudio) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
-                        } else {
-                            MaterialTheme.colorScheme.surfaceContainerHighest
+                        tintColor = when {
+                            hasAttachment || attachmentMenuOpen -> MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
+                            else -> MaterialTheme.colorScheme.surfaceContainerHighest
                         },
                         contentPadding = PaddingValues(0.dp)
                     ) {
                         Icon(
-                            Icons.Default.Mic,
-                            contentDescription = if (canRecordAudio) "Record audio" else "Selected model does not support raw audio input",
-                            tint = if (canRecordAudio) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.50f),
-                            modifier = Modifier.size(20.dp)
+                            imageVector = Icons.Default.Add,
+                            contentDescription = if (attachmentMenuOpen) {
+                                "Close attachments"
+                            } else if (supportsAttachments) {
+                                "Add image, audio, or file"
+                            } else {
+                                "Selected model does not support attachments"
+                            },
+                            modifier = Modifier
+                                .size(22.dp)
+                                .rotate(attachmentIconRotation),
+                            tint = if (supportsAttachments) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.48f)
                         )
                     }
+                }
+
+                // Slot 2: Expanded middle row controls (Model selector & Thinking toggle)
+                Row(
+                    modifier = Modifier.graphicsLayer {
+                        val t = if (isRecordingAudio) 1f else expandProgressState.value.coerceIn(0f, 1f)
+                        val reveal = ((t - 0.16f) / 0.84f).coerceIn(0f, 1f)
+                        val eased = 1f - (1f - reveal) * (1f - reveal)
+                        alpha = eased
+                        val scale = 0.94f + 0.06f * eased
+                        scaleX = scale
+                        scaleY = scale
+                        translationY = (1f - eased) * 5.dp.toPx()
+                    },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        ComposerModelPicker(
+                            models = models,
+                            selectedPath = selectedModelPath,
+                            isModelReady = isModelReady,
+                            isInitializing = isInitializing,
+                            onSelect = onSelectModel,
+                            validationStates = validationStates,
+                            onTryAnyway = onTryAnyway,
+                            onGoToModels = onGoToModels,
+                            onExpandedChange = onModelMenuExpandedChange,
+                            hazeState = hazeState
+                        )
+                    }
+
+                    if (canThink && (isToggleable || isModelControlled)) {
+                        LiquidGlassButton(
+                            onClick = {
+                                if (thinkButtonEnabled) {
+                                    onToggleThinking(!thinkingMode)
+                                }
+                            },
+                            hazeState = hazeState,
+                            enabled = thinkButtonEnabled,
+                            modifier = Modifier
+                                .height(38.dp)
+                                .dropdownTriggerBounce(thinkActive),
+                            shape = RoundedCornerShape(19.dp),
+                            tintColor = when {
+                                thinkActive -> MaterialTheme.colorScheme.primaryContainer
+                                thinkButtonEnabled -> MaterialTheme.colorScheme.surfaceContainerHighest
+                                else -> MaterialTheme.colorScheme.surfaceContainerLow
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Psychology,
+                                contentDescription = when {
+                                    isModelControlled -> "Model-controlled thinking"
+                                    isUnknown && isCheckingThinking -> "Checking thinking capability"
+                                    isUnknown -> "Thinking capability has not been verified"
+                                    isUnsupported -> "Selected model does not support thinking mode"
+                                    thinkActive -> "Disable thinking mode"
+                                    else -> "Enable thinking mode"
+                                },
+                                tint = thinkContentColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            if (thinkActive) {
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    text = "Think",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = thinkContentColor,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Slot 3: Mic / Send / Stop button
+                AnimatedContent(
+                    targetState = showSendButton,
+                    transitionSpec = {
+                        (fadeIn(tween(180)) + scaleIn(initialScale = 0.85f)) togetherWith
+                            (fadeOut(tween(130)) + scaleOut(targetScale = 0.85f))
+                    },
+                    label = "composer_action_mic_or_send"
+                ) { isSend ->
+                    if (isSend) {
+                        LiquidGlassButton(
+                            onClick = {
+                                when {
+                                    isGenerating -> onStop()
+                                    canSend -> {
+                                        onSend()
+                                        sendAnimationScope.launch {
+                                            rocketFlight.snapTo(0f)
+                                            rocketFlight.animateTo(
+                                                targetValue = 1f,
+                                                animationSpec = tween(durationMillis = 190)
+                                            )
+                                            rocketFlight.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioLowBouncy,
+                                                    stiffness = Spring.StiffnessMediumLow
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                            hazeState = hazeState,
+                            enabled = isGenerating || canSend,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .graphicsLayer {
+                                    val flight = rocketFlight.value
+                                    translationX = with(sendAnimationDensity) { (flight * 8f).dp.toPx() }
+                                    translationY = with(sendAnimationDensity) { (-flight * 36f).dp.toPx() }
+                                    rotationZ = flight * 12f
+                                    scaleX = 1f - flight * 0.16f
+                                    scaleY = 1f - flight * 0.16f
+                                },
+                            shape = CircleShape,
+                            tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            androidx.compose.animation.Crossfade(
+                                targetState = isGenerating,
+                                animationSpec = tween(180),
+                                label = "chat_send_stop_icon"
+                            ) { generating ->
+                                if (generating) {
+                                    Icon(Icons.Default.Stop, contentDescription = "Stop responding", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+                                } else {
+                                    Icon(
+                                        Icons.Default.RocketLaunch,
+                                        contentDescription = "Send",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .graphicsLayer {
+                                                val flight = rocketFlight.value
+                                                translationY = with(sendAnimationDensity) { (-flight * 8f).dp.toPx() }
+                                                rotationZ = flight * 10f
+                                            }
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        LiquidGlassButton(
+                            onClick = {
+                                if (canRecordAudio) {
+                                    onMicRecord()
+                                } else {
+                                    onMicUnavailable()
+                                }
+                            },
+                            hazeState = hazeState,
+                            enabled = !isGenerating,
+                            modifier = Modifier.size(40.dp),
+                            shape = CircleShape,
+                            tintColor = if (canRecordAudio) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerHighest
+                            },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Mic,
+                                contentDescription = if (canRecordAudio) "Record audio" else "Selected model does not support raw audio input",
+                                tint = if (canRecordAudio) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.50f),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        ) { measurables, constraints ->
+            val gapPx = 8.dp.roundToPx()
+            val rowGapPx = 4.dp.roundToPx()
+            val totalWidth = constraints.maxWidth.coerceAtLeast(1)
+
+            val attachPlaceable = measurables[1].measure(constraints.copy(minWidth = 0, minHeight = 0))
+            val endPlaceable = measurables[3].measure(constraints.copy(minWidth = 0, minHeight = 0))
+
+            val t = if (isRecordingAudio) 1f else expandProgressState.value.coerceIn(0f, 1f)
+            val collapsedInputWidth = (totalWidth - attachPlaceable.width - endPlaceable.width - gapPx * 2).coerceAtLeast(1)
+            val currentInputWidth = (collapsedInputWidth + (totalWidth - collapsedInputWidth) * t)
+                .roundToInt().coerceIn(1, totalWidth)
+
+            val inputPlaceable = measurables[0].measure(
+                constraints.copy(minWidth = currentInputWidth, maxWidth = currentInputWidth, minHeight = 0)
+            )
+
+            val middleMaxWidth = (totalWidth - attachPlaceable.width - endPlaceable.width - gapPx * 2).coerceAtLeast(0)
+            val middlePlaceable = measurables[2].measure(
+                constraints.copy(minWidth = middleMaxWidth, maxWidth = middleMaxWidth, minHeight = 0)
+            )
+
+            val collapsedHeight = maxOf(inputPlaceable.height, attachPlaceable.height, endPlaceable.height)
+            val actionRowHeight = maxOf(attachPlaceable.height, middlePlaceable.height, endPlaceable.height)
+            val expandedHeight = inputPlaceable.height + rowGapPx + actionRowHeight
+            val layoutHeight = (collapsedHeight + (expandedHeight - collapsedHeight) * t)
+                .roundToInt().coerceAtLeast(collapsedHeight)
+
+            layout(totalWidth, layoutHeight) {
+                val collapsedInputX = (attachPlaceable.width + gapPx).toFloat()
+                val inputX = (collapsedInputX + (0f - collapsedInputX) * t).roundToInt()
+                val collapsedInputY = (collapsedHeight - inputPlaceable.height) / 2f
+                val inputY = (collapsedInputY * (1f - t)).roundToInt()
+                inputPlaceable.placeRelative(inputX, inputY)
+
+                val actionRowTop = inputPlaceable.height + rowGapPx
+
+                val collapsedAttachY = (collapsedHeight - attachPlaceable.height) / 2f
+                val expandedAttachY = actionRowTop + (actionRowHeight - attachPlaceable.height) / 2f
+                val attachY = (collapsedAttachY + (expandedAttachY - collapsedAttachY) * t).roundToInt()
+                attachPlaceable.placeRelative(0, attachY)
+
+                val collapsedEndY = (collapsedHeight - endPlaceable.height) / 2f
+                val expandedEndY = actionRowTop + (actionRowHeight - endPlaceable.height) / 2f
+                val endY = (collapsedEndY + (expandedEndY - collapsedEndY) * t).roundToInt()
+                endPlaceable.placeRelative(totalWidth - endPlaceable.width, endY)
+
+                if (t > 0.01f) {
+                    val collapsedMiddleY = (collapsedHeight - middlePlaceable.height) / 2f
+                    val expandedMiddleY = actionRowTop + (actionRowHeight - middlePlaceable.height) / 2f
+                    val middleY = (collapsedMiddleY + (expandedMiddleY - collapsedMiddleY) * t).roundToInt()
+                    middlePlaceable.placeRelative(attachPlaceable.width + gapPx, middleY)
                 }
             }
         }
@@ -2779,20 +3013,10 @@ private fun AttachmentInlineMenu(
     Box(
         modifier = Modifier
             .widthIn(min = 196.dp, max = 250.dp)
-            .fluidReveal(initialScale = 0.90f, initialYOffset = 8.dp)
             .clip(menuShape)
+            .background(menuTint.copy(alpha = 0.36f), menuShape)
+            .border(0.8.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), menuShape)
     ) {
-        Box(
-            Modifier.matchParentSize()
-                .clip(menuShape)
-                .hazeEffect(state = hazeState, style = HazeStyle(
-                    backgroundColor = MaterialTheme.colorScheme.surface,
-                    blurRadius = 24.dp,
-                    tint = HazeTint(menuTint.copy(alpha = 0.28f)),
-                    noiseFactor = 0.04f
-                ))
-                .border(0.8.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.42f), menuShape)
-        )
         Column(
             modifier = Modifier.padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -3099,6 +3323,63 @@ private fun AudioLoudnessBarsCanvas(
 }
 
 @Composable
+private fun HazeCircleActionButton(
+    onClick: () -> Unit,
+    hazeState: HazeState,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    tintColor: Color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.26f),
+    borderColor: Color = MaterialTheme.colorScheme.outline.copy(alpha = 0.44f),
+    content: @Composable BoxScope.() -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    val reduceMotion = com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed && !reduceMotion && enabled) 0.92f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "haze_circle_button_scale"
+    )
+
+    Box(
+        modifier = modifier
+            .size(46.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                alpha = if (enabled) 1f else 0.5f
+            }
+            .clip(CircleShape)
+            .hazeEffect(
+                state = hazeState,
+                style = HazeStyle(
+                    backgroundColor = colors.surface,
+                    blurRadius = 28.dp,
+                    tint = HazeTint(tintColor),
+                    noiseFactor = 0.06f
+                )
+            )
+            .border(
+                width = 0.85.dp,
+                color = borderColor,
+                shape = CircleShape
+            )
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center,
+        content = content
+    )
+}
+
+@Composable
 private fun HistoryButton(
     onClick: () -> Unit,
     hazeState: HazeState,
@@ -3107,15 +3388,13 @@ private fun HistoryButton(
     val haptic = LocalHapticFeedback.current
     val barColor = MaterialTheme.colorScheme.onSurface
 
-    LiquidGlassButton(
+    HazeCircleActionButton(
         onClick = {
             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             onClick()
         },
         hazeState = hazeState,
-        modifier = modifier.size(46.dp),
-        shape = CircleShape,
-        contentPadding = PaddingValues(0.dp)
+        modifier = modifier
     ) {
         Canvas(modifier = Modifier.size(22.dp)) {
             val strokeWidth = 2.4.dp.toPx()
@@ -3158,17 +3437,24 @@ private fun TemporaryChatButton(
     val normalColor = MaterialTheme.colorScheme.onSurfaceVariant
     val iconColor = if (isTemporary) activeColor else normalColor
 
-    LiquidGlassButton(
+    HazeCircleActionButton(
         onClick = {
             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             onClick()
         },
         hazeState = hazeState,
         enabled = enabled,
-        modifier = modifier.size(46.dp),
-        shape = CircleShape,
-        tintColor = if (isTemporary) activeColor.copy(alpha = 0.22f) else MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentPadding = PaddingValues(0.dp)
+        modifier = modifier,
+        tintColor = if (isTemporary) {
+            activeColor.copy(alpha = 0.22f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.26f)
+        },
+        borderColor = if (isTemporary) {
+            activeColor.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.outline.copy(alpha = 0.44f)
+        }
     ) {
         Canvas(modifier = Modifier.size(24.dp)) {
             val center = Offset(size.width / 2f, size.height / 2f)
@@ -3298,16 +3584,13 @@ private fun CompactChatButton(
     val haptic = LocalHapticFeedback.current
     val normalColor = MaterialTheme.colorScheme.onSurfaceVariant
 
-    LiquidGlassButton(
+    HazeCircleActionButton(
         onClick = {
             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             onClick()
         },
         hazeState = hazeState,
-        modifier = modifier.size(46.dp),
-        shape = CircleShape,
-        tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentPadding = PaddingValues(0.dp)
+        modifier = modifier
     ) {
         Canvas(modifier = Modifier.size(20.dp)) {
             val stroke = 2.dp.toPx()
@@ -3338,16 +3621,13 @@ private fun ModernNewChatButton(
 ) {
     val haptic = LocalHapticFeedback.current
 
-    LiquidGlassButton(
+    HazeCircleActionButton(
         onClick = {
             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             onClick()
         },
         hazeState = hazeState,
-        modifier = modifier.size(46.dp),
-        shape = CircleShape,
-        tintColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentPadding = PaddingValues(0.dp)
+        modifier = modifier
     ) {
         Icon(
             imageVector = Icons.Default.AddComment,
@@ -3368,10 +3648,14 @@ private fun ComposerModelPicker(
     onSelect: (ModelInfo) -> Unit,
     onTryAnyway: (ModelInfo) -> Unit,
     onGoToModels: (() -> Unit)? = null,
+    onExpandedChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
     hazeState: HazeState
 ) {
     var expanded by remember { mutableStateOf(false) }
+    LaunchedEffect(expanded) {
+        onExpandedChange(expanded)
+    }
     var lastDismissTime by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
     var blockedModelForDetails by remember { mutableStateOf<ModelInfo?>(null) }
     var failedModelForDetails by remember { mutableStateOf<ModelInfo?>(null) }
@@ -3390,22 +3674,56 @@ private fun ComposerModelPicker(
         label = "composer_model_picker_arrow_rotation"
     )
 
+    val colors = MaterialTheme.colorScheme
+    val reduceMotion = com.shounak.localmeshai.features.LocalWorkspaceVisuals.current.reduceMotion
+    val pillInteractionSource = remember { MutableInteractionSource() }
+    val isPillPressed by pillInteractionSource.collectIsPressedAsState()
+    val pillScale by animateFloatAsState(
+        targetValue = if (isPillPressed && !reduceMotion) 0.96f else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "composer_model_picker_press_scale"
+    )
+    val pillShape = RoundedCornerShape(20.dp)
+
     Box(modifier = modifier) {
-        LiquidGlassButton(
-            onClick = {
-                val now = android.os.SystemClock.uptimeMillis()
-                if (now - lastDismissTime > 250L) {
-                    expanded = !expanded
-                }
-            },
-            hazeState = hazeState,
+        Row(
             modifier = Modifier
                 .height(40.dp)
-                .widthIn(min = 72.dp, max = 135.dp)
-                .dropdownTriggerBounce(expanded),
-            shape = RoundedCornerShape(20.dp),
-            tintColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-            contentPadding = PaddingValues(start = 10.dp, end = 8.dp, top = 0.dp, bottom = 0.dp)
+                .widthIn(min = 72.dp, max = 216.dp)
+                .graphicsLayer {
+                    scaleX = pillScale
+                    scaleY = pillScale
+                }
+                .dropdownTriggerBounce(expanded)
+                .clip(pillShape)
+                .hazeEffect(
+                    state = hazeState,
+                    style = HazeStyle(
+                        backgroundColor = colors.surface,
+                        blurRadius = 26.dp,
+                        tint = HazeTint(colors.surfaceContainerHighest.copy(alpha = 0.26f)),
+                        noiseFactor = 0.06f
+                    )
+                )
+                .border(
+                    width = 0.85.dp,
+                    color = colors.outline.copy(alpha = 0.44f),
+                    shape = pillShape
+                )
+                .clickable(
+                    interactionSource = pillInteractionSource,
+                    indication = null
+                ) {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastDismissTime > 250L) {
+                        expanded = !expanded
+                    }
+                }
+                .padding(start = 10.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             if (selected != null) {
                 Box(
@@ -3425,6 +3743,7 @@ private fun ComposerModelPicker(
             Text(
                 text = selectedName,
                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+                color = colors.onSurface,
                 overflow = TextOverflow.Ellipsis,
                 maxLines = 1,
                 modifier = Modifier.weight(1f, fill = false)
@@ -3447,7 +3766,8 @@ private fun ComposerModelPicker(
                 lastDismissTime = android.os.SystemClock.uptimeMillis()
             },
             hazeState = hazeState,
-            offset = androidx.compose.ui.unit.DpOffset(0.dp, (-4).dp),
+            offset = androidx.compose.ui.unit.DpOffset(0.dp, (-6).dp),
+            transformOrigin = TransformOrigin(0.14f, 1f),
             modifier = Modifier
                 .width(popupWidth)
                 .heightIn(max = popupHeight)
@@ -3544,8 +3864,8 @@ private fun ComposerModelPicker(
                                 }
                                 Text(
                                     when {
-                                        isSelected && isModelReady -> "Ready in memory"
-                                        isSelected && isInitializing -> "Preparing model…"
+                                        isSelected && isModelReady -> "Ready in memory · Tap to eject"
+                                        isSelected && isInitializing -> "Preparing model… · Tap to eject"
                                         isSelected -> "Unloaded · Tap to initialize"
                                         model.supportsVision && model.supportsAudio -> "Images and audio"
                                         model.supportsVision -> "Images"
@@ -4016,7 +4336,15 @@ private fun ScrollHazeFab(
 }
 
 @Composable
-private fun EmptyState(title: String, subtitle: String, hazeState: HazeState, topInset: Dp = 0.dp, bottomInset: Dp = 0.dp) {
+private fun EmptyState(
+    title: String,
+    subtitle: String,
+    hazeState: HazeState,
+    topInset: Dp = 0.dp,
+    bottomInset: Dp = 0.dp,
+    actionLabel: String? = null,
+    onActionClick: (() -> Unit)? = null
+) {
     val cardTint = MaterialTheme.colorScheme.surfaceContainer
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -4033,6 +4361,7 @@ private fun EmptyState(title: String, subtitle: String, hazeState: HazeState, to
             .fluidReveal(delayMillis = 70, initialYOffset = 16.dp),
         cornerRadius = 28.dp,
         tintColor = cardTint,
+        backdropAlpha = 0.72f,
         animatedCaustics = true
     ) {
         Column(
@@ -4070,6 +4399,30 @@ private fun EmptyState(title: String, subtitle: String, hazeState: HazeState, to
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
+            if (actionLabel != null && onActionClick != null) {
+                Spacer(modifier = Modifier.height(20.dp))
+                LiquidGlassButton(
+                    onClick = onActionClick,
+                    hazeState = hazeState,
+                    modifier = Modifier.height(42.dp),
+                    shape = RoundedCornerShape(21.dp),
+                    tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f),
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 0.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Tune,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        actionLabel,
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
         }
     }
         }
@@ -4195,21 +4548,23 @@ private fun MessageToolButton(
     contentDescription: String,
     hazeState: HazeState,
     tintColor: Color,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     LiquidGlassButton(
         onClick = onClick,
+        enabled = enabled,
         hazeState = hazeState,
         modifier = Modifier.size(34.dp),
         shape = RoundedCornerShape(17.dp),
-        tintColor = tintColor.copy(alpha = 0.18f),
+        tintColor = if (enabled) tintColor.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.08f),
         contentPadding = PaddingValues(0.dp)
     ) {
         Icon(
             icon,
             contentDescription = contentDescription,
             modifier = Modifier.size(16.dp),
-            tint = tintColor
+            tint = if (enabled) tintColor else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
         )
     }
 }
@@ -4600,6 +4955,7 @@ private fun ChatBubble(
                 if (!isUser) {
                     val ttsManager = remember { com.shounak.localmeshai.ai.tts.TinyVocaManager.getInstance(context) }
                     val isSpeaking by ttsManager.isSpeaking.collectAsState()
+                    val isModelDownloaded by ttsManager.isModelDownloaded.collectAsState()
                     val speakingId by ttsManager.currentSpeakingId.collectAsState()
                     val isThisSpeaking = isSpeaking && speakingId == messageId
                     val appSettings = remember { com.shounak.localmeshai.utils.AppSettings.getInstance(context) }
@@ -4607,13 +4963,18 @@ private fun ChatBubble(
 
                     MessageToolButton(
                         icon = if (isThisSpeaking) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
-                        contentDescription = if (isThisSpeaking) "Stop reading" else "Read aloud",
+                        contentDescription = when {
+                            isThisSpeaking -> "Stop reading"
+                            !isModelDownloaded -> "Download TinyVoca in Voice settings to enable read aloud"
+                            else -> "Read aloud"
+                        },
                         hazeState = hazeState,
+                        enabled = isModelDownloaded || isThisSpeaking,
                         tintColor = if (isThisSpeaking) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                         onClick = {
                             if (isThisSpeaking) {
                                 ttsManager.stop()
-                            } else {
+                            } else if (isModelDownloaded) {
                                 val clean = com.shounak.localmeshai.ai.tts.TinyVocaManager.cleanTextForSpeech(text)
                                 ttsManager.speak(
                                     text = clean,
@@ -5210,6 +5571,17 @@ internal fun ChatHistoryDrawer(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
                         thickness = 0.8.dp
+                    )
+
+                    Text(
+                        text = "RECENT CHATS",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            letterSpacing = 1.2.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.70f),
+                        modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 4.dp)
                     )
 
                     // Chat History List

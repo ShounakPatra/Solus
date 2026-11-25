@@ -59,4 +59,14 @@ class WordPieceTokenizerTest {
     fun blankTextIsJustClsSep() {
         assertArrayEquals(intArrayOf(2, 3), tokenizer.encode("   "))
     }
+
+    @Test
+    fun withoutSpecialTokensEncodesRawPieces() {
+        assertArrayEquals(intArrayOf(4, 5, 6, 7), tokenizer.encode("Hello, WORLD!", addSpecialTokens = false))
+    }
+
+    @Test
+    fun blankTextWithoutSpecialTokensReturnsUnk() {
+        assertArrayEquals(intArrayOf(1), tokenizer.encode("   ", addSpecialTokens = false))
+    }
 }

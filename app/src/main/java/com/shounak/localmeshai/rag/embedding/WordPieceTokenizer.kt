@@ -13,18 +13,21 @@ class WordPieceTokenizer(private val vocab: Map<String, Int>, private val maxLen
     val clsId: Int = vocab.getValue(CLS)
     val sepId: Int = vocab.getValue(SEP)
 
-    init { require(maxLength >= 2) { "maxLength must leave room for [CLS] and [SEP]" } }
+    init { require(maxLength >= 2) { "maxLength must leave room for tokens" } }
 
-    /** Returns `[CLS] tokens… [SEP]`, truncated to [maxLength]. */
-    fun encode(text: String): IntArray {
+    /** Returns tokens truncated to [maxLength]. If [addSpecialTokens] is true, wraps with `[CLS]` and `[SEP]`. */
+    fun encode(text: String, addSpecialTokens: Boolean = true): IntArray {
         val pieces = ArrayList<Int>()
-        val budget = maxLength - 2
+        val budget = if (addSpecialTokens) maxLength - 2 else maxLength
         for (word in basicTokenize(text)) {
             for (id in wordPiece(word)) {
                 if (pieces.size == budget) break
                 pieces.add(id)
             }
             if (pieces.size == budget) break
+        }
+        if (!addSpecialTokens) {
+            return if (pieces.isEmpty()) intArrayOf(unkId) else pieces.toIntArray()
         }
         return IntArray(pieces.size + 2).also { out ->
             out[0] = clsId

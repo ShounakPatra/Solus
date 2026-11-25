@@ -19,7 +19,7 @@ class EmbeddingModelsDownloadTest {
         val context = object : android.content.ContextWrapper(null) {
             override fun getFilesDir() = temp.root
         }
-        val modelDir = EmbeddingModels.directory(context, EmbeddingModels.BGE_SMALL_EN_V15).apply { mkdirs() }
+        val modelDir = EmbeddingModels.directory(context, EmbeddingModels.POTION_BASE_2M).apply { mkdirs() }
         java.io.File(modelDir, "model.onnx.part").writeText("partial")
         val manager = RagManager(
             context,
@@ -37,7 +37,7 @@ class EmbeddingModelsDownloadTest {
         val context = object : android.content.ContextWrapper(null) {
             override fun getFilesDir() = temp.root
         }
-        val spec = EmbeddingModels.BGE_SMALL_EN_V15
+        val spec = EmbeddingModels.POTION_BASE_2M
         val modelDir = EmbeddingModels.directory(context, spec).apply { mkdirs() }
         spec.files.forEach { java.io.File(modelDir, it.localName).writeText("model companion") }
         java.io.File(modelDir, "model.onnx.part").writeText("interrupted download")
@@ -76,7 +76,7 @@ class EmbeddingModelsDownloadTest {
     private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     private fun spec(model: ByteArray, vocab: ByteArray, modelHash: String = sha(model)) =
-        EmbeddingModels.BGE_SMALL_EN_V15.copy(
+        EmbeddingModels.POTION_BASE_2M.copy(
             model = EmbeddingModels.RemoteFile("m.onnx", "model.onnx", model.size.toLong(), modelHash),
             vocab = EmbeddingModels.RemoteFile("vocab.txt", "vocab.txt", vocab.size.toLong(), sha(vocab))
         )
@@ -90,7 +90,7 @@ class EmbeddingModelsDownloadTest {
             server.enqueue(MockResponse().setBody(okio.Buffer().write(model)))
             server.enqueue(MockResponse().setBody(okio.Buffer().write(vocab)))
             val s = spec(model, vocab)
-            val dir = temp.newFolder("bge")
+            val dir = temp.newFolder("potion")
             var last = 0L
             EmbeddingModels.download(dir, s, OkHttpClient(), { done, _ -> last = done }) { listOf(server.url("/" + it.remotePath).toString()) }
             assertTrue(EmbeddingModels.isInstalled(dir, s))
@@ -143,12 +143,11 @@ class EmbeddingModelsDownloadTest {
     }
 
     @Test
-    fun builtInSpecListsHuggingFaceThenReleaseMirror() {
-        val spec = EmbeddingModels.BGE_SMALL_EN_V15
+    fun builtInSpecListsHuggingFaceUrl() {
+        val spec = EmbeddingModels.POTION_BASE_2M
         val urls = spec.urls(spec.model)
-        assertEquals(2, urls.size)
-        assertTrue(urls[0].startsWith("https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/"))
-        assertEquals("https://github.com/ShounakPatra/Solus/releases/download/v6.0.6/bge-small-en-v1.5-int8.onnx", urls[1])
+        assertTrue(urls.isNotEmpty())
+        assertTrue(urls[0].startsWith("https://huggingface.co/minishlab/potion-base-2M/resolve/389b9f64be5aa4ae7a6bc6fe95ef20ce485ae5da/"))
     }
 
     @Test

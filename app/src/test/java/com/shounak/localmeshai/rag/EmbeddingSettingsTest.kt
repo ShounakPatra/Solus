@@ -12,10 +12,10 @@ class EmbeddingSettingsTest {
         val prefs = FeatureTestPreferences()
         val settings = AppSettings(prefs)
         settings.updateSettings { it.copy(embeddingModelPromptSkipped = true) }
-        settings.commitEmbeddingModel(EmbeddingModels.BGE_SMALL_EN_V15.id)
+        settings.commitEmbeddingModel(EmbeddingModels.POTION_BASE_2M.id)
         val reloaded = AppSettings(prefs).settings.value
         assertTrue(reloaded.embeddingModelPromptSkipped)
-        assertEquals(EmbeddingModels.BGE_SMALL_EN_V15.id, reloaded.ragEmbeddingModel)
+        assertEquals(EmbeddingModels.POTION_BASE_2M.id, reloaded.ragEmbeddingModel)
         assertTrue(reloaded.enabledToolSkills.contains("calculator"))
     }
 }

@@ -17,7 +17,9 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.rememberTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -608,99 +610,89 @@ fun GlassDropdownMenu(
     hazeState: HazeState? = null,
     modifier: Modifier = Modifier,
     offset: DpOffset = DpOffset(0.dp, 0.dp),
+    transformOrigin: TransformOrigin = TransformOrigin(0.14f, 0f),
     properties: PopupProperties = PopupProperties(focusable = false),
     content: @Composable ColumnScope.() -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     val shape = RoundedCornerShape(22.dp)
-    var keepPopupVisible by remember { mutableStateOf(expanded) }
     val visibilityState = remember { MutableTransitionState(false) }
 
     LaunchedEffect(expanded) {
-        if (expanded) {
-            keepPopupVisible = true
-            visibilityState.targetState = true
-        } else {
-            visibilityState.targetState = false
-            keepPopupVisible = false
-        }
+        visibilityState.targetState = expanded
     }
 
-    val glassModifier = if (hazeState != null) {
-        modifier.glassEffect(
-            hazeState = hazeState,
-            shape = shape,
-            blurRadius = 28.dp,
-            tintColor = colors.surfaceContainerHigh,
-            borderAlpha = 0.38f
-        )
-    } else {
-        modifier.background(
+    if (!expanded && !visibilityState.currentState && visibilityState.isIdle) return
+
+    val transition = rememberTransition(visibilityState, label = "glass_dropdown_transition")
+    val menuScale by transition.animateFloat(
+        transitionSpec = {
+            if (targetState) {
+                spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            } else {
+                spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMedium
+                )
+            }
+        },
+        label = "glass_dropdown_scale"
+    ) { isVisible -> if (isVisible) 1f else 0.90f }
+
+    val menuAlpha by transition.animateFloat(
+        transitionSpec = {
+            tween(durationMillis = if (targetState) 160 else 120)
+        },
+        label = "glass_dropdown_alpha"
+    ) { isVisible -> if (isVisible) 1f else 0f }
+
+    val glassModifier = modifier
+        .graphicsLayer {
+            scaleX = menuScale
+            scaleY = menuScale
+            alpha = menuAlpha
+            this.transformOrigin = transformOrigin
+        }
+        .clip(shape)
+        .background(
             brush = Brush.linearGradient(
                 listOf(
-                    colors.surfaceContainerHigh,
-                    colors.surfaceContainer,
-                    colors.surfaceContainerHigh
+                    colors.surfaceContainerHigh.copy(alpha = 0.96f),
+                    colors.surfaceContainer.copy(alpha = 0.93f),
+                    colors.surfaceContainerHigh.copy(alpha = 0.96f)
                 )
             ),
             shape = shape
         )
-    }
-    if (!keepPopupVisible) return
+        .border(
+            width = 0.85.dp,
+            brush = Brush.linearGradient(
+                listOf(
+                    colors.outline.copy(alpha = 0.44f),
+                    colors.outlineVariant.copy(alpha = 0.28f),
+                    colors.primary.copy(alpha = 0.22f),
+                    colors.outlineVariant.copy(alpha = 0.28f)
+                )
+            ),
+            shape = shape
+        )
 
     DropdownMenu(
-        expanded = keepPopupVisible,
+        expanded = true,
         onDismissRequest = onDismissRequest,
         modifier = glassModifier,
         shape = shape,
         containerColor = Color.Transparent,
         tonalElevation = 0.dp,
-        shadowElevation = 14.dp,
+        shadowElevation = 0.dp,
         offset = offset,
         properties = properties,
-        border = BorderStroke(
-            0.8.dp,
-            Brush.linearGradient(
-                listOf(
-                    colors.outline.copy(alpha = 0.58f),
-                    colors.outlineVariant.copy(alpha = 0.72f),
-                    colors.primary.copy(alpha = 0.34f)
-                )
-            )
-        ),
-    ) {
-        AnimatedVisibility(
-            visibleState = visibilityState,
-            enter = scaleIn(
-                initialScale = 0.78f,
-                transformOrigin = TransformOrigin(0.14f, 0f),
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioLowBouncy,
-                    stiffness = Spring.StiffnessMedium
-                )
-            ) + fadeIn(
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMedium
-                )
-            ),
-            exit = scaleOut(
-                targetScale = 0.88f,
-                transformOrigin = TransformOrigin(0.14f, 0f),
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessMedium
-                )
-            ) + fadeOut(
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMedium
-                )
-            )
-        ) {
-            Column(content = content)
-        }
-    }
+        border = null,
+        content = content
+    )
 }
 
 // ── Glass Dispersion Card using AGSL Shaders (Android 13+) ───────────────────────────────
@@ -714,6 +706,7 @@ fun GlassDispersionCard(
     cornerRadius:       Dp       = 24.dp,
     tintColor:          Color    = Color.White.copy(alpha = 0.10f),
     borderAlpha:        Float    = 0.25f,
+    backdropAlpha:      Float    = 1f,
     contentPadding:     PaddingValues = PaddingValues(16.dp),
     animatedCaustics:   Boolean  = false,
     content: @Composable BoxScope.() -> Unit = {}
@@ -721,9 +714,10 @@ fun GlassDispersionCard(
     var cardSize by remember { mutableStateOf(IntSize.Zero) }
     val quality = rememberLiquidGlassQuality()
     val colors = MaterialTheme.colorScheme
+    val baseBackdrop = colors.surfaceContainerHigh.copy(alpha = backdropAlpha.coerceIn(0f, 1f))
     val elevatedTint = tintColor
         .copy(alpha = (tintColor.alpha * 0.35f).coerceAtMost(0.14f))
-        .compositeOver(colors.surfaceContainerHigh)
+        .compositeOver(baseBackdrop)
     val isBusy by ModelRuntimeCoordinator.isRuntimeBusy.collectAsState()
     val causticShader = remember(quality, isBusy) {
         if (!isBusy && quality == LiquidGlassQuality.Full &&
@@ -790,7 +784,7 @@ fun GlassDispersionCard(
                 drawCircle(
                     brush = Brush.radialGradient(
                         listOf(
-                            Color.White.copy(alpha = 0.12f),
+                            Color.White.copy(alpha = 0.05f),
                             Color.Transparent
                         ),
                         center = Offset(size.width * 0.16f, 0f),
@@ -808,10 +802,10 @@ fun GlassDispersionCard(
                 .matchParentSize()
                 .align(Alignment.TopCenter)
         ) {
-            val highlightHeight = size.height * 0.38f
+            val highlightHeight = size.height * 0.22f
             drawRect(
                 brush = Brush.verticalGradient(
-                    colors = listOf(Color.White.copy(borderAlpha), Color.Transparent),
+                    colors = listOf(Color.White.copy(alpha = (borderAlpha * 0.32f).coerceAtMost(0.08f)), Color.Transparent),
                     endY = highlightHeight
                 ),
                 size = Size(size.width, highlightHeight)

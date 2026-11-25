@@ -272,6 +272,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _isDeletingHistory = MutableStateFlow(false)
     val isDeletingHistory = _isDeletingHistory.asStateFlow()
     private var autoUnloadJob: Job? = null
+    private var chatDefaultsReloadJob: Job? = null
     @Volatile private var resetRuntimeConversationBeforeNextSend = false
     @Volatile private var lastRuntimeThinkingMode: Boolean? = null
     private var coordinatorToken: RegistrationToken? = null
@@ -630,6 +631,36 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             forceReload = true,
                             bundle = currentBundle
                         )
+                    }
+                }
+        }
+        // Reinitialize active model if user modifies chat defaults (Temperature, Top P, Top K, Max length) in settings
+        viewModelScope.launch {
+            appSettings.settings
+                .map {
+                    "${it.defaultTemperature}_${it.defaultTopP}_${it.defaultTopK}_${it.defaultMaxLength}"
+                }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect {
+                    chatDefaultsReloadJob?.cancel()
+                    chatDefaultsReloadJob = viewModelScope.launch {
+                        delay(350L)
+                        val path = currentModelPath
+                        if (path != null && _isModelReady.value) {
+                            Log.i("ChatViewModel", "Chat defaults changed, reinitializing active model: $path")
+                            initModel(
+                                path = path,
+                                modelId = currentModelId,
+                                modelName = currentModelName,
+                                modelSize = currentModelSize,
+                                contextWindowTokens = defaultProfileContext,
+                                supportsThinkingMode = currentSupportsThinkingMode,
+                                allowUnsafeOverride = currentAllowUnsafeOverride,
+                                forceReload = true,
+                                bundle = currentBundle
+                            )
+                        }
                     }
                 }
         }

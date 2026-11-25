@@ -17,17 +17,17 @@ import java.io.File
 import java.nio.LongBuffer
 
 /**
- * Neural sentence embedder for BERT-family ONNX encoders (bge-small-en-v1.5 by default).
+ * Neural sentence embedder for BERT-family and Model2Vec ONNX encoders (potion-base-2M by default).
  *
  * Memory policy: the ORT session loads on first use and is released after [idleReleaseMillis]
  * without calls, so the embedder only shares RAM with the chat model while documents are being
- * indexed or a question is being embedded. The int8 bge-small model is ~34 MB on disk.
+ * indexed or a question is being embedded.
  */
 class OnnxBertEmbeddingEngine(
     private val modelFile: File,
     private val vocabFile: File,
     override val algorithmId: String,
-    override val dimension: Int = 384,
+    override val dimension: Int = 64,
     private val queryPrefix: String = "",
     private val maxTokens: Int = 512,
     private val batchSize: Int = 8,
@@ -42,6 +42,7 @@ class OnnxBertEmbeddingEngine(
     private var session: OrtSession? = null
     private var tokenizer: WordPieceTokenizer? = null
     private var hasTokenTypeIds = false
+    private var isStaticEmbeddingBag = false
     private val releaseScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     @Volatile private var releaseJob: Job? = null
 
@@ -61,13 +62,21 @@ class OnnxBertEmbeddingEngine(
                 try {
                     val (ortSession, tk) = openLocked()
                     ensureActive() // Cold session creation can outlive the interactive caller's deadline.
-                    val encoded = texts.map { if (it.isBlank()) null else tk.encode(it) }
+                    val encoded = texts.map {
+                        if (it.isBlank()) null
+                        else tk.encode(it, addSpecialTokens = !isStaticEmbeddingBag)
+                    }
                     val results = arrayOfNulls<FloatArray>(texts.size)
                     // Sort by length so each batch pads as little as possible.
                     val order = encoded.indices.filter { encoded[it] != null }.sortedBy { encoded[it]!!.size }
                     for (batch in order.chunked(batchSize)) {
                         ensureActive()
-                        val vectors = runBatch(ortSession, batch.map { encoded[it]!! })
+                        val batchTokens = batch.map { encoded[it]!! }
+                        val vectors = if (isStaticEmbeddingBag) {
+                            runBatchStatic(ortSession, batchTokens)
+                        } else {
+                            runBatchTransformer(ortSession, batchTokens)
+                        }
                         batch.forEachIndexed { i, index -> results[index] = vectors[i] }
                     }
                     results.map { it ?: FloatArray(dimension) }
@@ -102,10 +111,18 @@ class OnnxBertEmbeddingEngine(
         }
         val created = options.use { environment.createSession(modelFile.absolutePath, it) }
         try {
-            require("input_ids" in created.inputNames && "attention_mask" in created.inputNames) {
-                "Embedding graph must accept input_ids and attention_mask"
+            if ("offsets" in created.inputNames && "input_ids" in created.inputNames) {
+                isStaticEmbeddingBag = true
+                require("embeddings" in created.outputNames) {
+                    "Static embedding graph must output embeddings"
+                }
+            } else {
+                isStaticEmbeddingBag = false
+                require("input_ids" in created.inputNames && "attention_mask" in created.inputNames) {
+                    "Embedding graph must accept input_ids and attention_mask"
+                }
+                require("last_hidden_state" in created.outputNames) { "Embedding graph must output last_hidden_state" }
             }
-            require("last_hidden_state" in created.outputNames) { "Embedding graph must output last_hidden_state" }
         } catch (e: Throwable) {
             created.close()
             throw e
@@ -116,7 +133,47 @@ class OnnxBertEmbeddingEngine(
         return created to tk
     }
 
-    private fun runBatch(ortSession: OrtSession, batch: List<IntArray>): List<FloatArray> {
+    private fun runBatchStatic(ortSession: OrtSession, batch: List<IntArray>): List<FloatArray> {
+        val rows = batch.size
+        val totalTokens = batch.sumOf { it.size }
+        if (totalTokens == 0) return List(rows) { FloatArray(dimension) }
+        val ids = LongArray(totalTokens)
+        val offsets = LongArray(rows)
+        var cursor = 0
+        batch.forEachIndexed { r, tokens ->
+            offsets[r] = cursor.toLong()
+            for (id in tokens) {
+                ids[cursor++] = id.toLong()
+            }
+        }
+        val shapeIds = longArrayOf(totalTokens.toLong())
+        val shapeOffsets = longArrayOf(rows.toLong())
+        val tensors = ArrayList<OnnxTensor>(2)
+        try {
+            val feed = LinkedHashMap<String, OnnxTensor>()
+            OnnxTensor.createTensor(environment, LongBuffer.wrap(ids), shapeIds).also { tensors += it; feed["input_ids"] = it }
+            OnnxTensor.createTensor(environment, LongBuffer.wrap(offsets), shapeOffsets).also { tensors += it; feed["offsets"] = it }
+            ortSession.run(feed, setOf("embeddings")).use { result ->
+                val output = result.get("embeddings").orElse(null) as? OnnxTensor
+                    ?: error("Embedding graph returned no embeddings")
+                val outShape = output.info.shape
+                require(outShape.size == 2 && outShape[0] == rows.toLong() && outShape[1] == dimension.toLong()) {
+                    "Unexpected embedding output shape ${outShape.contentToString()}"
+                }
+                val buffer = output.floatBuffer
+                return List(rows) { r ->
+                    val vector = FloatArray(dimension)
+                    buffer.position(r * dimension)
+                    buffer.get(vector)
+                    VectorEmbedding.l2Normalize(vector)
+                }
+            }
+        } finally {
+            tensors.forEach { it.close() }
+        }
+    }
+
+    private fun runBatchTransformer(ortSession: OrtSession, batch: List<IntArray>): List<FloatArray> {
         val rows = batch.size
         val width = batch.maxOf { it.size }
         val ids = LongArray(rows * width)

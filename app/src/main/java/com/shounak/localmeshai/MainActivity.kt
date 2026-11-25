@@ -6,6 +6,7 @@ import android.os.Build
 import android.content.pm.PackageManager
 import android.view.Display
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
@@ -130,7 +131,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         handleIntent(intent)
         com.shounak.localmeshai.utils.CrashReportManager.install(this)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
         preferHighestRefreshRate()
         requestNotificationPermissionIfNeeded()
         val decor = window.decorView
@@ -323,8 +327,9 @@ fun MainNavigation(mainViewModel: MainViewModel) {
 
     LiquidGlassBackdrop(hazeState = hazeState) {
         Scaffold(
-            containerColor = MaterialTheme.colorScheme.background
-        ) { innerPadding ->
+            containerColor = MaterialTheme.colorScheme.background,
+            contentWindowInsets = WindowInsets(0, 0, 0, 0)
+        ) { _ ->
             // Animate only the destination over an opaque background. The outgoing
             // page and its blur capture are disposed immediately, avoiding colour bleed.
             key(selectedIndex) {
@@ -338,12 +343,8 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(top = innerPadding.calculateTopPadding())
                         .background(MaterialTheme.colorScheme.background)
                         .clipToBounds()
-                        // Bottom space belongs to floating controls; let each screen
-                        // consume the full IME inset when the keyboard opens.
-                        .consumeWindowInsets(PaddingValues(top = innerPadding.calculateTopPadding()))
                         .pointerInput(selectedIndex, isKeyboardOpen, tabSwipeThresholdPx) {
                             if (isKeyboardOpen) return@pointerInput
                             var accumulatedDragX = 0f

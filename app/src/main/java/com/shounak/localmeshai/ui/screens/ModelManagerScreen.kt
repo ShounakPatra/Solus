@@ -83,6 +83,8 @@ import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -565,7 +567,7 @@ fun ModelManagerScreen(
                 start = 16.dp,
                 top = 16.dp,
                 end = 16.dp,
-                bottom = if (isKeyboardOpen) 24.dp else bottomContentInset + 24.dp
+                bottom = if (isKeyboardOpen) 24.dp else maxOf(bottomContentInset + 104.dp, 120.dp)
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -648,28 +650,8 @@ fun ModelManagerScreen(
         }
 
         if (!isSearching) {
-            item(key = "tiny_voca_neural_tts") {
-                com.shounak.localmeshai.ui.components.TinyVocaModelCard(hazeState = hazeState)
-            }
-
-            item(key = "document_search_model") {
-                com.shounak.localmeshai.ui.components.DocumentSearchModelCard(hazeState = hazeState)
-            }
-
-
-            item(key = "storage_summary") {
-                // Storage usage summary
-                val downloadedForSummary = mainViewModel.availableModels.filter {
-                    it.localPath != null &&
-                        (it.status == ModelStatus.Available ||
-                            it.status == ModelStatus.Blocked ||
-                            it.status == ModelStatus.Failed)
-                }
-                StorageSummaryCard(downloadedModels = downloadedForSummary, hazeState = hazeState)
-            }
-
-            item(key = "device_hardware") {
-                DeviceHardwareCard(hazeState = hazeState)
+            item(key = "specialized_models_menu") {
+                com.shounak.localmeshai.ui.components.SpecializedModelsMenuCard(hazeState = hazeState)
             }
 
             item(key = "privacy_card") {
@@ -748,6 +730,7 @@ fun ModelManagerScreen(
                         onRelinkBundle = { importResult -> mainViewModel.relinkModelBundle(model.id, importResult) },
                         isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                         onOpenSettings = { mainViewModel.openSettings(false) },
+                        onOpenSettingsWithTarget = { target -> mainViewModel.openSettings(targetSubMenu = target) },
                         enableDynamicThemes = enableDynamicThemes,
                         hazeState = hazeState
                     )
@@ -818,6 +801,7 @@ fun ModelManagerScreen(
                     onRelinkBundle = { importResult -> mainViewModel.relinkModelBundle(model.id, importResult) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                     onOpenSettings = { mainViewModel.openSettings(false) },
+                    onOpenSettingsWithTarget = { target -> mainViewModel.openSettings(targetSubMenu = target) },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -871,6 +855,7 @@ fun ModelManagerScreen(
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                     onOpenSettings = { mainViewModel.openSettings(false) },
+                    onOpenSettingsWithTarget = { target -> mainViewModel.openSettings(targetSubMenu = target) },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -921,6 +906,7 @@ fun ModelManagerScreen(
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                     onOpenSettings = { mainViewModel.openSettings(false) },
+                    onOpenSettingsWithTarget = { target -> mainViewModel.openSettings(targetSubMenu = target) },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -966,6 +952,7 @@ fun ModelManagerScreen(
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                     onOpenSettings = { mainViewModel.openSettings(false) },
+                    onOpenSettingsWithTarget = { target -> mainViewModel.openSettings(targetSubMenu = target) },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -1016,6 +1003,7 @@ fun ModelManagerScreen(
                     onDelete = { mainViewModel.deleteModel(model.id) },
                     isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
                     onOpenSettings = { mainViewModel.openSettings(false) },
+                    onOpenSettingsWithTarget = { target -> mainViewModel.openSettings(targetSubMenu = target) },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -1066,6 +1054,9 @@ fun ModelManagerScreen(
                         onGoToChat?.invoke()
                     },
                     onRelinkBundle = { importResult -> mainViewModel.relinkModelBundle(model.id, importResult) },
+                    isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
+                    onOpenSettings = { mainViewModel.openSettings(false) },
+                    onOpenSettingsWithTarget = { target -> mainViewModel.openSettings(targetSubMenu = target) },
                     enableDynamicThemes = enableDynamicThemes,
                     hazeState = hazeState
                 )
@@ -1151,6 +1142,7 @@ fun ModelManagerScreen(
     Box(
         modifier = Modifier
             .align(Alignment.BottomEnd)
+            .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(end = 20.dp, bottom = bottomContentInset + 20.dp)
             .height(56.dp)
             .defaultMinSize(minWidth = 56.dp, minHeight = 56.dp)
@@ -1418,254 +1410,6 @@ private fun NoModelsMatchCard(
                 Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text("Clear filter")
-            }
-        }
-    }
-}
-
-@Composable
-private fun StorageSummaryCard(downloadedModels: List<ModelInfo>, hazeState: HazeState) {
-    val storagePaths = downloadedModels.mapNotNull { it.localPath }.distinct().sorted()
-    val totalBytes by androidx.compose.runtime.produceState(0L, storagePaths) {
-        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            storagePaths.sumOf { path ->
-                val file = java.io.File(path)
-                when {
-                    file.isDirectory -> file.walkTopDown().filter { it.isFile }.sumOf { it.length() }
-                    file.isFile -> file.length()
-                    else -> 0L
-                }
-            }
-        }
-    }
-    val cardTint = MaterialTheme.colorScheme.surfaceContainer
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .fluidReveal(
-                delayMillis = 60,
-                initialYOffset = 20.dp,
-                initialXOffset = (-18).dp,
-                initialRotationZ = -0.6f
-            )
-            .animatedGlassHalo(enabled = downloadedModels.isNotEmpty(), shape = MaterialTheme.shapes.medium, alpha = 0.04f, durationMillis = 5_000)
-            .glassEffect(hazeState = hazeState, shape = MaterialTheme.shapes.medium, blurRadius = 16.dp, tintColor = cardTint),
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        shape = MaterialTheme.shapes.medium
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column {
-                Text(
-                    "Downloaded models",
-                    style = MaterialTheme.typography.titleSmall
-                )
-                if (downloadedModels.isEmpty()) {
-                    Text(
-                        "No models downloaded yet",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    Text(
-                        "${downloadedModels.size} model${if (downloadedModels.size != 1) "s" else ""}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            if (downloadedModels.isNotEmpty()) {
-                Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text(
-                        formatBytes(totalBytes),
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DeviceCard(isCompatible: Boolean, message: String, hazeState: HazeState) {
-    val tintColor = if (isCompatible) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.errorContainer
-    }
-    val borderAlpha = if (isCompatible) 0.35f else 0.45f
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .fluidReveal(
-                delayMillis = 100,
-                initialYOffset = 20.dp,
-                initialXOffset = 18.dp,
-                initialRotationZ = 0.6f
-            )
-            .animatedGlassHalo(shape = MaterialTheme.shapes.medium, alpha = if (isCompatible) 0.045f else 0.03f, durationMillis = 4_600)
-            .glassEffect(hazeState = hazeState, shape = MaterialTheme.shapes.medium, blurRadius = 20.dp, tintColor = tintColor, borderAlpha = borderAlpha),
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        shape = MaterialTheme.shapes.medium
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = if (isCompatible) Icons.Default.CheckCircle else Icons.Default.Info,
-                contentDescription = null,
-                modifier = Modifier.size(24.dp),
-                tint = if (isCompatible) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-            )
-            Spacer(modifier = Modifier.width(16.dp))
-            Text(
-                message,
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium
-            )
-        }
-    }
-}
-
-@Composable
-private fun DeviceHardwareCard(hazeState: HazeState) {
-    val context = LocalContext.current
-    var ramInfo by remember { mutableStateOf(DeviceUtils.getRamMemoryInfo(context)) }
-    val socInfo = remember { DeviceUtils.getDeviceSoCInfo(context) }
-    val cardTint = MaterialTheme.colorScheme.surfaceContainer
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(2000L)
-            ramInfo = DeviceUtils.getRamMemoryInfo(context)
-        }
-    }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .fluidReveal(
-                delayMillis = 80,
-                initialYOffset = 20.dp,
-                initialXOffset = 18.dp,
-                initialRotationZ = 0.5f
-            )
-            .animatedGlassHalo(
-                enabled = true,
-                shape = MaterialTheme.shapes.medium,
-                alpha = 0.035f,
-                durationMillis = 4_800
-            )
-            .glassEffect(
-                hazeState = hazeState,
-                shape = MaterialTheme.shapes.medium,
-                blurRadius = 16.dp,
-                tintColor = cardTint
-            ),
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        shape = MaterialTheme.shapes.medium
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f, fill = false)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Memory,
-                        contentDescription = "Device SoC Model",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column {
-                        Text(
-                            text = "Processor & Memory",
-                            style = MaterialTheme.typography.titleSmall
-                        )
-                        Text(
-                            text = socInfo.title,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        if (socInfo.details.isNotBlank()) {
-                            Text(
-                                text = socInfo.details,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text(
-                        text = String.format(Locale.US, "%.2f GiB free", ramInfo.availableGb),
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-            }
-
-            // Live RAM utilization bar
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                LinearProgressIndicator(
-                    progress = { ramInfo.usedPercentage },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(6.dp)
-                        .clip(RoundedCornerShape(3.dp)),
-                    color = when {
-                        ramInfo.usedPercentage > 0.88f -> MaterialTheme.colorScheme.error
-                        ramInfo.usedPercentage > 0.75f -> MaterialTheme.colorScheme.tertiary
-                        else -> MaterialTheme.colorScheme.primary
-                    },
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Available: ${String.format(Locale.US, "%.2f", ramInfo.availableGb)} GiB / Total: ${String.format(Locale.US, "%.1f", ramInfo.totalGb)} GiB",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "${(ramInfo.usedPercentage * 100).toInt()}% used",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
             }
         }
     }
@@ -2048,14 +1792,31 @@ fun ModelItem(
                         tint = statusColor
                     )
                 }
+                val cleanModelName = remember(model.name) {
+                    model.name.replace("⭐", "").replace("Recommended", "").trim()
+                }
                 Spacer(modifier = Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        model.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            cleanModelName,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (model.isRecommended) {
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = "Recommended",
+                                tint = Color(0xFFFFB300),
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                    }
                     Text(
                         "${model.taskLabel}  •  ${model.displaySize}  •  ${model.displayBackend}",
                         style = MaterialTheme.typography.bodySmall,
@@ -2082,40 +1843,25 @@ fun ModelItem(
                     label = model.contextLengthLabel,
                     accentColor = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (model.isRecommended) {
-                    GlassLabelChip(
-                        label = "Recommended",
-                        accentColor = MaterialTheme.colorScheme.tertiary
-                    )
-                }
-                if (model.requiresHuggingFaceToken) {
-                    GlassLabelChip(
-                        label = "Token needed",
-                        accentColor = MaterialTheme.colorScheme.secondary
-                    )
-                }
-                if (model.isCustom) {
-                    GlassLabelChip(
-                        label = "Imported",
-                        accentColor = MaterialTheme.colorScheme.primary
-                    )
-                }
-                if (model.isStorageImport) {
-                    GlassLabelChip(
-                        label = "Phone Storage",
-                        accentColor = MaterialTheme.colorScheme.primary
-                    )
-                }
                 if (model.isMultimodal) {
                     GlassLabelChip(
                         label = "Multimodal",
                         accentColor = MaterialTheme.colorScheme.secondary
                     )
-                }
-                if (model.isSplit) {
+                } else if (model.requiresHuggingFaceToken) {
                     GlassLabelChip(
-                        label = "Split GGUF",
-                        accentColor = MaterialTheme.colorScheme.tertiary
+                        label = "Token needed",
+                        accentColor = MaterialTheme.colorScheme.secondary
+                    )
+                } else if (model.isCustom) {
+                    GlassLabelChip(
+                        label = "Imported",
+                        accentColor = MaterialTheme.colorScheme.primary
+                    )
+                } else if (model.isStorageImport) {
+                    GlassLabelChip(
+                        label = "Phone Storage",
+                        accentColor = MaterialTheme.colorScheme.primary
                     )
                 }
             }
@@ -2295,9 +2041,15 @@ fun ModelItem(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (classified?.isOpenSettingsAction == true && onOpenSettings != null) {
+                            if (classified?.isOpenSettingsAction == true && (onOpenSettingsWithTarget != null || onOpenSettings != null)) {
                                 OutlinedButton(
-                                    onClick = { onOpenSettings.invoke() },
+                                    onClick = {
+                                        if (onOpenSettingsWithTarget != null) {
+                                            onOpenSettingsWithTarget.invoke("PROVIDERS")
+                                        } else {
+                                            onOpenSettings?.invoke()
+                                        }
+                                    },
                                     modifier = Modifier.height(34.dp),
                                     shape = RoundedCornerShape(10.dp),
                                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
@@ -2394,14 +2146,14 @@ fun ModelItem(
                     LiquidGlassButton(
                         onClick = { showDeleteConfirm = true },
                         hazeState = hazeState,
-                        modifier = Modifier.height(40.dp),
+                        modifier = Modifier.height(38.dp),
                         shape = RoundedCornerShape(12.dp),
-                        tintColor = MaterialTheme.colorScheme.error.copy(alpha = 0.22f),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+                        tintColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.25f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                     ) {
-                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error.copy(alpha = 0.85f))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(if (isCustomWithoutFile) "Remove" else "Delete")
+                        Text(if (isCustomWithoutFile) "Remove" else "Delete", color = MaterialTheme.colorScheme.error.copy(alpha = 0.90f), style = MaterialTheme.typography.labelMedium)
                     }
                 }
 
@@ -2809,14 +2561,14 @@ fun ModelItem(
                             showBenchDialog = true
                         },
                         hazeState = hazeState,
-                        modifier = Modifier.height(40.dp),
+                        modifier = Modifier.height(38.dp),
                         shape = RoundedCornerShape(12.dp),
-                        tintColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.22f),
+                        tintColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.35f),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                     ) {
-                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Bench")
+                        Text("Bench", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
 
@@ -2940,14 +2692,14 @@ fun ModelItem(
                     LiquidGlassButton(
                         onClick = onOpenPage,
                         hazeState = hazeState,
-                        modifier = Modifier.height(40.dp),
+                        modifier = Modifier.height(38.dp),
                         shape = RoundedCornerShape(12.dp),
-                        tintColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
+                        tintColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.35f),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
                     ) {
-                        Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Page")
+                        Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Page", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
 
@@ -3007,7 +2759,14 @@ fun ModelItem(
                         modelName = model.name,
                         hazeState = hazeState,
                         onDismissRequest = { showHfTokenPromptDialog = false },
-                        onOpenSettings = { onOpenSettings?.invoke() }
+                        onOpenSettings = {
+                            showHfTokenPromptDialog = false
+                            if (onOpenSettingsWithTarget != null) {
+                                onOpenSettingsWithTarget.invoke("PROVIDERS")
+                            } else {
+                                onOpenSettings?.invoke()
+                            }
+                        }
                     )
                 }
 
@@ -3031,12 +2790,12 @@ fun ModelItem(
                     },
                     enabled = isButtonEnabled,
                     hazeState = hazeState,
-                    modifier = Modifier.height(44.dp),
+                    modifier = Modifier.height(42.dp),
                     shape = RoundedCornerShape(12.dp),
                     tintColor = if (isSelected) {
-                        MaterialTheme.colorScheme.primaryContainer
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.38f)
                     } else {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
                     },
                     contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp)
                 ) {
@@ -3044,17 +2803,18 @@ fun ModelItem(
                         imageVector = when {
                             isUnloading -> Icons.Default.HourglassTop
                             isSelected -> Icons.Default.Eject
-                            model.status == ModelStatus.Available -> Icons.Default.CheckCircle
+                            model.status == ModelStatus.Available -> Icons.Default.Check
                             model.status == ModelStatus.Downloading -> Icons.Default.Pause
                             model.status == ModelStatus.Blocked -> if (canTryAnyway) Icons.Default.Info else Icons.Default.Download
                             else -> Icons.Default.Download
                         },
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(18.dp),
+                        tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        when {
+                        text = when {
                             isUnloading -> "Ejecting…"
                             isSelected -> "Eject"
                             model.status == ModelStatus.Downloading -> "Pause"
@@ -3067,7 +2827,9 @@ fun ModelItem(
                             isFuturePlaceholder && model.status == ModelStatus.NeedsConversion -> "Future"
                             isFuturePlaceholder && model.status == ModelStatus.ComingSoon -> "Soon"
                             else -> "Download"
-                        }
+                        },
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
@@ -3316,77 +3078,143 @@ private fun HfTokenRequiredDialog(
         onDismissRequest = onDismissRequest,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Surface(
-            modifier = Modifier.fillMaxWidth(0.92f),
-            shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.50f))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+            GlassDispersionCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .wrapContentHeight()
+                    .widthIn(max = 500.dp)
+                    .fluidReveal(initialScale = 0.90f, initialYOffset = 16.dp)
+                    .animatedGlassHalo(alpha = 0.08f, durationMillis = 4_800),
+                hazeState = hazeState,
+                cornerRadius = 24.dp,
+                blurRadius = 32.dp,
+                refractionStrength = 0.20f,
+                dispersionAmount = 0.035f,
+                tintColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.65f),
+                borderAlpha = 0.50f,
+                contentPadding = PaddingValues(22.dp),
+                animatedCaustics = true
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                    RoundedCornerShape(14.dp)
+                                )
+                                .border(
+                                    width = 1.dp,
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                                    shape = RoundedCornerShape(14.dp)
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Token Required",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Hugging Face Access Token needed",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
                     Box(
                         modifier = Modifier
-                            .size(44.dp)
-                            .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(12.dp)),
-                        contentAlignment = Alignment.Center
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.28f),
+                                RoundedCornerShape(14.dp)
+                            )
+                            .border(
+                                width = 0.8.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            .padding(14.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Lock,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                    Column {
-                        Text(
-                            text = "Token Required",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "Hugging Face Access Token needed",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                Text(
-                    text = "$modelName requires a Hugging Face Access Token to download.\n\nPlease open Settings (⚙️) → Hugging Face Access Token to paste your read token.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(onClick = onDismissRequest) {
-                        Text("Cancel")
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = "$modelName requires a Hugging Face Access Token to download.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Please open Settings → Providers & API to enter your Hugging Face read token.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
 
-                    LiquidGlassButton(
-                        onClick = {
-                            onDismissRequest()
-                            onOpenSettings()
-                        },
-                        hazeState = hazeState,
-                        modifier = Modifier.height(40.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Open Settings")
+                        LiquidGlassButton(
+                            onClick = onDismissRequest,
+                            hazeState = hazeState,
+                            modifier = Modifier.height(40.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            tintColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.35f),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
+                        ) {
+                            Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+
+                        LiquidGlassButton(
+                            onClick = {
+                                onDismissRequest()
+                                onOpenSettings()
+                            },
+                            hazeState = hazeState,
+                            modifier = Modifier.height(40.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                "Open Settings",
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
             }

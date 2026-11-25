@@ -13,9 +13,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.platform.LocalView
@@ -25,6 +22,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import com.shounak.localmeshai.utils.ModelOperationError
 import com.shounak.localmeshai.utils.ModelErrorReason
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +42,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.CloudDownload
@@ -200,7 +200,7 @@ fun AddModelSheet(
                 SlidingGlassTabs(
                     tabs = listOf(
                         SlidingGlassTab("Phone files", Icons.Default.FolderOpen),
-                        SlidingGlassTab("Hugging Face / URL", Icons.Default.CloudDownload)
+                        SlidingGlassTab("Hugging Face", Icons.Default.CloudDownload)
                     ),
                     selectedIndex = selectedTabIndex,
                     onSelect = { selectedTabIndex = it },
@@ -264,10 +264,29 @@ private fun PhoneImportSection(
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text(
-            text = "Select model weights together with their configuration, tokenizer and processor files. Supported ONNX and safetensors pipelines include text, image classification, speech transcription and image generation. For pipelines with component folders, import a .zip or .solusmodel archive to preserve the folder structure. Compatibility depends on the architecture and tensor interface.",
-            style = MaterialTheme.typography.bodyMedium,
+            text = "Select model weights along with configuration, tokenizer, or processor files. Multi-folder pipelines can be imported as .zip or .solusmodel archives.",
+            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            listOf("GGUF", "LiteRT", "ONNX", "Safetensors").forEach { format ->
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.50f),
+                    border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f))
+                ) {
+                    Text(
+                        text = format,
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
+                    )
+                }
+            }
+        }
 
         LiquidGlassButton(
             onClick = {
@@ -496,13 +515,34 @@ private fun HuggingFaceImportSection(
             }
         }
         Text(
-            text = "Browse all files in a Hugging Face repository or folder and select multiple downloads. Runnable imports support GGUF, .task, .litertlm, .onnx, .tflite and .safetensors. Required companions are included automatically. Other formats can be saved as files; model compatibility is checked before downloading weights.",
-            style = MaterialTheme.typography.bodyMedium,
+            text = "Browse and download models directly from Hugging Face repositories. Required companions and shards are resolved automatically.",
+            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            listOf("GGUF", "LiteRT", "ONNX", "Safetensors").forEach { format ->
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.50f),
+                    border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.40f))
+                ) {
+                    Text(
+                        text = format,
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
+                    )
+                }
+            }
+        }
 
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             OutlinedTextField(
@@ -513,7 +553,8 @@ private fun HuggingFaceImportSection(
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .defaultMinSize(minHeight = 56.dp),
+                    .defaultMinSize(minHeight = 56.dp)
+                    .padding(horizontal = 2.dp),
                 label = { Text("Repository or model URL") },
                 leadingIcon = { Icon(Icons.Default.Link, contentDescription = null) },
                 singleLine = true,
@@ -614,16 +655,19 @@ private fun HuggingFaceImportSection(
                             fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                         Text("Revision: ${repoInfo.commitSha.take(10)} (${repoInfo.requestedRevision})", style = MaterialTheme.typography.bodySmall)
                         Text("Repository files (${state.browseFiles.size})", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                        Text("Select one or more files. Required companions and remaining shards are downloaded automatically, even when unselected. Other files are saved separately; downloading them does not add inference support.",
-                            style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            text = "Select files to download. Shards and required companions are included automatically.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         OutlinedTextField(value = fileFilter, onValueChange = { fileFilter = it },
                             label = { Text("Filter files") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             TextButton(onClick = { mainViewModel.selectAllHfFiles(true) }, enabled = !isSubmittingVariant) { Text("Select all files") }
                             TextButton(onClick = { mainViewModel.selectAllHfFiles(false) }, enabled = !isSubmittingVariant) { Text("Clear selection") }
                         }
-                        LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(filtered, key = { it.path }) { file ->
+                        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            filtered.forEach { file ->
                                 val checked = file.path in selectedPaths
                                 val automatic = file.path in plan.automaticPaths
                                 val key = remember(repoInfo.repoId, repoInfo.commitSha, file.path) {
@@ -636,7 +680,7 @@ private fun HuggingFaceImportSection(
                                     .toggleable(value = checked, enabled = !isSubmittingVariant, role = Role.Checkbox,
                                         onValueChange = { mainViewModel.toggleHfFile(file.path) })
                                     .padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    CircularFileSelector(checked)
+                                    TickFileSelector(checked)
                                     Spacer(Modifier.width(10.dp))
                                     Column(Modifier.weight(1f)) {
                                         Text(file.path, style = MaterialTheme.typography.bodyMedium,
@@ -661,8 +705,8 @@ private fun HuggingFaceImportSection(
                         val automaticFiles = plan.downloadFiles.filter { it.path in plan.automaticPaths }
                         if (automaticFiles.isNotEmpty()) {
                             Text("Automatic bundle files (${automaticFiles.size})", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
-                            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 140.dp)) {
-                                items(automaticFiles, key = { it.path }) { Text("• ${it.path} (${repositoryFileSize(it.sizeBytes)})", style = MaterialTheme.typography.labelSmall) }
+                            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                automaticFiles.forEach { Text("• ${it.path} (${repositoryFileSize(it.sizeBytes)})", style = MaterialTheme.typography.labelSmall) }
                             }
                         }
                         if (plan.models.isNotEmpty()) Text("${plan.models.size} model bundle(s); ${plan.extraFiles.size} other file(s). Additional export-declared assets are fetched when needed.", style = MaterialTheme.typography.bodySmall)
@@ -737,10 +781,33 @@ private fun HuggingFaceImportSection(
 }
 
 @Composable
-private fun CircularFileSelector(selected: Boolean) {
-    val color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-    Box(Modifier.size(24.dp).border(2.dp, color, CircleShape), contentAlignment = Alignment.Center) {
-        if (selected) Box(Modifier.size(12.dp).background(color, CircleShape))
+private fun TickFileSelector(selected: Boolean) {
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val outlineColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
+    val shape = RoundedCornerShape(6.dp)
+
+    Box(
+        modifier = Modifier
+            .size(22.dp)
+            .border(
+                width = if (selected) 0.dp else 1.5.dp,
+                color = if (selected) Color.Transparent else outlineColor,
+                shape = shape
+            )
+            .background(
+                color = if (selected) primaryColor else Color.Transparent,
+                shape = shape
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (selected) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(16.dp)
+            )
+        }
     }
 }
 

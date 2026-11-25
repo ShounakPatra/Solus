@@ -58,39 +58,39 @@ object EmbeddingModels {
     const val LEXICAL_ID = "universal-fnv1a-384"
 
     /**
-     * BAAI bge-small-en-v1.5, int8 ONNX export (Xenova). 33M parameters, 384 dimensions.
-     * Heuristic calibration maps 0.35..0.80 raw cosine onto the app's 0..1 relevance scale.
-     * Scores remain relevance estimates, not probabilities.
+     * MinishLab potion-base-2M, static Model2Vec ONNX export. 2M parameters, 64 dimensions.
+     * Pinned to revision 389b9f64be5aa4ae7a6bc6fe95ef20ce485ae5da.
+     * Calibration maps 0.20..0.70 raw cosine onto the app's 0..1 relevance scale.
      */
-    val BGE_SMALL_EN_V15 = Spec(
-        id = "bge-small-en-v1.5-int8",
-        displayName = "bge-small-en-v1.5",
-        repository = "Xenova/bge-small-en-v1.5",
-        revision = "ea104dacec62c0de699686887e3f920caeb4f3e3",
-        dimension = 384,
-        queryPrefix = "Represent this sentence for searching relevant passages: ",
-        calibrationFloor = 0.35f,
-        calibrationSpan = 0.45f,
+    val POTION_BASE_2M = Spec(
+        id = "potion-base-2M",
+        displayName = "potion-base-2M",
+        repository = "minishlab/potion-base-2M",
+        revision = "389b9f64be5aa4ae7a6bc6fe95ef20ce485ae5da",
+        dimension = 64,
+        queryPrefix = "",
+        calibrationFloor = 0.15f,
+        calibrationSpan = 0.50f,
         model = RemoteFile(
-            remotePath = "onnx/model_quantized.onnx",
-            localName = "model_quantized.onnx",
-            sizeBytes = 34_014_426L,
-            sha256 = "6c9c6101a956d62dfb5e7190c538226c0c5bb9cb27b651234b6df063ee7dbfe4",
-            mirrorName = "bge-small-en-v1.5-int8.onnx"
+            remotePath = "onnx/model.onnx",
+            localName = "model.onnx",
+            sizeBytes = 7_563_349L,
+            sha256 = "92d4a7576de7d39055924b4d9d3979c8c3b2de272010f76f99e2ac14c7b2e5a8"
         ),
         vocab = RemoteFile(
             remotePath = "vocab.txt",
             localName = "vocab.txt",
-            sizeBytes = 231_508L,
-            sha256 = "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
-            mirrorName = "bge-small-en-v1.5-vocab.txt"
-        ),
-        mirrorBaseUrl = "https://github.com/ShounakPatra/Solus/releases/download/v6.0.6"
+            sizeBytes = 219_690L,
+            sha256 = "1394523a67ddd404a825428018c0582a6998bcfa044ecbcbf1f4d71adb94c61c"
+        )
     )
 
-    val all: List<Spec> = listOf(BGE_SMALL_EN_V15)
+    @Deprecated("Replaced by POTION_BASE_2M", ReplaceWith("POTION_BASE_2M"))
+    val BGE_SMALL_EN_V15 = POTION_BASE_2M
 
-    fun find(id: String): Spec? = all.firstOrNull { it.id == id }
+    val all: List<Spec> = listOf(POTION_BASE_2M)
+
+    fun find(id: String): Spec? = if (id == "bge-small-en-v1.5-int8") POTION_BASE_2M else all.firstOrNull { it.id == id }
 
     fun directory(context: Context, spec: Spec): File = File(context.filesDir, "embeddings/${spec.id}")
 

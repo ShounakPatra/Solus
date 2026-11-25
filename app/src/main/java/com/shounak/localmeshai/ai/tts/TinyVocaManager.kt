@@ -81,43 +81,13 @@ class TinyVocaManager private constructor(private val appContext: Context) {
         get() = File(appContext.filesDir, "models/tiny_voca.onnx")
 
     val hasBundledAsset: Boolean
-        get() = try {
-            appContext.assets.open("models/tiny_voca.onnx").use { true }
-        } catch (_: Exception) {
-            false
-        }
+        get() = false
 
     init {
-        extractAssetModelIfPresent()
         checkModelStatus()
         initializeTtsEngine()
         if (_isModelDownloaded.value) {
             preloadModelToRam()
-        }
-    }
-
-    private fun extractAssetModelIfPresent() {
-        try {
-            if (!modelFile.exists() || modelFile.length() < 1_000_000L) {
-                appContext.assets.open("models/tiny_voca.onnx").use { input ->
-                    val targetDir = modelFile.parentFile
-                    if (targetDir != null && !targetDir.exists()) {
-                        targetDir.mkdirs()
-                    }
-                    val temp = File(appContext.filesDir, "models/tiny_voca.tmp")
-                    FileOutputStream(temp).use { output ->
-                        input.copyTo(output)
-                    }
-                    if (modelFile.exists()) modelFile.delete()
-                    if (!temp.renameTo(modelFile)) {
-                        temp.copyTo(modelFile, overwrite = true)
-                        temp.delete()
-                    }
-                    Log.i(TAG, "Bundled compact TinyVoca model extracted to: ${modelFile.absolutePath}")
-                }
-            }
-        } catch (e: Exception) {
-            Log.d(TAG, "No bundled TinyVoca asset or failed to extract: ${e.message}")
         }
     }
 
@@ -312,48 +282,33 @@ class TinyVocaManager private constructor(private val appContext: Context) {
     }
 
     /**
-     * Restore the TinyVoca model: first checks for the bundled APK asset (instant, 0 network usage),
-     * and if not found, falls back to downloading from Hugging Face.
+     * Download the TinyVoca model manually on demand from Hugging Face.
+     * This is NEVER called automatically; only when the user explicitly taps "Download".
      */
     fun restoreOrDownloadTinyVoca(
         onProgress: ((Float) -> Unit)? = null,
         onComplete: (() -> Unit)? = null,
         onError: ((String) -> Unit)? = null
     ) {
-        if (_downloadProgress.value != null) return
-
-        scope.launch(Dispatchers.IO) {
-            try {
-                if (hasBundledAsset) {
-                    _downloadProgress.value = 0.5f
-                    extractAssetModelIfPresent()
-                    checkModelStatus()
-                    if (_isModelDownloaded.value) {
-                        preloadModelToRam()
-                        _downloadProgress.value = null
-                        withContext(Dispatchers.Main) {
-                            onComplete?.invoke()
-                        }
-                        Log.i(TAG, "TinyVoca model successfully restored from APK asset.")
-                        return@launch
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Asset restore failed, falling back to download: ${e.message}")
-            }
-
-            // Fall back to network download
-            downloadTinyVoca(onProgress, onComplete, onError)
-        }
+        downloadTinyVoca(onProgress, onComplete, onError)
     }
 
+    /**
+     * Delete the downloaded TinyVoca model.
+     * Once deleted, it stays deleted and is NEVER re-downloaded automatically.
+     */
     fun deleteTinyVocaModel(): Boolean {
         return try {
+            stop()
             ortSession?.close()
             ortSession = null
             _isModelResidentInRam.value = false
-            val deleted = modelFile.delete()
+            _downloadProgress.value = null
+            val tempFile = File(appContext.filesDir, "models/tiny_voca.tmp")
+            if (tempFile.exists()) tempFile.delete()
+            val deleted = if (modelFile.exists()) modelFile.delete() else true
             checkModelStatus()
+            Log.i(TAG, "TinyVoca model manually deleted by user. Auto-download is strictly disabled.")
             deleted
         } catch (e: Exception) {
             Log.e(TAG, "Error deleting TinyVoca model: ${e.message}", e)
@@ -370,6 +325,10 @@ class TinyVocaManager private constructor(private val appContext: Context) {
         voice: String = "F2",
         speed: Float = 1.0f
     ) {
+        if (!_isModelDownloaded.value) {
+            Log.w(TAG, "TinyVoca model is not downloaded. Speak disabled.")
+            return
+        }
         val clean = cleanTextForSpeech(text)
         if (clean.isBlank()) return
 

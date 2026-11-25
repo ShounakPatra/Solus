@@ -36,6 +36,7 @@ import dev.chrisbanes.haze.hazeEffect
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.window.Dialog
@@ -73,10 +74,15 @@ fun TemporaryChatToggle(temporary: Boolean, busy: Boolean, hazeState: HazeState,
 @Composable
 fun ContextUsageIndicator(budget: ContextBudget) {
     var showDetails by remember { mutableStateOf(false) }
-    Text("Context ~${budget.estimatedTokens} / ${budget.limit}",
+    val limitLabel = if (budget.limit >= 1024) "${budget.limit / 1024}k" else "${budget.limit}"
+    Text(
+        text = "${budget.estimatedTokens} / $limitLabel",
         modifier = Modifier.clickable(role = Role.Button, onClickLabel = "Show estimated context usage") { showDetails = true },
-        fontSize = 11.sp, maxLines = 1,
-        color = if (budget.warning) MaterialTheme.colorScheme.error else Color(0xFF94A3B8))
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Medium,
+        maxLines = 1,
+        color = if (budget.warning) MaterialTheme.colorScheme.error else Color(0xFF94A3B8)
+    )
     if (showDetails) AlertDialog(onDismissRequest = { showDetails = false }, title = { Text("Estimated context usage") },
         text = { Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("~${budget.estimatedTokens} / ${budget.limit} tokens")
@@ -97,9 +103,16 @@ fun HistoryEntryActions(kind: String, id: String, defaultTitle: String, hazeStat
     var menu by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     Box {
-        LiquidGlassButton(onClick = { menu = true }, hazeState = hazeState, modifier = Modifier.size(36.dp),
-            shape = CircleShape, contentPadding = PaddingValues(0.dp)) {
-            Icon(Icons.Default.MoreVert, contentDescription = "Conversation actions for $defaultTitle", modifier = Modifier.size(20.dp))
+        IconButton(
+            onClick = { menu = true },
+            modifier = Modifier.size(32.dp)
+        ) {
+            Icon(
+                Icons.Default.MoreVert,
+                contentDescription = "Conversation actions for $defaultTitle",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.70f),
+                modifier = Modifier.size(18.dp)
+            )
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false },
             modifier = Modifier.widthIn(min = 180.dp).glassEffect(hazeState = hazeState, shape = RoundedCornerShape(16.dp),

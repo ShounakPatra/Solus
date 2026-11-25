@@ -212,6 +212,12 @@ class AppSettings internal constructor(
         private const val KEY_ENABLE_VOICE_LIVE_HIGHLIGHT = "enable_voice_live_highlight"
         private const val KEY_ENABLE_AUTO_CHAT_BACKUP = "enable_auto_chat_backup"
 
+        const val DEFAULT_TEMPERATURE = 0.7f
+        const val DEFAULT_TOP_P = 0.90f
+        const val DEFAULT_TOP_K = 40
+        const val DEFAULT_MAX_LENGTH = 0
+        const val DEFAULT_AUTO_UNLOAD_MINUTES = 5
+
         @Volatile
         private var INSTANCE: AppSettings? = null
 

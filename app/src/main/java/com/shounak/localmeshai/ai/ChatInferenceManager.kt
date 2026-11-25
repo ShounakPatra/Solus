@@ -870,7 +870,7 @@ class ChatInferenceManager(context: Context) {
                     val sampling = profileSampling()
                     var firstToken = true
                     requireNotNull(portableTextEngine).generate(
-                        prompt = portableTextEngine!!.renderPrompt(structuredMessages, inferencePrompt, memoryContext, thinkingMode), limit = MAX_RESPONSE_TOKENS,
+                        prompt = portableTextEngine!!.renderPrompt(structuredMessages, inferencePrompt, memoryContext, thinkingMode), limit = if (sampling.maxTokens > 0) sampling.maxTokens else MAX_RESPONSE_TOKENS,
                         temperature = sampling.temperature, topP = sampling.topP, topK = sampling.topK,
                         onText = { delta -> timing?.recordChunk(delta); effectiveOnUpdate(delta) },
                         onToken = {
@@ -1185,10 +1185,11 @@ class ChatInferenceManager(context: Context) {
         onUpdate: (String) -> Unit
     ): String {
         val inference = mediaPipeInference ?: throw IllegalStateException("Inference not initialized")
+        val sampling = profileSampling()
         val sessionOptions = LlmInferenceSession.LlmInferenceSessionOptions.builder()
-            .setTopK(40)
-            .setTopP(0.95f)
-            .setTemperature(temperature)
+            .setTopK(sampling.topK)
+            .setTopP(sampling.topP)
+            .setTemperature(sampling.temperature)
             .setRandomSeed(31 * prompt.hashCode() + seedSalt)
             .build()
         val session = LlmInferenceSession.createFromOptions(inference, sessionOptions)
@@ -1574,10 +1575,14 @@ class ChatInferenceManager(context: Context) {
 
     private fun createLiteRtConversation(mode: LiteRtConversationMode): Conversation? {
         val engine = liteRtEngine ?: return null
+        val sampling = profileSampling()
         val base = LiteRtThinkingConfig.apply(
-            ConversationConfig(extraContext = if (mode == LiteRtConversationMode.NoThinking)
-                ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
-                else emptyMap()),
+            ConversationConfig(
+                extraContext = if (mode == LiteRtConversationMode.NoThinking)
+                    ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
+                    else emptyMap(),
+                maxOutputToken = if (sampling.maxTokens > 0) sampling.maxTokens else null
+            ),
             enabled = if (isDefaultThinkingModel) mode != LiteRtConversationMode.NoThinking else null,
             softSwitch = configuredCapabilities?.capabilities?.thinkingControl == ThinkingControlStrategy.QwenSoftSwitch
         )

@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -58,6 +59,7 @@ fun ChatDefaultsSubmenu(
         )
 
         // 1. Temperature
+        val isTempModified = kotlin.math.abs(settingsData.defaultTemperature - AppSettings.DEFAULT_TEMPERATURE) > 0.01f
         ChatDefaultSliderRow(
             title = "Temperature",
             valueText = String.format(Locale.US, "%.1f", settingsData.defaultTemperature),
@@ -66,12 +68,17 @@ fun ChatDefaultsSubmenu(
             valueRange = 0.0f..2.0f,
             step = 0.1f,
             hazeState = hazeState,
+            isModified = isTempModified,
+            onReset = {
+                appSettings.updateSettings { it.copy(defaultTemperature = AppSettings.DEFAULT_TEMPERATURE) }
+            },
             onValueChange = { newVal ->
                 appSettings.updateSettings { it.copy(defaultTemperature = newVal) }
             }
         )
 
         // 2. Top P
+        val isTopPModified = kotlin.math.abs(settingsData.defaultTopP - AppSettings.DEFAULT_TOP_P) > 0.01f
         ChatDefaultSliderRow(
             title = "Top P",
             valueText = String.format(Locale.US, "%.2f", settingsData.defaultTopP),
@@ -80,12 +87,17 @@ fun ChatDefaultsSubmenu(
             valueRange = 0.05f..1.00f,
             step = 0.05f,
             hazeState = hazeState,
+            isModified = isTopPModified,
+            onReset = {
+                appSettings.updateSettings { it.copy(defaultTopP = AppSettings.DEFAULT_TOP_P) }
+            },
             onValueChange = { newVal ->
                 appSettings.updateSettings { it.copy(defaultTopP = newVal) }
             }
         )
 
         // 3. Top K
+        val isTopKModified = settingsData.defaultTopK != AppSettings.DEFAULT_TOP_K
         ChatDefaultSliderRow(
             title = "Top K",
             valueText = "${settingsData.defaultTopK}",
@@ -94,12 +106,17 @@ fun ChatDefaultsSubmenu(
             valueRange = 1.0f..100.0f,
             step = 5.0f,
             hazeState = hazeState,
+            isModified = isTopKModified,
+            onReset = {
+                appSettings.updateSettings { it.copy(defaultTopK = AppSettings.DEFAULT_TOP_K) }
+            },
             onValueChange = { newVal ->
                 appSettings.updateSettings { it.copy(defaultTopK = newVal.toInt()) }
             }
         )
 
         // 4. Max length
+        val isMaxLengthModified = settingsData.defaultMaxLength != AppSettings.DEFAULT_MAX_LENGTH
         ChatDefaultSliderRow(
             title = "Max length",
             valueText = if (settingsData.defaultMaxLength <= 0) "Auto" else "${settingsData.defaultMaxLength}",
@@ -108,10 +125,223 @@ fun ChatDefaultsSubmenu(
             valueRange = 0.0f..4096.0f,
             step = 128.0f,
             hazeState = hazeState,
+            isModified = isMaxLengthModified,
+            onReset = {
+                appSettings.updateSettings { it.copy(defaultMaxLength = AppSettings.DEFAULT_MAX_LENGTH) }
+            },
             onValueChange = { newVal ->
                 appSettings.updateSettings { it.copy(defaultMaxLength = newVal.toInt()) }
             }
         )
+
+        // 5. Auto-Unload Timer
+        val isAutoUnloadModified = settingsData.autoUnloadMinutes != AppSettings.DEFAULT_AUTO_UNLOAD_MINUTES
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .glassEffect(
+                    hazeState = hazeState,
+                    shape = RoundedCornerShape(20.dp),
+                    blurRadius = 24.dp,
+                    tintColor = colors.surfaceContainerHigh.copy(alpha = 0.52f),
+                    borderAlpha = 0.40f
+                ),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Auto-Unload Timer",
+                        modifier = Modifier.weight(1f, fill = false),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        LiquidGlassButton(
+                            onClick = {
+                                appSettings.updateSettings { it.copy(autoUnloadMinutes = AppSettings.DEFAULT_AUTO_UNLOAD_MINUTES) }
+                            },
+                            hazeState = hazeState,
+                            modifier = Modifier.height(28.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            tintColor = if (isAutoUnloadModified) colors.primary.copy(alpha = 0.22f) else colors.surfaceContainerHighest.copy(alpha = 0.25f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Reset auto-unload to default",
+                                tint = if (isAutoUnloadModified) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.7f),
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                "Reset",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                                fontWeight = if (isAutoUnloadModified) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isAutoUnloadModified) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.height(28.dp),
+                            color = if (settingsData.autoUnloadMinutes <= 0) colors.surfaceContainerHigh.copy(alpha = 0.5f) else colors.primary.copy(alpha = 0.14f),
+                            border = BorderStroke(0.8.dp, if (settingsData.autoUnloadMinutes <= 0) colors.outlineVariant.copy(alpha = 0.35f) else colors.primary.copy(alpha = 0.35f))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .padding(horizontal = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = if (settingsData.autoUnloadMinutes <= 0) "Off" else "${settingsData.autoUnloadMinutes}m",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace),
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (settingsData.autoUnloadMinutes <= 0) colors.onSurfaceVariant else colors.primary,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    LiquidGlassButton(
+                        onClick = {
+                            val next = (settingsData.autoUnloadMinutes - 1).coerceAtLeast(0)
+                            appSettings.updateSettings { it.copy(autoUnloadMinutes = next) }
+                        },
+                        hazeState = hazeState,
+                        modifier = Modifier
+                            .size(42.dp)
+                            .border(1.dp, colors.primary.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
+                        shape = RoundedCornerShape(12.dp),
+                        tintColor = colors.primary.copy(alpha = 0.12f),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text("—", color = colors.primary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(38.dp)
+                            .glassEffect(
+                                hazeState = hazeState,
+                                shape = RoundedCornerShape(19.dp),
+                                blurRadius = 16.dp,
+                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.28f),
+                                borderAlpha = 0.30f
+                            )
+                            .border(
+                                0.8.dp,
+                                colors.outlineVariant.copy(alpha = 0.35f),
+                                RoundedCornerShape(19.dp)
+                            )
+                            .padding(horizontal = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Slider(
+                            value = settingsData.autoUnloadMinutes.toFloat().coerceIn(0f, 60f),
+                            onValueChange = { newVal ->
+                                appSettings.updateSettings { it.copy(autoUnloadMinutes = newVal.toInt()) }
+                            },
+                            valueRange = 0f..60f,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = SliderDefaults.colors(
+                                thumbColor = colors.primary,
+                                activeTrackColor = colors.primary,
+                                inactiveTrackColor = colors.onSurface.copy(alpha = 0.15f)
+                            )
+                        )
+                    }
+
+                    LiquidGlassButton(
+                        onClick = {
+                            val next = (settingsData.autoUnloadMinutes + 1).coerceAtMost(60)
+                            appSettings.updateSettings { it.copy(autoUnloadMinutes = next) }
+                        },
+                        hazeState = hazeState,
+                        modifier = Modifier
+                            .size(42.dp)
+                            .border(1.dp, colors.primary.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
+                        shape = RoundedCornerShape(12.dp),
+                        tintColor = colors.primary.copy(alpha = 0.12f),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text("+", color = colors.primary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                // Quick preset pills
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val presets = listOf(
+                        0 to "Off",
+                        2 to "2m",
+                        5 to "5m",
+                        10 to "10m",
+                        15 to "15m",
+                        30 to "30m"
+                    )
+                    presets.forEach { (mins, label) ->
+                        val isSelected = settingsData.autoUnloadMinutes == mins
+                        LiquidGlassButton(
+                            onClick = { appSettings.updateSettings { it.copy(autoUnloadMinutes = mins) } },
+                            hazeState = hazeState,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(32.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            tintColor = if (isSelected) colors.primary.copy(alpha = 0.28f) else colors.surfaceContainerHighest.copy(alpha = 0.25f),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) colors.primary else colors.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = "Automatically unloads idle model from RAM after inactivity to save battery and memory. 0 turns auto-unload off.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.onSurfaceVariant.copy(alpha = 0.82f)
+                )
+            }
+        }
 
         // 5. Compact automatically at
         Card(
@@ -239,6 +469,10 @@ fun VoiceSettingsSubmenu(
             .padding(horizontal = 4.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // TinyVoca Model Card for on-demand download & management
+        com.shounak.localmeshai.ui.components.TinyVocaModelCard(hazeState = hazeState)
+
+        // Voice & Speech preferences
         VoiceSettingsSection(appSettings, settingsData, hazeState)
     }
 }
@@ -250,6 +484,9 @@ fun VoiceSettingsSection(
     hazeState: HazeState
 ) {
     val colors = MaterialTheme.colorScheme
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val ttsManager = remember { com.shounak.localmeshai.ai.tts.TinyVocaManager.getInstance(context) }
+    val isDownloaded by ttsManager.isModelDownloaded.collectAsState()
 
     Card(
         modifier = Modifier
@@ -270,12 +507,39 @@ fun VoiceSettingsSection(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Text(
-                text = "Voice & Speech (TinyVoca)",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = colors.onSurface
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Voice & Speech Preferences",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.onSurface,
+                    modifier = Modifier.weight(1f, fill = false),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (!isDownloaded) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = colors.error.copy(alpha = 0.12f),
+                        border = BorderStroke(0.8.dp, colors.error.copy(alpha = 0.35f))
+                    ) {
+                        Text(
+                            text = "Not downloaded",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                            color = colors.error,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+            }
 
             // Voice Switcher (F2 Female vs M2 Male)
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -418,9 +682,6 @@ fun VoiceSettingsSection(
             }
         }
     }
-
-    // TinyVoca Model Manager Card
-    com.shounak.localmeshai.ui.components.TinyVocaModelCard(hazeState = hazeState)
 }
 
 @Composable
@@ -432,6 +693,8 @@ private fun ChatDefaultSliderRow(
     valueRange: ClosedFloatingPointRange<Float>,
     step: Float,
     hazeState: HazeState,
+    isModified: Boolean = false,
+    onReset: (() -> Unit)? = null,
     onValueChange: (Float) -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
@@ -462,22 +725,65 @@ private fun ChatDefaultSliderRow(
             ) {
                 Text(
                     text = title,
+                    modifier = Modifier.weight(1f, fill = false),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = colors.onSurface
+                    color = colors.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = colors.primary.copy(alpha = 0.14f),
-                    border = BorderStroke(0.8.dp, colors.primary.copy(alpha = 0.35f))
+                Spacer(modifier = Modifier.width(8.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text(
-                        text = valueText,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
-                        style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace),
-                        fontWeight = FontWeight.Bold,
-                        color = colors.primary
-                    )
+                    if (onReset != null) {
+                        LiquidGlassButton(
+                            onClick = onReset,
+                            hazeState = hazeState,
+                            modifier = Modifier.height(28.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            tintColor = if (isModified) colors.primary.copy(alpha = 0.22f) else colors.surfaceContainerHighest.copy(alpha = 0.25f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Reset $title to default",
+                                tint = if (isModified) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.7f),
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                "Reset",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                                fontWeight = if (isModified) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isModified) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.height(28.dp),
+                        color = colors.primary.copy(alpha = 0.14f),
+                        border = BorderStroke(0.8.dp, colors.primary.copy(alpha = 0.35f))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .padding(horizontal = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = valueText,
+                                style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace),
+                                fontWeight = FontWeight.Bold,
+                                color = colors.primary,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
                 }
             }
 

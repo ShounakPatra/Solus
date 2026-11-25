@@ -76,49 +76,49 @@ fun TinyVocaModelCard(
             // Header Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
+                Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .size(38.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(PurpleAccent.copy(alpha = 0.20f)),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(PurpleAccent.copy(alpha = 0.20f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                            contentDescription = null,
-                            tint = PurpleAccent,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "TinyVoca Neural TTS",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = colors.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "n4ze3m/tiny-voca • 8.1 MB (Compact INT8)",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                        contentDescription = null,
+                        tint = PurpleAccent,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
 
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "TinyVoca Neural TTS",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "n4ze3m/tiny-voca • ~21.4 MB (INT8 ONNX)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // Status Pills in FlowRow below title/subtitle
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 if (isDownloaded) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
@@ -126,14 +126,14 @@ fun TinyVocaModelCard(
                         border = BorderStroke(0.8.dp, Color(0xFF10B981))
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(13.dp))
                             Text(
                                 text = if (isResidentInRam) "In RAM" else "Ready",
-                                style = MaterialTheme.typography.labelSmall,
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
                                 color = Color(0xFF10B981),
                                 fontWeight = FontWeight.SemiBold,
                                 maxLines = 1,
@@ -148,18 +148,44 @@ fun TinyVocaModelCard(
                     ) {
                         Text(
                             text = "Not downloaded",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
                             color = colors.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                             maxLines = 1,
                             softWrap = false
                         )
                     }
                 }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = colors.surfaceContainerHighest.copy(alpha = 0.50f),
+                    border = BorderStroke(0.6.dp, colors.outlineVariant.copy(alpha = 0.35f))
+                ) {
+                    Text(
+                        text = "F2 / M2 Voices",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                        color = colors.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = colors.surfaceContainerHighest.copy(alpha = 0.50f),
+                    border = BorderStroke(0.6.dp, colors.outlineVariant.copy(alpha = 0.35f))
+                ) {
+                    Text(
+                        text = "Offline Audio",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                        color = colors.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
             }
 
             Text(
-                text = "Ultra-lightweight on-device neural voice model for offline answer reading. Pre-initialized in RAM for instant playback with F2 (Female) and M2 (Male) voices.",
+                text = "Ultra-lightweight on-device neural voice model for offline answer reading. Completely optional — when downloaded, Solus can speak responses aloud using F2 (Female) or M2 (Male) voices.",
                 style = MaterialTheme.typography.bodySmall,
                 color = colors.onSurfaceVariant
             )
@@ -193,7 +219,7 @@ fun TinyVocaModelCard(
                 if (!isDownloaded && downloadProgress == null) {
                     LiquidGlassButton(
                         onClick = {
-                            ttsManager.restoreOrDownloadTinyVoca(
+                            ttsManager.downloadTinyVoca(
                                 onComplete = {
                                     Toast.makeText(context, "TinyVoca model ready in RAM!", Toast.LENGTH_SHORT).show()
                                 },
@@ -214,7 +240,7 @@ fun TinyVocaModelCard(
                         Icon(Icons.Default.Download, contentDescription = null, tint = PurpleAccent, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (ttsManager.hasBundledAsset) "Restore Model (Offline / Instant)" else "Download Model (8.1 MB)",
+                            text = "Download Voice Model (21.4 MB)",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
@@ -315,7 +341,7 @@ fun TinyVocaModelCard(
                         )
                     }
                     Text(
-                        text = "This removes the offline neural voice model from internal storage. You can restore or re-download it anytime.",
+                        text = "This removes the offline neural voice model from internal storage. Once deleted, it will NOT download automatically — you can manually download it again anytime from Model Manager or Voice & Speech settings.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.onSurfaceVariant
                     )
@@ -336,7 +362,7 @@ fun TinyVocaModelCard(
                             onClick = {
                                 showDeleteConfirmDialog = false
                                 ttsManager.deleteTinyVocaModel()
-                                Toast.makeText(context, "TinyVoca model removed", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "TinyVoca model deleted. Voice reading disabled.", Toast.LENGTH_SHORT).show()
                             },
                             hazeState = hazeState,
                             shape = RoundedCornerShape(12.dp),

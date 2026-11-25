@@ -797,7 +797,7 @@ fun SettingsDialog(
                                 )
                             }
 
-                            Spacer(modifier = Modifier.height(24.dp))
+                            Spacer(modifier = Modifier.height(36.dp))
                         }
                     } else {
                         // Individual Submenu View
@@ -1216,11 +1216,52 @@ fun SettingsDialog(
                                                 }
                                             }
                                         }
-                                        Spacer(modifier = Modifier.height(24.dp))
+                                        Spacer(modifier = Modifier.height(36.dp))
                                     }
                                 }
 
                                 SettingsSubMenu.RAG -> {
+                                    val embeddingStatus by ragManager.embeddingStatus.collectAsState()
+                                    val filesRevision by ragManager.embeddingFilesRevision.collectAsState()
+                                    val neuralSpec = com.shounak.localmeshai.rag.embedding.EmbeddingModels.POTION_BASE_2M
+                                    val neuralOn = settingsData.ragEmbeddingModel == neuralSpec.id
+                                    val isModelInstalled = remember(filesRevision, embeddingStatus) {
+                                        com.shounak.localmeshai.rag.embedding.EmbeddingModels.isInstalled(context, neuralSpec)
+                                    }
+                                    val sizeLabel = com.shounak.localmeshai.utils.ByteSizeLabel.wholeMib(neuralSpec.downloadBytes)
+                                    val switching = embeddingStatus is com.shounak.localmeshai.rag.EmbeddingModelStatus.Downloading ||
+                                        embeddingStatus is com.shounak.localmeshai.rag.EmbeddingModelStatus.Reindexing
+                                    var confirmDeleteModel by remember { mutableStateOf(false) }
+
+                                    LaunchedEffect(embeddingStatus) {
+                                        if (embeddingStatus is com.shounak.localmeshai.rag.EmbeddingModelStatus.Idle) {
+                                            ragDocCount = ragManager.indexedDocuments.size
+                                            ragChunkCount = ragManager.totalIndexedChunks
+                                        }
+                                    }
+
+                                    if (confirmDeleteModel) {
+                                        com.shounak.localmeshai.features.GlassActionDialog(
+                                            hazeState = hazeState,
+                                            onDismiss = { confirmDeleteModel = false },
+                                            title = "Delete neural search model?",
+                                            confirmLabel = "Delete model",
+                                            destructive = true,
+                                            confirmEnabled = !switching,
+                                            onConfirm = {
+                                                confirmDeleteModel = false
+                                                appSettings.updateSettings { it.copy(embeddingModelPromptSkipped = true) }
+                                                ragManager.requestEmbeddingModel(com.shounak.localmeshai.rag.embedding.EmbeddingModels.LEXICAL_ID)
+                                            }
+                                        ) {
+                                            Text(
+                                                "This removes the downloaded search model ($sizeLabel). Your documents stay in the knowledge base and use built-in keyword search. You can download the model again anytime.",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = colors.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+
                                     SettingsCategory(title = "Knowledge Base & Documents", hazeState = hazeState) {
                                         SettingsSwitchRow(
                                             title = "Enable RAG Knowledge Base",
@@ -1231,122 +1272,240 @@ fun SettingsDialog(
                                             }
                                         )
 
-                                        if (settingsData.enableRag) {
-                                            val embeddingStatus by ragManager.embeddingStatus.collectAsState()
-                                            val neuralSpec = com.shounak.localmeshai.rag.embedding.EmbeddingModels.BGE_SMALL_EN_V15
-                                            val neuralOn = settingsData.ragEmbeddingModel == neuralSpec.id
-                                            val switching = embeddingStatus is com.shounak.localmeshai.rag.EmbeddingModelStatus.Downloading ||
-                                                embeddingStatus is com.shounak.localmeshai.rag.EmbeddingModelStatus.Reindexing
-                                            LaunchedEffect(embeddingStatus) {
-                                                if (embeddingStatus is com.shounak.localmeshai.rag.EmbeddingModelStatus.Idle) {
-                                                    ragDocCount = ragManager.indexedDocuments.size
-                                                    ragChunkCount = ragManager.totalIndexedChunks
-                                                }
-                                            }
-                                            val neuralSubtitle = when (val status = embeddingStatus) {
-                                                is com.shounak.localmeshai.rag.EmbeddingModelStatus.Downloading ->
-                                                    "Downloading ${neuralSpec.displayName}… ${(status.bytesDone * 100 / status.bytesTotal.coerceAtLeast(1L)).toInt()}%"
-                                                is com.shounak.localmeshai.rag.EmbeddingModelStatus.Reindexing ->
-                                                    "Re-indexing documents… ${status.chunksDone}/${status.chunksTotal} chunks"
-                                                is com.shounak.localmeshai.rag.EmbeddingModelStatus.Failed ->
-                                                    "Couldn't switch search model: ${status.message}"
-                                                else -> if (neuralOn) {
-                                                    "On: ${neuralSpec.displayName}, fully offline. Finds passages by meaning, not just words"
-                                                } else {
-                                                    "Downloads a ${com.shounak.localmeshai.utils.ByteSizeLabel.wholeMib(neuralSpec.downloadBytes)} English search model. Uses extra RAM while indexing and searching; unloads after idle."
-                                                }
-                                            }
-                                            SettingsSwitchRow(
-                                                title = "Neural Semantic Search",
-                                                subtitle = neuralSubtitle,
-                                                checked = neuralOn,
-                                                enabled = !switching,
-                                                onCheckedChange = { enable ->
-                                                    if (!enable) appSettings.updateSettings { it.copy(embeddingModelPromptSkipped = true) }
-                                                    ragManager.requestEmbeddingModel(
-                                                        if (enable) neuralSpec.id else com.shounak.localmeshai.rag.embedding.EmbeddingModels.LEXICAL_ID
-                                                    )
-                                                }
-                                            )
+                                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.25f))
 
-                                            Surface(
-                                                shape = RoundedCornerShape(16.dp),
-                                                color = colors.surfaceContainerLow,
-                                                border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.40f)),
-                                                modifier = Modifier.fillMaxWidth()
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .glassEffect(
+                                                    hazeState = hazeState,
+                                                    shape = RoundedCornerShape(16.dp),
+                                                    blurRadius = 16.dp,
+                                                    tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                                                    borderAlpha = 0.30f
+                                                )
+                                                .padding(14.dp),
+                                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                Column(
-                                                    modifier = Modifier.padding(14.dp),
-                                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                                Text(
+                                                    text = "Knowledge Base Status",
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = colors.onSurface,
+                                                    modifier = Modifier.weight(1f, fill = false),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                val docSuffix = if (ragDocCount == 1) "doc" else "docs"
+                                                val chunkSuffix = if (ragChunkCount == 1) "chunk" else "chunks"
+                                                val ragBadgeText = when {
+                                                    ragIndexNeedsRecovery -> "Needs recovery"
+                                                    ragDocCount == 0 -> "0 docs • 0 chunks"
+                                                    else -> "$ragDocCount $docSuffix • $ragChunkCount $chunkSuffix"
+                                                }
+                                                Surface(
+                                                    onClick = { showRagDialog = true },
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    color = colors.surfaceContainerHighest.copy(alpha = 0.55f),
+                                                    border = BorderStroke(0.8.dp, (if (ragIndexNeedsRecovery) colors.error else colors.primary).copy(alpha = 0.35f))
                                                 ) {
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically
-                                                    ) {
-                                                        Text(
-                                                            text = "Knowledge Base Status",
-                                                            style = MaterialTheme.typography.titleSmall,
-                                                            fontWeight = FontWeight.Bold,
-                                                            color = colors.onSurface
-                                                        )
-                                                        val docSuffix = if (ragDocCount == 1) "doc" else "docs"
-                                                        val chunkSuffix = if (ragChunkCount == 1) "chunk" else "chunks"
-                                                        val ragBadgeText = when {
-                                                            ragIndexNeedsRecovery -> "Needs recovery"
-                                                            ragDocCount == 0 -> "0 docs • 0 chunks"
-                                                            else -> "$ragDocCount $docSuffix • $ragChunkCount $chunkSuffix"
-                                                        }
-                                                        SuggestionChip(
-                                                            onClick = { showRagDialog = true },
-                                                            label = { Text(ragBadgeText, style = MaterialTheme.typography.labelSmall) },
-                                                            shape = RoundedCornerShape(10.dp),
-                                                            colors = SuggestionChipDefaults.suggestionChipColors(
-                                                                containerColor = colors.surfaceContainer,
-                                                                labelColor = if (ragIndexNeedsRecovery) colors.error else colors.primary
-                                                            )
-                                                        )
-                                                    }
                                                     Text(
-                                                        text = "Top-K Chunks: ${settingsData.ragTopK} | Min Relevance: ${(settingsData.ragMinSimilarity * 100).toInt()}%",
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = colors.onSurfaceVariant.copy(alpha = 0.82f)
+                                                        text = ragBadgeText,
+                                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                                                        color = if (ragIndexNeedsRecovery) colors.error else colors.primary,
+                                                        fontWeight = FontWeight.Medium,
+                                                        maxLines = 1,
+                                                        softWrap = false,
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                                     )
-                                                    LiquidGlassButton(
-                                                        onClick = { showRagDialog = true },
-                                                        hazeState = hazeState,
-                                                        modifier = Modifier.fillMaxWidth().height(44.dp).border(0.9.dp, colors.primary.copy(alpha = 0.50f), RoundedCornerShape(12.dp)),
-                                                        shape = RoundedCornerShape(12.dp),
-                                                        tintColor = colors.primary.copy(alpha = 0.20f)
-                                                    ) {
-                                                        Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.primary)
-                                                        Spacer(modifier = Modifier.width(8.dp))
-                                                        Text("Manage Knowledge Base & Documents", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.primary)
-                                                    }
-                                                    if (ragChunkCount > 0) {
-                                                        LiquidGlassButton(
-                                                            onClick = {
-                                                                ragClearScope.launch {
-                                                                    val removal = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                                                        runCatching { ragManager.clearKnowledgeBase() }.getOrElse { com.shounak.localmeshai.rag.RagRemovalResult(false, it.message) }
-                                                                    }
-                                                                    ragDocCount = ragManager.indexedDocuments.size
-                                                                    ragChunkCount = ragManager.totalIndexedChunks
-                                                                    if (!removal.success) {
-                                                                        Toast.makeText(context, "Could not clear documents: ${removal.message ?: "unknown error"}", Toast.LENGTH_LONG).show()
-                                                                    }
-                                                                }
-                                                            },
-                                                            hazeState = hazeState,
-                                                            modifier = Modifier.fillMaxWidth().height(42.dp).border(0.8.dp, colors.error.copy(alpha = 0.45f), RoundedCornerShape(12.dp)),
-                                                            shape = RoundedCornerShape(12.dp),
-                                                            tintColor = colors.error.copy(alpha = 0.16f)
-                                                        ) {
-                                                            Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.error)
-                                                            Spacer(modifier = Modifier.width(6.dp))
-                                                            Text("Clear RAG Knowledge Base", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.error)
+                                                }
+                                            }
+                                            Text(
+                                                text = "Top-K Chunks: ${settingsData.ragTopK} | Min Relevance: ${(settingsData.ragMinSimilarity * 100).toInt()}%",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = colors.onSurfaceVariant.copy(alpha = 0.82f)
+                                            )
+                                            LiquidGlassButton(
+                                                onClick = { showRagDialog = true },
+                                                hazeState = hazeState,
+                                                modifier = Modifier.fillMaxWidth().height(44.dp).border(0.9.dp, colors.primary.copy(alpha = 0.50f), RoundedCornerShape(12.dp)),
+                                                shape = RoundedCornerShape(12.dp),
+                                                tintColor = colors.primary.copy(alpha = 0.20f)
+                                            ) {
+                                                Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.primary)
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = "Manage Knowledge Base",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = colors.primary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            if (ragChunkCount > 0) {
+                                                LiquidGlassButton(
+                                                    onClick = {
+                                                        ragClearScope.launch {
+                                                            val removal = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                                runCatching { ragManager.clearKnowledgeBase() }.getOrElse { com.shounak.localmeshai.rag.RagRemovalResult(false, it.message) }
+                                                            }
+                                                            ragDocCount = ragManager.indexedDocuments.size
+                                                            ragChunkCount = ragManager.totalIndexedChunks
+                                                            if (!removal.success) {
+                                                                Toast.makeText(context, "Could not clear documents: ${removal.message ?: "unknown error"}", Toast.LENGTH_LONG).show()
+                                                            }
                                                         }
-                                                    }
+                                                    },
+                                                    hazeState = hazeState,
+                                                    modifier = Modifier.fillMaxWidth().height(42.dp).border(0.8.dp, colors.error.copy(alpha = 0.45f), RoundedCornerShape(12.dp)),
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    tintColor = colors.error.copy(alpha = 0.16f)
+                                                ) {
+                                                    Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.error)
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text("Clear RAG Knowledge Base", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.error)
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    SettingsCategory(title = "Neural Semantic Search", hazeState = hazeState) {
+                                        val neuralSubtitle = when (val status = embeddingStatus) {
+                                            is com.shounak.localmeshai.rag.EmbeddingModelStatus.Downloading ->
+                                                "Downloading ${neuralSpec.displayName}… ${(status.bytesDone * 100 / status.bytesTotal.coerceAtLeast(1L)).toInt()}%"
+                                            is com.shounak.localmeshai.rag.EmbeddingModelStatus.Reindexing ->
+                                                "Re-indexing documents… ${status.chunksDone}/${status.chunksTotal} chunks"
+                                            is com.shounak.localmeshai.rag.EmbeddingModelStatus.Failed ->
+                                                "Couldn't switch search model: ${status.message}"
+                                            else -> if (neuralOn) {
+                                                "On: ${neuralSpec.displayName} · $sizeLabel · Fully offline vector search by meaning, not just words"
+                                            } else if (isModelInstalled) {
+                                                "Downloaded (${neuralSpec.displayName}) · $sizeLabel. Toggle on to search passages by meaning."
+                                            } else {
+                                                "Downloads a $sizeLabel English search model (${neuralSpec.displayName}). Finds answers by meaning, not just matching keywords."
+                                            }
+                                        }
+
+                                        SettingsSwitchRow(
+                                            title = "Neural Semantic Search",
+                                            subtitle = neuralSubtitle,
+                                            checked = neuralOn,
+                                            enabled = !switching,
+                                            onCheckedChange = { enable ->
+                                                if (enable && !settingsData.enableRag) {
+                                                    appSettings.updateSettings { it.copy(enableRag = true) }
+                                                }
+                                                if (!enable) {
+                                                    appSettings.updateSettings { it.copy(embeddingModelPromptSkipped = true) }
+                                                }
+                                                ragManager.requestEmbeddingModel(
+                                                    if (enable) neuralSpec.id else com.shounak.localmeshai.rag.embedding.EmbeddingModels.LEXICAL_ID
+                                                )
+                                            }
+                                        )
+
+                                        when (val s = embeddingStatus) {
+                                            is com.shounak.localmeshai.rag.EmbeddingModelStatus.Downloading -> {
+                                                val fraction = (s.bytesDone.toFloat() / s.bytesTotal.coerceAtLeast(1L)).coerceIn(0f, 1f)
+                                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                    LinearProgressIndicator(
+                                                        progress = { fraction },
+                                                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                                        color = colors.primary
+                                                    )
+                                                    Text(
+                                                        "Downloading ${neuralSpec.displayName}… ${(fraction * 100).toInt()}% of $sizeLabel",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = colors.primary
+                                                    )
+                                                }
+                                            }
+                                            is com.shounak.localmeshai.rag.EmbeddingModelStatus.Reindexing -> {
+                                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                    LinearProgressIndicator(
+                                                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                                        color = colors.primary
+                                                    )
+                                                    Text(
+                                                        "Re-indexing documents… ${s.chunksDone}/${s.chunksTotal} chunks",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = colors.primary
+                                                    )
+                                                }
+                                            }
+                                            else -> Unit
+                                        }
+
+                                        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.25f))
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isModelInstalled) Icons.Default.CheckCircle else Icons.Default.Search,
+                                                    contentDescription = null,
+                                                    tint = if (isModelInstalled) colors.primary else colors.onSurfaceVariant,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                                Column {
+                                                    Text(
+                                                        text = "${neuralSpec.displayName} (Static 64-D)",
+                                                        style = MaterialTheme.typography.labelLarge,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = colors.onSurface
+                                                    )
+                                                    Text(
+                                                        text = if (isModelInstalled) "Installed · Runs offline · Auto-unloads" else "Not downloaded · $sizeLabel",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = colors.onSurfaceVariant.copy(alpha = 0.8f)
+                                                    )
+                                                }
+                                            }
+
+                                            if (!isModelInstalled && !switching) {
+                                                LiquidGlassButton(
+                                                    onClick = {
+                                                        if (!settingsData.enableRag) {
+                                                            appSettings.updateSettings { it.copy(enableRag = true) }
+                                                        }
+                                                        ragManager.requestEmbeddingModel(neuralSpec.id)
+                                                    },
+                                                    hazeState = hazeState,
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                                                    tintColor = colors.primary.copy(alpha = 0.20f),
+                                                    modifier = Modifier.border(0.8.dp, colors.primary.copy(alpha = 0.40f), RoundedCornerShape(12.dp))
+                                                ) {
+                                                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(14.dp), tint = colors.primary)
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Download", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.primary)
+                                                }
+                                            } else if (isModelInstalled && !switching) {
+                                                LiquidGlassButton(
+                                                    onClick = { confirmDeleteModel = true },
+                                                    hazeState = hazeState,
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                                    tintColor = colors.error.copy(alpha = 0.15f),
+                                                    modifier = Modifier.border(0.8.dp, colors.error.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                                                ) {
+                                                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(14.dp), tint = colors.error)
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Delete", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.error)
                                                 }
                                             }
                                         }
@@ -1561,6 +1720,14 @@ fun SettingsDialog(
                                 }
 
                                 SettingsSubMenu.STORAGE -> {
+                                    val downloadedForSummary = mainViewModel.availableModels.filter {
+                                        it.localPath != null &&
+                                            (it.status == com.shounak.localmeshai.models.ModelStatus.Available ||
+                                                it.status == com.shounak.localmeshai.models.ModelStatus.Blocked ||
+                                                it.status == com.shounak.localmeshai.models.ModelStatus.Failed)
+                                    }
+                                    com.shounak.localmeshai.ui.components.StorageSummaryCard(downloadedModels = downloadedForSummary, hazeState = hazeState)
+                                    com.shounak.localmeshai.ui.components.DeviceHardwareCard(hazeState = hazeState)
                                     WorkspaceStorageSection(hazeState = hazeState)
                                 }
 
@@ -2236,7 +2403,7 @@ fun SettingsDialog(
                                             }
                                         }
 
-                                        Spacer(modifier = Modifier.height(24.dp))
+                                        Spacer(modifier = Modifier.height(36.dp))
                                     }
                                 }
                             }

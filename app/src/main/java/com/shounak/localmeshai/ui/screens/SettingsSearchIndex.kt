@@ -429,8 +429,8 @@ object SettingsSearchIndex {
         SearchableSetting(
             id = "rag_neural_search",
             title = "Neural Semantic Search",
-            subtitle = "BGE-small neural embedding search offline for meaning-based retrieval",
-            keywords = "neural semantic search bge small embeddings vector rag meaning offline model ai retrieval",
+            subtitle = "potion-base-2M neural embedding search offline for meaning-based retrieval",
+            keywords = "neural semantic search potion base 2m model2vec embeddings vector rag meaning offline model ai retrieval bge",
             category = "AGENT > Knowledge Base (RAG)",
             targetSubMenu = SettingsSubMenu.RAG
         ),

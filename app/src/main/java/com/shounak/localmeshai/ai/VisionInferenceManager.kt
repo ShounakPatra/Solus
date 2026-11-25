@@ -149,7 +149,14 @@ class VisionInferenceManager(context: Context) {
     private var profileModelId: String = ""
     private fun profileSampling(): LlamaSamplingParams {
         val profile = com.shounak.localmeshai.features.WorkspacePreferences.get(context).profile(profileModelId)
-        return LlamaSamplingParams(temperature = profile.temperature ?: 0.7f, topP = profile.topP ?: 0.95f, topK = profile.topK ?: 40)
+        val appData = com.shounak.localmeshai.utils.AppSettings.getInstance(context).settings.value
+        val maxTokens = if (appData.defaultMaxLength > 0) appData.defaultMaxLength else 1024
+        return LlamaSamplingParams(
+            temperature = profile.temperature ?: appData.defaultTemperature,
+            topP = profile.topP ?: appData.defaultTopP,
+            topK = profile.topK ?: appData.defaultTopK,
+            maxTokens = maxTokens
+        )
     }
 
     @Volatile private var currentGgufBundle: ModelBundle? = null
@@ -910,10 +917,12 @@ class VisionInferenceManager(context: Context) {
             userPreference = thinkingMode
         )
 
-        val config = if (!initialMessages.isNullOrEmpty() || extraCtx.isNotEmpty()) {
+        val sampling = profileSampling()
+        val config = if (!initialMessages.isNullOrEmpty() || extraCtx.isNotEmpty() || sampling.maxTokens > 0) {
             ConversationConfig(
                 initialMessages = initialMessages.orEmpty(),
-                extraContext = extraCtx
+                extraContext = extraCtx,
+                maxOutputToken = if (sampling.maxTokens > 0) sampling.maxTokens else null
             )
         } else null
         liteRtConversationThinking = extraCtx[ThinkingModeConfig.ENABLE_THINKING_KEY] as? Boolean
@@ -1480,10 +1489,11 @@ class VisionInferenceManager(context: Context) {
                 .setEnableVisionModality(mpImage != null)
                 .setEnableAudioModality(mediaPipeAudioBytes != null)
                 .build()
+            val sampling = profileSampling()
             val sessionOptions = LlmInferenceSession.LlmInferenceSessionOptions.builder()
-                .setTopK(40)
-                .setTopP(0.95f)
-                .setTemperature(0.7f)
+                .setTopK(sampling.topK)
+                .setTopP(sampling.topP)
+                .setTemperature(sampling.temperature)
                 .setRandomSeed(0)
                 .setGraphOptions(graphOptions)
                 .build()
