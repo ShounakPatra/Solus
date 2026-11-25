@@ -15,14 +15,14 @@
     <img src="docs/assets/download-solus-apk.svg" alt="Download the signed Solus APK from GitHub" width="300" height="60" />
   </a>
   &nbsp;
-  <a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC" title="Add the Solus third-party repository to F-Droid">
-    <img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" alt="Get Solus through its third-party F-Droid repository" height="60" />
+  <a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC" title="Install or update Solus via its F-Droid repository">
+    <img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png" alt="Get Solus through its F-Droid repository" height="60" />
   </a>
 </p>
 
 <img src="docs/assets/google-play-coming-soon.svg" alt="Coming soon on Google Play" width="180" height="53" />
 
-<sub>Get v7.0.0 from GitHub or add the <a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC">Solus third-party F-Droid repository</a>. Both distribute the same maintainer-signed APK. Solus is not listed in the official F-Droid catalog.</sub>
+<sub>Get v7.0.0 from <a href="https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk">GitHub Releases</a> or install via the <a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC">Solus F-Droid repository</a> (<code>https://shounakpatra.github.io/Solus/fdroid/repo</code>). Both distribute the same maintainer-signed APK; an <a href="https://gitlab.com/fdroid/rfp/-/work_items/4686">official F-Droid RFP</a> is also pending.</sub>
 
 [![Android CI](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg)](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml)
 ![Version 7.0.0](https://img.shields.io/badge/version-7.0.0-0EA5E9)
@@ -44,18 +44,18 @@
 ## App preview
 
 <p align="center">
-  <img src="docs/screenshots/chat-response.jpeg" width="260" alt="Solus chat and response controls" />
+  <img src="docs/screenshots/Screenshot_2026-11-23-01-19-16-42_d804bf37f052c7c9c36b5bf4d4e85d30.jpg" width="260" alt="Solus v7.0.0 chat with Gemma 4 E2B IT" />
   &nbsp;
-  <img src="docs/screenshots/model-manager-overview.jpeg" width="260" alt="Solus model library" />
+  <img src="docs/screenshots/Screenshot_2026-11-23-02-31-07-40_d804bf37f052c7c9c36b5bf4d4e85d30.jpg" width="260" alt="Solus v7.0.0 Model Manager with TinyVoca Neural TTS and hardware telemetry" />
   &nbsp;
-  <img src="docs/screenshots/model-download-progress.jpeg" width="260" alt="Solus model download progress" />
+  <img src="docs/screenshots/Screenshot_2026-11-23-01-57-57-35_d804bf37f052c7c9c36b5bf4d4e85d30.jpg" width="260" alt="Solus v7.0.0 Settings with TinyVoca voice and Personas" />
 </p>
 
-<p align="center"><sub>Chat, manage models and follow downloads in the glass workspace. Controls vary by version and model.</sub></p>
+<p align="center"><sub>Chat with Gemma 4, manage models and TinyVoca TTS, and search 74+ settings in the Liquid Glass workspace.</sub></p>
 
 ## Get started
 
-1. **Install** through the [Solus third-party F-Droid repository](https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC) or download the [v7.0.0 signed APK](https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk). It requires **Android 11+** and an **ARM64-v8a** device. Verify it with the [matching SHA-256 checksum](https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk.sha256).
+1. **Install** via the [Solus F-Droid repository](https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC) ([repo URL](https://shounakpatra.github.io/Solus/fdroid/repo/)) or download the [v7.0.0 signed APK](https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk). It requires **Android 11+** and an **ARM64-v8a** device. Verify it with the [matching SHA-256 checksum](https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk.sha256).
 2. **Choose a model** in **Models**, or use **Add model** to import one from your phone, Hugging Face or a direct URL.
 3. **Start a chat** after the model finishes loading. A small model is a good place to start if your phone has limited RAM.
 4. **Add context** with a PDF or DOCX. Image and audio inputs require a compatible model and export.
@@ -64,13 +64,14 @@ An existing installation can be updated without uninstalling when Android accept
 
 ## What's new in v7.0.0
 
-Solus v7.0.0 introduces resident on-device neural voice reading and major glass UI refinements:
+Solus v7.0.0 is a landmark release—featuring a **Rust + Candle native core rebuild**, **bundled on-device neural voice reading**, and a **full Liquid Glass UI overhaul**:
 
-- **TinyVoca Neural TTS:** ultra-lightweight 8.1 MB on-device neural voice model bundled in the APK and pre-warmed in RAM for offline voice reading with F2 (Female) and M2 (Male) voices.
-- **Synchronized live word highlighting:** reading aloud dynamically tracks and highlights words live as they are spoken, with syllable-aware pacing and natural punctuation pauses.
-- **Liquid-glass performance benchmark:** revamped performance benchmark dialog with high-contrast controls, cold/warm latency measurement, and synthetic input diagnostics.
-- **Discoverable voice models:** TinyVoca model card integrated directly into the Models tab and search.
-- **Model re-initialization fix:** models cleanly unload and can be re-initialized at any time from the selector.
+- **Rebuilt with Rust & Candle (`solus_candle`):** Core portable inference, tensor computation, tokenizer execution, and panic-guarded JNI bindings are built in Rust (`candle-core` 0.9.1) for memory safety, predictable CPU multi-threading, and minimal battery overhead.
+- **TinyVoca Neural Voice (TTS) & Live Word Highlighting:** Ultra-compact 8.1 MB `tiny_voca.onnx` neural voice bundled in the APK for instant zero-network reading aloud with F2/M2 voices, syllable-aware live word highlighting, and one-tap asset restoration.
+- **Liquid Glass Workspace & Live Aurora:** Full-bleed edge-to-edge layout (removing the legacy bottom navigation bar, making system navigation transparent on Android, and scoping an opaque status bar with pinned search to the Model Manager), frosted glass sliders, animated `LiveAuroraBackground`, and the Vice City neon sunset launcher emblem (with original icon backup).
+- **19-Submenu Ranked Settings Search (`SettingsSearchIndex`):** Indexes 74+ settings plus user model profiles with multi-token relevance scoring, deep-linking, and a dedicated **Personas** submenu.
+- **Unified Passive Template-Native Thinking:** Replaced legacy per-model thinking heuristics and prompt injections with passive `enable_thinking` forwarding across GGUF, LiteRT-LM **0.19.1**, ONNX, and Candle, permanently active thought-block parsing (`<think>`, `<|channel>thought`, `<|thought|>`), unclosed-tag recovery, and clean **Gemma 3 270M** `.task` routing.
+- **Tool-Free Web Search, Telemetry & Crash Diagnostics:** Autonomous web search with a Glass UI search test viewer, device RAM/storage breakdown cards (`potion-base-2M`, TinyVoca, caches), formal lifecycle state machines, and redesigned Crash Reports with single-report deletion and Liquid Glass **Send to Repo** actions.
 
 The release retains expanded model imports, conversation tools, optional neural document search, history search and pinning, temporary chats, backups, per-model profiles and the glass interface.
 
@@ -97,22 +98,22 @@ These projects have different goals. The table summarizes their publicly documen
 features; **Not verified** means the linked documentation did not establish the
 answer, not that the feature is absent. Model, version and device support vary.
 
-| Feature | Solus v7.0.0 | AI Edge Gallery | PocketPal AI | LM Playground | ChatterUI |
+| Feature | Solus v7.0.0 | AI Edge Gallery | PocketPal AI | AnythingLLM Mobile | MLC Chat |
 | --- | --- | --- | --- | --- | --- |
-| Local model formats | GGUF, LiteRT-LM, MediaPipe and selected portable exports | LiteRT | GGUF | GGUF | GGUF |
-| Import `.gguf`, `.litertlm` and `.task` | Supported exports | Not verified for all three | GGUF documented | GGUF documented | GGUF documented |
-| Images, audio and document chat | Available with compatible models and document extraction | Image and audio features documented; document chat not verified | Voice output documented; other inputs not verified | Image, voice dictation and document Q&A documented | Text-to-speech documented; other inputs not verified |
-| Thinking and tools | Available on compatible GGUF and LiteRT-LM models; model-dependent | Thinking on supported models; separate mobile actions | Tools documented; thinking not verified here | Reasoning and tools documented | Not verified |
-| Source passages for document answers | Retrieved passages available | Not verified | Not verified | Document retrieval documented; passage display not verified | Not verified |
-| Temporary chats excluded from history | Yes | Not verified | Not verified | Not verified | Not verified |
-| Backup chats, memories and settings | Yes; model weights excluded | Not verified | Not verified | Not verified | Not verified |
-| Android requirement | Android 11+ | Android 12+ | Check project | Check project | Check project |
-| Pricing | Free and open source | Open source | Free app; optional paid Pals | Check project | Check project |
+| Native runtimes | **Multi-runtime:** `llama.cpp` (CPU/Vulkan), Rust `Candle` (`solus_candle`), LiteRT-LM 0.19.1, MediaPipe & ONNX Runtime 1.31.1 | LiteRT / LiteRT-LM | `llama.cpp` (CPU, OpenCL/Adreno & NPU) | `llama.rn` (`llama.cpp` CPU) + optional Desktop/Cloud sync | MLC / TVM OpenCL GPU engine |
+| Local model formats | **6 formats:** `.gguf`, `.litertlm`, `.task`, `.onnx`, `.safetensors`, `.tflite` | LiteRT / `.litertlm` / `.tflite` | GGUF | GGUF | Compiled MLC packages only (requires TVM conversion; no raw GGUF/SafeTensors) |
+| Offline Neural Voice (TTS) | **Bundled 8.1 MB `TinyVoca` ONNX TTS + synchronized live word highlighting** (plus mic/audio input) | Audio Scribe (STT); bundled neural TTS not verified | Whisper STT + TTS (Kokoro / system); hands-free voice requires **Plus** on Google Play | System assistant / voice input documented; bundled neural TTS not verified | Not documented (text chat focused) |
+| Images, audio & document Q&A | **Vision, audio & offline PDF/DOCX RAG (`potion-base-2M`) with collapsible Sources passages** | Ask Image, Audio Scribe & media search; general PDF/DOCX Q&A not verified | Vision & voice documented; PDF/DOCX RAG not verified in README | Offline vision & local RAG (PDF, Word, Excel, txt); passage UI details not verified | Primarily text-to-text chat on Android |
+| Thinking & agent tools | **Passive template-native `enable_thinking` + always-on collapsible thought UI + tool-free autonomous web search & built-in skills** | Thinking Mode (Gemma) & Agent Skills (maps, Wikipedia) | Tool use (`calculator`, web search, Pals); thinking toggle not verified | Web search, calendar, doc generation & background jobs; template thinking toggle not verified | Not verified in Android docs |
+| Temporary chats & backups | **Yes: isolated Temporary Chats + full workspace backup** (chats, memories & settings; excludes weights) | Not verified in README | Not verified in README | Workspace memory documented; temporary chats & backup format not verified | Not verified in README |
+| UI & customization | **Liquid Glass + Live Aurora UI, 74+ ranked searchable settings (19 submenus) & per-model profiles** | Material showcase UI | Material UI with Pals & benchmarks | Workspace UI with RAM fit badges & Android assistant mode | Minimalist reference chat UI |
+| Android requirement | **Android 11+ (API 30) · ARM64-v8a** | Android 12+ | Check project | Check project | Android 5.1+ (`minSdk 22`) |
+| Pricing | **100% Free & Open Source (Apache 2.0) — every feature unlocked** | Free & Open Source | MIT (GitHub APK free; optional paid **PocketPal Plus** on Play/App Store) | MIT app free; optional managed **AnythingLLM Cloud** from USD 50/mo | Free & Open Source (Apache 2.0) |
 
 Sources: [AI Edge Gallery](https://github.com/google-ai-edge/gallery),
 [PocketPal AI](https://github.com/a-ghorbani/pocketpal-ai),
-[LM Playground](https://github.com/andriydruk/LMPlayground), and
-[ChatterUI](https://github.com/Vali-98/ChatterUI). Features and pricing can change;
+[AnythingLLM Mobile](https://github.com/Mintplex-Labs/anythingllm-mobile), and
+[MLC LLM / MLC Chat](https://github.com/mlc-ai/mlc-llm). Features and pricing can change;
 check each project's latest release before deciding.
 
 ## Tools and thinking
@@ -123,7 +124,7 @@ Skills include calculator, date/time, document search, hashes, text statistics, 
 
 Tools require compatible model behavior and templates. A plausible answer is not proof that a tool ran: check the **Used tool** record. Many enabled schemas consume context and can increase prompt-processing time; small models may ignore tool requests.
 
-**Thinking can remain enabled while tools are on**, including supported LiteRT vision conversations. Toggleable models follow the Think setting; model-controlled reasoning and unsupported models have different controls. A model need not return a separate reasoning block on every response.
+**Passive thinking and tool execution:** Think preferences (`enable_thinking`) are forwarded passively to model-native templates and LiteRT-LM conversations while the thought-block parser remains active for emitted reasoning chains—including supported LiteRT vision chats with tools enabled. A model need not return a separate reasoning block on every response.
 
 Wikipedia uses the network. Calendar/email actions can open another app or a review screen, and external services may need connectivity. Review actions before completing them.
 
@@ -142,7 +143,7 @@ Text-based PDF and DOCX files are supported. **Scanned/image-only PDFs require O
 | Format | Runtime / scope | Required assets |
 | --- | --- | --- |
 | `.gguf` | llama.cpp CPU or qualified Vulkan backend | Complete split set and compatible projector when required |
-| `.litertlm` | LiteRT-LM **0.18.0** | A compatible packaged export; media/backend support is artifact-specific |
+| `.litertlm` | LiteRT-LM **0.19.1** | A compatible packaged export; media/backend support is artifact-specific |
 | `.task` | MediaPipe GenAI | A compatible packaged task model |
 | `.onnx` | ONNX Runtime CPU; supported text and media tensor contracts | Configuration, processing/tokenizer files and any external data/component graphs |
 | `.safetensors` | Candle CPU; implemented architecture adapters | Configuration, tokenizer/processor assets and all indexed shards/components |
@@ -203,7 +204,7 @@ The Android interface uses Kotlin, with C/C++ and Rust native runtimes, Python t
 and CMake/Shell build support. Bundled llama.cpp also contains GLSL Vulkan shaders;
 its Svelte web interface and Apple Metal backend are upstream components.
 
-Use the checked-in Gradle wrapper, a Gradle JVM supported by the configured Android Gradle Plugin, Android SDK **37**, NDK **28.2.13676358** and CMake **3.22.1**. Java/Kotlin bytecode targets Java 17. The wrapper is **Gradle 9.8.2**; the UI uses Kotlin **2.4.20** and Compose.
+Use the checked-in Gradle wrapper, a Gradle JVM supported by the configured Android Gradle Plugin, Android SDK **37**, NDK **28.2.13676358** and CMake **3.22.1**. Java/Kotlin bytecode targets Java 17. The wrapper is **Gradle 9.9.2**; the UI uses Kotlin **2.4.21**, Compose, Haze **1.7.3**, ONNX Runtime **1.31.1** and latexRenderer **1.8.0**.
 
 Portable SafeTensors support also needs Rust and the `aarch64-linux-android` target. On Windows, [native tooling preparation](tools/prepare-native-tools.ps1) and the [Candle build helper](tools/build-candle.ps1) support the private ignored tool installations.
 

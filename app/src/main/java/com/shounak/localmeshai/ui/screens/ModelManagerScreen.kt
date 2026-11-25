@@ -562,6 +562,7 @@ fun ModelManagerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .hazeSource(state = hazeState)
+                .statusBarsPadding()
                 .imePadding(),
             contentPadding = PaddingValues(
                 start = 16.dp,
@@ -574,8 +575,7 @@ fun ModelManagerScreen(
         item(key = "top_nav_bar") {
             Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .statusBarsPadding(),
+                    .fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1124,6 +1124,15 @@ fun ModelManagerScreen(
         }
     }
 }
+
+    // Opaque status bar backdrop scoped only to ModelManagerScreen.
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .fillMaxWidth()
+            .windowInsetsTopHeight(WindowInsets.statusBars)
+            .background(MaterialTheme.colorScheme.background)
+    )
 
     val animDuration = if (areAnimationsDisabled) 0 else 200
     val addFabShape = RoundedCornerShape(28.dp)
