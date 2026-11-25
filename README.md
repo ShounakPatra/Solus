@@ -12,7 +12,7 @@
 
 <p>
   <a href="https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk" title="Download Solus v7.0.0 from GitHub">
-    <img src="docs/assets/download-solus-apk.svg" alt="Download the signed Solus APK from GitHub" width="300" height="60" />
+    <img src="https://raw.githubusercontent.com/ShounakPatra/Solus/main/docs/assets/download-solus-apk.svg?v=7.0.0" alt="Download the signed Solus APK from GitHub" width="300" height="60" />
   </a>
   &nbsp;
   <a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC" title="Install or update Solus via its F-Droid repository">
