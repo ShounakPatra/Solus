@@ -124,7 +124,7 @@ android {
                     // Haze 1.7.3's consumer rule uses { *; }, which also
                     // matches Object methods. Replace it in proguard-rules.pro.
                     // Version-scoped so future Haze rules are reviewed on upgrade.
-                    ignoreFrom("dev.chrisbanes.haze:haze-android:1.7.3")
+                    ignoreFrom("dev.chrisbanes.haze:haze-android:2.1.0")
                 }
             }
             proguardFiles(
