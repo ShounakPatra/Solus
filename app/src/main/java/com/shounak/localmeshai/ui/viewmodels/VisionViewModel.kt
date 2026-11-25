@@ -19,7 +19,6 @@ import com.shounak.localmeshai.utils.CrashReportManager
 import com.shounak.localmeshai.ai.ModelLoadIdentity
 import com.shounak.localmeshai.ai.GgufExecutionProfile
 import com.shounak.localmeshai.utils.DeviceUtils
-import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.utils.DocumentTextExtractor
 import com.shounak.localmeshai.utils.ModelOutputSanitizer
 import com.shounak.localmeshai.utils.ModelRuntimeCoordinator
@@ -27,7 +26,6 @@ import com.shounak.localmeshai.utils.RegistrationToken
 import com.shounak.localmeshai.utils.ModelRuntimeOwner
 import com.shounak.localmeshai.utils.AppCacheCleaner
 import com.shounak.localmeshai.utils.ThinkingTextUtils
-import com.shounak.localmeshai.utils.ThinkingModeConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -288,13 +286,10 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     private var currentModelSize: String = ""
     private var currentContextWindowTokensTokens: Int? = null
     private var currentSupportsAudioInput: Boolean = false
-    private var currentSupportsThinkingMode: Boolean = false
     private var currentAllowUnsafeOverride: Boolean = false
     private var lastLoadedBackendPreference: String? = null
     private var currentRequestedIdentity: ModelLoadIdentity? = null
     private var currentLoadedIdentity: ModelLoadIdentity? = null
-    @Volatile var currentResolvedThinkingCapability: ThinkingCapability = ThinkingCapability.Unknown
-        private set
     private val _runtimeCapabilities = MutableStateFlow<com.shounak.localmeshai.models.ModelCapabilitySnapshot?>(null)
     val runtimeCapabilities = _runtimeCapabilities.asStateFlow()
     private var currentContextWindowTokens: Int = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
@@ -544,7 +539,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     releaseModel(clearCoordinator = true, clearSelection = false)
                     if (path != null) initModel(path, modelId = currentModelId, modelName = currentModelName,
                         modelSize = currentModelSize, contextWindowTokens = defaultProfileContext,
-                        supportsAudioInput = currentSupportsAudioInput, supportsThinkingMode = currentSupportsThinkingMode, allowUnsafeOverride = currentAllowUnsafeOverride, forceReload = true, bundle = currentBundle)
+                        supportsAudioInput = currentSupportsAudioInput, allowUnsafeOverride = currentAllowUnsafeOverride, forceReload = true, bundle = currentBundle)
                 }
             }
         }
@@ -630,7 +625,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             modelSize = currentModelSize,
                             contextWindowTokens = defaultProfileContext,
                             supportsAudioInput = currentSupportsAudioInput,
-                            supportsThinkingMode = currentSupportsThinkingMode,
                             allowUnsafeOverride = currentAllowUnsafeOverride,
                             forceReload = true,
                             bundle = currentBundle
@@ -660,7 +654,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                 modelSize = currentModelSize,
                                 contextWindowTokens = defaultProfileContext,
                                 supportsAudioInput = currentSupportsAudioInput,
-                                supportsThinkingMode = currentSupportsThinkingMode,
                                 allowUnsafeOverride = currentAllowUnsafeOverride,
                                 forceReload = true,
                                 bundle = currentBundle
@@ -735,7 +728,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         modelSize: String = "",
         contextWindowTokens: Int? = null,
         supportsAudioInput: Boolean = false,
-        supportsThinkingMode: Boolean = false,
         allowUnsafeOverride: Boolean = false,
         forceReload: Boolean = false,
         bundle: ModelBundle? = null
@@ -788,7 +780,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             }
             if (_isInitializing.value && initJob?.isActive == true && currentRequestedIdentity == identity && !_isStopping.value) {
                 currentContextWindowTokens = inferenceManager.runtimeCapabilities?.initializedContextTokens ?: resolvedContextWindowTokens
-                currentSupportsThinkingMode = supportsThinkingMode
                 currentAllowUnsafeOverride = allowUnsafeOverride
                 currentSupportsAudioInput = supportsAudioInput
                 return
@@ -803,7 +794,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         currentModelSize = modelSize
         currentContextWindowTokensTokens = configuredProfileContext
         currentSupportsAudioInput = supportsAudioInput
-        currentSupportsThinkingMode = supportsThinkingMode
         currentAllowUnsafeOverride = allowUnsafeOverride
         currentRequestedIdentity = identity
 
@@ -855,7 +845,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                                 modelName = modelName,
                                 modelSize = modelSize,
                                 supportsAudioInput = supportsAudioInput,
-                                supportsThinkingMode = supportsThinkingMode,
                                 allowUnsafeOverride = allowUnsafeOverride,
                                 contextWindowTokens = resolvedContextWindowTokens,
                                 bundle = bundle,
@@ -895,7 +884,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             lastLoadedBackendPreference = null
                             currentLoadedIdentity = null
                             currentRequestedIdentity = null
-                            currentResolvedThinkingCapability = ThinkingCapability.Unknown
                             _activeBackend.value = null
                             currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
                             _runtimeCapabilities.value = null
@@ -916,7 +904,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                 lastLoadedBackendPreference = null
                 currentLoadedIdentity = null
                 currentRequestedIdentity = null
-                currentResolvedThinkingCapability = ThinkingCapability.Unknown
                 _activeBackend.value = null
                 currentContextWindowTokens = DEFAULT_VISION_CONTEXT_WINDOW_TOKENS
                 _runtimeCapabilities.value = null
@@ -937,8 +924,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
         val initialized = inferenceManager.runtimeCapabilities
         _runtimeCapabilities.value = initialized
         initialized?.initializedContextTokens?.let { currentContextWindowTokens = it }
-        currentResolvedThinkingCapability = initialized?.capabilities?.thinking ?: ThinkingCapability.Unknown
-        currentSupportsThinkingMode = currentResolvedThinkingCapability in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled)
         currentSupportsAudioInput = initialized?.capabilities?.supportsAudio == true
     }
 
@@ -959,7 +944,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     inferenceManager.initialize(
                         modelPath = path, modelId = currentModelId, modelName = currentModelName,
                         modelSize = currentModelSize, supportsAudioInput = currentSupportsAudioInput,
-                        supportsThinkingMode = currentSupportsThinkingMode, allowUnsafeOverride = currentAllowUnsafeOverride,
+                        allowUnsafeOverride = currentAllowUnsafeOverride,
                         contextWindowTokens = resolvedContextWindowTokens, bundle = expectedBundle,
                         // This load runs inside the request: skip the warm-up turn the request would duplicate.
                         initialThinkingPreference = _thinkingMode.value, warmStart = false
@@ -1318,9 +1303,7 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             isThinking = _thinkingMode.value
         )
         timing.recordAcknowledged()
-        val requestThinkingPreference = thinkingMode
-        val capability = currentResolvedThinkingCapability.takeIf { it != ThinkingCapability.Unknown } ?: currentBundle?.capabilities?.thinking ?: ThinkingCapability.Unknown
-        var thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(capability, requestThinkingPreference)
+        val thinkingModeForRequest = thinkingMode
         activeRequestId = requestId
         val reqModelEpoch = currentModelEpoch
         val assistantMessageId = messages[assistantIndex].id
@@ -1501,13 +1484,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
 
-                // Same capability fallback as the pre-load resolution above, so a runtime that has not
-                // resolved its capability does not silently turn a Think-on request off.
-                thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(
-                    currentResolvedThinkingCapability.takeIf { it != ThinkingCapability.Unknown }
-                        ?: currentBundle?.capabilities?.thinking ?: ThinkingCapability.Unknown,
-                    requestThinkingPreference
-                )
                 // Loading may have selected a smaller fallback than the requested limit.
                 documentBudget = documentTextBudget(
                     userPrompt = basePrompt,
@@ -2962,7 +2938,6 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
             withContext(Dispatchers.Main.immediate) {
                 currentRequestedIdentity = null
                 currentLoadedIdentity = null
-                currentResolvedThinkingCapability = ThinkingCapability.Unknown
                 if (pendingClearSelection) {
                     pendingClearSelection = false
                     currentModelPath = null

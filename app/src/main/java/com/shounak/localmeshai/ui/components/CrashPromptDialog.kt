@@ -245,15 +245,15 @@ fun CrashPromptDialog(
                             onClick = onSend,
                             hazeState = hazeState,
                             shape = RoundedCornerShape(12.dp),
-                            tintColor = colors.error.copy(alpha = 0.22f),
+                            tintColor = colors.primary.copy(alpha = 0.22f),
                             modifier = Modifier
                                 .weight(1.4f)
                                 .height(44.dp)
-                                .border(1.dp, colors.error.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
+                                .border(1.dp, colors.primary.copy(alpha = 0.55f), RoundedCornerShape(12.dp))
                         ) {
-                            Icon(Icons.Default.BugReport, contentDescription = null, tint = colors.error, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.BugReport, contentDescription = null, tint = colors.primary, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Send to Repo", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = colors.error)
+                            Text("Send to Repo", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = colors.primary)
                         }
                     } else {
                         OutlinedButton(
@@ -269,14 +269,14 @@ fun CrashPromptDialog(
                         Button(
                             onClick = onSend,
                             shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = colors.error),
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.primary),
                             modifier = Modifier
                                 .weight(1.4f)
                                 .height(44.dp)
                         ) {
-                            Icon(Icons.Default.BugReport, contentDescription = null, tint = colors.onError, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.BugReport, contentDescription = null, tint = colors.onPrimary, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Send to Repo", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = colors.onError)
+                            Text("Send to Repo", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = colors.onPrimary)
                         }
                     }
                 }

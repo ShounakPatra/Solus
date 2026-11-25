@@ -12,7 +12,6 @@ import com.shounak.localmeshai.models.ModelArtifact
 import com.shounak.localmeshai.models.ModelBundle
 import com.shounak.localmeshai.models.ModelCapabilities
 import com.shounak.localmeshai.models.ModelFormat
-import com.shounak.localmeshai.models.ThinkingCapability
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.NonCancellable
@@ -45,7 +44,7 @@ object LocalModelImporter {
         val hasVision: Boolean = false,
         val hasAudio: Boolean = false,
         val trainContextLength: Int = 0,
-        val thinkingCapability: String = "Unknown"
+        val chatTemplate: String? = null
     )
 
     data class UriInspectionResult(
@@ -450,7 +449,7 @@ object LocalModelImporter {
                     hasVision = inspection.clipHasVisionEncoder,
                     hasAudio = inspection.clipHasAudioEncoder,
                     trainContextLength = inspection.trainContextLength,
-                    thinkingCapability = inspection.thinkingCapability
+                    chatTemplate = inspection.chatTemplate
                 )
 
                 inspections.add(UriInspectionResult(uri, displayName, sizeBytes, lastModified, header))
@@ -475,7 +474,7 @@ object LocalModelImporter {
                     hasVision = item.header.hasVision,
                     hasAudio = item.header.hasAudio,
                     trainContextLength = item.header.trainContextLength,
-                    thinkingCapability = item.header.thinkingCapability
+                    chatTemplate = item.header.chatTemplate.orEmpty()
                 )
             }
 

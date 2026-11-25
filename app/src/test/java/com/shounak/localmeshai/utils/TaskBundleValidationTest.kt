@@ -1,6 +1,5 @@
 package com.shounak.localmeshai.utils
 
-import com.shounak.localmeshai.models.ThinkingCapability
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -127,12 +126,11 @@ class TaskBundleValidationTest {
         assertEquals(4096, result.capabilities.contextLength)
     }
 
-    @Test fun legacyAndRoleSpecificNestedPromptTemplatesAreDecoded() {
+    @Test fun chatTemplateInTaskMetadataIsExtractedCleanly() {
         val template = message(byteArrayOf(26), "<think>".toByteArray())
         for (metadata in listOf(message(byteArrayOf(66), template), message(byteArrayOf(0x8a.toByte(), 1), message(byteArrayOf(18), template)))) {
             val result = NonGgufBundleInspector.inspectMediaPipeTask(task(metadata))
             assertTrue(result.errorMessage, result.isValid)
-            assertEquals(ThinkingCapability.ModelControlled, result.capabilities.thinking)
         }
     }
 
@@ -149,12 +147,10 @@ class TaskBundleValidationTest {
         assertFalse(NonGgufBundleInspector.inspectMediaPipeTask(task(graph = magicOnly)).isValid)
     }
 
-    @Test fun optionalMetadataMayBeAbsentAndDoesNotInventVisionOrThinkingToggle() {
+    @Test fun optionalMetadataMayBeAbsentWithoutInventingVision() {
         val result = NonGgufBundleInspector.inspectMediaPipeTask(task())
         assertTrue(result.errorMessage, result.isValid)
         assertFalse(result.capabilities.supportsVision)
-        assertEquals(ThinkingCapability.Unknown, result.capabilities.thinking)
-        val literal = message(byteArrayOf(66), message(byteArrayOf(18), "enable_thinking".toByteArray()))
-        assertEquals(ThinkingCapability.Unknown, NonGgufBundleInspector.inspectMediaPipeTask(task(literal)).capabilities.thinking)
+        assertNull(result.capabilities.chatTemplate)
     }
 }

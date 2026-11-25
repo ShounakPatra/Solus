@@ -18,7 +18,6 @@ import com.shounak.localmeshai.utils.ModelValidationQueue
 import com.shounak.localmeshai.utils.ModelVerificationCache
 import com.shounak.localmeshai.models.ModelStatus
 import com.shounak.localmeshai.models.ModelType
-import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.services.DownloadController
 import com.shounak.localmeshai.services.ModelDownloadService
 import com.shounak.localmeshai.utils.DeviceUtils
@@ -285,7 +284,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         } else target?.let { ModelVerificationCache.fileIdentity(it) } ?: model.localPath.orEmpty()
-        return "${ThinkingModeConfig.DETECTOR_VERSION}:${model.sha256.orEmpty()}:$revision"
+        return "${ThinkingModeConfig.CONFIG_VERSION}:${model.sha256.orEmpty()}:$revision"
     }
 
     private fun sourceSignature(model: ModelInfo): String =
@@ -384,12 +383,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             val c = bundleRes.capabilities
                             val ctx = if (bundleRes.contextLength > 0) bundleRes.contextLength else (model.contextWindowTokens ?: 2048)
                             val updatedBundle = resolvedBundle.copy(
-                                capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
+                                capabilities = c,
                                 contextLength = ctx
                             )
                             InspectedBundleOutcome(
                                 bundle = updatedBundle,
-                                capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
+                                capabilities = c,
                                 contextLength = ctx,
                                 loadRestriction = resolvedBundle.loadRestriction,
                                 isMultimodal = c.isMediaModel,
@@ -422,12 +421,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             val c = insp.capabilities
                             val ctx = if (c.contextLength > 0) c.contextLength else (model.contextWindowTokens ?: 2048)
                             val updatedBundle = resolvedBundle.copy(
-                                capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
+                                capabilities = c,
                                 contextLength = ctx
                             )
                             InspectedBundleOutcome(
                                 bundle = updatedBundle,
-                                capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
+                                capabilities = c,
                                 contextLength = ctx,
                                 loadRestriction = insp.loadRestriction ?: resolvedBundle.loadRestriction,
                                 isMultimodal = c.isMediaModel,
@@ -460,13 +459,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             val c = insp.capabilities
                             val ctx = if (c.contextLength > 0) c.contextLength else (model.contextWindowTokens ?: 2048)
                             val updatedBundle = resolvedBundle.copy(
-                                capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
+                                capabilities = c,
                                 contextLength = ctx,
                                 loadRestriction = insp.loadRestriction ?: resolvedBundle.loadRestriction
                             )
                             InspectedBundleOutcome(
                                 bundle = updatedBundle,
-                                capabilities = c.copy(thinkingArtifactIdentity = resolvedBundle.mainArtifacts.first().source.location),
+                                capabilities = c,
                                 contextLength = ctx,
                                 loadRestriction = insp.loadRestriction ?: resolvedBundle.loadRestriction,
                                 isMultimodal = c.isMediaModel,
@@ -750,8 +749,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                             reservedDraft.stagedArtifactItems.map { item ->
                                                 val target = File(generationRoot, com.shounak.localmeshai.utils.PortableBundlePath.normalize(item.relativeTargetName))
                                                 ModelArtifact(ArtifactRole.Main, item.relativeTargetName, ArtifactSource.AppManaged(target.absolutePath), target.length(), target.lastModified())
-                                            },
-                                        capabilities = bundle.capabilities.copy(thinkingArtifactIdentity = publishedFile.absolutePath)
+                                            }
                                     )
                                 } else {
                                     val primary = bundle.mainArtifacts.firstOrNull()
@@ -821,7 +819,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 backend = effectiveBundle.backend,
                                 deviceTarget = "All supported chipsets",
                                 bundle = effectiveBundle,
-                                supportsThinkingMode = (effectiveBundle.capabilities.thinking == ThinkingCapability.ModelControlled || effectiveBundle.capabilities.thinking == ThinkingCapability.Toggleable),
                                 supportsVisionInput = effectiveBundle.capabilities.supportsVision,
                                 supportsAudioInput = effectiveBundle.capabilities.supportsAudio,
                                 contextWindowTokens = effectiveBundle.contextLength.takeIf { it > 0 }
@@ -1022,6 +1019,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _crashReports.value = com.shounak.localmeshai.utils.CrashReportManager.getAllReports(getApplication())
     }
 
+    fun deleteCrashReport(report: com.shounak.localmeshai.utils.CrashReport) {
+        com.shounak.localmeshai.utils.CrashReportManager.deleteReport(getApplication(), report)
+        refreshCrashReports()
+    }
+
     fun clearCrashReports() {
         com.shounak.localmeshai.utils.CrashReportManager.clearAllReports(getApplication())
         refreshCrashReports()
@@ -1202,7 +1204,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         model.copy(status = ModelStatus.Available, progress = 1f, errorMessage = null,
                             localPath = model.localPath ?: target?.absolutePath, bundle = bundle, backend = bundle.backend,
                             type = if (caps.isMediaModel) ModelType.Vision else ModelType.Text,
-                            supportsThinkingMode = caps.thinking in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled),
                             supportsVisionInput = caps.supportsVision, supportsAudioInput = caps.supportsAudio,
                             contextWindowTokens = bundle.contextLength.takeIf { it > 0 }, loadRestriction = bundle.loadRestriction
                         ).also { if (!revision.contains(":opaque:")) runCatching { cache.recordBundle(revision, bundle) } }
@@ -1842,7 +1843,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     sha256 = def.sha256,
                     requiresHuggingFaceToken = ModelDownloadUrlPolicy.requiresHuggingFaceToken(def.url),
                     bundle = effectiveBundle,
-                    supportsThinkingMode = (effectiveBundle?.capabilities?.thinking == ThinkingCapability.ModelControlled || effectiveBundle?.capabilities?.thinking == ThinkingCapability.Toggleable || def.bundle?.capabilities?.thinking == ThinkingCapability.ModelControlled || def.bundle?.capabilities?.thinking == ThinkingCapability.Toggleable),
                     supportsVisionInput = (effectiveBundle?.capabilities?.supportsVision == true || def.bundle?.capabilities?.supportsVision == true),
                     supportsAudioInput = (effectiveBundle?.capabilities?.supportsAudio == true || def.bundle?.capabilities?.supportsAudio == true),
                     contextWindowTokens = effectiveBundle?.contextLength?.takeIf { it > 0 },
@@ -1936,7 +1936,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             backend = bundle.backend,
             deviceTarget = "All supported chipsets",
             bundle = bundle,
-            supportsThinkingMode = (bundle.capabilities.thinking == ThinkingCapability.ModelControlled || bundle.capabilities.thinking == ThinkingCapability.Toggleable),
             supportsVisionInput = bundle.capabilities.supportsVision,
             supportsAudioInput = bundle.capabilities.supportsAudio,
             contextWindowTokens = bundle.contextLength.takeIf { it > 0 }
@@ -2025,7 +2024,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     backend = bundleWithExistingId.backend,
                     deviceTarget = "All supported chipsets",
                     bundle = bundleWithExistingId,
-                    supportsThinkingMode = (bundleWithExistingId.capabilities.thinking == ThinkingCapability.ModelControlled || bundleWithExistingId.capabilities.thinking == ThinkingCapability.Toggleable),
                     supportsVisionInput = bundleWithExistingId.capabilities.supportsVision,
                     supportsAudioInput = bundleWithExistingId.capabilities.supportsAudio,
                     contextWindowTokens = bundleWithExistingId.contextLength.takeIf { it > 0 }

@@ -668,9 +668,7 @@ class ModelArtifactStorage(val rootDir: File) {
 
             val runnableRel = primaryRelativePath ?: relPaths.first()
             val finalPrimary = primaryFile ?: File(modelDir, runnableRel)
-            val updatedCapabilities = capabilities?.copy(
-                thinkingArtifactIdentity = finalPrimary.absolutePath
-            )
+            val updatedCapabilities = capabilities
             val inferredFormat = format ?: when {
                 finalPrimary.name.endsWith(".task", ignoreCase = true) -> ModelFormat.MediaPipeTask
                 finalPrimary.name.endsWith(".litertlm", ignoreCase = true) -> ModelFormat.LiteRtLm

@@ -204,7 +204,11 @@ object MessagePresentationCache {
                 isThinkingActive = isStreaming && isThinkingActive
             )
         } else {
-            val parsedThinking = ThinkingTextUtils.parse(text, allowActiveThinking = isStreaming)
+            val parsedThinking = ThinkingTextUtils.parse(
+                text,
+                allowActiveThinking = isStreaming,
+                recoverUnclosedOnCompletion = !isStreaming
+            )
             val parsedReasoning = parsedThinking.thinkingText?.trim()?.takeIf { it.isNotBlank() }
             if (parsedReasoning.isNullOrBlank() && !cleanReasoning.isNullOrBlank()) {
                 parsedThinking.copy(thinkingText = cleanReasoning)

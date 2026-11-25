@@ -18,8 +18,8 @@ class InferenceResponseControllerTest {
         assertEquals("Processing math step 1...\nStep 2: evaluating integral", controller.currentThinkingText())
         assertEquals("", controller.currentAnswerText())
 
-        // Generation ends abruptly without closing </think>
-        controller.finish()
+        // Aborted/cancelled generation ends without closing </think> (recoverUnclosedOnCompletion = false)
+        controller.finish(recoverUnclosedOnCompletion = false)
 
         assertFalse(controller.isThinkingActive)
         assertEquals("Processing math step 1...\nStep 2: evaluating integral", controller.getReasoningText())
@@ -28,6 +28,24 @@ class InferenceResponseControllerTest {
         val finalized = controller.finalizeResponse(requestId = "req-1")
         assertTrue("Should fail as ReasoningOnly when answer is blank", finalized is FinalizedResponse.Failed)
         assertEquals(EmptyResponseReason.ReasoningOnly, (finalized as FinalizedResponse.Failed).emptyReason)
+    }
+
+    @Test
+    fun testUnclosedThinkTagGracefullyDisplaysReplyOnNormalCompletion() {
+        val controller = InferenceResponseController(thinkingMode = false)
+        controller.appendDelta("<think>")
+        controller.appendDelta("The capital of France is Paris.")
+
+        assertTrue(controller.isThinkingActive)
+        controller.finish(recoverUnclosedOnCompletion = true)
+
+        assertFalse(controller.isThinkingActive)
+        assertEquals("", controller.getReasoningText())
+        assertEquals("The capital of France is Paris.", controller.getFinalAnswer())
+
+        val finalized = controller.finalizeResponse(requestId = "req-unclosed-recover")
+        assertTrue(finalized is FinalizedResponse.Completed)
+        assertEquals("The capital of France is Paris.", finalized.answerText)
     }
 
     @Test
@@ -68,19 +86,40 @@ class InferenceResponseControllerTest {
     }
 
     @Test
-    fun testThinkingDisabledSuppressesThinkingAndStripsLeakedTags() {
+    fun testAlwaysOnParserCapturesThoughtBlocksEvenWhenToggleIsOff() {
         val controller = InferenceResponseController(thinkingMode = false)
         controller.appendDelta("<think>Internal monologue leaked here</think>")
         controller.appendDelta("Direct response to user.")
 
         controller.finish()
-        assertEquals("", controller.getReasoningText())
+        assertEquals("Internal monologue leaked here", controller.getReasoningText())
         assertEquals("Direct response to user.", controller.getFinalAnswer())
 
         val finalized = controller.finalizeResponse(requestId = "req-3")
         assertTrue(finalized is FinalizedResponse.Completed)
         assertEquals("Direct response to user.", finalized.answerText)
-        assertEquals("", finalized.reasoningText)
+        assertEquals("Internal monologue leaked here", finalized.reasoningText)
+    }
+
+    @Test
+    fun testAlwaysOnParserRecognizesChannelAndPipeThoughtDelimitersAndPlainText() {
+        val channelCtrl = InferenceResponseController(thinkingMode = true)
+        channelCtrl.appendDelta("<|channel>thought\nLet me reason step by step.<channel|>Here is the answer.")
+        channelCtrl.finish()
+        assertEquals("Let me reason step by step.", channelCtrl.getReasoningText())
+        assertEquals("Here is the answer.", channelCtrl.getFinalAnswer())
+
+        val pipeCtrl = InferenceResponseController(thinkingMode = false)
+        pipeCtrl.appendDelta("<|thought|>Checking constraints.<|/thought|>Verified result.")
+        pipeCtrl.finish()
+        assertEquals("Checking constraints.", pipeCtrl.getReasoningText())
+        assertEquals("Verified result.", pipeCtrl.getFinalAnswer())
+
+        val plainCtrl = InferenceResponseController(thinkingMode = false)
+        plainCtrl.appendDelta("Just a normal assistant reply.")
+        plainCtrl.finish()
+        assertEquals("", plainCtrl.getReasoningText())
+        assertEquals("Just a normal assistant reply.", plainCtrl.getFinalAnswer())
     }
 
     @Test
@@ -94,13 +133,13 @@ class InferenceResponseControllerTest {
     }
 
     @Test
-    fun testStreamingFormattedTextHidesThinkingWhenDisabled() {
+    fun testStreamingFormattedTextAlwaysIncludesStructuredThinkingAndAnswer() {
         val controller = InferenceResponseController(thinkingMode = false)
         controller.appendDelta("<think>Streaming some thought")
-        assertEquals("", controller.currentFormattedText())
+        assertEquals("<think>\nStreaming some thought", controller.currentFormattedText())
 
         controller.appendDelta("</think>Hello world!")
-        assertEquals("Hello world!", controller.currentFormattedText())
+        assertEquals("<think>\nStreaming some thought\n</think>\n\nHello world!", controller.currentFormattedText())
     }
 
     @Test

@@ -1,8 +1,8 @@
 package com.shounak.localmeshai.utils
 
-import com.shounak.localmeshai.models.ThinkingCapability
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -96,7 +96,7 @@ class GgufBundleInspectorTest {
     }
 
     @Test
-    fun validateBundle_preservesThinkingCapabilityWithoutNameFallback() {
+    fun validateBundle_preservesChatTemplateWithoutNameFallback() {
         val main = GgufArtifactInspection(
             location = "/path/to/DeepSeek-R1-Distill-Q4_K_M.gguf",
             displayName = "DeepSeek-R1-Distill-Q4_K_M.gguf",
@@ -105,16 +105,16 @@ class GgufBundleInspectorTest {
             isSupported = true,
             architecture = "qwen2",
             name = "DeepSeek R1 Distill Qwen",
-            thinkingCapability = "Unknown"
+            chatTemplate = ""
         )
 
         val result = GgufBundleInspector.validateBundle(listOf(main))
         assertTrue(result.isValid)
-        assertEquals(ThinkingCapability.Unknown, result.capabilities.thinking)
 
-        val explicitMain = main.copy(thinkingCapability = "Toggleable")
+        val explicitTemplate = "{% if enable_thinking %}<think>{% endif %}"
+        val explicitMain = main.copy(chatTemplate = explicitTemplate)
         val explicitResult = GgufBundleInspector.validateBundle(listOf(explicitMain))
         assertTrue(explicitResult.isValid)
-        assertEquals(ThinkingCapability.Toggleable, explicitResult.capabilities.thinking)
+        assertEquals(explicitTemplate, explicitResult.capabilities.chatTemplate)
     }
 }

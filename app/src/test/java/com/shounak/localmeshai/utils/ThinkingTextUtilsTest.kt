@@ -1,6 +1,7 @@
 package com.shounak.localmeshai.utils
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ThinkingTextUtilsTest {
@@ -105,6 +106,25 @@ class ThinkingTextUtilsTest {
     fun removeLooseThinkTagsStripsOpenAndCloseTags() {
         val text = "<think>some thought</think>answer"
         assertEquals("some thoughtanswer", ThinkingTextUtils.removeLooseThinkTags(text))
+    }
+
+    @Test
+    fun alwaysOnParserHandlesAllStandardThoughtDelimitersAndPlainText() {
+        val channel = ThinkingTextUtils.parse("<|channel>thought\nReasoning here<channel|>Final answer", allowActiveThinking = false)
+        assertEquals("Reasoning here", channel.thinkingText)
+        assertEquals("Final answer", channel.finalResponseText)
+
+        val pipe = ThinkingTextUtils.parse("<|thought|>Checking edge case<|/thought|>Done!", allowActiveThinking = false)
+        assertEquals("Checking edge case", pipe.thinkingText)
+        assertEquals("Done!", pipe.finalResponseText)
+
+        val tag = ThinkingTextUtils.parse("<thought>Step 1</thought>Result", allowActiveThinking = false)
+        assertEquals("Step 1", tag.thinkingText)
+        assertEquals("Result", tag.finalResponseText)
+
+        val plain = ThinkingTextUtils.parse("Plain response without tags", allowActiveThinking = false)
+        assertNull(plain.thinkingText)
+        assertEquals("Plain response without tags", plain.finalResponseText)
     }
 }
 

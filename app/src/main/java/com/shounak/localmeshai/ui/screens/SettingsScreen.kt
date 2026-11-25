@@ -204,6 +204,7 @@ fun SettingsDialog(
         CrashReportsDialog(
             reports = crashReports,
             onDismissRequest = { showCrashDialog = false },
+            onDeleteReport = { report -> mainViewModel.deleteCrashReport(report) },
             onClearReports = { mainViewModel.clearCrashReports() },
             onSendReport = { report ->
                 CrashReportManager.sendToGitHub(context, report.details, report.title)
@@ -258,6 +259,15 @@ fun SettingsDialog(
             window?.apply {
                 setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
                 setBackgroundDrawable(android.graphics.drawable.ColorDrawable(colors.background.toArgb()))
+                androidx.core.view.WindowCompat.setDecorFitsSystemWindows(this, false)
+                @Suppress("DEPRECATION")
+                run {
+                    statusBarColor = android.graphics.Color.TRANSPARENT
+                    navigationBarColor = android.graphics.Color.TRANSPARENT
+                }
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    isNavigationBarContrastEnforced = false
+                }
             }
         }
 
@@ -2662,12 +2672,19 @@ private class LastCharPasswordVisualTransformation(
 private fun CrashReportsDialog(
     reports: List<CrashReport>,
     onDismissRequest: () -> Unit,
+    onDeleteReport: (CrashReport) -> Unit,
     onClearReports: () -> Unit,
     onSendReport: (CrashReport) -> Unit,
     hazeState: HazeState
 ) {
     val context = LocalContext.current
     var selectedReport by remember { mutableStateOf(reports.firstOrNull()) }
+    LaunchedEffect(reports) {
+        if (selectedReport !in reports) {
+            selectedReport = reports.firstOrNull()
+        }
+    }
+    val activeReport = selectedReport?.takeIf { it in reports } ?: reports.firstOrNull()
     val colors = MaterialTheme.colorScheme
 
     Dialog(
@@ -2746,7 +2763,7 @@ private fun CrashReportsDialog(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             reports.forEachIndexed { index, report ->
-                                val isSel = selectedReport == report
+                                val isSel = activeReport == report
                                 FilterChip(
                                     selected = isSel,
                                     onClick = { selectedReport = report },
@@ -2759,7 +2776,7 @@ private fun CrashReportsDialog(
                         }
                     }
 
-                    (selectedReport ?: reports.firstOrNull())?.let { report ->
+                    activeReport?.let { report ->
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -2835,19 +2852,22 @@ private fun CrashReportsDialog(
                             }
 
                             LiquidGlassButton(
-                                onClick = { CrashReportManager.shareCrashReport(context, report) },
+                                onClick = {
+                                    onDeleteReport(report)
+                                    Toast.makeText(context, "Crash report deleted", Toast.LENGTH_SHORT).show()
+                                },
                                 hazeState = hazeState,
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(42.dp)
-                                    .border(0.8.dp, colors.outlineVariant.copy(alpha = 0.50f), RoundedCornerShape(12.dp)),
+                                    .border(0.8.dp, colors.error.copy(alpha = 0.42f), RoundedCornerShape(12.dp)),
                                 shape = RoundedCornerShape(12.dp),
-                                tintColor = colors.surfaceContainerHighest.copy(alpha = 0.35f),
+                                tintColor = colors.error.copy(alpha = 0.14f),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                             ) {
-                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.onSurfaceVariant)
+                                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.error)
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Share", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+                                Text("Delete", style = MaterialTheme.typography.labelMedium, color = colors.error)
                             }
 
                             LiquidGlassButton(
@@ -2856,14 +2876,14 @@ private fun CrashReportsDialog(
                                 modifier = Modifier
                                     .weight(1.3f)
                                     .height(42.dp)
-                                    .border(1.dp, colors.error.copy(alpha = 0.55f), RoundedCornerShape(12.dp)),
+                                    .border(1.dp, colors.primary.copy(alpha = 0.55f), RoundedCornerShape(12.dp)),
                                 shape = RoundedCornerShape(12.dp),
-                                tintColor = colors.error.copy(alpha = 0.22f),
+                                tintColor = colors.primary.copy(alpha = 0.22f),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                             ) {
-                                Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.error)
+                                Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(16.dp), tint = colors.primary)
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Send to Repo", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.error)
+                                Text("Send to Repo", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = colors.primary)
                             }
                         }
                     }

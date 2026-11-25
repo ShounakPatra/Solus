@@ -73,15 +73,6 @@ data class ModelArtifact(
     }
 }
 
-enum class ThinkingCapability {
-    Unknown,
-    Unsupported,
-    Toggleable,
-    ModelControlled
-}
-
-enum class ThinkingControlStrategy { None, NativeTemplate, QwenSoftSwitch }
-
 enum class ModelTask(val id: String) {
     Chat("text_generation"), VisionLanguage("vision_language"), ImageClassification("image_classification"),
     SpeechRecognition("speech_recognition"), ImageGeneration("image_generation"), Unknown("unknown")
@@ -92,14 +83,10 @@ data class ModelCapabilities(
     val supportsText: Boolean = true,
     val supportsVision: Boolean = false,
     val supportsAudio: Boolean = false,
-    val thinking: ThinkingCapability = ThinkingCapability.Unknown,
-    val thinkingDetectorVersion: Int = 0,
-    val thinkingArtifactIdentity: String = "",
     val contextLength: Int = 0,
     val visionProjectorMissing: Boolean = false,
-    val thinkingControl: ThinkingControlStrategy = ThinkingControlStrategy.None,
+    val chatTemplate: String? = null,
     val reasoningChannels: Set<String> = emptySet(),
-    val reasoningPrefill: Boolean = false,
     val task: ModelTask = ModelTask.Chat
 ) {
     val isMediaModel: Boolean get() = supportsVision || supportsAudio || task == ModelTask.ImageGeneration
@@ -108,34 +95,23 @@ data class ModelCapabilities(
         put("supportsText", supportsText)
         put("supportsVision", supportsVision)
         put("supportsAudio", supportsAudio)
-        put("thinking", thinking.name)
-        put("thinkingControl", thinkingControl.name)
+        chatTemplate?.let { put("chatTemplate", it) }
         put("reasoningChannels", JSONArray(reasoningChannels.toList()))
-        put("reasoningPrefill", reasoningPrefill)
-        put("thinkingDetectorVersion", thinkingDetectorVersion)
-        put("thinkingArtifactIdentity", thinkingArtifactIdentity)
         put("contextLength", contextLength)
         put("visionProjectorMissing", visionProjectorMissing)
     }
 
     companion object {
         fun fromJson(json: JSONObject): ModelCapabilities {
-            val thinkingCap = json.optString("thinking").let { name ->
-                ThinkingCapability.entries.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: ThinkingCapability.Unknown
-            }
             return ModelCapabilities(
                 task = ModelTask.entries.firstOrNull { it.id == json.optString("task") } ?: ModelTask.Chat,
                 supportsText = json.optBoolean("supportsText", true),
                 supportsVision = json.optBoolean("supportsVision", false),
                 supportsAudio = json.optBoolean("supportsAudio", false),
-                thinking = thinkingCap,
-                thinkingDetectorVersion = json.optInt("thinkingDetectorVersion", 0),
-                thinkingArtifactIdentity = json.optString("thinkingArtifactIdentity", ""),
                 contextLength = json.optInt("contextLength", 0),
                 visionProjectorMissing = json.optBoolean("visionProjectorMissing", false),
-                thinkingControl = ThinkingControlStrategy.entries.firstOrNull { it.name == json.optString("thinkingControl") } ?: ThinkingControlStrategy.None,
-                reasoningChannels = json.optJSONArray("reasoningChannels")?.let { names -> (0 until names.length()).map { names.getString(it) }.toSet() } ?: emptySet(),
-                reasoningPrefill = json.optBoolean("reasoningPrefill", false)
+                chatTemplate = json.optString("chatTemplate").takeIf { it.isNotBlank() },
+                reasoningChannels = json.optJSONArray("reasoningChannels")?.let { names -> (0 until names.length()).map { names.getString(it) }.toSet() } ?: emptySet()
             )
         }
     }

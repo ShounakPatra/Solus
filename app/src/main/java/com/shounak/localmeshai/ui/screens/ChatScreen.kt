@@ -14,7 +14,6 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.ui.layout.onSizeChanged
-import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.models.ModelCapabilityPolicy
 import com.shounak.localmeshai.utils.InitCrashGuard
 import com.shounak.localmeshai.utils.ThinkingModeConfig
@@ -592,10 +591,8 @@ fun ChatScreen(
     val selectedDeclaredAudio = selectedModel?.supportsAudio == true
     val selectedSupportsAudio = runtimeSnapshot?.capabilities?.supportsAudio == true
     val isCurrentModelReady = if (selectedSupportsAttachments) isVisionModelReady else isModelReady
-    val selectedThinkingCapability = if (isCurrentModelReady) runtimeSnapshot?.capabilities?.thinking ?: ThinkingCapability.Unknown
-        else selectedModel?.thinkingCapability ?: ThinkingCapability.Unknown
-    val isCheckingThinking = selectedModel != null && validationStates[selectedModel.id] in setOf(ModelValidationState.Pending, ModelValidationState.Checking)
-    val selectedSupportsThinking = selectedThinkingCapability in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled)
+    val composerChatTemplate = if (isCurrentModelReady) runtimeSnapshot?.capabilities?.chatTemplate else selectedModel?.chatTemplate
+    val selectedThinkingAvailable = ThinkingModeConfig.isToggleAvailableForTemplate(composerChatTemplate)
     val isCurrentModelResponding = if (selectedSupportsAttachments) {
         isVisionAnalyzing || isVisionStopping
     } else {
@@ -819,7 +816,6 @@ fun ChatScreen(
                         modelSize = model.size,
                         contextWindowTokens = model.effectiveContextWindowTokens,
                         supportsAudioInput = model.supportsAudio,
-                        supportsThinkingMode = model.thinkingCapability in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled),
                         allowUnsafeOverride = unsafeOverride,
                         forceReload = true,
                         bundle = model.bundle
@@ -836,7 +832,6 @@ fun ChatScreen(
                         modelName = model.name,
                         modelSize = model.size,
                         contextWindowTokens = model.effectiveContextWindowTokens,
-                        supportsThinkingMode = model.thinkingCapability in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled),
                         allowUnsafeOverride = unsafeOverride,
                         bundle = model.bundle,
                         deferLoad = false,
@@ -997,7 +992,6 @@ fun ChatScreen(
                     modelName = selectedModel?.name ?: "",
                     modelSize = selectedModel?.size ?: "",
                     contextWindowTokens = selectedModel?.effectiveContextWindowTokens,
-                    supportsThinkingMode = selectedSupportsThinking,
                     allowUnsafeOverride = selectedUnsafeOverride,
                     bundle = selectedModel?.bundle,
                     deferLoad = com.shounak.localmeshai.ui.models.ChatModelHandoff.defersLoad(path,
@@ -1023,7 +1017,6 @@ fun ChatScreen(
                     modelSize = selectedModel?.size ?: "",
                     contextWindowTokens = selectedModel?.effectiveContextWindowTokens,
                     supportsAudioInput = selectedDeclaredAudio,
-                    supportsThinkingMode = selectedSupportsThinking,
                     allowUnsafeOverride = selectedUnsafeOverride,
                     bundle = selectedModel?.bundle
                 )
@@ -1149,7 +1142,7 @@ fun ChatScreen(
     var floatingDockHeight by remember { mutableStateOf(64.dp) }
     val floatingDockDensity = LocalDensity.current
     val floatingBottomInset = floatingDockHeight + 8.dp
-    val restingEmptyStateBottomInset = 68.dp
+    val restingEmptyStateBottomInset = 68.dp + if (isKeyboardOpen) 0.dp else bottomContentInset
     val hideComposerShortcuts = isKeyboardOpen
     val isTemporaryChat = if (effectiveSupportsAttachments) temporaryVision else temporaryText
     val activeSessionState = if (effectiveSupportsAttachments) visionSessionState else chatSessionState
@@ -1224,9 +1217,9 @@ fun ChatScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            // A single inset follows the IME animation and never falls below the
-                            // floating navigation bar's resting space. Do not add dock padding too.
-                            .windowInsetsPadding(WindowInsets.ime.union(WindowInsets(bottom = bottomContentInset)))
+                            // Keep Layer 1 full-bleed to the bottom edge behind the transparent system
+                            // navigation bar when the keyboard is closed; only shrink for the IME.
+                            .windowInsetsPadding(WindowInsets.ime)
                             .padding(horizontal = 16.dp)
                     ) {
                     when {
@@ -1237,7 +1230,10 @@ fun ChatScreen(
                                 state = listState,
                                 modifier = Modifier
                                     .fillMaxSize(),
-                                contentPadding = PaddingValues(top = topControlsHeight + 8.dp, bottom = floatingBottomInset + 20.dp),
+                                contentPadding = PaddingValues(
+                                    top = topControlsHeight + 8.dp,
+                                    bottom = floatingBottomInset + (if (isKeyboardOpen) 0.dp else bottomContentInset) + 20.dp
+                                ),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 if (effectiveSupportsAttachments) {
@@ -1909,7 +1905,7 @@ fun ChatScreen(
                             !isDecodingAudioFile &&
                             (hasVisionAttachment || textState.isNotBlank())
                         val composerGenerating = if (effectiveSupportsAttachments) isVisionAnalyzing else (isGenerating || isInitializing)
-                        val composerCanThink = isCurrentModelReady && runtimeSnapshot != null && selectedSupportsThinking && !isCurrentModelResponding
+                        val composerCanThink = isCurrentModelReady && !isCurrentModelResponding
                         val composerSupportsVision = effectiveSupportsAttachments && runtimeSnapshot?.capabilities?.supportsVision == true
                         val composerSupportsAudioInput = effectiveSupportsAttachments && selectedSupportsAudio
                         val composerVisionDisabledReason = when {
@@ -1997,8 +1993,7 @@ fun ChatScreen(
                             onModelMenuExpandedChange = { isModelMenuOpen = it },
                             compactAttachmentMenu = hideComposerShortcuts,
                             thinkingMode = thinkingMode,
-                            thinkingCapability = selectedThinkingCapability,
-                            isCheckingThinking = isCheckingThinking,
+                            isThinkingAvailable = selectedThinkingAvailable,
                             canSend = canSendMessage,
                             isGenerating = composerGenerating,
                             canThink = composerCanThink,
@@ -2371,23 +2366,6 @@ private fun ModelInfo?.supportsAudioInputByMetadata(): Boolean {
     return model.supportsAudio
 }
 
-private fun ModelInfo?.supportsThinkingMode(): Boolean {
-    val model = this ?: return false
-    return ThinkingModeConfig.resolveThinkingCapability(model) != ThinkingCapability.Unsupported
-}
-
-private val ThinkingModelMarkers = listOf(
-    "qwen3",
-    "qwen 3",
-    "deepseek",
-    "reasoning",
-    "mimo",
-    "exaone",
-    "gemma 4",
-    "gemma4",
-    "gemma-4"
-)
-
 private fun File.containsAudioModelAssets(): Boolean {
     if (!exists()) return false
     val audioMarkers = listOf("AUDIO_ENCODER", "AUDIO_ADAPTER", "AUDIO_EMBEDDER", "AUDIO")
@@ -2599,8 +2577,7 @@ private fun MorphingChatComposer(
     modifier: Modifier = Modifier,
     compactAttachmentMenu: Boolean = false,
     thinkingMode: Boolean,
-    thinkingCapability: ThinkingCapability = ThinkingCapability.Unknown,
-    isCheckingThinking: Boolean = false,
+    isThinkingAvailable: Boolean = true,
     canSend: Boolean,
     isGenerating: Boolean,
     canThink: Boolean,
@@ -2640,19 +2617,10 @@ private fun MorphingChatComposer(
         ),
         label = "attachment_menu_icon_rotation"
     )
-    val isToggleable = thinkingCapability == ThinkingCapability.Toggleable
-    val isModelControlled = thinkingCapability == ThinkingCapability.ModelControlled
-    val isUnknown = thinkingCapability == ThinkingCapability.Unknown
-    val isUnsupported = thinkingCapability == ThinkingCapability.Unsupported
-
-    val thinkButtonEnabled = canThink && isToggleable
-    val thinkActive = when {
-        isModelControlled -> true
-        isToggleable -> thinkingMode
-        else -> false
-    }
+    val thinkButtonEnabled = canThink && isThinkingAvailable
+    val thinkActive = thinkButtonEnabled && thinkingMode
     val thinkContentColor = when {
-        isUnknown || isUnsupported -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+        !isThinkingAvailable -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
         thinkActive -> MaterialTheme.colorScheme.onPrimaryContainer
         else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.86f)
     }
@@ -2790,7 +2758,7 @@ private fun MorphingChatComposer(
                         )
                     }
 
-                    if (canThink && (isToggleable || isModelControlled)) {
+                    if (canThink && isThinkingAvailable) {
                         LiquidGlassButton(
                             onClick = {
                                 if (thinkButtonEnabled) {
@@ -2812,14 +2780,7 @@ private fun MorphingChatComposer(
                         ) {
                             Icon(
                                 Icons.Default.Psychology,
-                                contentDescription = when {
-                                    isModelControlled -> "Model-controlled thinking"
-                                    isUnknown && isCheckingThinking -> "Checking thinking capability"
-                                    isUnknown -> "Thinking capability has not been verified"
-                                    isUnsupported -> "Selected model does not support thinking mode"
-                                    thinkActive -> "Disable thinking mode"
-                                    else -> "Enable thinking mode"
-                                },
+                                contentDescription = if (thinkActive) "Disable thinking mode" else "Enable thinking mode",
                                 tint = thinkContentColor,
                                 modifier = Modifier.size(18.dp)
                             )

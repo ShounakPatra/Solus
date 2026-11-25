@@ -40,8 +40,6 @@ import com.shounak.localmeshai.utils.ModelOutputSanitizer
 import com.shounak.localmeshai.utils.ModelAnswerFormatter
 import com.shounak.localmeshai.utils.ModelAnswerSegment
 import com.shounak.localmeshai.utils.ThinkingTextUtils
-import com.shounak.localmeshai.utils.ThinkingModeConfig
-import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.ui.models.rememberMessagePresentation
 import com.shounak.localmeshai.ui.components.ModelMathCard
 import com.shounak.localmeshai.ui.components.InlineMathListItem
@@ -335,9 +333,6 @@ fun ImageGenScreen(
                     modelSize = selectedVisionModel?.size ?: "",
                     contextWindowTokens = selectedVisionModel?.effectiveContextWindowTokens,
                     supportsAudioInput = selectedVisionModel?.supportsAudioInput == true,
-                    supportsThinkingMode = ThinkingModeConfig.resolveThinkingCapability(selectedVisionModel, context = context.applicationContext).let {
-                        it == ThinkingCapability.Toggleable || it == ThinkingCapability.ModelControlled
-                    },
                     allowUnsafeOverride = selectedUnsafeOverride,
                     bundle = selectedVisionModel?.bundle
                 )
@@ -625,10 +620,7 @@ fun ImageGenScreen(
                                     question = question,
                                     fileUri = selectedFileUri,
                                     fileName = selectedFileName,
-                                    thinkingMode = ThinkingModeConfig.resolveRequestThinking(
-                                        ThinkingModeConfig.resolveThinkingCapability(selectedVisionModel, context = context.applicationContext),
-                                        userPreference = true
-                                    )
+                                    thinkingMode = true
                                 )
                                 question = ""
                                 selectedBitmap = null

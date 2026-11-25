@@ -6,49 +6,57 @@ data class ParsedThinkingContent(
     val isThinkingActive: Boolean
 )
 
+/**
+ * Always-on delimiter parser for thinking/reasoning blocks across all formats.
+ * Supports `<think>...</think>`, `<|channel>thought...<channel|>`, `<|thought|>...<|/thought|>`,
+ * `<thought>...</thought>`, `<reasoning>...</reasoning>`, and bracketed variants.
+ */
 object ThinkingTextUtils {
-    private const val GEMMA_THOUGHT = "<|channel>thought\n"
+    private const val GEMMA_THOUGHT_PREFIX = "<|channel>thought"
+    private const val GEMMA_THOUGHT_LINE = "<|channel>thought\n"
     private const val GEMMA_CHANNEL_END = "<channel|>"
+    private const val PIPE_THOUGHT_OPEN = "<|thought|>"
+    private const val PIPE_THOUGHT_CLOSE = "<|/thought|>"
 
     /** Hold a possible control-tag suffix until the next delta disambiguates it. */
     fun holdIncompleteTag(text: String): String {
-        // The header itself can arrive over several callbacks, including its channel name.
-        if (GEMMA_THOUGHT.startsWith(text.trimStart()) && text.trimStart() != GEMMA_THOUGHT) return ""
         val lastAngle = text.lastIndexOf('<')
         val lastBracket = text.lastIndexOf('[')
         val start = maxOf(lastAngle, lastBracket)
         if (start < 0) return text
         val suffix = text.substring(start).lowercase()
         val tags = listOf(
-            "<think>", "</think>", "<thought>", "</thought>", "<reasoning>", "</reasoning>",
-            "[think]", "[/think]", "[thought]", "[/thought]", "[reasoning]", "[/reasoning]",
-            GEMMA_CHANNEL_END
+            "<think>", "</think>",
+            "<thought>", "</thought>",
+            "<reasoning>", "</reasoning>",
+            "[think]", "[/think]",
+            "[thought]", "[/thought]",
+            "[reasoning]", "[/reasoning]",
+            PIPE_THOUGHT_OPEN, PIPE_THOUGHT_CLOSE,
+            GEMMA_THOUGHT_PREFIX, GEMMA_THOUGHT_LINE, GEMMA_CHANNEL_END
         )
         return if (tags.any { it.startsWith(suffix) && it != suffix }) text.substring(0, start) else text
     }
 
-    private val openThinkTagRegex =
-        Regex("""<\s*(?:think|thought|reasoning)\s*>|\[\s*(?:think|thought|reasoning)\s*\]""", RegexOption.IGNORE_CASE)
-    private val closeThinkTagRegex =
-        Regex("""<\s*/\s*(?:think|thought|reasoning)\s*>|\[\s*/\s*(?:think|thought|reasoning)\s*\]""", RegexOption.IGNORE_CASE)
-    private val combinedTagRegex =
-        Regex("""(<\s*(?:think|thought|reasoning)\s*>|\[\s*(?:think|thought|reasoning)\s*\])|(<\s*/\s*(?:think|thought|reasoning)\s*>|\[\s*/\s*(?:think|thought|reasoning)\s*\])""", RegexOption.IGNORE_CASE)
+    private val openThinkTagRegex = Regex(
+        """<\s*(?:think|thought|reasoning)\s*>|\[\s*(?:think|thought|reasoning)\s*\]|<\|thought\|>|<\|channel>thought(?:\r?\n)?""",
+        RegexOption.IGNORE_CASE
+    )
+    private val closeThinkTagRegex = Regex(
+        """<\s*/\s*(?:think|thought|reasoning)\s*>|\[\s*/\s*(?:think|thought|reasoning)\s*\]|<\|/thought\|>|<channel\|>""",
+        RegexOption.IGNORE_CASE
+    )
+    private val combinedTagRegex = Regex(
+        """(<\s*(?:think|thought|reasoning)\s*>|\[\s*(?:think|thought|reasoning)\s*\]|<\|thought\|>|<\|channel>thought(?:\r?\n)?)|(<\s*/\s*(?:think|thought|reasoning)\s*>|\[\s*/\s*(?:think|thought|reasoning)\s*\]|<\|/thought\|>|<channel\|>)""",
+        RegexOption.IGNORE_CASE
+    )
 
-    fun parse(text: String, allowActiveThinking: Boolean): ParsedThinkingContent {
+    fun parse(
+        text: String,
+        allowActiveThinking: Boolean,
+        recoverUnclosedOnCompletion: Boolean = false
+    ): ParsedThinkingContent {
         if (text.isBlank()) return ParsedThinkingContent(null, "", false)
-
-        // Some exports return Gemma's raw channel envelope instead of SDK named channels.
-        // Restrict this to the response prefix so quoted protocol examples remain ordinary text.
-        val gemma = text.trimStart()
-        if (gemma.startsWith(GEMMA_THOUGHT)) {
-            val end = gemma.indexOf(GEMMA_CHANNEL_END, GEMMA_THOUGHT.length)
-            val reasoning = gemma.substring(GEMMA_THOUGHT.length, if (end < 0) gemma.length else end).trimLineBreaks()
-            return ParsedThinkingContent(
-                reasoning.takeIf { it.isNotBlank() },
-                if (end < 0) "" else gemma.substring(end + GEMMA_CHANNEL_END.length).trimLineBreaks(),
-                allowActiveThinking && end < 0
-            )
-        }
 
         val firstClose = closeThinkTagRegex.find(text)
         val firstOpen = openThinkTagRegex.find(text)
@@ -93,13 +101,34 @@ object ThinkingTextUtils {
 
         val rawThinking = thinkingBuilder.toString().trimLineBreaks()
         val rawAnswer = answerBuilder.toString().trimLineBreaks()
-        val isThinkingActive = allowActiveThinking && (depth > 0)
+        val hasUnclosedOpening = depth > 0
+        val isThinkingActive = allowActiveThinking && hasUnclosedOpening
+
+        // Safety guard: if generation finished with an opened thought tag and no closing tag
+        // (leaving visible answer empty), expose the content gracefully instead of an empty bubble.
+        if (recoverUnclosedOnCompletion && !allowActiveThinking && hasUnclosedOpening && rawAnswer.isBlank() && rawThinking.isNotBlank()) {
+            return ParsedThinkingContent(
+                thinkingText = null,
+                finalResponseText = rawThinking,
+                isThinkingActive = false
+            )
+        }
 
         return ParsedThinkingContent(
             thinkingText = rawThinking.takeIf { it.isNotBlank() },
             finalResponseText = rawAnswer,
             isThinkingActive = isThinkingActive
         )
+    }
+
+    fun hasUnclosedOpeningTag(text: String): Boolean {
+        if (text.isBlank()) return false
+        var depth = 0
+        for (match in combinedTagRegex.findAll(text)) {
+            if (match.groups[1] != null) depth++
+            else if (depth > 0) depth--
+        }
+        return depth > 0
     }
 
     fun normalizeFinalOutput(text: String): String {
@@ -118,17 +147,17 @@ object ThinkingTextUtils {
                     append("\n\n")
                     append(finalText)
                 }
-            }.trimLineBreaks()
+            }
         }
     }
 
     /**
      * Returns the final answer outside of thinking tags.
-     * When allowReasoningFallback is false (e.g. Think off), reasoning is never exposed as a substitute final answer.
+     * When allowReasoningFallback is true (e.g. unclosed block recovery), exposes the parsed content.
      */
     fun finalResponseOrReasoning(text: String, allowReasoningFallback: Boolean = false): String {
         val cleaned = ModelOutputSanitizer.clean(text)
-        val parsed = parse(cleaned, allowActiveThinking = false)
+        val parsed = parse(cleaned, allowActiveThinking = false, recoverUnclosedOnCompletion = allowReasoningFallback)
         return if (parsed.finalResponseText.isNotBlank()) {
             parsed.finalResponseText
         } else if (allowReasoningFallback) {
@@ -139,9 +168,7 @@ object ThinkingTextUtils {
     }
 
     /**
-     * Extracts ONLY the final answer outside of thinking tags.
-     * When thinking mode is disabled, reasoning tokens must NEVER be returned as the final answer.
-     * Strips explicit thinking tags and handles untagged reasoning monologues without deleting valid answers.
+     * Strips explicit thinking tags and recovers non-monologue final answers when possible.
      */
     fun extractFinalAnswerOnly(text: String): String {
         val cleaned = ModelOutputSanitizer.clean(text)
@@ -221,15 +248,4 @@ object ThinkingTextUtils {
 
     private fun String.trimLineBreaks(): String =
         trim('\n', '\r')
-
-    private fun List<String>.joinThinkingSegments(): String =
-        filter { it.isNotBlank() }
-            .joinToString("\n\n") { it.trimLineBreaks() }
-            .trimLineBreaks()
-
-    private fun mergeVisibleText(first: String, second: String): String =
-        listOf(first, second)
-            .filter { it.isNotBlank() }
-            .joinToString("\n")
-            .trimLineBreaks()
 }

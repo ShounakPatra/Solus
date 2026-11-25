@@ -29,7 +29,7 @@ class ModelVerificationCacheTest {
 
     @Test fun bundleCacheRequiresExactRevisionAndDetectorVersion() {
         val directory = folder.newFolder()
-        val bundle = ModelBundle("id", "model", emptyList(), capabilities = ModelCapabilities(thinking = ThinkingCapability.ModelControlled))
+        val bundle = ModelBundle("id", "model", emptyList(), capabilities = ModelCapabilities(chatTemplate = "{% if enable_thinking %}<think>{% endif %}"))
         ModelVerificationCache(directory).recordBundle("7:artifact-a", bundle)
         val restored = ModelVerificationCache(directory)
         assertEquals(bundle, restored.readBundle("7:artifact-a"))

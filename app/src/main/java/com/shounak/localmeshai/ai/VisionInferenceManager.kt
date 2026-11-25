@@ -28,8 +28,6 @@ import com.shounak.localmeshai.models.ModelBundle
 import com.shounak.localmeshai.models.ModelCapabilities
 import com.shounak.localmeshai.models.ModelCapabilitySnapshot
 import com.shounak.localmeshai.models.ModelFormat
-import com.shounak.localmeshai.models.ThinkingCapability
-import com.shounak.localmeshai.models.ThinkingControlStrategy
 import com.shounak.localmeshai.utils.AppCacheCleaner
 import com.shounak.localmeshai.utils.AppSettings
 import com.shounak.localmeshai.utils.AudioUtils
@@ -37,7 +35,6 @@ import com.shounak.localmeshai.utils.DeviceUtils
 import com.shounak.localmeshai.utils.InferenceBackend
 import com.shounak.localmeshai.utils.InferenceTiming
 import com.shounak.localmeshai.utils.InitCrashGuard
-import com.shounak.localmeshai.utils.LegacyThinkingProfiles
 import com.shounak.localmeshai.utils.LiteRtRuntimeCache
 import com.shounak.localmeshai.utils.ModelArtifactStorage
 import com.shounak.localmeshai.utils.ModelDownloader
@@ -175,8 +172,10 @@ class VisionInferenceManager(context: Context) {
     private val runtimeContextCapacity = RuntimeContextCapacity()
     val runtimeCapabilities: ModelCapabilitySnapshot?
         get() = if (!isReady) null else configuredCapabilities?.let { snapshot ->
+            val resolvedTemplate = snapshot.capabilities.chatTemplate
+                ?: llamaCppEngine?.getMetadata()?.chatTemplate?.takeIf { it.isNotBlank() }
             snapshot.copy(initializedContextTokens = runtimeContextCapacity.tokens, capabilities = snapshot.capabilities.copy(
-                thinking = resolvedThinkingCapability,
+                chatTemplate = resolvedTemplate,
                 supportsVision = snapshot.capabilities.supportsVision && (runtime != RuntimeKind.LlamaCpp || llamaCppEngine?.getMetadata()?.supportsVision == true),
                 supportsAudio = modelSupportsAudioInput
             ))
@@ -207,12 +206,9 @@ class VisionInferenceManager(context: Context) {
     @Volatile private var isBeingClosed = false
     @Volatile private var modelSupportsAudioInput = false
     @Volatile private var configuredCapabilities: ModelCapabilitySnapshot? = null
-    @Volatile private var resolvedThinkingCapability: ThinkingCapability = ThinkingCapability.Unknown
-    @Volatile private var isDefaultThinkingModel = false
-    @Volatile private var supportsThinkingMode = false
     /**
      * The `enable_thinking` value the live LiteRT-LM conversation was created with, or null when it
-     * carries no thinking context. Tool retries reuse [conversationBaseConfig], so they keep this value.
+     * carries no thinking context or fallback omitted it.
      */
     @Volatile private var liteRtConversationThinking: Boolean? = null
     /** The user's Think preference when the engine loads, so the first conversation already matches it. */
@@ -230,13 +226,6 @@ class VisionInferenceManager(context: Context) {
         private const val MEDIA_PIPE_MAX_TOP_K = 200
         private const val DEFAULT_VISION_TEMPERATURE = 0.7f
         private const val RETRY_VISION_TEMPERATURE = 0.2f
-
-        private val THINK_BLOCK_REGEX =
-            Regex("""<\s*(?:think|thought|reasoning)\s*>[\s\S]*?<\s*/\s*(?:think|thought|reasoning)\s*>""", RegexOption.IGNORE_CASE)
-        private val THINK_UNCLOSED_REGEX =
-            Regex("""<\s*(?:think|thought|reasoning)\s*>[\s\S]*$""", RegexOption.IGNORE_CASE)
-        private val THINK_PREFILLED_CLOSE_REGEX =
-            Regex("""^[\s\S]*?<\s*/\s*(?:think|thought|reasoning)\s*>""", RegexOption.IGNORE_CASE)
     }
 
     suspend fun initialize(
@@ -245,7 +234,6 @@ class VisionInferenceManager(context: Context) {
         modelName: String = "",
         modelSize: String = "",
         supportsAudioInput: Boolean = false,
-        supportsThinkingMode: Boolean = false,
         allowUnsafeOverride: Boolean = false,
         contextWindowTokens: Int? = null,
         bundle: ModelBundle? = null,
@@ -275,28 +263,13 @@ class VisionInferenceManager(context: Context) {
             AppCacheCleaner.clearAppCache(context)
             this.initialThinkingPreference = initialThinkingPreference
             this.warmStartLoad = warmStart
-            this.supportsThinkingMode = supportsThinkingMode
-            val resolvedCap = ThinkingModeConfig.resolveThinkingCapability(
-                bundle = bundle,
-                localPath = modelPath,
-                supportsThinkingFlag = supportsThinkingMode,
-                id = effectiveId,
-                name = effectiveName,
-                backend = "",
-                fileName = file?.name ?: "",
-                context = context
-            )
-            resolvedThinkingCapability = resolvedCap
             configuredCapabilities = ModelCapabilitySnapshot(
                 effectiveId,
                 ModelCapabilitySnapshot.revision(bundle, modelPath),
-                (bundle?.capabilities ?: file?.takeIf {
+                bundle?.capabilities ?: file?.takeIf {
                     NonGgufBundleInspector.detectFormat(it) in setOf(ModelFormat.LiteRtLm, ModelFormat.MediaPipeTask)
-                }?.let { NonGgufBundleInspector.inspectFile(it).capabilities } ?: ModelCapabilities(supportsVision = true, supportsAudio = supportsAudioInput))
-                    .copy(thinking = resolvedCap)
+                }?.let { NonGgufBundleInspector.inspectFile(it).capabilities } ?: ModelCapabilities(supportsVision = true, supportsAudio = supportsAudioInput)
             )
-
-            isDefaultThinkingModel = (resolvedCap == ThinkingCapability.ModelControlled || resolvedCap == ThinkingCapability.Toggleable)
         val audioInputAvailable = bundle?.capabilities?.supportsAudio ?: supportsAudioInput
         modelSupportsAudioInput = audioInputAvailable
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -481,7 +454,7 @@ class VisionInferenceManager(context: Context) {
                 // AUTO picks GPU only from a Tune speed receipt that measured GPU faster and has no GPU veto.
                 TtftLog.d("vision backend pref=$pref selected=$inferenceBackend loaded=$loadedBackend " +
                     "blockedAutoLoad=$blockedAutoLoad threads=$runtimeThreads warmStart=$warmStartLoad " +
-                    "initialThinkingPreference=$initialThinkingPreference capability=$resolvedThinkingCapability")
+                    "initialThinkingPreference=$initialThinkingPreference")
             }
             detectedFormat?.isPortable == true -> {
                 val primary = requireNotNull(effectiveFile) { "Portable media requires an app-managed model bundle" }
@@ -498,9 +471,6 @@ class VisionInferenceManager(context: Context) {
                 InitCrashGuard.markInitSucceeded(context,effectiveId)
                 configuredCapabilities = configuredCapabilities?.copy(capabilities = mediaCaps)
                 modelSupportsAudioInput = mediaCaps.supportsAudio
-                resolvedThinkingCapability = mediaCaps.thinking
-                this.supportsThinkingMode = mediaCaps.thinking in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled)
-                isDefaultThinkingModel = this.supportsThinkingMode
                 runtime = RuntimeKind.PortableMedia
                 activeBackendDisplayName = "${detectedFormat.backendLabel} ${mediaCaps.task.id} CPU"
             }
@@ -549,21 +519,9 @@ class VisionInferenceManager(context: Context) {
         this@VisionInferenceManager.documentSearchDocumentIds = documentSearchDocumentIds.toSet()
         stopRequested = false
         lastLiteRtSnapshot = null
-        // The controller, adapter and finalizer must keep reasoning whenever the runtime is asked to
-        // think. Using the raw preference here while the LiteRT request resolves it through the
-        // capability let a ModelControlled turn think while its "thought" channel was discarded.
-        val showReasoning = ThinkingModeConfig.displaysReasoning(resolvedThinkingCapability, thinkingMode)
-        val repeatedPrefix = memoryContext.takeIf { it.isNotBlank() }?.let { "${it.trim()}\n\n" }
-        val omitRepeatedPrefix = runtime == RuntimeKind.LiteRtLm && completedLiteRtTurns > 0 &&
-            repeatedPrefix != null && seededMemoryPrefix == repeatedPrefix && question.startsWith(repeatedPrefix)
-        val prompt = (if (omitRepeatedPrefix) question.removePrefix(repeatedPrefix) else question).trim()
-        if (runtime == RuntimeKind.LiteRtLm && repeatedPrefix != null) seededMemoryPrefix = repeatedPrefix
-        if (omitRepeatedPrefix) timing?.recordPromptBlocks(systemChars = 0, memoryChars = 0)
-        timing?.recordRuntime(++requestsSinceLoad, runtimeThreads, activeBackendDisplayName, prompt.length, warmupMs)
-        // Measured once when the conversation was created rather than rebuilding every tool per request.
-        timing?.recordPromptBlocks(toolChars = if (conversationHasTools) conversationToolChars else 0)
+        val prompt = question
         val responseController = InferenceResponseController(
-            thinkingMode = showReasoning,
+            thinkingMode = true,
             rawUserText = prompt,
             requestId = requestId,
             initialAttemptId = 1
@@ -619,7 +577,7 @@ class VisionInferenceManager(context: Context) {
                     prompt = prompt,
                     audioFile = audioFile,
                     audioBytes = audioBytes,
-                    thinkingMode = showReasoning,
+                    thinkingMode = thinkingMode,
                     preparedImageFile = preparedImageFile,
                     requestId = requestId,
                     timing = timing,
@@ -644,11 +602,7 @@ class VisionInferenceManager(context: Context) {
                         onUpdate = effectiveOnUpdate
                     )
                     val cleanedFirst = ModelOutputSanitizer.clean(firstOutput)
-                    val visibleFirst = if (!showReasoning) {
-                        ThinkingTextUtils.extractFinalAnswerOnly(cleanedFirst)
-                    } else {
-                        ThinkingTextUtils.finalResponseOrReasoning(cleanedFirst, allowReasoningFallback = false)
-                    }
+                    val visibleFirst = ThinkingTextUtils.finalResponseOrReasoning(cleanedFirst, allowReasoningFallback = true)
                     if (!stopRequested && !isBeingClosed && visibleFirst.isBlank() && responseController.getFinalAnswer().isBlank()) {
                         Log.w(TAG, "MediaPipeVision returned empty response on attempt 1; retrying once")
                         currentAttemptId = 2
@@ -697,8 +651,8 @@ class VisionInferenceManager(context: Context) {
                 }
                 RuntimeKind.None -> throw IllegalStateException("Choose and initialise a multimodal model first.")
             } }
-            responseController.finish()
-            val rawReasoning = if (!showReasoning) "" else if (runtime == RuntimeKind.LiteRtLm) {
+            responseController.finish(recoverUnclosedOnCompletion = !stopRequested)
+            val rawReasoning = if (runtime == RuntimeKind.LiteRtLm) {
                 lastLiteRtSnapshot?.reasoningText.orEmpty().ifBlank { responseController.getReasoningText() }
             } else {
                 responseController.getReasoningText()
@@ -709,8 +663,7 @@ class VisionInferenceManager(context: Context) {
                 controllerAnswer.isNotBlank() -> controllerAnswer
                 rawResponse.isNotBlank() -> {
                     val sanitized = ModelOutputSanitizer.clean(rawResponse)
-                    if (!showReasoning) ThinkingTextUtils.extractFinalAnswerOnly(sanitized)
-                    else ThinkingTextUtils.finalResponseOrReasoning(sanitized, allowReasoningFallback = false)
+                    ThinkingTextUtils.finalResponseOrReasoning(sanitized, allowReasoningFallback = false)
                 }
                 else -> ""
             }
@@ -722,7 +675,7 @@ class VisionInferenceManager(context: Context) {
                 isStopped = stopRequested,
                 acceptedAnswerFallback = responseController.acceptedAnswerText(),
                 acceptedReasoningFallback = responseController.acceptedReasoningText(),
-                thinkingMode = showReasoning
+                thinkingMode = thinkingMode
             )
             val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
             publisher.finishExplicit(finalFormatted)
@@ -737,7 +690,7 @@ class VisionInferenceManager(context: Context) {
             )
             finalized.toExecutionResult(metrics)
         } catch (exception: kotlinx.coroutines.CancellationException) {
-            responseController.finish()
+            responseController.finish(recoverUnclosedOnCompletion = false)
             val acceptedAnswer = responseController.getFinalAnswer()
             val rawReasoning = responseController.getReasoningText()
             timing?.endGeneration()
@@ -749,7 +702,7 @@ class VisionInferenceManager(context: Context) {
                 isStopped = true,
                 acceptedAnswerFallback = responseController.acceptedAnswerText(),
                 acceptedReasoningFallback = responseController.acceptedReasoningText(),
-                thinkingMode = showReasoning
+                thinkingMode = thinkingMode
             )
             val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
             publisher.finishExplicit(finalFormatted)
@@ -763,7 +716,7 @@ class VisionInferenceManager(context: Context) {
             )
             finalized.toExecutionResult(metrics)
         } catch (t: Throwable) {
-            responseController.finish()
+            responseController.finish(recoverUnclosedOnCompletion = false)
             val acceptedAnswer = responseController.getFinalAnswer()
             val rawReasoning = responseController.getReasoningText()
             timing?.endGeneration()
@@ -776,7 +729,7 @@ class VisionInferenceManager(context: Context) {
                 sdkError = if (stopRequested && t !is PromptTimeoutException) null else t,
                 acceptedAnswerFallback = responseController.acceptedAnswerText(),
                 acceptedReasoningFallback = responseController.acceptedReasoningText(),
-                thinkingMode = showReasoning
+                thinkingMode = thinkingMode
             )
             val finalFormatted = responseController.formatFinal(finalized.answerText, finalized.reasoningText)
             publisher.finishExplicit(finalFormatted)
@@ -910,9 +863,6 @@ class VisionInferenceManager(context: Context) {
         runtime = RuntimeKind.None
         activeBackendDisplayName = ""
         configuredCapabilities = null
-        resolvedThinkingCapability = ThinkingCapability.Unknown
-        isDefaultThinkingModel = false
-        supportsThinkingMode = false
         liteRtConversationThinking = null
         isBeingClosed = false
         AppCacheCleaner.clearAppCache(context)
@@ -951,10 +901,7 @@ class VisionInferenceManager(context: Context) {
         runCatching { previousConversation?.close() }.onFailure { t ->
             Log.w(TAG, "LiteRT-LM vision conversation close during reset failed", t)
         }
-        val extraCtx = ThinkingModeConfig.liteRtExtraContext(
-            capability = resolvedThinkingCapability,
-            userPreference = thinkingMode
-        )
+        val extraCtx = ThinkingModeConfig.liteRtExtraContext(thinkingMode)
 
         val configuredMaxTokens = com.shounak.localmeshai.utils.AppSettings.getInstance(context).settings.value.defaultMaxLength
             .takeIf { it > 0 }
@@ -965,7 +912,7 @@ class VisionInferenceManager(context: Context) {
                 maxOutputToken = configuredMaxTokens
             )
         } else null
-        liteRtConversationThinking = extraCtx[ThinkingModeConfig.ENABLE_THINKING_KEY] as? Boolean
+        liteRtConversationThinking = thinkingMode
         val resetStart = TtftLog.now()
         liteRtConversation = createLiteRtConversation(config)
         TtftLog.d("vision conversation.reset ms=${TtftLog.elapsedMs(resetStart)} history=${initialMessages?.size ?: 0} " +
@@ -986,13 +933,10 @@ class VisionInferenceManager(context: Context) {
         )
 
     /**
-     * True when the live LiteRT-LM conversation was created with a different thinking setting than
-     * [requested] (already resolved through [ThinkingModeConfig.resolveRequestThinking]). Mirrors
-     * ChatInferenceManager.needsResetForThinkingMode: the conversation-level `enable_thinking` decides
-     * the outcome, so a toggle or the first Think-on turn after load must rebuild the conversation.
+     * True when the live LiteRT-LM conversation was created with a different thinking setting than [requested].
      */
     fun needsResetForThinkingMode(requested: Boolean): Boolean =
-        runtime == RuntimeKind.LiteRtLm && isDefaultThinkingModel && liteRtConversationThinking != requested
+        runtime == RuntimeKind.LiteRtLm && liteRtConversationThinking != requested
 
     /**
      * [prefillPreface] prefills the preface (system turn and tool declarations) while the conversation is
@@ -1001,8 +945,7 @@ class VisionInferenceManager(context: Context) {
      */
     private fun createLiteRtConversation(base: ConversationConfig?, prefillPreface: Boolean = false): Conversation {
         val createStart = TtftLog.now()
-        val configBase = LiteRtThinkingConfig.apply(base, liteRtConversationThinking,
-            configuredCapabilities?.capabilities?.thinkingControl == ThinkingControlStrategy.QwenSoftSwitch)
+        val configBase = LiteRtThinkingConfig.apply(base, liteRtConversationThinking)
         seededMemoryPrefix = null
         val engine = checkNotNull(liteRtEngine)
         val settings = ConversationToolSettings.from(AppSettings.getInstance(context).settings.value)
@@ -1038,7 +981,7 @@ class VisionInferenceManager(context: Context) {
                 Log.w(TAG, "Vision tools unavailable; using ordinary conversation", failure)
             }
         }
-        return engine.createConversation(configBase).also {
+        return createLiteRtConversationSafely(engine, configBase).also {
             TtftLog.d("vision conversation.create ms=${TtftLog.elapsedMs(createStart)} tools=0 " +
                 "history=${base?.initialMessages?.size ?: 0} thinking=$liteRtConversationThinking prefillPreface=false")
         }
@@ -1046,21 +989,29 @@ class VisionInferenceManager(context: Context) {
 
     /**
      * Falls back to an ordinary (lazily prefilled) conversation if the runtime rejects preface prefill,
-     * so the optimisation can never cost the tools or the load. The prefilled preface is rendered before
-     * any message carries a thinking config, so the conversation-level one is set to the same value the
-     * requests use ([liteRtConversationThinking]).
+     * so the optimisation can never cost the tools or the load. Also retries without thinking overrides if rejected.
      */
     private fun createConversationWithOptionalPrefill(engine: Engine, config: ConversationConfig, prefill: Boolean): Conversation {
-        if (!prefill) return engine.createConversation(config)
-        val qwenSoftSwitch = configuredCapabilities?.capabilities?.thinkingControl == ThinkingControlStrategy.QwenSoftSwitch
+        if (!prefill) return createLiteRtConversationSafely(engine, config)
         val thinkingConfig = config.thinkingConfig
-            ?: liteRtConversationThinking?.takeIf { !qwenSoftSwitch }?.let { ThinkingConfig(enableThinking = it) }
+            ?: liteRtConversationThinking?.let { ThinkingConfig(enableThinking = it) }
         return try {
-            engine.createConversation(config.copy(prefillPrefaceOnInit = true, thinkingConfig = thinkingConfig))
+            createLiteRtConversationSafely(engine, config.copy(prefillPrefaceOnInit = true, thinkingConfig = thinkingConfig))
         } catch (failure: Exception) {
             if (failure is CancellationException || stopRequested || isBeingClosed) throw failure
             Log.w(TAG, "LiteRT-LM preface prefill on create failed; using a lazily prefilled conversation", failure)
+            createLiteRtConversationSafely(engine, config)
+        }
+    }
+
+    private fun createLiteRtConversationSafely(engine: Engine, config: ConversationConfig): Conversation {
+        return try {
             engine.createConversation(config)
+        } catch (failure: Exception) {
+            if (failure is CancellationException || stopRequested || isBeingClosed) throw failure
+            if (config.thinkingConfig == null && config.extraContext.isEmpty()) throw failure
+            Log.w(TAG, "LiteRT-LM vision conversation rejected thinking config/extraContext; retrying without thinking overrides", failure)
+            engine.createConversation(config.copy(thinkingConfig = null, extraContext = emptyMap()))
         }
     }
 
@@ -1203,18 +1154,11 @@ class VisionInferenceManager(context: Context) {
                 warmupMs = RuntimeWarmup.liteRt(readyEngine) { liteRtConversation = it }.coerceAtLeast(1)
                 TtftLog.d("vision warmup ms=$warmupMs")
             }
-            // Build the first conversation with the same thinking context resetConversation would use for the
-            // user's current Think preference. It used to be created with enable_thinking=false for every
-            // thinking model, so needsResetForThinkingMode rebuilt it on the first turn whenever Think was on
-            // (and on every first turn for ModelControlled models, which always request thinking).
-            val initialExtraContext = ThinkingModeConfig.liteRtExtraContext(
-                capability = resolvedThinkingCapability,
-                userPreference = initialThinkingPreference
-            )
+            val initialExtraContext = ThinkingModeConfig.liteRtExtraContext(initialThinkingPreference)
             val initialConfig = if (initialExtraContext.isNotEmpty()) ConversationConfig(extraContext = initialExtraContext) else null
             toolsDisabledForLoad = false
             retryToolsNextTurn = false
-            liteRtConversationThinking = initialExtraContext[ThinkingModeConfig.ENABLE_THINKING_KEY] as? Boolean
+            liteRtConversationThinking = initialThinkingPreference
             liteRtConversation = createLiteRtConversation(initialConfig, prefillPreface = warmStart)
             runtime = RuntimeKind.LiteRtLm
             if (stopRequested || isBeingClosed) throw CancellationException("Model initialization cancelled")
@@ -1363,20 +1307,11 @@ class VisionInferenceManager(context: Context) {
         val imageFile = reusableImageFile ?: bitmap?.writeToCacheFile()
         val effectiveAudioFile = audioFile
         var firstChunkRecorded = false
-        val requestedThinking = ThinkingModeConfig.resolveRequestThinking(
-            capability = resolvedThinkingCapability,
-            userPreference = thinkingMode
-        )
-        val requestContext = ThinkingModeConfig.liteRtExtraContext(
-            capability = resolvedThinkingCapability,
-            userPreference = thinkingMode
-        )
+        val requestContext = ThinkingModeConfig.liteRtExtraContext(thinkingMode)
         Log.i(
             TAG,
             "LiteRT-LM vision request mode=${if (thinkingMode) "thinking" else "direct"} " +
-                "requestedThinking=$requestedThinking capability=$resolvedThinkingCapability " +
-                "conversationThinking=$liteRtConversationThinking " +
-                "defaultThinking=$isDefaultThinkingModel contextKeys=${requestContext.keys}"
+                "conversationThinking=$liteRtConversationThinking contextKeys=${requestContext.keys}"
         )
         try {
             val audioContent: Content? = when {
@@ -1386,8 +1321,7 @@ class VisionInferenceManager(context: Context) {
             }
             val imageContent: Content? = imageFile?.let { Content.ImageFile(it.absolutePath) }
             val effectivePromptText = if (prompt.isNotBlank()) prompt else if (imageContent != null) DEFAULT_IMAGE_PROMPT else ""
-            val controlledPrompt = LegacyThinkingProfiles.applyPrompt(effectivePromptText, configuredCapabilities?.capabilities?.thinkingControl ?: ThinkingControlStrategy.None, thinkingMode)
-            val textContent = if (controlledPrompt.isNotBlank()) Content.Text(controlledPrompt) else null
+            val textContent = if (effectivePromptText.isNotBlank()) Content.Text(effectivePromptText) else null
             val message = when {
                 imageContent != null && audioContent != null && textContent != null -> Message.of(imageContent, audioContent, textContent)
                 imageContent != null && audioContent != null -> Message.of(imageContent, audioContent)
@@ -1405,7 +1339,6 @@ class VisionInferenceManager(context: Context) {
                 attemptId = 1,
                 thinkingMode = thinkingMode,
                 reasoningChannelKeys = configuredCapabilities?.capabilities?.reasoningChannels.orEmpty(),
-                startsInReasoning = configuredCapabilities?.capabilities?.reasoningPrefill == true,
                 onFirstToken = {
                     timing?.recordFirstToken()
                     sendStartNanos.get().takeIf { it != 0L }?.let { start ->
@@ -1447,17 +1380,23 @@ class VisionInferenceManager(context: Context) {
                 // KV tokens already in the conversation: 0 on a fresh one, the preface size if it was prefilled
                 // during load, the whole history on later turns. kvAfter - kvBefore - callbacks ~= prefilled tokens.
                 val kvBefore = runCatching { conversation.getTokenCount() }.getOrDefault(-1)
-                TtftLog.d("vision send req=$requestId kvTokensBefore=$kvBefore promptChars=${controlledPrompt.length} " +
+                TtftLog.d("vision send req=$requestId kvTokensBefore=$kvBefore promptChars=${effectivePromptText.length} " +
                     "image=${imageContent != null} audio=${audioContent != null} tools=$conversationHasTools " +
-                    "toolChars=$conversationToolChars thinking=$requestedThinking conversationThinking=$liteRtConversationThinking " +
+                    "toolChars=$conversationToolChars thinking=$thinkingMode conversationThinking=$liteRtConversationThinking " +
                     "turn=${completedLiteRtTurns + 1} backend=${activeBackendDisplayName.replace(' ', '_')} threads=$runtimeThreads")
                 sendStartNanos.set(TtftLog.now())
-                conversation.sendMessageAsync(
-                    message,
-                    adapter,
-                    requestContext,
-                    thinkingConfig = if (configuredCapabilities?.capabilities?.thinkingControl == ThinkingControlStrategy.QwenSoftSwitch) null else ThinkingConfig(enableThinking = requestedThinking)
-                )
+                try {
+                    conversation.sendMessageAsync(
+                        message,
+                        adapter,
+                        requestContext,
+                        thinkingConfig = ThinkingConfig(enableThinking = thinkingMode)
+                    )
+                } catch (failure: Exception) {
+                    if (failure is CancellationException || stopRequested || isBeingClosed) throw failure
+                    Log.w(TAG, "LiteRT-LM vision sendMessageAsync rejected thinking config/extraContext; retrying without thinking overrides", failure)
+                    conversation.sendMessageAsync(message, adapter)
+                }
                 val finalSnapshot = adapter.awaitDone()
                 lastLiteRtSnapshot = finalSnapshot
                 val kvAfter = runCatching { conversation.getTokenCount() }.getOrDefault(-1)
@@ -2044,25 +1983,6 @@ class VisionInferenceManager(context: Context) {
             .sortedByDescending { it.lastModified() }
             .drop(8)
             .forEach { runCatching { it.delete() } }
-    }
-
-    private fun finalizeModelOutput(
-        text: String,
-        thinkingMode: Boolean,
-        shouldStripThinking: Boolean
-    ): String {
-        return if (shouldStripThinking || !thinkingMode) {
-            ThinkingTextUtils.extractFinalAnswerOnly(text)
-        } else {
-            ThinkingTextUtils.normalizeFinalOutput(text)
-        }
-    }
-
-    private fun stripThinkingTags(text: String): String {
-        var result = THINK_BLOCK_REGEX.replace(text, "")
-        result = THINK_UNCLOSED_REGEX.replace(result, "")
-        result = THINK_PREFILLED_CLOSE_REGEX.replace(result, "")
-        return result.trimStart()
     }
 
     private enum class RuntimeKind {

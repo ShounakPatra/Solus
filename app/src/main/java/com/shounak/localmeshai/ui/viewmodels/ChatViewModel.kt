@@ -16,14 +16,12 @@ import com.shounak.localmeshai.utils.ModelRuntimeCoordinator
 import com.shounak.localmeshai.utils.RegistrationToken
 import com.shounak.localmeshai.utils.ModelRuntimeOwner
 import com.shounak.localmeshai.utils.ThinkingTextUtils
-import com.shounak.localmeshai.utils.ThinkingModeConfig
 import com.shounak.localmeshai.utils.AppCacheCleaner
 import com.shounak.localmeshai.ai.ModelLoadController
 import com.shounak.localmeshai.ai.ModelLoadIdentity
 import com.shounak.localmeshai.ai.ModelLoadState
 import com.shounak.localmeshai.ai.ModelLoadStage
 import com.shounak.localmeshai.models.ModelBundle
-import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.ai.ModelActualConfiguration
 import com.shounak.localmeshai.ai.GgufExecutionProfile
 import com.shounak.localmeshai.models.state.InferenceSessionState
@@ -256,13 +254,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var currentModelName: String = ""
     private var currentModelSize: String = ""
     private var currentContextWindowTokens: Int? = null
-    private var currentSupportsThinkingMode: Boolean = false
     private var currentAllowUnsafeOverride: Boolean = false
     private var lastLoadedBackendPreference: String? = null
     private var currentRequestedIdentity: ModelLoadIdentity? = null
     private var currentLoadedIdentity: ModelLoadIdentity? = null
-    @Volatile var currentResolvedThinkingCapability: ThinkingCapability = ThinkingCapability.Unknown
-        private set
     private val _runtimeCapabilities = MutableStateFlow<com.shounak.localmeshai.models.ModelCapabilitySnapshot?>(null)
     val runtimeCapabilities = _runtimeCapabilities.asStateFlow()
     @Volatile private var currentModelEpoch: Long = 0L
@@ -459,7 +454,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     releaseModel(clearCoordinator = true, clearSelection = false)
                     if (path != null) initModel(path, modelId = currentModelId, modelName = currentModelName,
                         modelSize = currentModelSize, contextWindowTokens = defaultProfileContext,
-                        supportsThinkingMode = currentSupportsThinkingMode, allowUnsafeOverride = currentAllowUnsafeOverride, forceReload = true, bundle = currentBundle)
+                        allowUnsafeOverride = currentAllowUnsafeOverride, forceReload = true, bundle = currentBundle)
                 }
             }
         }
@@ -626,7 +621,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             modelName = currentModelName,
                             modelSize = currentModelSize,
                             contextWindowTokens = defaultProfileContext,
-                            supportsThinkingMode = currentSupportsThinkingMode,
                             allowUnsafeOverride = currentAllowUnsafeOverride,
                             forceReload = true,
                             bundle = currentBundle
@@ -655,7 +649,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 modelName = currentModelName,
                                 modelSize = currentModelSize,
                                 contextWindowTokens = defaultProfileContext,
-                                supportsThinkingMode = currentSupportsThinkingMode,
                                 allowUnsafeOverride = currentAllowUnsafeOverride,
                                 forceReload = true,
                                 bundle = currentBundle
@@ -883,7 +876,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         modelName: String = "",
         modelSize: String = "",
         contextWindowTokens: Int? = null,
-        supportsThinkingMode: Boolean = false,
         allowUnsafeOverride: Boolean = false,
         forceReload: Boolean = false,
         bundle: ModelBundle? = null,
@@ -932,7 +924,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             val activeLoadState = modelLoadController.loadState.value
             if (activeLoadState is ModelLoadState.Loading && (modelLoadController.currentIdentity == identity || currentRequestedIdentity == identity) && initJob?.isActive == true && !_isStopping.value) {
-                currentSupportsThinkingMode = supportsThinkingMode
                 currentAllowUnsafeOverride = allowUnsafeOverride
                 currentContextWindowTokens = configuredProfileContext
                 return
@@ -946,7 +937,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentModelName = modelName
         currentModelSize = modelSize
         currentContextWindowTokens = configuredProfileContext
-        currentSupportsThinkingMode = supportsThinkingMode
         currentAllowUnsafeOverride = allowUnsafeOverride
         currentRequestedIdentity = identity
 
@@ -1001,7 +991,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 modelId = modelId,
                                 modelName = modelName,
                                 modelSize = modelSize,
-                                supportsThinkingMode = supportsThinkingMode,
+                                initialThinkingPreference = _thinkingMode.value,
                                 allowUnsafeOverride = allowUnsafeOverride,
                                 contextWindowTokens = configuredProfileContext,
                                 operationControlId = operationControlId,
@@ -1040,7 +1030,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     lastLoadedBackendPreference = null
                     currentLoadedIdentity = null
                     currentRequestedIdentity = null
-                    currentResolvedThinkingCapability = ThinkingCapability.Unknown
                     _activeBackend.value = null
                     _runtimeCapabilities.value = null
                     _isModelReady.value = false
@@ -1057,8 +1046,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun publishRuntimeCapabilities() {
         val initialized = inferenceManager.runtimeCapabilities
         _runtimeCapabilities.value = initialized
-        currentResolvedThinkingCapability = initialized?.capabilities?.thinking ?: ThinkingCapability.Unknown
-        currentSupportsThinkingMode = currentResolvedThinkingCapability in setOf(ThinkingCapability.Toggleable, ThinkingCapability.ModelControlled)
     }
 
     suspend fun ensureModelReady(
@@ -1115,7 +1102,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             modelId = currentModelId,
                             modelName = currentModelName,
                             modelSize = currentModelSize,
-                            supportsThinkingMode = currentSupportsThinkingMode,
+                            initialThinkingPreference = _thinkingMode.value,
                             allowUnsafeOverride = currentAllowUnsafeOverride,
                             contextWindowTokens = currentContextWindowTokens,
                             operationControlId = operationControlId,
@@ -1276,9 +1263,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val preparation = inputUri?.let { documentPreparation.take(it, inputName) }
 
         timing.recordAcknowledged()
-        val requestThinkingPreference = _thinkingMode.value
-        val capability = currentResolvedThinkingCapability.takeIf { it != ThinkingCapability.Unknown } ?: currentBundle?.capabilities?.thinking ?: ThinkingCapability.Unknown
-        var thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(capability, requestThinkingPreference)
+        val thinkingModeForRequest = _thinkingMode.value
         activeRequestId = requestId
         val reqModelEpoch = currentModelEpoch
         val assistantMessageId = messages[assistantIndex].id
@@ -1391,8 +1376,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                thinkingModeForRequest = ThinkingModeConfig.resolveRequestThinking(currentResolvedThinkingCapability, requestThinkingPreference)
-
                 var effectivePromptText = if (attachedContext.isNotBlank()) {
                     "$userText\n\n--- ATTACHED DOCUMENT: $resolvedDocName ---\n$attachedContext\n--- END ATTACHED DOCUMENT ---"
                 } else userText
@@ -1504,7 +1487,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         lockedMessages = rebuilt.second
                     }
                     if (resetForRequest) {
-                        inferenceManager.resetConversation(noThinking = !thinkingModeForRequest)
+                        inferenceManager.resetConversation(thinkingMode = thinkingModeForRequest)
                         resetRuntimeConversationBeforeNextSend = false
                     }
                     inferenceManager.generateResponseStreaming(
@@ -2160,14 +2143,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         history: List<ChatMessage> = messages.toList()
     ): List<Pair<String, String>> {
         val turns = mutableListOf<Pair<String, String>>()
-        if (!thinkingMode) {
-            val systemInstruction = if (memoryContext.isNotBlank()) {
-                "$memoryContext\n\nAnswer concisely. Omit reasoning and <think> tags."
-            } else {
-                "Answer concisely. Omit reasoning and <think> tags."
-            }
-            turns.add("system" to systemInstruction)
-        } else if (memoryContext.isNotBlank()) {
+        if (memoryContext.isNotBlank()) {
             turns.add("system" to memoryContext)
         }
         val priorHistory = if (history.size >= 2 && !history.last().isUser) {
@@ -2344,7 +2320,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             withContext(Dispatchers.Main.immediate) {
                 currentRequestedIdentity = null
                 currentLoadedIdentity = null
-                currentResolvedThinkingCapability = ThinkingCapability.Unknown
                 if (pendingClearSelection) {
                     pendingClearSelection = false
                     currentModelPath = null

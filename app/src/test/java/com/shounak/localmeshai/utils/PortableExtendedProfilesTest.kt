@@ -56,11 +56,12 @@ class PortableExtendedProfilesTest {
         config.writeText(config.readText().replace("\"gemma\"","\"gemma2\""))
         assertNotNull(PortableModelBundle.runtimeRestriction(file,ModelFormat.Safetensors))
     }
-    @Test fun portableThinkingSurvivesImportMetadataInspection() {
+    @Test fun portableChatTemplateSurvivesImportMetadataInspection() {
         val root = temp.newFolder()
+        val template = "{% if enable_thinking %}<think>{% endif %}"
         File(root,"config.json").writeText("""{"model_type":"qwen2","eos_token_id":2}""")
         File(root,"tokenizer.json").writeText("""{"model":{"vocab":{"a":0}}}""")
-        File(root,"tokenizer_config.json").writeText(JSONObject().put("chat_template","{% if enable_thinking %}<think>{% endif %}").toString())
-        assertEquals(ThinkingCapability.Toggleable,PortableModelBundle.inspect(lite(root),ModelFormat.TensorFlowLite).thinking)
+        File(root,"tokenizer_config.json").writeText(JSONObject().put("chat_template", template).toString())
+        assertEquals(template, PortableModelBundle.inspect(lite(root),ModelFormat.TensorFlowLite).chatTemplate)
     }
 }

@@ -2,7 +2,6 @@ package com.shounak.localmeshai.utils
 
 import com.shounak.localmeshai.models.ModelCapabilities
 import com.shounak.localmeshai.models.ModelFormat
-import com.shounak.localmeshai.models.ThinkingCapability
 import org.json.JSONObject
 import java.io.File
 import java.io.RandomAccessFile
@@ -104,12 +103,13 @@ internal object PortableModelBundle {
             }
             else -> error("Not a portable model")
         }
+        val template = if (task in setOf(com.shounak.localmeshai.models.ModelTask.Chat, com.shounak.localmeshai.models.ModelTask.VisionLanguage)) {
+            companion("tokenizer_config.json").takeIf { it.isFile }?.let(::json)?.let(com.shounak.localmeshai.ai.PortablePrompt::template)
+        } else null
         return ModelCapabilities(supportsText = task == com.shounak.localmeshai.models.ModelTask.Chat,
             supportsVision = task in setOf(com.shounak.localmeshai.models.ModelTask.ImageClassification, com.shounak.localmeshai.models.ModelTask.VisionLanguage),
             supportsAudio = task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition,
-            task = task, thinking = if (task in setOf(com.shounak.localmeshai.models.ModelTask.Chat, com.shounak.localmeshai.models.ModelTask.VisionLanguage))
-                PortableThinking.capability(config, companion("tokenizer_config.json").takeIf { it.isFile }?.let(::json) ?: JSONObject())
-                else ThinkingCapability.Unsupported, contextLength = context)
+            task = task, chatTemplate = template, contextLength = context)
     }
 
     fun runtimeRestriction(primary: File, expected: ModelFormat, companions: Map<String, File> = emptyMap()): com.shounak.localmeshai.models.LoadRestriction? {
@@ -182,9 +182,11 @@ internal object PortableModelBundle {
             val old = bundle.loadRestriction
             val restriction = if (old == null || old.category == com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility)
                 runtimeRestriction(file, bundle.format, companions) else old
+            val template = if (task in setOf(com.shounak.localmeshai.models.ModelTask.Chat, com.shounak.localmeshai.models.ModelTask.VisionLanguage)) {
+                File(root, "tokenizer_config.json").takeIf { it.isFile }?.let(::json)?.let(com.shounak.localmeshai.ai.PortablePrompt::template)
+            } else null
             bundle.copy(capabilities = bundle.capabilities.copy(task = task,
-                thinking = if (task in setOf(com.shounak.localmeshai.models.ModelTask.Chat, com.shounak.localmeshai.models.ModelTask.VisionLanguage)) PortableThinking.capability(config,
-                    File(root, "tokenizer_config.json").takeIf { it.isFile }?.let(::json) ?: JSONObject()) else ThinkingCapability.Unsupported,
+                chatTemplate = template,
                 supportsText = task == com.shounak.localmeshai.models.ModelTask.Chat,
                 supportsVision = task in setOf(com.shounak.localmeshai.models.ModelTask.ImageClassification, com.shounak.localmeshai.models.ModelTask.VisionLanguage),
                 supportsAudio = task == com.shounak.localmeshai.models.ModelTask.SpeechRecognition), loadRestriction = restriction)

@@ -235,6 +235,7 @@ object ModelResponseQuality {
         val lower = request.lowercase(Locale.ROOT).trim().removeSuffix("!").removeSuffix(".").removeSuffix("?").trim()
         val exactGreetings = setOf(
             "hi", "hello", "hey", "hii", "heyy", "hiii", "yo", "sup",
+            "hola", "bonjour", "namaste",
             "what's up", "whats up", "what's new", "whats new",
             "howdy", "how are you", "how are you doing", "how r u",
             "good morning", "good evening", "good afternoon", "good day",
@@ -429,6 +430,10 @@ object ModelResponseQuality {
     private fun isOnlyBoilerplate(normalized: String): Boolean {
         val boilerplateMarkers = listOf(
             "i will do my best to answer",
+            "i will respond to your request",
+            "in a concise and informative manner",
+            "in a concise manner",
+            "concise and informative",
             "i will wait for your request",
             "please feel free to ask",
             "how can i help",
@@ -465,6 +470,7 @@ object ModelResponseQuality {
         "okay, i understand",
         "ok, i understand",
         "i will do my best to answer your request",
+        "i will respond to your request",
         "i will wait for your request",
         "i am unable to provide information on the topic",
         "i cannot provide information on the topic",

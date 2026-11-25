@@ -202,12 +202,11 @@ internal class PortableMediaEngine private constructor(
         val template = PortablePrompt.template(tokenizerConfig)
         fun special(key: String): String = (tokenizerConfig.opt(key) as? String)
             ?: (tokenizerConfig.opt(key) as? JSONObject)?.optString("content").orEmpty()
-        val enabled = thinking && PortableThinking.capability(config,tokenizerConfig) != com.shounak.localmeshai.models.ThinkingCapability.Unsupported
+        val enabled = thinking
         val rendered = if (!template.isNullOrBlank()) LlamaCppEngine.nativeRenderPortableChat(template,
             org.json.JSONArray().put(JSONObject().put("role","user").put("content",prompt)).toString(),special("bos_token"),special("eos_token"),enabled)
             else config.optString("solus_vision_prompt", "{prompt}\n").replace("{prompt}", prompt)
         val tokens = (if (!template.isNullOrBlank()) CandleBridge.encodeRendered(graphTokenizer, rendered) else CandleBridge.encode(graphTokenizer, rendered)).toMutableList()
-        val reasoningPrefix = if (PortableThinking.hasReasoningPrefill(rendered)) "<think>" else ""
         val imageId = config.optInt("image_token_index", -1)
         if (imageId >= 0 && imageId !in tokens) {
             val vision = config.optJSONObject("vision_config")
@@ -242,11 +241,11 @@ internal class PortableMediaEngine private constructor(
             val vocab = result.shape.last().toInt()
             val offset = result.values.size-vocab
             val token = (0 until vocab).filter { result.values[offset+it].isFinite() }.maxByOrNull { result.values[offset+it] } ?: error("No finite vision decoder scores")
-            if (token in eos) return reasoningPrefix + CandleBridge.decode(graphTokenizer, generated.toIntArray())
+            if (token in eos) return CandleBridge.decode(graphTokenizer, generated.toIntArray())
             tokens.add(token); generated.add(token)
         }
         checkActive()
-        return reasoningPrefix + CandleBridge.decode(graphTokenizer, generated.toIntArray())
+        return CandleBridge.decode(graphTokenizer, generated.toIntArray())
     }
 
     private fun imagePixels(bitmap: Bitmap, width: Int, height: Int, processor: JSONObject): FloatArray {

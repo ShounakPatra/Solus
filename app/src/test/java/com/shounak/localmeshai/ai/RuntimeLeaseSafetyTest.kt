@@ -20,35 +20,29 @@ class RuntimeLeaseSafetyTest {
         val manager = ChatInferenceManager(context())
         val runtimeType = manager.javaClass.getDeclaredField("runtime").type
         set(manager, "runtime", checkNotNull(runtimeType.enumConstants).first { it.toString() == "LiteRtLm" })
-        set(manager, "isDefaultThinkingModel", true)
-        val modeType = manager.javaClass.getDeclaredField("liteRtConversationMode").type
-        set(manager, "liteRtConversationMode", checkNotNull(modeType.enumConstants).first { it.toString() == "NoThinking" })
-        assertTrue(manager.needsResetForThinkingMode(true))
-        assertFalse(manager.needsResetForThinkingMode(false))
-        set(manager, "liteRtConversationMode", checkNotNull(modeType.enumConstants).first { it.toString() == "Default" })
-        assertFalse(manager.needsResetForThinkingMode(true))
-        assertTrue(manager.needsResetForThinkingMode(false))
-    }
-
-    @Test fun visionThinkingToggleRebuildsTheLiteRtConversationCreatedWithADifferentValue() {
-        val manager = VisionInferenceManager(context())
-        val runtimeType = manager.javaClass.getDeclaredField("runtime").type
-        set(manager, "runtime", checkNotNull(runtimeType.enumConstants).first { it.toString() == "LiteRtLm" })
-        set(manager, "isDefaultThinkingModel", true)
-        // The load creates the first conversation with enable_thinking=false.
         set(manager, "liteRtConversationThinking", false)
         assertTrue(manager.needsResetForThinkingMode(true))
         assertFalse(manager.needsResetForThinkingMode(false))
         set(manager, "liteRtConversationThinking", true)
         assertFalse(manager.needsResetForThinkingMode(true))
         assertTrue(manager.needsResetForThinkingMode(false))
-        // Models without a thinking switch never reset for the toggle.
-        set(manager, "isDefaultThinkingModel", false)
-        set(manager, "liteRtConversationThinking", null)
+        // Non-LiteRT runtimes carry thinking per request.
+        set(manager, "runtime", checkNotNull(runtimeType.enumConstants).first { it.toString() == "LlamaCpp" })
         assertFalse(manager.needsResetForThinkingMode(true))
         assertFalse(manager.needsResetForThinkingMode(false))
+    }
+
+    @Test fun visionThinkingToggleRebuildsTheLiteRtConversationCreatedWithADifferentValue() {
+        val manager = VisionInferenceManager(context())
+        val runtimeType = manager.javaClass.getDeclaredField("runtime").type
+        set(manager, "runtime", checkNotNull(runtimeType.enumConstants).first { it.toString() == "LiteRtLm" })
+        set(manager, "liteRtConversationThinking", false)
+        assertTrue(manager.needsResetForThinkingMode(true))
+        assertFalse(manager.needsResetForThinkingMode(false))
+        set(manager, "liteRtConversationThinking", true)
+        assertFalse(manager.needsResetForThinkingMode(true))
+        assertTrue(manager.needsResetForThinkingMode(false))
         // Non-LiteRT runtimes carry thinking per request.
-        set(manager, "isDefaultThinkingModel", true)
         set(manager, "runtime", checkNotNull(runtimeType.enumConstants).first { it.toString() == "LlamaCpp" })
         assertFalse(manager.needsResetForThinkingMode(true))
     }

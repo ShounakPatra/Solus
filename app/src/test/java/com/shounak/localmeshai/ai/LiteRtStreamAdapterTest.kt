@@ -21,72 +21,34 @@ class LiteRtStreamAdapterTest {
             adapter.onDone()
             assertEquals("Careful reasoning", adapter.currentSnapshot().reasoningText)
             assertEquals("Hello", adapter.currentSnapshot().answerText)
-            assertEquals(if (thinking) "<think>\nCareful reasoning\n</think>\n\nHello" else "Hello", deltas.joinToString(""))
-        }
-    }
-
-
-    @Test
-    fun verifiedPrefillSeparatesReasoningFromTheFirstTokenWithThinkingOnOrOff() {
-        for (thinking in listOf(true, false)) {
-            val controller = InferenceResponseController(thinkingMode = thinking, requestId = "prefill")
-            val deltas = mutableListOf<String>()
-            val adapter = LiteRtStreamAdapter("prefill", thinkingMode = thinking, startsInReasoning = true,
-                onDelta = { deltas += it }, onSnapshot = {
-                    controller.appendStructured(it.answerText, it.reasoningText, it.isThinkingActive,
-                        "prefill", 1, replaceSnapshot = true)
-                })
-            adapter.onMessage(Message.model("Careful reasoning"))
-            assertEquals("", controller.snapshot().answerText)
-            assertEquals(if (thinking) "Careful reasoning" else "", controller.snapshot().reasoningText)
-            assertEquals(thinking, controller.snapshot().isThinkingActive)
-            if (!thinking) assertTrue(deltas.isEmpty())
-            adapter.onMessage(Message.model("</thi"))
-            assertEquals("", controller.snapshot().answerText)
-            adapter.onMessage(Message.model("nk>Hello"))
-            adapter.onDone()
-            controller.finish()
-            assertEquals("Hello", controller.getFinalAnswer())
-            assertEquals(if (thinking) "Careful reasoning" else "", controller.getReasoningText())
-            assertFalse(controller.snapshot().isThinkingActive)
-            if (!thinking) assertEquals("Hello", deltas.joinToString(""))
+            assertEquals("<think>\nCareful reasoning\n</think>\n\nHello", deltas.joinToString(""))
         }
     }
 
     @Test
-    fun stoppingPrefilledReasoningPreservesOneBlockAndRejectsLateCallbacks() {
-        val snapshots = mutableListOf<StructuredResponseSnapshot>()
-        val adapter = LiteRtStreamAdapter("stop-prefill", thinkingMode = true,
-            startsInReasoning = true, onSnapshot = { snapshots += it })
-        adapter.onMessage(Message.model("Partial reasoning"))
-        assertEquals("", snapshots.last().answerText)
-        assertTrue(snapshots.last().isThinkingActive)
-        adapter.cancel()
-        val stopped = snapshots.last()
-        assertEquals("Partial reasoning", stopped.reasoningText)
-        assertEquals("", stopped.answerText)
-        assertFalse(stopped.isThinkingActive)
-        adapter.onMessage(Message.model("late"))
-        adapter.onDone()
-        adapter.onError(IllegalStateException("late error"))
-        assertEquals(stopped, adapter.currentSnapshot())
-        assertEquals(2, snapshots.size)
-        assertEquals(null, adapter.terminalError)
-    }
-
-    @Test
-    fun prefillDoesNotDuplicateGeneratedTagsOrCaptureNativeChannelAnswers() {
-        val explicit = LiteRtStreamAdapter("explicit", thinkingMode = true, startsInReasoning = true)
+    fun implicitClosingThinkTagSeparatesReasoningAndCapturesNativeChannels() {
+        val explicit = LiteRtStreamAdapter("explicit", thinkingMode = true)
         listOf("<thi", "nk>Reason", "</think>Answer").forEach { explicit.onMessage(Message.model(it)) }
         explicit.onDone()
         assertEquals("Reason", explicit.currentSnapshot().reasoningText)
         assertEquals("Answer", explicit.currentSnapshot().answerText)
-        val native = LiteRtStreamAdapter("native", thinkingMode = true, startsInReasoning = true)
+
+        val native = LiteRtStreamAdapter("native", thinkingMode = true)
         native.onMessage(Message.model(channels = mapOf("thought" to "Reason")))
         native.onMessage(Message.model("Answer"))
         native.onDone()
         assertEquals("Reason", native.currentSnapshot().reasoningText)
         assertEquals("Answer", native.currentSnapshot().answerText)
+    }
+
+    @Test
+    fun unclosedThinkTagRecoversContentOnNormalCompletion() {
+        val adapter = LiteRtStreamAdapter("unclosed-recovery", thinkingMode = true)
+        adapter.onMessage(Message.model("<think>Direct reply with missing close tag"))
+        adapter.onDone()
+        assertEquals("", adapter.currentSnapshot().reasoningText)
+        assertEquals("Direct reply with missing close tag", adapter.currentSnapshot().answerText)
+        assertFalse(adapter.currentSnapshot().isThinkingActive)
     }
 
     @Test
@@ -118,14 +80,14 @@ class LiteRtStreamAdapterTest {
     }
 
     @Test
-    fun terminalSuffixInsideReasoningIsNeverPromotedToAnswer() {
+    fun terminalSuffixInsideCancelledReasoningIsNeverPromotedToAnswer() {
         val controller = InferenceResponseController(thinkingMode = true, requestId = "reason-literal")
-        val adapter = LiteRtStreamAdapter("reason-literal", thinkingMode = true, startsInReasoning = true,
+        val adapter = LiteRtStreamAdapter("reason-literal", thinkingMode = true,
             onSnapshot = { controller.appendStructured(it.answerText, it.reasoningText, it.isThinkingActive,
                 "reason-literal", 1, replaceSnapshot = true) })
-        adapter.onMessage(Message.model("Reason about <"))
-        adapter.onDone()
-        controller.finish()
+        adapter.onMessage(Message.model("<think>Reason about <"))
+        adapter.cancel()
+        controller.finish(recoverUnclosedOnCompletion = false)
         assertEquals("Reason about <", controller.getReasoningText())
         assertEquals("", controller.getFinalAnswer())
         assertFalse(controller.snapshot().isThinkingActive)
@@ -149,7 +111,7 @@ class LiteRtStreamAdapterTest {
     }
 
     @Test
-    fun rawThinkingOffDoesNotLeakIntoLiveOrFinalAnswer() {
+    fun rawThinkingIsAlwaysParsedWithoutLeakingIntoLiveOrFinalAnswer() {
         val controller = InferenceResponseController(thinkingMode = false, rawUserText = "Hi", requestId = "off")
         val deltas = mutableListOf<String>()
         val adapter = LiteRtStreamAdapter("off", thinkingMode = false, onDelta = { deltas += it }, onSnapshot = {
@@ -158,9 +120,9 @@ class LiteRtStreamAdapterTest {
         listOf("<think>", "secret", "</think>", "Hello").forEach { adapter.onMessage(Message.model(it)) }
         adapter.onDone()
         controller.finish()
-        assertEquals("Hello", deltas.joinToString(""))
+        assertEquals("<think>\nsecret\n</think>\n\nHello", deltas.joinToString(""))
         assertEquals("Hello", controller.getFinalAnswer())
-        assertEquals("", controller.getReasoningText())
+        assertEquals("secret", controller.getReasoningText())
         assertFalse(controller.snapshot().isThinkingActive)
     }
 
@@ -285,7 +247,7 @@ class LiteRtStreamAdapterTest {
     }
 
     @Test
-    fun testThinkingModeOffSuppressesReasoningDeltasButTriggersFirstToken() = runBlocking {
+    fun testThinkingModeOffStillParsesThoughtChannelAlwaysOn() = runBlocking {
         val deltas = mutableListOf<String>()
         var firstTokenTriggered = false
 
@@ -309,8 +271,10 @@ class LiteRtStreamAdapterTest {
         adapter.onMessage(answerMsg)
         adapter.onDone()
 
-        // When thinkingMode is false, reasoning is suppressed from deltas
-        assertEquals(listOf("Direct answer."), deltas)
+        assertEquals(
+            listOf("<think>\n", "Silent background calculation.", "\n</think>\n\n", "Direct answer."),
+            deltas
+        )
         assertEquals("Direct answer.", adapter.currentSnapshot().answerText)
         assertEquals("Silent background calculation.", adapter.currentSnapshot().reasoningText)
     }
@@ -390,19 +354,17 @@ class LiteRtStreamAdapterTest {
     }
 
     @Test
-    fun thinkingModeFalseDiscardsAThoughtChannelSoCallersMustPassTheResolvedFlag() {
-        // Documents the contract VisionInferenceManager now honours with displaysReasoning: a model
-        // that thinks while the adapter and controller run with thinkingMode=false loses its reasoning.
-        val controller = InferenceResponseController(thinkingMode = false, requestId = "hidden")
-        val adapter = LiteRtStreamAdapter("hidden", thinkingMode = false, onSnapshot = {
-            controller.appendStructured(it.answerText, it.reasoningText, it.isThinkingActive, "hidden", 1, replaceSnapshot = true)
+    fun thoughtChannelIsAlwaysParsedEvenWhenThinkingToggleIsOff() {
+        val controller = InferenceResponseController(thinkingMode = false, requestId = "always-on")
+        val adapter = LiteRtStreamAdapter("always-on", thinkingMode = false, onSnapshot = {
+            controller.appendStructured(it.answerText, it.reasoningText, it.isThinkingActive, "always-on", 1, replaceSnapshot = true)
         })
-        adapter.onMessage(Message.model(channels = mapOf("thought" to "Hidden reasoning")))
+        adapter.onMessage(Message.model(channels = mapOf("thought" to "Always parsed reasoning")))
         adapter.onMessage(Message.model("Answer"))
         adapter.onDone()
-        controller.finish()
-        assertEquals("Hidden reasoning", adapter.currentSnapshot().reasoningText)
-        assertEquals("", controller.getReasoningText())
+        controller.finish(recoverUnclosedOnCompletion = true)
+        assertEquals("Always parsed reasoning", adapter.currentSnapshot().reasoningText)
+        assertEquals("Always parsed reasoning", controller.getReasoningText())
         assertEquals("Answer", controller.getFinalAnswer())
     }
 }

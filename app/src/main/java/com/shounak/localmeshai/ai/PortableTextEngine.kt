@@ -25,7 +25,6 @@ internal class PortableTextEngine private constructor(private val file: File, pr
     private var tflite: Interpreter? = null
     private var tflitePlan: TfliteTextPlan? = null
     private var promptHasSpecialTokens = false
-    private var reasoningPrefill = false
     private var turnStops: List<String> = emptyList()
     private val registeredPromptTokens by lazy {
         File(file.parentFile, "tokenizer.json").takeIf { it.isFile }
@@ -90,7 +89,6 @@ internal class PortableTextEngine private constructor(private val file: File, pr
         promptTurns = messages?.takeIf { it.isNotEmpty() } ?: listOf("user" to fallback)
         promptMemory = memory
         promptThinking = thinking
-        reasoningPrefill = false
         val config = PortableModelBundle.json(File(file.parentFile, "config.json"))
         val tokenizerConfig = File(file.parentFile, "tokenizer_config.json").takeIf { it.isFile }?.let(PortableModelBundle::json) ?: org.json.JSONObject()
         val raw = messages?.takeIf { it.isNotEmpty() } ?: listOf("user" to fallback)
@@ -107,10 +105,7 @@ internal class PortableTextEngine private constructor(private val file: File, pr
             val history = JSONArray().apply { turns.forEach { (role, content) -> put(org.json.JSONObject().put("role", role).put("content", content)) } }
             promptHasSpecialTokens = true
             turnStops = PortablePrompt.stopSequences(template)
-            val enabled = thinking && com.shounak.localmeshai.utils.PortableThinking.capability(config, tokenizerConfig) != com.shounak.localmeshai.models.ThinkingCapability.Unsupported
-            return LlamaCppEngine.nativeRenderPortableChat(template, history.toString(), special("bos_token"), special("eos_token"), enabled).also {
-                reasoningPrefill = com.shounak.localmeshai.utils.PortableThinking.hasReasoningPrefill(it)
-            }
+            return LlamaCppEngine.nativeRenderPortableChat(template, history.toString(), special("bos_token"), special("eos_token"), thinking)
         }
         val promptFormat = PortablePrompt.fallbackFormat(config, tokenizerConfig, registeredPromptTokens)
         turnStops = PortablePrompt.stopSequences(promptFormat)
@@ -139,7 +134,6 @@ internal class PortableTextEngine private constructor(private val file: File, pr
             val turnEos = eos + turnStops.mapNotNull { marker ->
                 CandleBridge.encodeRendered(tokenizer, marker).singleOrNull()
             }
-            var pendingReasoningPrefix = reasoningPrefill
             return PortableTokenLoop.generate(promptIds, contextTokens, limit, turnEos, { stopped },
                 next = { tokens, step ->
                     val logits = when (format) {
@@ -150,7 +144,6 @@ internal class PortableTextEngine private constructor(private val file: File, pr
                     }
                     sample(logits, temperature, topP, topK)
                 }, decode = { CandleBridge.decode(tokenizer, it) }, onText = { delta ->
-                    if (pendingReasoningPrefix) { onText("<think>"); pendingReasoningPrefix = false }
                     onText(delta)
                 }, onToken = onToken, stopSequences = turnStops)
         } finally { onnxDecoder?.reset(); lifecycle.unlock() }

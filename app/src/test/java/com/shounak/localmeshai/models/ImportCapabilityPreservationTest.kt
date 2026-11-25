@@ -43,9 +43,7 @@ class ImportCapabilityPreservationTest {
             supportsText = true,
             supportsVision = false,
             supportsAudio = false,
-            thinking = ThinkingCapability.Toggleable,
-            thinkingDetectorVersion = 2,
-            thinkingArtifactIdentity = "content://media/external/file/101",
+            chatTemplate = "{% if enable_thinking %}<think>{% endif %}",
             contextLength = 32768
         )
         val bundle = ModelBundle(
@@ -72,7 +70,7 @@ class ImportCapabilityPreservationTest {
         val restoredBundle = restored?.bundle
         assertNotNull("Bundle must be restored", restoredBundle)
 
-        assertEquals(ThinkingCapability.Toggleable, restoredBundle?.capabilities?.thinking)
+        assertEquals("{% if enable_thinking %}<think>{% endif %}", restoredBundle?.capabilities?.chatTemplate)
         assertEquals(32768, restoredBundle?.capabilities?.contextLength)
         assertEquals(32768, restoredBundle?.contextLength)
         assertTrue(restoredBundle?.capabilities?.supportsText == true)
@@ -107,7 +105,7 @@ class ImportCapabilityPreservationTest {
         val capabilities = ModelCapabilities(
             supportsText = true,
             supportsVision = false,
-            thinking = ThinkingCapability.ModelControlled,
+            chatTemplate = "<think>",
             contextLength = 16384
         )
         val bundle = ModelBundle(
@@ -130,7 +128,7 @@ class ImportCapabilityPreservationTest {
         val store2 = CustomModelStore(storeDir)
         val restored = store2.getById(bundleId)?.bundle
         assertNotNull(restored)
-        assertEquals(ThinkingCapability.ModelControlled, restored?.capabilities?.thinking)
+        assertEquals("<think>", restored?.capabilities?.chatTemplate)
         assertEquals(16384, restored?.contextLength)
         assertEquals(16384, restored?.capabilities?.contextLength)
     }
@@ -153,7 +151,7 @@ class ImportCapabilityPreservationTest {
             supportsText = true,
             supportsVision = true,
             supportsAudio = false,
-            thinking = ThinkingCapability.Unsupported,
+            chatTemplate = "plain chat",
             contextLength = 4096
         )
         val bundle = ModelBundle(
@@ -181,7 +179,7 @@ class ImportCapabilityPreservationTest {
         assertTrue("Restored bundle isMultimodal must be true", restored?.isMultimodal == true)
         assertNotNull("Projector artifact must be restored", restored?.projectorArtifact)
         assertEquals("mmproj-model-f16.gguf", restored?.projectorArtifact?.displayName)
-        assertEquals(ThinkingCapability.Unsupported, restored?.capabilities?.thinking)
+        assertEquals("plain chat", restored?.capabilities?.chatTemplate)
         assertEquals(4096, restored?.contextLength)
     }
 
@@ -202,7 +200,7 @@ class ImportCapabilityPreservationTest {
         val capabilities = ModelCapabilities(
             supportsText = true,
             supportsVision = true,
-            thinking = ThinkingCapability.Toggleable,
+            chatTemplate = "<|thought|>",
             contextLength = 8192
         )
         val bundle = ModelBundle(
@@ -227,7 +225,7 @@ class ImportCapabilityPreservationTest {
         val restored = store2.getById(bundleId)?.bundle
         assertNotNull(restored)
         assertTrue(restored?.capabilities?.supportsVision == true)
-        assertEquals(ThinkingCapability.Toggleable, restored?.capabilities?.thinking)
+        assertEquals("<|thought|>", restored?.capabilities?.chatTemplate)
         assertEquals(8192, restored?.contextLength)
     }
 
@@ -253,8 +251,8 @@ class ImportCapabilityPreservationTest {
         val stagingCapabilities = ModelCapabilities(
             supportsText = true,
             supportsVision = false,
-            thinking = ThinkingCapability.Toggleable,
-            thinkingArtifactIdentity = initialStagingIdentity,
+            chatTemplate = "{% if enable_thinking %}<think>{% endif %}",
+            reasoningChannels = setOf("thought"),
             contextLength = 4096
         )
 
@@ -272,16 +270,9 @@ class ImportCapabilityPreservationTest {
         // Reopen published bundle from storage
         val publishedBundle = artifactStorage.getPublishedBundle(modelId)
         assertNotNull("Published bundle must be loadable", publishedBundle)
-
-        // PROVENANCE CHECK:
-        // thinkingArtifactIdentity MUST point to the published artifact path, NOT the staging path
-        val publishedIdentity = publishedBundle!!.capabilities.thinkingArtifactIdentity
-        assertEquals(publishedFile.absolutePath, publishedIdentity)
-        assertFalse(
-            "thinkingArtifactIdentity must NOT retain the staging path",
-            publishedIdentity.contains("staging")
-        )
-        assertEquals(ThinkingCapability.Toggleable, publishedBundle.capabilities.thinking)
+        assertEquals(publishedFile.absolutePath, publishedBundle!!.mainArtifacts.first().source.location)
+        assertEquals("{% if enable_thinking %}<think>{% endif %}", publishedBundle.capabilities.chatTemplate)
+        assertEquals(setOf("thought"), publishedBundle.capabilities.reasoningChannels)
         assertEquals(4096, publishedBundle.capabilities.contextLength)
     }
 }

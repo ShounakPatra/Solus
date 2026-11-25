@@ -3,7 +3,6 @@ package com.shounak.localmeshai.utils
 import android.util.Log
 import com.shounak.localmeshai.ai.LlamaCppEngine
 import com.shounak.localmeshai.models.ArtifactRole
-import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.models.ModelCapabilities
 import java.io.File
 import java.util.Locale
@@ -25,7 +24,7 @@ data class GgufArtifactInspection(
     val hasVision: Boolean = false,
     val hasAudio: Boolean = false,
     val trainContextLength: Int = 0,
-    val thinkingCapability: String = "Unknown",
+    val chatTemplate: String = "",
     val error: String = ""
 )
 
@@ -114,7 +113,7 @@ object GgufBundleInspector {
             hasVision = hasVis,
             hasAudio = inspection.clipHasAudioEncoder,
             trainContextLength = inspection.trainContextLength,
-            thinkingCapability = inspection.thinkingCapability,
+            chatTemplate = inspection.chatTemplate,
             error = ""
         )
     }
@@ -403,22 +402,14 @@ object GgufBundleInspector {
         val isVisionProjectorMissing = !hasVision && mainIsVisionArch && projector == null
         val hasAudio = projectorHasAudio || mainHasAudio
 
-        val rawThinkingCap = orderedMain.firstOrNull()?.thinkingCapability?.let { capStr ->
-            com.shounak.localmeshai.models.ThinkingCapability.entries.firstOrNull { it.name.equals(capStr, ignoreCase = true) }
-        } ?: com.shounak.localmeshai.models.ThinkingCapability.Unknown
-
-        val mainThinkingCapability = rawThinkingCap
-
         val detectedContextLength = orderedMain.firstOrNull()?.trainContextLength ?: 0
+        val chatTemplate = orderedMain.firstOrNull()?.chatTemplate?.takeIf { it.isNotBlank() }
 
         val capabilities = ModelCapabilities(
             supportsText = true,
             supportsVision = hasVision,
             supportsAudio = hasAudio,
-            thinking = mainThinkingCapability,
-            thinkingControl = if (mainThinkingCapability == ThinkingCapability.Toggleable) com.shounak.localmeshai.models.ThinkingControlStrategy.NativeTemplate else com.shounak.localmeshai.models.ThinkingControlStrategy.None,
-            thinkingDetectorVersion = ThinkingModeConfig.DETECTOR_VERSION,
-            thinkingArtifactIdentity = orderedMain.firstOrNull()?.location.orEmpty(),
+            chatTemplate = chatTemplate,
             contextLength = detectedContextLength,
             visionProjectorMissing = isVisionProjectorMissing
         )

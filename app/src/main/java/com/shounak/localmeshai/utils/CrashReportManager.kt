@@ -23,7 +23,8 @@ data class CrashReport(
     val timestamp: Long,
     val title: String,
     val details: String,
-    val isNativeCrash: Boolean = false
+    val isNativeCrash: Boolean = false,
+    val filePath: String = ""
 ) {
     val formattedDate: String
         get() = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
@@ -310,7 +311,8 @@ object CrashReportManager {
                 timestamp = file.lastModified(),
                 title = titleLine,
                 details = text,
-                isNativeCrash = file.name.startsWith("native_crash_")
+                isNativeCrash = file.name.startsWith("native_crash_"),
+                filePath = file.absolutePath
             )
         }.getOrNull()
     }
@@ -326,6 +328,28 @@ object CrashReportManager {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load crash reports", e)
             emptyList()
+        }
+    }
+
+    fun deleteReport(context: Context, report: CrashReport): Boolean {
+        return try {
+            val dir = getReportsDir(context)
+            val target = report.filePath
+                .takeIf { it.isNotBlank() }
+                ?.let { File(it) }
+                ?.takeIf { it.exists() && it.parentFile?.canonicalFile == dir.canonicalFile }
+                ?: dir.listFiles()?.firstOrNull {
+                    it.isFile && it.name.endsWith(".txt") && it.lastModified() == report.timestamp
+                } ?: return false
+            val deleted = target.delete()
+            val pendingPath = prefs(context).getString(KEY_PENDING_CRASH_FILE, null)
+            if (deleted && pendingPath != null && pendingPath == target.absolutePath) {
+                clearPendingCrashPrompt(context)
+            }
+            deleted
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to delete crash report", e)
+            false
         }
     }
 

@@ -24,18 +24,17 @@ import java.util.concurrent.atomic.AtomicInteger
 class LiteRtStreamAdapter(
     val requestId: String,
     val attemptId: Int = 1,
-    private val thinkingMode: Boolean = false,
+    @Suppress("unused")
+    private val thinkingMode: Boolean = true,
     private val onFirstToken: (() -> Unit)? = null,
     private val onDelta: ((String) -> Unit)? = null,
     private val onSnapshot: ((StructuredResponseSnapshot) -> Unit)? = null,
-    reasoningChannelKeys: Set<String> = emptySet(),
-    private val startsInReasoning: Boolean = false
+    reasoningChannelKeys: Set<String> = emptySet()
 ) : MessageCallback {
 
     companion object {
         private const val TAG = "LiteRtStreamAdapter"
         private val REASONING_CHANNEL_KEYS = setOf("thought", "reasoning", "thinking", "analysis")
-        private val LEADING_REASONING_TAG = Regex("^\\s*(?:<\\s*(?:think|thought|reasoning)\\s*>|\\[\\s*(?:think|thought|reasoning)\\s*\\])", RegexOption.IGNORE_CASE)
     }
 
     private val reasoningKeys = REASONING_CHANNEL_KEYS + reasoningChannelKeys.map { it.lowercase() }
@@ -94,10 +93,7 @@ class LiteRtStreamAdapter(
                 if (seenChannelKeys.add(key)) {
                     val isReasoning = reasoningKeys.contains(key.lowercase())
                     Log.d(TAG, "req=$requestId attempt=$attemptId channel key=\"$key\" reasoning=$isReasoning " +
-                        "thinkingMode=$thinkingMode chars=${value.length}")
-                    if (isReasoning && !thinkingMode) {
-                        Log.w(TAG, "req=$requestId reasoning channel \"$key\" received while thinkingMode=false; it will not be shown")
-                    }
+                        "chars=${value.length}")
                 }
                 if (value.isNotEmpty()) {
                     val buf = namedChannels.getOrPut(key) { StringBuilder() }
@@ -129,25 +125,19 @@ class LiteRtStreamAdapter(
     }
 
     private fun publishDeltas(newAnswerDelta: String, newReasoningDelta: String) {
-        if (thinkingMode) {
-            if (newReasoningDelta.isNotEmpty()) {
-                if (!hasEmittedThinkingStart) {
-                    hasEmittedThinkingStart = true
-                    onDelta?.invoke("<think>\n")
-                }
-                onDelta?.invoke(newReasoningDelta)
+        if (newReasoningDelta.isNotEmpty()) {
+            if (!hasEmittedThinkingStart) {
+                hasEmittedThinkingStart = true
+                onDelta?.invoke("<think>\n")
             }
-            if (newAnswerDelta.isNotEmpty()) {
-                if (hasEmittedThinkingStart && !hasEmittedThinkingEnd) {
-                    hasEmittedThinkingEnd = true
-                    onDelta?.invoke("\n</think>\n\n")
-                }
-                onDelta?.invoke(newAnswerDelta)
+            onDelta?.invoke(newReasoningDelta)
+        }
+        if (newAnswerDelta.isNotEmpty()) {
+            if (hasEmittedThinkingStart && !hasEmittedThinkingEnd) {
+                hasEmittedThinkingEnd = true
+                onDelta?.invoke("\n</think>\n\n")
             }
-        } else {
-            if (newAnswerDelta.isNotEmpty()) {
-                onDelta?.invoke(newAnswerDelta)
-            }
+            onDelta?.invoke(newAnswerDelta)
         }
     }
 
@@ -186,7 +176,7 @@ class LiteRtStreamAdapter(
                 if (finalSnapshot.answerText.startsWith(previous.answerText)) finalSnapshot.answerText.substring(previous.answerText.length) else "",
                 if (finalSnapshot.reasoningText.startsWith(previous.reasoningText)) finalSnapshot.reasoningText.substring(previous.reasoningText.length) else ""
             )
-            if (thinkingMode && hasEmittedThinkingStart && !hasEmittedThinkingEnd) {
+            if (hasEmittedThinkingStart && !hasEmittedThinkingEnd) {
                 hasEmittedThinkingEnd = true
                 onDelta?.invoke("\n</think>")
             }
@@ -200,12 +190,13 @@ class LiteRtStreamAdapter(
 
     private fun parseRawLocked(): com.shounak.localmeshai.utils.ParsedThinkingContent {
         val raw = answerBuffer.toString()
+        val doneNormally = isCompleted.get() && !isCancelled.get() && terminalError == null
         val text = if (isCompleted.get()) raw else ThinkingTextUtils.holdIncompleteTag(raw)
-        // A legacy template may already supply the opening tag. Native channels take
-        // precedence, and an explicitly generated opening tag must not add a second depth.
-        val prefill = startsInReasoning && reasoningBuffer.isEmpty() &&
-            !LEADING_REASONING_TAG.containsMatchIn(text) && !text.trimStart().startsWith("<|channel>thought\n")
-        return ThinkingTextUtils.parse(if (prefill) "<think>$text" else text, allowActiveThinking = true)
+        return ThinkingTextUtils.parse(
+            text = text,
+            allowActiveThinking = !doneNormally,
+            recoverUnclosedOnCompletion = doneNormally
+        )
     }
 
     private fun snapshotLocked(): StructuredResponseSnapshot {
@@ -218,7 +209,7 @@ class LiteRtStreamAdapter(
             revision = revisionCounter.get(),
             answerText = parsed.finalResponseText,
             reasoningText = reasoning,
-            isThinkingActive = thinkingMode && (parsed.isThinkingActive || isThinkingOpen) && !isCompleted.get() && !isCancelled.get(),
+            isThinkingActive = (parsed.isThinkingActive || isThinkingOpen) && !isCompleted.get() && !isCancelled.get(),
             channels = namedChannels.mapValues { it.value.toString() }
         )
     }

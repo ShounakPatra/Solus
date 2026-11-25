@@ -2,8 +2,6 @@ package com.shounak.localmeshai.utils
 
 import com.shounak.localmeshai.models.ModelCapabilities
 import com.shounak.localmeshai.models.ModelFormat
-import com.shounak.localmeshai.models.ThinkingCapability
-import com.shounak.localmeshai.models.ThinkingControlStrategy
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Rule
@@ -52,66 +50,29 @@ class LiteRtMetadataRegressionTest {
 
     private fun useNativeFalse() {
         NonGgufBundleInspector.nativeModelInfoReader = object : NativeModelInfoReader {
-            override fun inspect(filePath: String) = NativeModelInfoResult.Success(false, false, false, false, 4096)
+            override fun inspect(filePath: String) = NativeModelInfoResult.Success(false, false, false, 4096)
         }
     }
 
-    @Test fun legacyModelPrefixPersistsInitialReasoningWithoutInferringItFromOtherRoles() {
-        useNativeFalse()
-        val prefix = field(3, field(2, field(1, "<|im_start|>assistant\n<think>\n".toByteArray())))
-        val result = NonGgufBundleInspector.inspectFile(container(prefix, "prefilled.litertlm"))
-        assertTrue(result.errorMessage, result.isValid)
-        val caps = ModelCapabilities.fromJson(result.capabilities.toJson())
-        assertTrue(caps.reasoningPrefill)
-        assertEquals(ThinkingCapability.ModelControlled, caps.thinking)
-        val adapter = com.shounak.localmeshai.ai.LiteRtStreamAdapter("metadata", thinkingMode = true,
-            startsInReasoning = caps.reasoningPrefill)
-        adapter.onMessage(com.google.ai.edge.litertlm.Message.model("Reason"))
-        assertEquals("Reason", adapter.currentSnapshot().reasoningText)
-        assertEquals("", adapter.currentSnapshot().answerText)
-
-        val userOnly = field(3, field(1, field(1, "<think>".toByteArray())))
-        assertFalse(NonGgufBundleInspector.inspectFile(container(userOnly, "user.litertlm")).capabilities.reasoningPrefill)
-        val closed = field(3, field(2, field(1, "<think></think>".toByteArray())))
-        assertFalse(NonGgufBundleInspector.inspectFile(container(closed, "closed.litertlm")).capabilities.reasoningPrefill)
-        val override = prefix + field(7, "{{ messages }}".toByteArray())
-        assertFalse(NonGgufBundleInspector.inspectFile(container(override, "override.litertlm")).capabilities.reasoningPrefill)
-        assertFalse(ModelCapabilities.fromJson(org.json.JSONObject()).reasoningPrefill)
-    }
-
-    @Test fun absentThinkingFieldRemainsUnknownWhenLegacyNativeApiReturnsFalse() {
-        useNativeFalse()
-        val oldPrompt = field(3, field(2, field(1, "<|im_start|>assistant\n".toByteArray())))
-        val result = NonGgufBundleInspector.inspectFile(container(oldPrompt))
-        assertTrue(result.errorMessage, result.isValid)
-        assertEquals(ThinkingCapability.Unknown, result.capabilities.thinking)
-    }
-
-    @Test fun explicitFalseAndPositiveReasoningEvidenceAreDistinguished() {
-        assertEquals(ThinkingCapability.Unsupported, NonGgufBundleInspector.parseLiteRtThinkingForTesting(byteArrayOf(88, 0)))
-        assertEquals(ThinkingCapability.ModelControlled, NonGgufBundleInspector.parseLiteRtThinkingForTesting(byteArrayOf(88, 1)))
-        val channel = field(8, field(1, "analysis".toByteArray()) + byteArrayOf(32, 1))
-        assertEquals(ThinkingCapability.ModelControlled, NonGgufBundleInspector.parseLiteRtThinkingForTesting(channel))
+    @Test fun reasoningChannelsAreExtractedAndPreservedAcrossJsonRoundTrip() {
         useNativeFalse()
         val customChannel = field(8, field(1, "deliberation".toByteArray()) + byteArrayOf(32, 1))
         val capabilities = NonGgufBundleInspector.inspectFile(container(customChannel, "custom.litertlm")).capabilities
         assertEquals(setOf("deliberation"), capabilities.reasoningChannels)
         assertEquals(capabilities, ModelCapabilities.fromJson(capabilities.toJson()))
-        val legacyPrompt = field(3, field(2, field(1, "<think>".toByteArray())))
-        assertEquals(ThinkingCapability.ModelControlled, NonGgufBundleInspector.parseLiteRtThinkingForTesting(legacyPrompt))
     }
 
-    @Test fun templateControlIsPreservedRegardlessOfImportHintOrExtension() {
+    @Test fun jinjaTemplateIsExtractedRegardlessOfExtensionOrImportHint() {
         useNativeFalse()
-        val template = field(7, "{% if enable_thinking %}<think>{% endif %}".toByteArray())
+        val jinja = "{% if enable_thinking %}<think>{% endif %}"
+        val template = field(7, jinja.toByteArray())
         val file = container(template, "renamed.task")
         val storage = NonGgufBundleInspector.inspectFile(file)
         val url = NonGgufBundleInspector.inspectFile(file, ModelFormat.MediaPipeTask)
         assertTrue(storage.errorMessage, storage.isValid)
         assertEquals(ModelFormat.LiteRtLm, url.format)
         assertEquals(storage.capabilities, url.capabilities)
-        assertEquals(ThinkingCapability.Toggleable, url.capabilities.thinking)
-        assertEquals(ThinkingControlStrategy.NativeTemplate, url.capabilities.thinkingControl)
+        assertEquals(jinja, url.capabilities.chatTemplate)
         assertTrue(ModelDownloader.isLikelyTaskBundle(file))
     }
 
@@ -126,18 +87,5 @@ class LiteRtMetadataRegressionTest {
             assertFalse(result.isValid)
             assertTrue(result.errorMessage.orEmpty().contains("metadata"))
         }
-    }
-
-    @Test fun legacyProfileRequiresExactContentAndPreservesItsControlAfterPersistence() {
-        val strategy = LegacyThinkingProfiles.match(LegacyThinkingProfiles.QWEN_SIZE, LegacyThinkingProfiles.QWEN_SHA256)
-        assertEquals(ThinkingControlStrategy.QwenSoftSwitch, strategy)
-        assertEquals(ThinkingControlStrategy.None, LegacyThinkingProfiles.match(LegacyThinkingProfiles.QWEN_SIZE, "wrong"))
-        assertEquals(ThinkingControlStrategy.None, LegacyThinkingProfiles.match(100, LegacyThinkingProfiles.QWEN_SHA256))
-        val caps = ModelCapabilities(thinking = ThinkingCapability.Toggleable, thinkingControl = strategy)
-        assertEquals(caps, ModelCapabilities.fromJson(caps.toJson()))
-        assertEquals("Hi\n/no_think", LegacyThinkingProfiles.applyPrompt("Hi", strategy, false))
-        assertEquals("Hi\n/think", LegacyThinkingProfiles.applyPrompt("Hi", strategy, true))
-        assertEquals("Hi\n/no_think", LegacyThinkingProfiles.applyPrompt("Hi\n/no_think", strategy, false))
-        assertEquals("Hi", LegacyThinkingProfiles.applyPrompt("Hi", ThinkingControlStrategy.None, false))
     }
 }

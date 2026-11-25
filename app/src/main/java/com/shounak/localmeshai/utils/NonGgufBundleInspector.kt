@@ -3,7 +3,6 @@ package com.shounak.localmeshai.utils
 import android.util.Log
 import com.shounak.localmeshai.models.ModelCapabilities
 import com.shounak.localmeshai.models.ModelFormat
-import com.shounak.localmeshai.models.ThinkingCapability
 import java.io.File
 import java.io.FileInputStream
 import java.io.RandomAccessFile
@@ -29,7 +28,6 @@ sealed interface NativeModelInfoResult {
         val isEmbedding: Boolean,
         val supportsVision: Boolean,
         val supportsAudio: Boolean,
-        val supportsThinking: Boolean?,
         val maxContextTokens: Int
     ) : NativeModelInfoResult
 
@@ -50,16 +48,12 @@ class DefaultNativeModelInfoReader : NativeModelInfoReader {
                 val modalities = modelInfo.inputModalities()
                 val supportsVision = modalities.vision
                 val supportsAudio = modalities.audio
-                val supportsThinking = if (modelInfo is com.google.ai.edge.litertlm.ModelInfo.Llm) {
-                    runCatching { modelInfo.supportsThinking() }.getOrNull()
-                } else null
                 val maxTokens = runCatching { modelInfo.maxContextTokens() }.getOrDefault(0)
 
                 NativeModelInfoResult.Success(
                     isEmbedding = isEmbedding,
                     supportsVision = supportsVision,
                     supportsAudio = supportsAudio,
-                    supportsThinking = supportsThinking,
                     maxContextTokens = maxTokens
                 )
             }
@@ -95,7 +89,6 @@ class DefaultNativeModelInfoReader : NativeModelInfoReader {
  */
 object NonGgufBundleInspector {
     private const val TAG = "NonGgufBundleInspector"
-    const val DETECTOR_VERSION = 9
 
     @Volatile
     var nativeModelInfoReader: NativeModelInfoReader = DefaultNativeModelInfoReader()
@@ -293,23 +286,14 @@ object NonGgufBundleInspector {
             )
         }
 
-        val thinking = when {
-            metadataJson?.optBoolean("enable_thinking", false) == true -> ThinkingCapability.ModelControlled
-            metadataJson?.optString("thinking_mode", "").equals("model_controlled", ignoreCase = true) -> ThinkingCapability.ModelControlled
-            metadataJson?.optString("thinking", "")?.isNotBlank() == true -> ThinkingCapability.ModelControlled
-            mediaPipeMeta?.thinkingCapability != null && mediaPipeMeta.thinkingCapability != ThinkingCapability.Unknown -> mediaPipeMeta.thinkingCapability
-            else -> ThinkingCapability.Unknown
-        }
-
         val contextLength = mediaPipeMeta?.maxSeqLen ?: 0
+        val chatTemplate = metadataJson?.optString("chat_template")?.takeIf { it.isNotBlank() }
 
         val caps = ModelCapabilities(
             supportsText = true,
             supportsVision = hasVisionEncoder,
             supportsAudio = hasAudioEncoder,
-            thinking = thinking,
-            thinkingDetectorVersion = DETECTOR_VERSION,
-            thinkingArtifactIdentity = file.absolutePath,
+            chatTemplate = chatTemplate,
             contextLength = contextLength
         )
 
@@ -503,10 +487,8 @@ object NonGgufBundleInspector {
 
         var supportsVision = false
         var supportsAudio = false
-        var thinking = ThinkingCapability.Unknown
-        var declaredThinking: Boolean? = null
+        var chatTemplate: String? = null
         var reasoningChannels = emptySet<String>()
-        var reasoningPrefill = false
         var contextLength = 2048
 
         // If LlmMetadataProto section exists, parse it directly from file
@@ -524,10 +506,8 @@ object NonGgufBundleInspector {
                     val meta = parseLlmMetadataProto(protoBytes)
                     supportsVision = meta.supportsVision
                     supportsAudio = meta.supportsAudio
-                    thinking = meta.thinkingCapability
-                    declaredThinking = meta.declaredThinking
+                    chatTemplate = meta.jinjaTemplate?.takeIf { it.isNotBlank() }
                     reasoningChannels = meta.reasoningChannels
-                    reasoningPrefill = meta.reasoningPrefill
                     if (meta.maxNumTokens > 0) {
                         contextLength = meta.maxNumTokens
                     }
@@ -553,13 +533,6 @@ object NonGgufBundleInspector {
                 // Authoritative modalities replace guesses directly (NOT OR-ed)
                 supportsVision = nativeResult.supportsVision
                 supportsAudio = nativeResult.supportsAudio
-                if (nativeResult.supportsThinking == true) {
-                    if (thinking != ThinkingCapability.Toggleable) {
-                        thinking = ThinkingCapability.ModelControlled
-                    }
-                } else if (declaredThinking == false && thinking == ThinkingCapability.Unknown) {
-                    thinking = ThinkingCapability.Unsupported
-                }
                 if (nativeResult.maxContextTokens > 0) {
                     contextLength = nativeResult.maxContextTokens
                 }
@@ -585,25 +558,12 @@ object NonGgufBundleInspector {
             }
         }
 
-        val legacyProfile = if (thinking == ThinkingCapability.Unknown && declaredThinking == null) {
-            LegacyThinkingProfiles.controlFor(file, verifiedSha256)
-        } else com.shounak.localmeshai.models.ThinkingControlStrategy.None
-        if (legacyProfile != com.shounak.localmeshai.models.ThinkingControlStrategy.None) thinking = ThinkingCapability.Toggleable
-
         val caps = ModelCapabilities(
             supportsText = true,
             supportsVision = supportsVision,
             supportsAudio = supportsAudio,
-            thinking = thinking,
+            chatTemplate = chatTemplate,
             reasoningChannels = reasoningChannels,
-            reasoningPrefill = reasoningPrefill,
-            thinkingControl = when {
-                legacyProfile != com.shounak.localmeshai.models.ThinkingControlStrategy.None -> legacyProfile
-                thinking == ThinkingCapability.Toggleable -> com.shounak.localmeshai.models.ThinkingControlStrategy.NativeTemplate
-                else -> com.shounak.localmeshai.models.ThinkingControlStrategy.None
-            },
-            thinkingDetectorVersion = DETECTOR_VERSION,
-            thinkingArtifactIdentity = file.absolutePath,
             contextLength = contextLength
         )
 
@@ -724,8 +684,7 @@ object NonGgufBundleInspector {
     private data class DecodedMediaPipeMetadata(
         val maxSeqLen: Int = 0,
         val startToken: String? = null,
-        val stopTokens: List<String> = emptyList(),
-        val thinkingCapability: ThinkingCapability = ThinkingCapability.Unknown
+        val stopTokens: List<String> = emptyList()
     )
 
     /**
@@ -736,15 +695,6 @@ object NonGgufBundleInspector {
         var maxSeqLen = 0
         var startToken: String? = null
         val stopTokens = mutableListOf<String>()
-        val promptStrings = mutableListOf<String>()
-        fun promptTemplate(data: ByteArray) {
-            val reader = ProtoReader(data.inputStream(), data.size.toLong())
-            while (true) {
-                val field = reader.next() ?: break
-                if (field.wire == 2 && field.number in 1..3) promptStrings += String(reader.bytes(131072), StandardCharsets.UTF_8)
-                else reader.skip(field)
-            }
-        }
         val reader = ProtoReader(bytes.inputStream(), bytes.size.toLong())
         while (true) {
             val field = reader.next() ?: break
@@ -763,43 +713,19 @@ object NonGgufBundleInspector {
                 }
                 field.number == 5 && field.wire == 2 -> stopTokens += String(reader.bytes(131072), StandardCharsets.UTF_8)
                 field.number == 6 && field.wire == 2 -> startToken = String(reader.bytes(131072), StandardCharsets.UTF_8)
-                field.number == 8 && field.wire == 2 -> promptTemplate(reader.bytes(131072))
-                field.number == 17 && field.wire == 2 -> {
-                    val data = reader.bytes(131072)
-                    val templates = ProtoReader(data.inputStream(), data.size.toLong())
-                    while (true) {
-                        val template = templates.next() ?: break
-                        if (template.number in 1..3 && template.wire == 2) promptTemplate(templates.bytes(131072))
-                        else templates.skip(template)
-                    }
-                }
                 else -> reader.skip(field)
             }
         }
-        val hasThinkingTags = (promptStrings + stopTokens + listOfNotNull(startToken)).any {
-            it.contains("<think>") || it.contains("</think>")
-        }
-        // MediaPipe prompt prefix/suffix strings are not Jinja expressions or an SDK toggle.
-        return DecodedMediaPipeMetadata(maxSeqLen, startToken, stopTokens,
-            if (hasThinkingTags) ThinkingCapability.ModelControlled else ThinkingCapability.Unknown)
+        return DecodedMediaPipeMetadata(maxSeqLen, startToken, stopTokens)
     }
 
     private data class DecodedLlmMetadata(
         val maxNumTokens: Int = 0,
         val supportsVision: Boolean = false,
         val supportsAudio: Boolean = false,
-        val thinkingCapability: ThinkingCapability = ThinkingCapability.Unknown,
         val jinjaTemplate: String? = null,
-        val declaredThinking: Boolean? = null,
-        val reasoningChannels: Set<String> = emptySet(),
-        val reasoningPrefill: Boolean = false
+        val reasoningChannels: Set<String> = emptySet()
     )
-
-    /**
-     * Parses the protobuf binary data of litert.lm.proto.LlmMetadata
-     * without external generated code dependencies.
-     */
-    internal fun parseLiteRtThinkingForTesting(bytes: ByteArray): ThinkingCapability = parseLlmMetadataProto(bytes).thinkingCapability
 
     private fun parseLlmMetadataProto(bytes: ByteArray): DecodedLlmMetadata {
         val limit = 4 * 1024 * 1024
@@ -807,11 +733,7 @@ object NonGgufBundleInspector {
         var vision = false
         var audio = false
         var jinja: String? = null
-        var declared: Boolean? = null
-        var reasoning = false
         val reasoningNames = mutableSetOf<String>()
-        val promptStrings = mutableListOf<String>()
-        var modelPrefix = ""
         fun nested(data: ByteArray, block: (ProtoReader, ProtoReader.Field) -> Unit) {
             val reader = ProtoReader(data.inputStream(), data.size.toLong())
             while (true) { val field = reader.next() ?: break; block(reader, field) }
@@ -826,19 +748,8 @@ object NonGgufBundleInspector {
                 field.number == 11 && field.wire == 0 -> {
                     val value = reader.varint()
                     require(value == 0L || value == 1L) { "Invalid thinking flag" }
-                    declared = value == 1L
                 }
                 field.number == 7 && field.wire == 2 -> jinja = String(reader.bytes(limit), StandardCharsets.UTF_8)
-                field.number == 3 && field.wire == 2 -> nested(reader.bytes(limit)) { roles, role ->
-                    if (role.number in 1..3 && role.wire == 2) nested(roles.bytes(limit)) { affixes, affix ->
-                        if (affix.number in 1..2 && affix.wire == 2) {
-                            val text = String(affixes.bytes(limit), StandardCharsets.UTF_8)
-                            promptStrings += text
-                            if (role.number == 2 && affix.number == 1) modelPrefix = text
-                        }
-                        else affixes.skip(affix)
-                    } else roles.skip(role)
-                }
                 field.number == 6 && field.wire == 2 -> nested(reader.bytes(limit)) { types, type ->
                     if (type.wire == 2) {
                         vision = vision || type.number in setOf(2, 4, 8, 9)
@@ -861,23 +772,12 @@ object NonGgufBundleInspector {
                         } else channels.skip(channel)
                     }
                     isReasoning = isReasoning || name.lowercase(Locale.ROOT) in setOf("thought", "thinking", "reasoning", "analysis")
-                    reasoning = reasoning || isReasoning
                     if (isReasoning && name.isNotBlank()) reasoningNames += name
                 }
                 else -> reader.skip(field)
             }
         }
-        val templateReasoning = (promptStrings + listOfNotNull(jinja)).any { it.contains("<think>") || it.contains("</think>") }
-        val capability = when {
-            jinja?.contains("enable_thinking") == true -> ThinkingCapability.Toggleable
-            reasoning || templateReasoning || declared == true -> ThinkingCapability.ModelControlled
-            declared == false -> ThinkingCapability.Unsupported
-            else -> ThinkingCapability.Unknown
-        }
-        // Jinja overrides legacy affixes. Never infer an active branch from tag substrings
-        // inside a Jinja program; structured native channels remain authoritative there.
-        val reasoningPrefill = jinja == null && ThinkingTextUtils.parse(modelPrefix, true).isThinkingActive
-        return DecodedLlmMetadata(maxTokens, vision, audio, capability, jinja, declared, reasoningNames, reasoningPrefill)
+        return DecodedLlmMetadata(maxTokens, vision, audio, jinja, reasoningNames)
     }
 
     private fun readInt32LE(bytes: ByteArray, offset: Int): Int {
@@ -909,9 +809,7 @@ object NonGgufBundleInspector {
         return ModelCapabilities(
             supportsText = true,
             supportsVision = false,
-            supportsAudio = false,
-            thinking = ThinkingCapability.Unknown,
-            thinkingDetectorVersion = DETECTOR_VERSION
+            supportsAudio = false
         )
     }
 }

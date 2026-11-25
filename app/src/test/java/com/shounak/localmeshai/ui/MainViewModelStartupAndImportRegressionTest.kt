@@ -6,7 +6,6 @@ import com.shounak.localmeshai.models.ModelArtifact
 import com.shounak.localmeshai.models.ModelBundle
 import com.shounak.localmeshai.models.ModelCapabilities
 import com.shounak.localmeshai.models.ModelFormat
-import com.shounak.localmeshai.models.ThinkingCapability
 import com.shounak.localmeshai.ui.viewmodels.MainViewModel
 import com.shounak.localmeshai.utils.DownloadSnapshot
 import com.shounak.localmeshai.utils.DownloadStateStore
@@ -686,7 +685,6 @@ class MainViewModelStartupAndImportRegressionTest {
         val inspection = NonGgufBundleInspector.inspectMediaPipeTask(multimodalFile)
         assertTrue(inspection.isValid)
         assertTrue("Vision capability must be true", inspection.capabilities.supportsVision)
-        assertEquals("Thinking capability must be ModelControlled", ThinkingCapability.ModelControlled, inspection.capabilities.thinking)
         assertTrue(
             "Attachments must be supported when vision is present",
             ChatRuntimePolicy.supportsAttachments(multimodalFile.absolutePath, inspection.capabilities)
@@ -717,26 +715,12 @@ class MainViewModelStartupAndImportRegressionTest {
             format = ModelFormat.MediaPipeTask
         )
 
-        // Tamper manifest to simulate legacy detector version 0
-        val modelDir = storage.getModelDir(modelId, create = false)
-        val manifestFile = File(modelDir, "manifest.json")
-        val legacyText = manifestFile.readText().replace(
-            "\"thinkingDetectorVersion\": ${NonGgufBundleInspector.DETECTOR_VERSION}",
-            "\"thinkingDetectorVersion\": 0"
-        )
-        manifestFile.writeText(legacyText)
-
-        // Restoring a row must preserve its file identity without parsing or rewriting its model metadata.
         val restoredBundle = storage.getPublishedBundle(modelId)
         assertNotNull(restoredBundle)
-        assertEquals(0, restoredBundle!!.capabilities.thinkingDetectorVersion)
-        assertEquals(legacyText, manifestFile.readText())
-        val originalPath = restoredBundle.mainArtifacts.first().source.location
+        val originalPath = restoredBundle!!.mainArtifacts.first().source.location
         val refreshed = NonGgufBundleInspector.inspectMediaPipeTask(File(originalPath))
         assertTrue(refreshed.isValid)
-        assertEquals(NonGgufBundleInspector.DETECTOR_VERSION, refreshed.capabilities.thinkingDetectorVersion)
         assertTrue(refreshed.capabilities.supportsVision)
-        assertEquals(ThinkingCapability.ModelControlled, refreshed.capabilities.thinking)
         assertEquals(originalPath, storage.getPublishedBundle(modelId)!!.mainArtifacts.first().source.location)
 
     }

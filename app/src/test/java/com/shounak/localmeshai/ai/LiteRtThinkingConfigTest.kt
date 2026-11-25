@@ -8,16 +8,15 @@ class LiteRtThinkingConfigTest {
     @Test fun thinkingIsSetBeforeCreationAndPreservesThePreface() {
         for (enabled in listOf(true, false)) {
             val base = ConversationConfig(extraContext = mapOf("enable_thinking" to enabled), prefillPrefaceOnInit = true)
-            val config = LiteRtThinkingConfig.apply(base, enabled, softSwitch = false)
+            val config = LiteRtThinkingConfig.apply(base, enabled)
             assertEquals(enabled, config.thinkingConfig?.enableThinking)
             assertEquals(base.extraContext, config.extraContext)
             assertTrue(config.prefillPrefaceOnInit)
         }
     }
 
-    @Test fun softSwitchAndUnsupportedModelsKeepTheirOriginalConfig() {
+    @Test fun nullThinkingPreferenceKeepsOriginalConfig() {
         val base = ConversationConfig()
-        assertEquals(base, LiteRtThinkingConfig.apply(base, true, softSwitch = true))
-        assertEquals(base, LiteRtThinkingConfig.apply(base, null, softSwitch = false))
+        assertEquals(base, LiteRtThinkingConfig.apply(base, null))
     }
 }

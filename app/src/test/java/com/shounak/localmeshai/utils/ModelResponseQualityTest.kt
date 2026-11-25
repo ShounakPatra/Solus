@@ -35,6 +35,18 @@ class ModelResponseQualityTest {
         )
         assertTrue(
             ModelResponseQuality.isGenericNonAnswer(
+                "Okay, I understand. I will respond to your request in a concise and informative manner.",
+                "hi"
+            )
+        )
+        assertTrue(
+            ModelResponseQuality.isGenericNonAnswer(
+                "Okay, I understand. I will respond to your request in a concise and informative manner.",
+                "explain gravity"
+            )
+        )
+        assertTrue(
+            ModelResponseQuality.isGenericNonAnswer(
                 "I am unable to provide information on the topic of what can you do.",
                 "what can you do"
             )

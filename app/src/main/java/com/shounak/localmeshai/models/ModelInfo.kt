@@ -59,7 +59,6 @@ data class ModelInfo(
     val requiresHuggingFaceToken: Boolean = false,
     val isRecommended: Boolean = false,
     val supportsAudioInput: Boolean = false,
-    val supportsThinkingMode: Boolean = false,
     val contextWindowTokens: Int? = null,
     val sha256: String? = null,
     /**
@@ -147,19 +146,8 @@ data class ModelInfo(
             return supportsAudioInput
         }
 
-    val thinkingCapability: ThinkingCapability
-        get() {
-            if (bundle != null && bundle.capabilities.thinking != ThinkingCapability.Unknown) {
-                return bundle.capabilities.thinking
-            }
-            if (downloadSpec != null && downloadSpec.capabilities.thinking != ThinkingCapability.Unknown) {
-                return downloadSpec.capabilities.thinking
-            }
-            if (supportsThinkingMode) {
-                return ThinkingCapability.ModelControlled
-            }
-            return ThinkingCapability.Unknown
-        }
+    val chatTemplate: String?
+        get() = bundle?.capabilities?.chatTemplate ?: downloadSpec?.capabilities?.chatTemplate
 
     val isFutureBuild: Boolean
         get() = status == ModelStatus.NeedsConversion || status == ModelStatus.ComingSoon

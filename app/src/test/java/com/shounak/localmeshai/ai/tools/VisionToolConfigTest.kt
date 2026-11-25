@@ -19,7 +19,7 @@ class VisionToolConfigTest {
     }
 
     @Test fun addingToolsPreservesThinkingControlsAndRestoredConversationMessages() {
-        val context = ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
+        val context = ThinkingModeConfig.liteRtExtraContext(thinkingEnabled = false)
         val messages = listOf(Message.of(com.google.ai.edge.litertlm.Content.Text("Previous question")))
         val base = ConversationConfig(initialMessages = messages, extraContext = context)
         val providers = listOf(tool(CalculatorTool()), tool(CurrentDateTimeTool()))

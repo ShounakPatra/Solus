@@ -17,7 +17,6 @@ object ModelCatalog {
             modelPageUrl = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm",
             supportsVisionInput = true,
             supportsAudioInput = true,
-            supportsThinkingMode = true,
             isRecommended = true,
             contextWindowTokens = 32768
         ),
@@ -66,8 +65,7 @@ object ModelCatalog {
             deviceTarget = "8 GB nominal RAM, all supported chipsets",
             url = hf("litert-community/DeepSeek-R1-Distill-Qwen-1.5B", "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv1280.task"),
             modelPageUrl = "https://huggingface.co/litert-community/DeepSeek-R1-Distill-Qwen-1.5B",
-            isRecommended = true,
-            supportsThinkingMode = true
+            isRecommended = true
         ),
         ModelInfo(
             id = "gemma3n_e2b_vision",
@@ -116,7 +114,6 @@ object ModelCatalog {
             url = hf("litert-community/Qwen3-0.6B", "Qwen3-0.6B.litertlm", revision = "a3c5d805ae362dff7f580bc25f2dfb9a5a7eaa76"),
             modelPageUrl = "https://huggingface.co/litert-community/Qwen3-0.6B",
             isRecommended = true,
-            supportsThinkingMode = true,
             sha256 = "555579ff2f4fd13379abe69c1c3ab5200f7338bc92471557f1d6614a6e5ab0b4",
             expectedFileSizeBytes = 614_236_160L,
             contextWindowTokens = 4096
@@ -417,7 +414,6 @@ object ModelCatalog {
             deviceTarget = "6 GB nominal RAM, all supported chipsets",
             url = hf("unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF", "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf"),
             modelPageUrl = "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF",
-            supportsThinkingMode = true,
             contextWindowTokens = 4096,
             expectedFileSizeBytes = 1_117_321_312L
         ),
@@ -433,7 +429,6 @@ object ModelCatalog {
             deviceTarget = "12–16 GB RAM recommended",
             url = hf("unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF", "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf"),
             modelPageUrl = "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF",
-            supportsThinkingMode = true,
             contextWindowTokens = 4096,
             expectedFileSizeBytes = 4_683_272_352L  // ~4.36 GB Q4_K_M
         ),
@@ -449,7 +444,6 @@ object ModelCatalog {
             deviceTarget = "12–16 GB RAM recommended",
             url = hf("unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF", "DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf"),
             modelPageUrl = "https://huggingface.co/unsloth/DeepSeek-R1-Distill-Llama-8B-GGUF",
-            supportsThinkingMode = true,
             contextWindowTokens = 4096,
             expectedFileSizeBytes = 4_920_737_216L
         ),
@@ -621,7 +615,6 @@ object ModelCatalog {
             modelPageUrl = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm",
             supportsVisionInput = true,
             supportsAudioInput = true,
-            supportsThinkingMode = true,
             contextWindowTokens = 32768
         ),
         ModelInfo(

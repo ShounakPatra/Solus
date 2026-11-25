@@ -677,8 +677,7 @@ object HuggingFaceModelResolver {
         val capabilities = ModelCapabilities(
             supportsText = true,
             supportsVision = isMultimodal,
-            supportsAudio = isAudio,
-            thinking = com.shounak.localmeshai.models.ThinkingCapability.Unknown
+            supportsAudio = isAudio
         )
 
         val format = when {

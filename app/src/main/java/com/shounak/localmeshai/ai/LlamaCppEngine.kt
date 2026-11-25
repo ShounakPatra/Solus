@@ -145,6 +145,7 @@ data class LlamaModelMetadata(
     val trainContextLength: Int = 0,
     val vocabSize: Int = 0,
     val hasChatTemplate: Boolean = false,
+    val chatTemplate: String = "",
     val backend: String = "CPU",
     val nGpuLayers: Int = 0,
     val contextSize: Int = 0,
@@ -199,6 +200,7 @@ data class LlamaModelInspectionResult(
     val embeddingLength: Int = 0,
     val layerCount: Int = 0,
     val hasChatTemplate: Boolean = false,
+    val chatTemplate: String = "",
     val primaryQuantization: String = "",
     val isSupported: Boolean = false,
     val error: String = "",
@@ -206,8 +208,7 @@ data class LlamaModelInspectionResult(
     val splitCount: Int = -1,
     val isProjector: Boolean = false,
     val clipHasVisionEncoder: Boolean = false,
-    val clipHasAudioEncoder: Boolean = false,
-    val thinkingCapability: String = "Unknown"
+    val clipHasAudioEncoder: Boolean = false
 )
 
 /**
@@ -764,6 +765,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                     embeddingLength = json.optInt("n_embd", 0),
                     layerCount = json.optInt("n_layer", 0),
                     hasChatTemplate = json.optBoolean("has_chat_template", false),
+                    chatTemplate = json.optString("chat_template", ""),
                     primaryQuantization = json.optString("primary_quant", ""),
                     isSupported = json.optBoolean("is_supported", false),
                     error = json.optString("error", ""),
@@ -771,8 +773,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                     splitCount = json.optInt("split_count", -1),
                     isProjector = json.optBoolean("is_projector", false),
                     clipHasVisionEncoder = json.optBoolean("clip_has_vision_encoder", false),
-                    clipHasAudioEncoder = json.optBoolean("clip_has_audio_encoder", false),
-                    thinkingCapability = json.optString("thinking_capability", "Unknown")
+                    clipHasAudioEncoder = json.optBoolean("clip_has_audio_encoder", false)
                 )
             }.getOrElse {
                 fun extractString(key: String): String =
@@ -795,6 +796,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                     embeddingLength = extractInt("n_embd"),
                     layerCount = extractInt("n_layer"),
                     hasChatTemplate = extractBoolean("has_chat_template"),
+                    chatTemplate = extractString("chat_template"),
                     primaryQuantization = extractString("primary_quant"),
                     isSupported = extractBoolean("is_supported"),
                     error = extractString("error"),
@@ -802,8 +804,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                     splitCount = extractInt("split_count", -1),
                     isProjector = extractBoolean("is_projector"),
                     clipHasVisionEncoder = extractBoolean("clip_has_vision_encoder"),
-                    clipHasAudioEncoder = extractBoolean("clip_has_audio_encoder"),
-                    thinkingCapability = extractString("thinking_capability").ifBlank { "Unknown" }
+                    clipHasAudioEncoder = extractBoolean("clip_has_audio_encoder")
                 )
             }
         }
@@ -1549,6 +1550,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                 trainContextLength = json.optInt("n_ctx_train", 0),
                 vocabSize = json.optInt("n_vocab", 0),
                 hasChatTemplate = json.optBoolean("has_chat_template", false),
+                chatTemplate = json.optString("chat_template", ""),
                 backend = json.optString("backend", "CPU"),
                 nGpuLayers = json.optInt("n_gpu_layers", 0),
                 contextSize = json.optInt("n_ctx", 0),
@@ -1582,6 +1584,7 @@ class LlamaCppEngine @VisibleForTesting internal constructor(
                 trainContextLength = extractInt("n_ctx_train"),
                 vocabSize = extractInt("n_vocab"),
                 hasChatTemplate = extractBoolean("has_chat_template"),
+                chatTemplate = extractString("chat_template"),
                 backend = extractString("backend").ifBlank { "CPU" },
                 nGpuLayers = extractInt("n_gpu_layers"),
                 contextSize = extractInt("n_ctx"),

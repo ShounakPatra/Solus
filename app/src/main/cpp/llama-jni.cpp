@@ -1038,104 +1038,10 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeInspectModel(
     }
 
     std::string template_str = has_chat_template ? get_str_val(tmpl_idx) : "";
-    std::string thinking_capability = "Unknown";
     const auto tokenizer_tokens = gguf_find_key(ctx, "tokenizer.ggml.tokens");
     const bool valid_tokens = tokenizer_tokens < 0 || (gguf_get_kv_type(ctx, tokenizer_tokens) == GGUF_TYPE_ARRAY &&
         gguf_get_arr_type(ctx, tokenizer_tokens) == GGUF_TYPE_STRING);
     if (!valid_tokens) { is_supported = false; error_msg = "Tokenizer tokens must be an array of strings"; }
-    if (valid_tokens && !is_projector && has_chat_template && !template_str.empty()) {
-        try {
-            std::string bos_token = "";
-            std::string eos_token = "";
-            int64_t tokens_idx = gguf_find_key(ctx, "tokenizer.ggml.tokens");
-            if (tokens_idx >= 0 && gguf_get_kv_type(ctx, tokens_idx) == GGUF_TYPE_ARRAY) {
-                int64_t bos_idx = gguf_find_key(ctx, "tokenizer.ggml.bos_token_id");
-                if (bos_idx >= 0) {
-                    uint32_t id = get_u32_val(bos_idx);
-                    size_t n_tokens = gguf_get_arr_n(ctx, tokens_idx);
-                    if (id < n_tokens) {
-                        const char * s = gguf_get_arr_str(ctx, tokens_idx, id);
-                        if (s) bos_token = s;
-                    }
-                }
-                int64_t eos_idx = gguf_find_key(ctx, "tokenizer.ggml.eos_token_id");
-                if (eos_idx >= 0) {
-                    uint32_t id = get_u32_val(eos_idx);
-                    size_t n_tokens = gguf_get_arr_n(ctx, tokens_idx);
-                    if (id < n_tokens) {
-                        const char * s = gguf_get_arr_str(ctx, tokens_idx, id);
-                        if (s) eos_token = s;
-                    }
-                }
-            }
-
-            auto tmpls = common_chat_templates_init(nullptr, template_str, bos_token, eos_token);
-            if (tmpls) {
-                common_chat_templates_inputs inputs_on;
-                inputs_on.use_jinja = true;
-                inputs_on.add_generation_prompt = true;
-                inputs_on.enable_thinking = true;
-                inputs_on.chat_template_kwargs["enable_thinking"] = "true";
-                inputs_on.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
-                common_chat_msg msg;
-                msg.role = "user";
-                msg.content = "test";
-                inputs_on.messages = { msg };
-
-                common_chat_params params_on = common_chat_templates_apply(tmpls.get(), inputs_on);
-                if (params_on.supports_thinking) {
-                    common_chat_templates_inputs inputs_off = inputs_on;
-                    inputs_off.enable_thinking = false;
-                    inputs_off.chat_template_kwargs["enable_thinking"] = "false";
-                    inputs_off.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
-                    common_chat_params params_off = common_chat_templates_apply(tmpls.get(), inputs_off);
-
-                    std::string prompt_on = params_on.prompt.str();
-                    std::string prompt_off = params_off.prompt.str();
-
-                    common_chat_templates_inputs inputs_base = inputs_on;
-                    inputs_base.add_generation_prompt = false;
-                    common_chat_params params_base = common_chat_templates_apply(tmpls.get(), inputs_base);
-                    std::string prompt_base = params_base.prompt.str();
-
-                    std::string prefix_on = !params_on.generation_prompt.empty()
-                        ? params_on.generation_prompt
-                        : (prompt_on.size() >= prompt_base.size() ? prompt_on.substr(prompt_base.size()) : prompt_on);
-
-                    std::string prefix_off = !params_off.generation_prompt.empty()
-                        ? params_off.generation_prompt
-                        : (prompt_off.size() >= prompt_base.size() ? prompt_off.substr(prompt_base.size()) : prompt_off);
-
-                    std::string start_tag = !params_on.thinking_start_tag.empty() ? params_on.thinking_start_tag : "<think>";
-                    std::vector<std::string> end_tags = !params_on.thinking_end_tags.empty()
-                        ? params_on.thinking_end_tags
-                        : std::vector<std::string>{"</think>"};
-
-                    ReasoningPrefixState state_on = inspect_prefix_reasoning_state(prefix_on, start_tag, end_tags);
-                    ReasoningPrefixState state_off = inspect_prefix_reasoning_state(prefix_off, start_tag, end_tags);
-
-                    if (state_off == ReasoningPrefixState::CLOSED_THINKING || state_off == ReasoningPrefixState::ORDINARY_ANSWER) {
-                        if (!params_off.supports_thinking || state_on == ReasoningPrefixState::OPEN_THINKING || prompt_on != prompt_off) {
-                            thinking_capability = "Toggleable";
-                        } else {
-                            thinking_capability = "ModelControlled";
-                        }
-                    } else if (state_off == ReasoningPrefixState::OPEN_THINKING) {
-                        thinking_capability = "ModelControlled";
-                    } else {
-                        thinking_capability = "ModelControlled";
-                    }
-                } else {
-                    thinking_capability = "Unsupported";
-                }
-            }
-        } catch (const std::exception & e) {
-            LOGW("SolusLlamaJNI: Chat template thinking capability inspection failed: %s", e.what());
-            thinking_capability = "Unknown";
-        } catch (...) {
-            thinking_capability = "Unknown";
-        }
-    }
 
     gguf_free(ctx);
 
@@ -1151,6 +1057,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeInspectModel(
          << "\"n_embd\":" << n_embd << ","
          << "\"n_layer\":" << n_layer << ","
          << "\"has_chat_template\":" << (has_chat_template ? "true" : "false") << ","
+         << "\"chat_template\":\"" << escape_json(template_str) << "\","
          << "\"primary_quant\":\"" << escape_json(primary_quant) << "\","
          << "\"is_supported\":" << (is_supported ? "true" : "false") << ","
          << "\"split_no\":" << split_no << ","
@@ -1158,7 +1065,6 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeInspectModel(
          << "\"is_projector\":" << (is_projector ? "true" : "false") << ","
          << "\"clip_has_vision_encoder\":" << (clip_has_vision_encoder ? "true" : "false") << ","
          << "\"clip_has_audio_encoder\":" << (clip_has_audio_encoder ? "true" : "false") << ","
-         << "\"thinking_capability\":\"" << escape_json(thinking_capability) << "\","
          << "\"error\":\"" << escape_json(error_msg) << "\""
          << "}";
 
@@ -2494,6 +2400,7 @@ Java_com_shounak_localmeshai_ai_LlamaCppEngine_nativeGetMetadata(
          << "\"n_ctx_train\":" << n_ctx_train << ","
          << "\"n_vocab\":" << n_vocab << ","
          << "\"has_chat_template\":" << (chat_tmpl != nullptr ? "true" : "false") << ","
+         << "\"chat_template\":\"" << escape_json(chat_tmpl != nullptr ? chat_tmpl : "") << "\","
          << "\"backend\":\"" << (holder->active_backend == SOLUS_BACKEND_VULKAN ? "Vulkan" : "CPU") << "\","
          << "\"n_ctx\":" << holder->n_ctx << ","
          << "\"n_batch\":" << holder->n_batch << ","
