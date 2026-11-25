@@ -15,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap
 object ThinkingModeConfig {
     const val ENABLE_THINKING_KEY = "enable_thinking"
     const val DETECTOR_VERSION = 9
-    const val LITERTLM_RUNTIME_VERSION = "0.18.0"
+    const val LITERTLM_RUNTIME_VERSION = "0.19.1"
 
     private data class ArtifactCacheKey(
         val modelId: String,
