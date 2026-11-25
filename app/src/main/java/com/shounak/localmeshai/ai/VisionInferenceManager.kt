@@ -227,7 +227,9 @@ class VisionInferenceManager(context: Context) {
         private const val TAG = "VisionInferenceManager"
         private const val DEFAULT_IMAGE_PROMPT = "Describe the image"
         private const val MAX_RESPONSE_TOKENS = 2048
+        private const val MEDIA_PIPE_MAX_TOP_K = 200
         private const val DEFAULT_VISION_TEMPERATURE = 0.7f
+        private const val RETRY_VISION_TEMPERATURE = 0.2f
 
         private val THINK_BLOCK_REGEX =
             Regex("""<\s*(?:think|thought|reasoning)\s*>[\s\S]*?<\s*/\s*(?:think|thought|reasoning)\s*>""", RegexOption.IGNORE_CASE)
@@ -629,17 +631,48 @@ class VisionInferenceManager(context: Context) {
                     responseController = responseController,
                     onUpdate = effectiveOnUpdate
                 )
-                RuntimeKind.MediaPipeVision -> streamMediaPipeVision(
-                    bitmap = effectiveBitmap,
-                    prompt = prompt,
-                    audioFile = audioFile,
-                    audioBytes = audioBytes,
-                    timing = timing,
-                    onProgress = reportProgress,
-                    onTokensGenerated = { lastGeneratedTokens = it },
-                    responseSnapshot = publisher::rawText,
-                    onUpdate = effectiveOnUpdate
-                )
+                RuntimeKind.MediaPipeVision -> {
+                    val firstOutput = streamMediaPipeVision(
+                        bitmap = effectiveBitmap,
+                        prompt = prompt,
+                        audioFile = audioFile,
+                        audioBytes = audioBytes,
+                        timing = timing,
+                        onProgress = reportProgress,
+                        onTokensGenerated = { lastGeneratedTokens = it },
+                        responseSnapshot = publisher::rawText,
+                        onUpdate = effectiveOnUpdate
+                    )
+                    val cleanedFirst = ModelOutputSanitizer.clean(firstOutput)
+                    val visibleFirst = if (!showReasoning) {
+                        ThinkingTextUtils.extractFinalAnswerOnly(cleanedFirst)
+                    } else {
+                        ThinkingTextUtils.finalResponseOrReasoning(cleanedFirst, allowReasoningFallback = false)
+                    }
+                    if (!stopRequested && !isBeingClosed && visibleFirst.isBlank() && responseController.getFinalAnswer().isBlank()) {
+                        Log.w(TAG, "MediaPipeVision returned empty response on attempt 1; retrying once")
+                        currentAttemptId = 2
+                        lastGeneratedTokens = null
+                        timing?.beginAttempt()
+                        responseController.beginAttempt(2)
+                        publisher.beginAttempt(2)
+                        streamMediaPipeVision(
+                            bitmap = effectiveBitmap,
+                            prompt = prompt,
+                            audioFile = audioFile,
+                            audioBytes = audioBytes,
+                            temperatureOverride = RETRY_VISION_TEMPERATURE,
+                            seedSalt = 1,
+                            timing = timing,
+                            onProgress = reportProgress,
+                            onTokensGenerated = { lastGeneratedTokens = it },
+                            responseSnapshot = publisher::rawText,
+                            onUpdate = effectiveOnUpdate
+                        )
+                    } else {
+                        firstOutput
+                    }
+                }
                 RuntimeKind.LlamaCpp -> {
                     responseController.isStructuredMode = true
                     streamLlamaCppVision(
@@ -670,10 +703,16 @@ class VisionInferenceManager(context: Context) {
             } else {
                 responseController.getReasoningText()
             }
-            val cleanResponse = if (runtime == RuntimeKind.LiteRtLm) {
-                ModelOutputSanitizer.clean(rawResponse)
-            } else {
-                responseController.getFinalAnswer()
+            val controllerAnswer = responseController.getFinalAnswer()
+            val cleanResponse = when {
+                runtime == RuntimeKind.LiteRtLm -> ModelOutputSanitizer.clean(rawResponse)
+                controllerAnswer.isNotBlank() -> controllerAnswer
+                rawResponse.isNotBlank() -> {
+                    val sanitized = ModelOutputSanitizer.clean(rawResponse)
+                    if (!showReasoning) ThinkingTextUtils.extractFinalAnswerOnly(sanitized)
+                    else ThinkingTextUtils.finalResponseOrReasoning(sanitized, allowReasoningFallback = false)
+                }
+                else -> ""
             }
             val finalized = ResponseFinalizer.finalize(
                 requestId = requestId,
@@ -917,12 +956,13 @@ class VisionInferenceManager(context: Context) {
             userPreference = thinkingMode
         )
 
-        val sampling = profileSampling()
-        val config = if (!initialMessages.isNullOrEmpty() || extraCtx.isNotEmpty() || sampling.maxTokens > 0) {
+        val configuredMaxTokens = com.shounak.localmeshai.utils.AppSettings.getInstance(context).settings.value.defaultMaxLength
+            .takeIf { it > 0 }
+        val config = if (!initialMessages.isNullOrEmpty() || extraCtx.isNotEmpty() || configuredMaxTokens != null) {
             ConversationConfig(
                 initialMessages = initialMessages.orEmpty(),
                 extraContext = extraCtx,
-                maxOutputToken = if (sampling.maxTokens > 0) sampling.maxTokens else null
+                maxOutputToken = configuredMaxTokens
             )
         } else null
         liteRtConversationThinking = extraCtx[ThinkingModeConfig.ENABLE_THINKING_KEY] as? Boolean
@@ -1209,7 +1249,7 @@ class VisionInferenceManager(context: Context) {
         val optionsBuilder = LlmInference.LlmInferenceOptions.builder()
             .setModelPath(modelPath)
             .setMaxTokens(targetTokens)
-            .setMaxTopK(40)
+            .setMaxTopK(MEDIA_PIPE_MAX_TOP_K)
             .setMaxNumImages(1)
             .setPreferredBackend(LlmInference.Backend.CPU)
         if (supportsAudioInput) {
@@ -1229,7 +1269,7 @@ class VisionInferenceManager(context: Context) {
             val fallbackOptions = LlmInference.LlmInferenceOptions.builder()
                 .setModelPath(modelPath)
                 .setMaxTokens(1024)
-                .setMaxTopK(40)
+                .setMaxTopK(MEDIA_PIPE_MAX_TOP_K)
                 .setMaxNumImages(1)
                 .setPreferredBackend(LlmInference.Backend.CPU)
                 .build()
@@ -1460,6 +1500,8 @@ class VisionInferenceManager(context: Context) {
         prompt: String,
         audioFile: File?,
         audioBytes: ByteArray?,
+        temperatureOverride: Float? = null,
+        seedSalt: Int = 0,
         timing: InferenceTiming? = null,
         onProgress: ((RequestProgress) -> Unit)? = null,
         onTokensGenerated: ((Int) -> Unit)? = null,
@@ -1491,10 +1533,10 @@ class VisionInferenceManager(context: Context) {
                 .build()
             val sampling = profileSampling()
             val sessionOptions = LlmInferenceSession.LlmInferenceSessionOptions.builder()
-                .setTopK(sampling.topK)
+                .setTopK(sampling.topK.coerceIn(1, MEDIA_PIPE_MAX_TOP_K))
                 .setTopP(sampling.topP)
-                .setTemperature(sampling.temperature)
-                .setRandomSeed(0)
+                .setTemperature(temperatureOverride ?: sampling.temperature)
+                .setRandomSeed(seedSalt)
                 .setGraphOptions(graphOptions)
                 .build()
             val session = try {

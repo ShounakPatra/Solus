@@ -60,4 +60,40 @@ class ChatPromptPolicyTest {
         assertTrue(result.contains(memoryBlock))
         assertTrue(result.endsWith("What is my dog's name?"))
     }
+
+    @Test
+    fun nonThinkingNativeGemmaTaskDoesNotReceiveNoThinkPreamble() {
+        val result = ChatPromptPolicy.mediaPipePrompt(
+            fullHistoryPrompt = "User: hola\nAssistant:",
+            rawUserText = "hola",
+            useNativeGemmaTaskTemplate = true,
+            thinkingMode = false,
+            hasNativeThinkingMode = false
+        )
+
+        assertEquals("hola", result)
+        assertFalse(result.contains("<think>"))
+    }
+
+    @Test
+    fun thinkingMediaPipeModelReceivesNoThinkPreambleOnlyWhenDisabled() {
+        val suppressed = ChatPromptPolicy.mediaPipePrompt(
+            fullHistoryPrompt = "User: hola\nAssistant:",
+            rawUserText = "hola",
+            useNativeGemmaTaskTemplate = false,
+            thinkingMode = false,
+            hasNativeThinkingMode = true
+        )
+        assertTrue(suppressed.contains("Do not emit <think> tags"))
+        assertTrue(suppressed.endsWith("User: hola\nAssistant:"))
+
+        val enabled = ChatPromptPolicy.mediaPipePrompt(
+            fullHistoryPrompt = "User: hola\nAssistant:",
+            rawUserText = "hola",
+            useNativeGemmaTaskTemplate = false,
+            thinkingMode = true,
+            hasNativeThinkingMode = true
+        )
+        assertEquals("User: hola\nAssistant:", enabled)
+    }
 }

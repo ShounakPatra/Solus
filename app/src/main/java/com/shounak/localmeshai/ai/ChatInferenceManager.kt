@@ -93,13 +93,26 @@ class ChatInferenceManager(context: Context) {
     private fun profileSampling(): LlamaSamplingParams {
         val profile = com.shounak.localmeshai.features.WorkspacePreferences.get(context).profile(profileModelId)
         val appData = AppSettings.getInstance(context).settings.value
-        val maxTokens = if (appData.defaultMaxLength > 0) appData.defaultMaxLength else 1024
+        val maxTokens = if (appData.defaultMaxLength > 0) appData.defaultMaxLength else MAX_RESPONSE_TOKENS
+        val defaultTemp = if (runtime == RuntimeKind.MediaPipe &&
+            profile.temperature == null &&
+            kotlin.math.abs(appData.defaultTemperature - AppSettings.DEFAULT_TEMPERATURE) < 0.01f
+        ) {
+            mediaPipeTemperature
+        } else {
+            profile.temperature ?: appData.defaultTemperature
+        }
         return LlamaSamplingParams(
-            temperature = profile.temperature ?: appData.defaultTemperature,
+            temperature = defaultTemp,
             topP = profile.topP ?: appData.defaultTopP,
             topK = profile.topK ?: appData.defaultTopK,
             maxTokens = maxTokens
         )
+    }
+
+    private fun configuredLiteRtMaxOutputTokens(): Int? {
+        val configured = AppSettings.getInstance(context).settings.value.defaultMaxLength
+        return if (configured > 0) configured else null
     }
 
     private var runtime = RuntimeKind.None
@@ -162,6 +175,7 @@ class ChatInferenceManager(context: Context) {
     companion object {
         private const val TAG = "ChatInferenceManager"
         private const val MAX_RESPONSE_TOKENS = 1024
+        private const val MEDIA_PIPE_MAX_TOP_K = 200
         private const val DEFAULT_TEMPERATURE = 0.7f
         private const val TINY_MODEL_TEMPERATURE = 0.35f
         private const val RETRY_TEMPERATURE = 0.2f
@@ -717,7 +731,7 @@ class ChatInferenceManager(context: Context) {
         val options = LlmInference.LlmInferenceOptions.builder()
             .setModelPath(modelPath)
             .setMaxTokens(effectiveTokens)
-            .setMaxTopK(40)
+            .setMaxTopK(MEDIA_PIPE_MAX_TOP_K)
             .setPreferredBackend(LlmInference.Backend.CPU)
             .build()
 
@@ -777,6 +791,7 @@ class ChatInferenceManager(context: Context) {
         // For MediaPipe: stateless — the full history prompt is sent each turn.
         // Prepend thinking instruction for non-default models only (default models
         // handle thinking natively via their chat template + /no_think token).
+        val hasNativeMediaPipeThinking = isDefaultThinkingModel || supportsTextNoThinkingSwitch
         val mediaPipeBasePrompt = if (runtime == RuntimeKind.MediaPipe) {
             ChatPromptPolicy.mediaPipeBasePrompt(
                 fullHistoryPrompt = inferencePrompt,
@@ -787,12 +802,15 @@ class ChatInferenceManager(context: Context) {
         } else {
             inferencePrompt
         }
-        val mediaPipePrompt = if (runtime != RuntimeKind.MediaPipe) "" else when {
-            !thinkingMode ->
-                buildNoThinkingMediaPipePrompt(mediaPipeBasePrompt)
-            thinkingMode && !isDefaultThinkingModel ->
-                "Reason carefully before giving the final answer.\n\n$mediaPipeBasePrompt"
-            else -> mediaPipeBasePrompt
+        val mediaPipePrompt = if (runtime != RuntimeKind.MediaPipe) "" else {
+            ChatPromptPolicy.mediaPipePrompt(
+                fullHistoryPrompt = inferencePrompt,
+                rawUserText = inferenceUserText,
+                useNativeGemmaTaskTemplate = useNativeGemmaTaskTemplate,
+                memoryContext = memoryContext,
+                thinkingMode = thinkingMode,
+                hasNativeThinkingMode = hasNativeMediaPipeThinking
+            )
         }
         timing?.recordRuntime(++requestsSinceLoad, runtimeThreads, activeBackendDisplayName,
             when (runtime) {
@@ -892,14 +910,47 @@ class ChatInferenceManager(context: Context) {
                     responseController = responseController,
                     onUpdate = effectiveOnUpdate
                 )
-                RuntimeKind.MediaPipe -> streamMediaPipe(
-                    prompt = mediaPipePrompt,
-                    timing = timing,
-                    onProgress = reportProgress,
-                    onTokensGenerated = { lastNonLlamaTokenCount = it },
-                    responseSnapshot = publisher::rawText,
-                    onUpdate = effectiveOnUpdate
-                )
+                RuntimeKind.MediaPipe -> {
+                    val firstOutput = streamMediaPipe(
+                        prompt = mediaPipePrompt,
+                        timing = timing,
+                        onProgress = reportProgress,
+                        onTokensGenerated = { lastNonLlamaTokenCount = it },
+                        responseSnapshot = publisher::rawText,
+                        onUpdate = effectiveOnUpdate
+                    )
+                    val cleanedFirst = ModelOutputSanitizer.cleanAssistantText(firstOutput, rawUserText)
+                    val visibleFirst = if (!thinkingMode) {
+                        ThinkingTextUtils.extractFinalAnswerOnly(cleanedFirst)
+                    } else {
+                        ThinkingTextUtils.finalResponseOrReasoning(cleanedFirst, allowReasoningFallback = false)
+                    }
+                    if (!stopRequested && !isBeingClosed && visibleFirst.isBlank() && responseController.getFinalAnswer().isBlank()) {
+                        Log.w(TAG, "MediaPipe returned empty response on attempt 1; retrying once with fallback prompt")
+                        attempt = 2
+                        lastNonLlamaTokenCount = null
+                        timing?.beginAttempt()
+                        responseController.beginAttempt(2)
+                        publisher.beginAttempt(2)
+                        val retryPrompt = if (useNativeGemmaTaskTemplate) {
+                            ChatPromptPolicy.nativeGemmaRetryPrompt(inferenceUserText, memoryContext)
+                        } else {
+                            mediaPipeBasePrompt
+                        }
+                        streamMediaPipe(
+                            prompt = retryPrompt,
+                            temperatureOverride = RETRY_TEMPERATURE,
+                            seedSalt = 1,
+                            timing = timing,
+                            onProgress = reportProgress,
+                            onTokensGenerated = { lastNonLlamaTokenCount = it },
+                            responseSnapshot = publisher::rawText,
+                            onUpdate = effectiveOnUpdate
+                        )
+                    } else {
+                        firstOutput
+                    }
+                }
                 RuntimeKind.LlamaCpp -> streamLlamaCpp(
                     prompt = inferencePrompt,
                     rawUserText = inferenceUserText,
@@ -924,10 +975,16 @@ class ChatInferenceManager(context: Context) {
             } else {
                 responseController.getReasoningText()
             }
-            val cleanResponse = if (runtime == RuntimeKind.LiteRtLm) {
-                ModelOutputSanitizer.cleanAssistantText(response, rawUserText)
-            } else {
-                responseController.getFinalAnswer()
+            val controllerAnswer = responseController.getFinalAnswer()
+            val cleanResponse = when {
+                runtime == RuntimeKind.LiteRtLm -> ModelOutputSanitizer.cleanAssistantText(response, rawUserText)
+                controllerAnswer.isNotBlank() -> controllerAnswer
+                response.isNotBlank() -> {
+                    val sanitized = ModelOutputSanitizer.cleanAssistantText(response, rawUserText)
+                    if (!thinkingMode) ThinkingTextUtils.extractFinalAnswerOnly(sanitized)
+                    else ThinkingTextUtils.finalResponseOrReasoning(sanitized, allowReasoningFallback = false)
+                }
+                else -> ""
             }
             val finalized = ResponseFinalizer.finalize(
                 requestId = requestId,
@@ -1176,7 +1233,7 @@ class ChatInferenceManager(context: Context) {
 
     private fun streamMediaPipe(
         prompt: String,
-        temperature: Float = mediaPipeTemperature,
+        temperatureOverride: Float? = null,
         seedSalt: Int = 0,
         timing: InferenceTiming? = null,
         onProgress: ((RequestProgress) -> Unit)? = null,
@@ -1187,9 +1244,9 @@ class ChatInferenceManager(context: Context) {
         val inference = mediaPipeInference ?: throw IllegalStateException("Inference not initialized")
         val sampling = profileSampling()
         val sessionOptions = LlmInferenceSession.LlmInferenceSessionOptions.builder()
-            .setTopK(sampling.topK)
+            .setTopK(sampling.topK.coerceIn(1, MEDIA_PIPE_MAX_TOP_K))
             .setTopP(sampling.topP)
-            .setTemperature(sampling.temperature)
+            .setTemperature(temperatureOverride ?: sampling.temperature)
             .setRandomSeed(31 * prompt.hashCode() + seedSalt)
             .build()
         val session = LlmInferenceSession.createFromOptions(inference, sessionOptions)
@@ -1504,12 +1561,6 @@ class ChatInferenceManager(context: Context) {
     }
 
 
-    private fun buildNoThinkingMediaPipePrompt(prompt: String): String {
-        return "Skip analysis and reasoning. Do not emit <think> tags. " +
-            "Start the final answer immediately.\n\n$prompt"
-    }
-
-
     val isStopRequested: Boolean
         get() = stopRequested
 
@@ -1581,7 +1632,7 @@ class ChatInferenceManager(context: Context) {
                 extraContext = if (mode == LiteRtConversationMode.NoThinking)
                     ThinkingModeConfig.liteRtExtraContext(isDefaultThinkingModel = true, thinkingMode = false)
                     else emptyMap(),
-                maxOutputToken = if (sampling.maxTokens > 0) sampling.maxTokens else null
+                maxOutputToken = configuredLiteRtMaxOutputTokens()
             ),
             enabled = if (isDefaultThinkingModel) mode != LiteRtConversationMode.NoThinking else null,
             softSwitch = configuredCapabilities?.capabilities?.thinkingControl == ThinkingControlStrategy.QwenSoftSwitch

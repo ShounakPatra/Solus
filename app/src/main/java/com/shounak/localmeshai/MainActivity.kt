@@ -329,7 +329,7 @@ fun MainNavigation(mainViewModel: MainViewModel) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             contentWindowInsets = WindowInsets(0, 0, 0, 0)
-        ) { _ ->
+        ) { innerPadding ->
             // Animate only the destination over an opaque background. The outgoing
             // page and its blur capture are disposed immediately, avoiding colour bleed.
             key(selectedIndex) {
@@ -343,6 +343,7 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
+                        .padding(innerPadding)
                         .background(MaterialTheme.colorScheme.background)
                         .clipToBounds()
                         .pointerInput(selectedIndex, isKeyboardOpen, tabSwipeThresholdPx) {
