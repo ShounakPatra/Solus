@@ -48,6 +48,7 @@ fun TinyVocaModelCard(
     val ttsManager = remember { TinyVocaManager.getInstance(context) }
     val isDownloaded by ttsManager.isModelDownloaded.collectAsState()
     val isResidentInRam by ttsManager.isModelResidentInRam.collectAsState()
+    val isInitializing by ttsManager.isInitializing.collectAsState()
     val downloadProgress by ttsManager.downloadProgress.collectAsState()
     val isSpeaking by ttsManager.isSpeaking.collectAsState()
     val appSettings = remember { AppSettings.getInstance(context) }
@@ -132,7 +133,7 @@ fun TinyVocaModelCard(
                         ) {
                             Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(13.dp))
                             Text(
-                                text = if (isResidentInRam) "In RAM" else "Ready",
+                                text = if (isResidentInRam) "In RAM" else "Downloaded",
                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
                                 color = Color(0xFF10B981),
                                 fontWeight = FontWeight.SemiBold,
@@ -221,7 +222,7 @@ fun TinyVocaModelCard(
                         onClick = {
                             ttsManager.downloadTinyVoca(
                                 onComplete = {
-                                    Toast.makeText(context, "TinyVoca model ready in RAM!", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "TinyVoca downloaded. Tap Test Voice or a speaker icon to load on demand.", Toast.LENGTH_SHORT).show()
                                 },
                                 onError = { err ->
                                     Toast.makeText(context, "Failed: $err", Toast.LENGTH_LONG).show()
@@ -265,9 +266,19 @@ fun TinyVocaModelCard(
                         tintColor = if (isSpeaking) colors.error.copy(alpha = 0.25f) else PurpleAccent.copy(alpha = 0.25f),
                         contentPadding = PaddingValues(horizontal = 12.dp)
                     ) {
-                        Icon(if (isSpeaking) Icons.Default.Stop else Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(if (isSpeaking) "Stop Preview" else "Test Voice (${settingsData.ttsVoice})", style = MaterialTheme.typography.labelMedium)
+                        if (isInitializing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(15.dp),
+                                strokeWidth = 2.dp,
+                                color = PurpleAccent
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Loading voice…", style = MaterialTheme.typography.labelMedium)
+                        } else {
+                            Icon(if (isSpeaking) Icons.Default.Stop else Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(if (isSpeaking) "Stop Preview" else "Test Voice (${settingsData.ttsVoice})", style = MaterialTheme.typography.labelMedium)
+                        }
                     }
 
                     LiquidGlassButton(

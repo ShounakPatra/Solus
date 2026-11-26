@@ -56,7 +56,7 @@ jobs:
       - name: Prepare and test Candle runtime
         run: |
           rustup toolchain install 1.90.0 --profile minimal --target aarch64-linux-android
-          cargo test --locked --jobs 4 --lib --manifest-path app/src/main/rust/Cargo.toml
+          cargo test --workspace --locked --jobs 4 --lib --manifest-path app/src/main/rust/Cargo.toml
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1

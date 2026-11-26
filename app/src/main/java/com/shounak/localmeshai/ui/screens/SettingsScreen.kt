@@ -1556,6 +1556,10 @@ fun SettingsDialog(
 
                                 SettingsSubMenu.ENGINE -> {
                                     SettingsCategory(title = "Hardware & Accelerator", hazeState = hazeState) {
+                                        val selectedTextPath by mainViewModel.selectedTextModelPath.collectAsState()
+                                        val selectedVisionPath by mainViewModel.selectedVisionModelPath.collectAsState()
+                                        val activeModelPath = selectedTextPath ?: selectedVisionPath
+                                        val activeModel = mainViewModel.availableModels.firstOrNull { it.localPath == activeModelPath || it.id == activeModelPath }
                                         val gpuName by produceState(initialValue = "Detecting…") {
                                             value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                                 val vulkanDeviceInfo = LlamaCppEngine.getVulkanDeviceInfo()
@@ -1563,13 +1567,30 @@ fun SettingsDialog(
                                                     ?: if (LlamaCppEngine.isVulkanAvailable()) "GPU Supported" else "CPU Only"
                                             }
                                         }
+                                        val npuSnapshot by produceState<com.shounak.localmeshai.ai.NpuCapabilitySnapshot?>(
+                                            initialValue = null,
+                                            key1 = activeModel?.id
+                                        ) {
+                                            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                com.shounak.localmeshai.ai.NpuCapabilityDetector.detect(context, activeModel?.id)
+                                            }
+                                        }
+                                        val activeFormat = activeModel?.let {
+                                            it.bundle?.format ?: com.shounak.localmeshai.models.ModelFormat.fromFileName(it.fileName)
+                                        }
+                                        val formatNpuCap = npuSnapshot?.let { snap ->
+                                            if (activeFormat != null) snap.capabilityForFormat(activeFormat)
+                                            else if (snap.anyNpuSupported) snap.litertLm
+                                            else snap.litertLm
+                                        }
+                                        val isNpuOptionEnabled = npuSnapshot?.anyNpuSupported == true
                                         Text(
-                                            text = "Detected Hardware: $gpuName",
+                                            text = "Detected Hardware: $gpuName" + (npuSnapshot?.let { " • ${it.chipsetName}" } ?: ""),
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = colors.onSurfaceVariant.copy(alpha = 0.82f)
+                                            color = colors.onSurfaceVariant.copy(alpha = 0.85f)
                                         )
                                         Text(
-                                            text = "Choose whether models run on GPU accelerator, CPU-safe mode, or Auto mode (prefers validated GPU with automatic CPU fallback). Changing this automatically re-initializes the active model on the selected chip.",
+                                            text = "Auto selects the fastest crash-safe accelerator (NPU → Vulkan GPU → ARM CPU). Changing this automatically re-initializes the active model.",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = colors.onSurfaceVariant.copy(alpha = 0.72f)
                                         )
@@ -1579,24 +1600,34 @@ fun SettingsDialog(
                                             verticalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
                                             listOf(
-                                                "AUTO" to "Auto (GPU/CPU)",
+                                                "AUTO" to "Auto (NPU/GPU/CPU)",
+                                                "NPU" to "NPU (${npuSnapshot?.primaryBadgeLabel ?: "QNN / NeuroPilot"})",
                                                 "VULKAN" to "GPU (Vulkan / LiteRT)",
                                                 "CPU" to "CPU (Safe)"
                                             ).forEach { (backendPref, label) ->
+                                                val isNpuChip = backendPref == "NPU"
+                                                val chipEnabled = if (isNpuChip) isNpuOptionEnabled else true
                                                 val isSelected = settingsData.llamaBackendPreference.equals(backendPref, ignoreCase = true)
                                                 FilterChip(
                                                     selected = isSelected,
-                                                    onClick = { appSettings.updateSettings { it.copy(llamaBackendPreference = backendPref) } },
+                                                    enabled = chipEnabled,
+                                                    onClick = {
+                                                        if (chipEnabled) {
+                                                            appSettings.updateSettings { it.copy(llamaBackendPreference = backendPref) }
+                                                        }
+                                                    },
                                                     label = { Text(label, maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelSmall) },
                                                     shape = RoundedCornerShape(12.dp),
                                                     colors = FilterChipDefaults.filterChipColors(
                                                         selectedContainerColor = colors.primary.copy(alpha = 0.28f),
                                                         selectedLabelColor = Color.White,
                                                         containerColor = colors.surfaceContainerLow,
-                                                        labelColor = colors.onSurfaceVariant
+                                                        labelColor = colors.onSurfaceVariant,
+                                                        disabledContainerColor = colors.surfaceContainerLow.copy(alpha = 0.45f),
+                                                        disabledLabelColor = colors.onSurfaceVariant.copy(alpha = 0.42f)
                                                     ),
                                                     border = FilterChipDefaults.filterChipBorder(
-                                                        enabled = true,
+                                                        enabled = chipEnabled,
                                                         selected = isSelected,
                                                         borderColor = colors.outlineVariant.copy(alpha = 0.50f),
                                                         selectedBorderColor = colors.primary.copy(alpha = 0.75f),
@@ -1605,6 +1636,19 @@ fun SettingsDialog(
                                                     )
                                                 )
                                             }
+                                        }
+                                        if (!isNpuOptionEnabled && formatNpuCap != null) {
+                                            Text(
+                                                text = "NPU unavailable: ${formatNpuCap.reason}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = colors.onSurfaceVariant.copy(alpha = 0.72f)
+                                            )
+                                        } else if (isNpuOptionEnabled && formatNpuCap != null && !formatNpuCap.supported) {
+                                            Text(
+                                                text = "Note for selected model: ${formatNpuCap.reason}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = colors.onSurfaceVariant.copy(alpha = 0.72f)
+                                            )
                                         }
                                     }
 

@@ -46,7 +46,32 @@ internal object PortableModelBundle {
         val pipelineFile = companion("model_index.json")
         val pipeline = pipelineFile.takeIf { it.isFile }?.let(::json)
         val tflite = if (expected == ModelFormat.TensorFlowLite) TfliteExportInspector.file(primary) else null
-        val config = companion("config.json").takeIf { it.isFile }?.let(::json) ?: tflite?.config ?: JSONObject()
+        val configFile = companion("config.json")
+        if (expected == ModelFormat.Onnx && pipeline == null && !configFile.isFile) {
+            val t2iSpec = OnnxBundleValidation.inspectSingleGraphT2i(primary)
+            if (t2iSpec != null) {
+                OnnxBundleValidation.validate(primary, companions, logicalPath = logicalName)
+                val vocabFile = companion("vocab.json")
+                val tokenizerFile = companion("tokenizer.json")
+                if (!vocabFile.isFile && !tokenizerFile.isFile) {
+                    throw MissingModelFilesException("Single-graph ONNX T2I requires vocab.json or tokenizer.json alongside the .onnx weights.")
+                }
+                if (vocabFile.isFile) {
+                    require(vocabFile.length() in 16..MAX_JSON) { "Invalid vocab.json" }
+                } else {
+                    require(tokenizerFile.length() in 16..MAX_JSON) { "Invalid tokenizer.json" }
+                }
+                return ModelCapabilities(
+                    supportsText = false,
+                    supportsVision = false,
+                    supportsAudio = false,
+                    task = com.shounak.localmeshai.models.ModelTask.ImageGeneration,
+                    chatTemplate = null,
+                    contextLength = t2iSpec.sequenceLength
+                )
+            }
+        }
+        val config = configFile.takeIf { it.isFile }?.let(::json) ?: tflite?.config ?: JSONObject()
         tflite?.check(config)
         val task = PortableModelProfile.task(config, pipeline)
         val context = config.optInt("max_position_embeddings", config.optInt("n_positions", 2048))
@@ -114,9 +139,23 @@ internal object PortableModelBundle {
 
     fun runtimeRestriction(primary: File, expected: ModelFormat, companions: Map<String, File> = emptyMap()): com.shounak.localmeshai.models.LoadRestriction? {
         fun file(name: String) = companions[name] ?: File(primary.parentFile, name)
-        val config = file("config.json").takeIf { it.isFile }?.let(::json)
+        val configFile = file("config.json")
+        val pipelineFile = file("model_index.json")
+        if (expected == ModelFormat.Onnx && !pipelineFile.isFile && !configFile.isFile) {
+            val t2iSpec = OnnxBundleValidation.inspectSingleGraphT2i(primary)
+            if (t2iSpec != null) {
+                if (!file("vocab.json").isFile && !file("tokenizer.json").isFile) {
+                    return com.shounak.localmeshai.models.LoadRestriction(
+                        "Single-graph ONNX image model is missing vocab.json or tokenizer.json.",
+                        com.shounak.localmeshai.models.LoadRestrictionCategory.RuntimeIncompatibility
+                    )
+                }
+                return null
+            }
+        }
+        val config = configFile.takeIf { it.isFile }?.let(::json)
             ?: if (expected == ModelFormat.TensorFlowLite) TfliteExportInspector.file(primary).config ?: JSONObject() else JSONObject()
-        val pipeline = file("model_index.json").takeIf { it.isFile }?.let(::json)
+        val pipeline = pipelineFile.takeIf { it.isFile }?.let(::json)
         val task = PortableModelProfile.task(config, pipeline)
         return metadataRestriction(expected, config, pipeline, { file(it).isFile }, { json(file(it)) })
     }

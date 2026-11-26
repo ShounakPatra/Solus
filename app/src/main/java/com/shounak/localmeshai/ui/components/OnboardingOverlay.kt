@@ -20,13 +20,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,7 +48,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.shounak.localmeshai.utils.LiquidGlassBox
+import com.shounak.localmeshai.models.ModelInfo
+import com.shounak.localmeshai.models.ModelStatus
+import com.shounak.localmeshai.models.StarterModelRecommendation
 import com.shounak.localmeshai.utils.glassEffect
 import dev.chrisbanes.haze.HazeState
 
@@ -51,6 +58,12 @@ import dev.chrisbanes.haze.HazeState
 fun OnboardingOverlay(
     isVisible: Boolean,
     hazeState: HazeState? = null,
+    starterRecommendation: StarterModelRecommendation? = null,
+    starterModelState: ModelInfo? = starterRecommendation?.model,
+    onStartStarterDownload: ((String) -> Unit)? = null,
+    onPauseStarterDownload: ((String) -> Unit)? = null,
+    onResumeStarterDownload: ((String) -> Unit)? = null,
+    onUseStarterModel: ((ModelInfo) -> Unit)? = null,
     onGoToModels: () -> Unit
 ) {
     if (!isVisible) return
@@ -102,7 +115,7 @@ fun OnboardingOverlay(
                             .padding(24.dp)
                             .verticalScroll(rememberScrollState()),
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(18.dp)
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         // Header Icon Badge
                         Box(
@@ -161,15 +174,27 @@ fun OnboardingOverlay(
                             }
                         }
 
+                        // Device-tuned starter recommendation card (downloaded on-demand via Model Manager)
+                        if (starterRecommendation != null && starterModelState != null) {
+                            StarterModelCard(
+                                recommendation = starterRecommendation,
+                                model = starterModelState,
+                                onStartDownload = { onStartStarterDownload?.invoke(starterModelState.id) },
+                                onPauseDownload = { onPauseStarterDownload?.invoke(starterModelState.id) },
+                                onResumeDownload = { onResumeStarterDownload?.invoke(starterModelState.id) },
+                                onUseModel = { onUseStarterModel?.invoke(starterModelState) }
+                            )
+                        }
+
                         // Steps List
                         Column(
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             OnboardingStepCard(
                                 stepNumber = "1",
-                                title = "Pick & Download a Model",
-                                description = "Tap Models tab to download a model (e.g. DeepSeek R1, Gemma 3n, or Qwen 3). Models run entirely on your phone.",
+                                title = "Download On-Demand",
+                                description = "Models download via resumable HTTPS with SHA-256 verification and stay inside your private app storage.",
                                 icon = Icons.Default.Download,
                                 accentColor = Color(0xFF38BDF8)
                             )
@@ -177,7 +202,7 @@ fun OnboardingOverlay(
                             OnboardingStepCard(
                                 stepNumber = "2",
                                 title = "Chat Completely Offline",
-                                description = "Once downloaded, turn off Wi-Fi and chat anytime. Your conversations never leave your device.",
+                                description = "Once downloaded, turn off Wi-Fi and chat anytime. Zero telemetry, zero cloud accounts.",
                                 icon = Icons.Default.Lock,
                                 accentColor = Color(0xFFA855F7)
                             )
@@ -185,15 +210,13 @@ fun OnboardingOverlay(
                             OnboardingStepCard(
                                 stepNumber = "3",
                                 title = "Thinking Mode & Docs",
-                                description = "Enable Thinking Mode for step-by-step reasoning or attach documents & photos for analysis.",
+                                description = "Enable Thinking Mode for step-by-step reasoning or attach documents & photos for local analysis.",
                                 icon = Icons.Default.Psychology,
                                 accentColor = Color(0xFF34D399)
                             )
                         }
 
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        // Liquid Glass CTA Button
+                        // Primary CTA (Start chatting if starter is ready, Download starter if available, or Browse Models)
                         val interactionSource = remember { MutableInteractionSource() }
                         val isPressed by interactionSource.collectIsPressedAsState()
                         val scale by animateFloatAsState(
@@ -202,12 +225,25 @@ fun OnboardingOverlay(
                             label = "btnScale"
                         )
 
+                        val canOneTapDownload = starterModelState != null &&
+                            onStartStarterDownload != null &&
+                            starterModelState.status == ModelStatus.NotDownloaded
+                        val isStarterReady = starterModelState != null &&
+                            onUseStarterModel != null &&
+                            starterModelState.status == ModelStatus.Available
+
+                        val primaryLabel = when {
+                            isStarterReady -> "Start Chatting Now"
+                            canOneTapDownload -> "Download Starter (${starterModelState!!.size})"
+                            else -> "Browse All Models"
+                        }
+
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(54.dp)
+                                .height(52.dp)
                                 .scale(scale)
-                                .clip(RoundedCornerShape(27.dp))
+                                .clip(RoundedCornerShape(26.dp))
                                 .background(
                                     Brush.horizontalGradient(
                                         colors = listOf(
@@ -221,7 +257,11 @@ fun OnboardingOverlay(
                                     indication = null
                                 ) {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onGoToModels()
+                                    when {
+                                        isStarterReady -> onUseStarterModel?.invoke(starterModelState!!)
+                                        canOneTapDownload -> onStartStarterDownload?.invoke(starterModelState!!.id)
+                                        else -> onGoToModels()
+                                    }
                                 },
                             contentAlignment = Alignment.Center
                         ) {
@@ -230,22 +270,160 @@ fun OnboardingOverlay(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Text(
-                                    text = "Go to Models",
-                                    fontSize = 17.sp,
+                                    text = primaryLabel,
+                                    fontSize = 16.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color.White
                                 )
                                 Icon(
-                                    imageVector = Icons.Default.Download,
+                                    imageVector = if (isStarterReady) Icons.Default.PlayArrow else Icons.Default.Download,
                                     contentDescription = null,
                                     tint = Color.White,
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
                         }
+
+                        if (starterModelState != null) {
+                            TextButton(onClick = onGoToModels) {
+                                Text(
+                                    text = "Browse All Models in Model Manager",
+                                    fontSize = 13.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun StarterModelCard(
+    recommendation: StarterModelRecommendation,
+    model: ModelInfo,
+    onStartDownload: () -> Unit,
+    onPauseDownload: () -> Unit,
+    onResumeDownload: () -> Unit,
+    onUseModel: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xFF0F2942).copy(alpha = 0.72f))
+            .border(1.dp, Color(0xFF38BDF8).copy(alpha = 0.45f), RoundedCornerShape(20.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Memory,
+                    contentDescription = null,
+                    tint = Color(0xFF38BDF8),
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = "Best Fit for Your Device",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF7DD3FC)
+                )
+            }
+            Text(
+                text = recommendation.ramSummary,
+                fontSize = 11.sp,
+                color = Color(0xFF94A3B8)
+            )
+        }
+
+        Text(
+            text = "${model.cleanDisplayName} (${model.size})",
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White
+        )
+        Text(
+            text = recommendation.reason,
+            fontSize = 12.sp,
+            color = Color(0xFFCBD5E1),
+            lineHeight = 16.sp
+        )
+
+        when (model.status) {
+            ModelStatus.Downloading -> {
+                LinearProgressIndicator(
+                    progress = { model.progress.coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = Color(0xFF38BDF8),
+                    trackColor = Color(0xFF1E293B)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Downloading in background: ${(model.progress * 100).toInt()}%",
+                        fontSize = 11.sp,
+                        color = Color(0xFF7DD3FC)
+                    )
+                    TextButton(onClick = onPauseDownload, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)) {
+                        Icon(Icons.Default.Pause, contentDescription = null, tint = Color(0xFF94A3B8), modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Pause", fontSize = 12.sp, color = Color(0xFF94A3B8))
+                    }
+                }
+            }
+            ModelStatus.Paused, ModelStatus.Failed -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = model.errorMessage ?: "Download paused (${(model.progress * 100).toInt()}%)",
+                        fontSize = 11.sp,
+                        color = if (model.status == ModelStatus.Failed) Color(0xFFFCA5A5) else Color(0xFFFDE68A),
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = if (model.status == ModelStatus.Paused) onResumeDownload else onStartDownload,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Text(if (model.status == ModelStatus.Paused) "Resume" else "Retry", fontSize = 12.sp, color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            ModelStatus.Available -> {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.clickable(onClick = onUseModel)
+                ) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF34D399), modifier = Modifier.size(16.dp))
+                    Text(
+                        text = "Ready offline — tap Start Chatting Now",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF34D399)
+                    )
+                }
+            }
+            else -> Unit
         }
     }
 }

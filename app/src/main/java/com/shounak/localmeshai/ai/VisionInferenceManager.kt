@@ -115,7 +115,8 @@ class VisionInferenceManager(context: Context) {
                 enableVisionEncoder = enableVision, enableAudioEncoder = enableAudio, warmStart = false)
         } catch (failure: Exception) {
             if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
-                spec.backend != InferenceBackend.LITERT_GPU || AppSettings.getInstance(context).settings.value.llamaBackendPreference != "AUTO") throw failure
+                (spec.backend != InferenceBackend.LITERT_GPU && spec.backend != InferenceBackend.LITERT_NPU) ||
+                AppSettings.getInstance(context).settings.value.llamaBackendPreference !in listOf("AUTO", "NPU")) throw failure
             RuntimeSpeedTuner.recordGpuFailure(context, spec.id, spec.path)
             liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
             liteRtCacheDir = null
@@ -320,7 +321,7 @@ class VisionInferenceManager(context: Context) {
                     )
                 }
                 val requestedBackend = when (pref) {
-                    "VULKAN", "GPU" -> LlamaBackend.VULKAN
+                    "VULKAN", "GPU", "NPU" -> LlamaBackend.VULKAN
                     "CPU" -> LlamaBackend.CPU
                     else -> null
                 }
@@ -394,17 +395,24 @@ class VisionInferenceManager(context: Context) {
             detectedFormat == ModelFormat.LiteRtLm -> {
                 val resolvedModelPath = effectiveFile?.absolutePath ?: modelPath
                 val modelIdForLiteRt = modelId.ifBlank { bundle?.id ?: effectiveFile?.nameWithoutExtension.orEmpty() }
+                val npuSnapshot = NpuCapabilityDetector.detect(context, modelIdForLiteRt)
+                val canTryLiteRtNpu = npuSnapshot.litertLm.supported && !InitCrashGuard.isNpuBlocked(context, modelIdForLiteRt)
                 val appSettings = AppSettings.getInstance(context)
                 val pref = appSettings.settings.value.llamaBackendPreference.uppercase()
                 var blockedAutoLoad = false
                 val inferenceBackend = when (pref) {
                     "CPU" -> InferenceBackend.LITERT_CPU
+                    "NPU" -> when {
+                        canTryLiteRtNpu -> InferenceBackend.LITERT_NPU
+                        DeviceUtils.supportsLiteRtLmGpu() -> InferenceBackend.LITERT_GPU
+                        else -> InferenceBackend.LITERT_CPU
+                    }
                     "VULKAN", "GPU" -> InferenceBackend.LITERT_GPU
                     else -> if (InitCrashGuard.isModelBlocked(context, modelIdForLiteRt)) {
                         blockedAutoLoad = true
                         InferenceBackend.LITERT_CPU
                     }
-                        else RuntimeSpeedTuner.liteRtBackend(context, modelIdForLiteRt, resolvedModelPath, configuredContextWindow)
+                        else RuntimeSpeedTuner.liteRtBackend(context, modelIdForLiteRt, resolvedModelPath, configuredContextWindow, canTryLiteRtNpu)
                 }
                 val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                     context = context,
@@ -421,7 +429,7 @@ class VisionInferenceManager(context: Context) {
                 if (blockedAutoLoad && InitCrashGuard.blockedCrashMayHaveUsedGpu(context, modelIdForLiteRt)) {
                     RuntimeSpeedTuner.recordGpuFailure(context, modelIdForLiteRt, resolvedModelPath)
                 }
-                if (!allowUnsafeOverride && inferenceBackend != InferenceBackend.LITERT_CPU) {
+                if (!allowUnsafeOverride && inferenceBackend == InferenceBackend.LITERT_GPU) {
                     val (allowed, reason) = DeviceUtils.canInitializeLiteRtLm(
                         context = context,
                         modelId = modelIdForLiteRt,
@@ -441,16 +449,46 @@ class VisionInferenceManager(context: Context) {
                 try {
                     initializeLiteRtLm(resolvedModelPath, modelIdForLiteRt, loadedBackend, audioInputAvailable, configuredContextWindow)
                 } catch (failure: Exception) {
-                    if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
-                        pref != "AUTO" || inferenceBackend != InferenceBackend.LITERT_GPU) throw failure
-                    RuntimeSpeedTuner.recordGpuFailure(context, modelIdForLiteRt, resolvedModelPath)
-                    liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
-                    liteRtCacheDir = null
-                    loadedBackend = InferenceBackend.LITERT_CPU
-                    warmupMs = 0
-                    initializeLiteRtLm(resolvedModelPath, modelIdForLiteRt, loadedBackend, audioInputAvailable, configuredContextWindow)
+                    if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null) throw failure
+                    if (loadedBackend == InferenceBackend.LITERT_NPU && (pref == "AUTO" || pref == "NPU")) {
+                        Log.w(TAG, "Vision LiteRT-LM NPU init failed; falling back to GPU -> CPU", failure)
+                        liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
+                        liteRtCacheDir = null
+                        val nextBackend = if (DeviceUtils.supportsLiteRtLmGpu() && !InitCrashGuard.blockedCrashMayHaveUsedGpu(context, modelIdForLiteRt)) {
+                            InferenceBackend.LITERT_GPU
+                        } else {
+                            InferenceBackend.LITERT_CPU
+                        }
+                        loadedBackend = nextBackend
+                        warmupMs = 0
+                        try {
+                            initializeLiteRtLm(resolvedModelPath, modelIdForLiteRt, loadedBackend, audioInputAvailable, configuredContextWindow)
+                        } catch (gpuOrCpuFailure: Exception) {
+                            if (gpuOrCpuFailure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
+                                loadedBackend != InferenceBackend.LITERT_GPU) throw gpuOrCpuFailure
+                            RuntimeSpeedTuner.recordGpuFailure(context, modelIdForLiteRt, resolvedModelPath)
+                            liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
+                            liteRtCacheDir = null
+                            loadedBackend = InferenceBackend.LITERT_CPU
+                            warmupMs = 0
+                            initializeLiteRtLm(resolvedModelPath, modelIdForLiteRt, loadedBackend, audioInputAvailable, configuredContextWindow)
+                        }
+                    } else if (pref == "AUTO" && inferenceBackend == InferenceBackend.LITERT_GPU) {
+                        RuntimeSpeedTuner.recordGpuFailure(context, modelIdForLiteRt, resolvedModelPath)
+                        liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
+                        liteRtCacheDir = null
+                        loadedBackend = InferenceBackend.LITERT_CPU
+                        warmupMs = 0
+                        initializeLiteRtLm(resolvedModelPath, modelIdForLiteRt, loadedBackend, audioInputAvailable, configuredContextWindow)
+                    } else {
+                        throw failure
+                    }
                 }
-                activeBackendDisplayName = if (loadedBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
+                activeBackendDisplayName = when (loadedBackend) {
+                    InferenceBackend.LITERT_NPU -> npuSnapshot.primaryBadgeLabel
+                    InferenceBackend.LITERT_GPU -> "LiteRT-LM GPU"
+                    else -> "LiteRT-LM CPU"
+                }
                 // AUTO picks GPU only from a Tune speed receipt that measured GPU faster and has no GPU veto.
                 TtftLog.d("vision backend pref=$pref selected=$inferenceBackend loaded=$loadedBackend " +
                     "blockedAutoLoad=$blockedAutoLoad threads=$runtimeThreads warmStart=$warmStartLoad " +
@@ -476,8 +514,13 @@ class VisionInferenceManager(context: Context) {
             }
             detectedFormat == ModelFormat.MediaPipeTask -> {
                 val resolvedModelPath = effectiveFile?.absolutePath ?: modelPath
-                initializeMediaPipeVision(resolvedModelPath, audioInputAvailable, configuredContextWindow)
-                activeBackendDisplayName = "MediaPipe CPU"
+                val mpBackendPref = AppSettings.getInstance(context).settings.value.llamaBackendPreference
+                activeBackendDisplayName = initializeMediaPipeVision(
+                    resolvedModelPath,
+                    audioInputAvailable,
+                    configuredContextWindow,
+                    mpBackendPref
+                )
             }
             else -> {
                 throw IllegalArgumentException("Unsupported vision model format. Solus multimodal models require GGUF, LiteRT (.litertlm), or MediaPipe (.task) bundles.")
@@ -1026,12 +1069,18 @@ class VisionInferenceManager(context: Context) {
         warmStart: Boolean = warmStartLoad
     ) {
         val engineStart = TtftLog.now()
-        InitCrashGuard.markInitStarted(context, modelId,
-            if (inferenceBackend == InferenceBackend.LITERT_GPU) InitCrashGuard.BACKEND_GPU else InitCrashGuard.BACKEND_CPU)
+        val isNpuAttempt = inferenceBackend == InferenceBackend.LITERT_NPU
+        if (isNpuAttempt) {
+            InitCrashGuard.markNpuInitStarted(context, modelId)
+        } else {
+            InitCrashGuard.markInitStarted(context, modelId,
+                if (inferenceBackend == InferenceBackend.LITERT_GPU) InitCrashGuard.BACKEND_GPU else InitCrashGuard.BACKEND_CPU)
+        }
         var engine: Engine? = null
         try {
             val executionPolicy = RuntimeExecutionPolicy.resolve(context, modelId)
             val backend = when (inferenceBackend) {
+                InferenceBackend.LITERT_NPU -> Backend.NPU(context.applicationInfo.nativeLibraryDir.orEmpty())
                 InferenceBackend.LITERT_GPU -> Backend.GPU()
                 InferenceBackend.LITERT_CPU,
                 InferenceBackend.MEDIAPIPE -> Backend.CPU(executionPolicy.cpuThreads)
@@ -1117,6 +1166,38 @@ class VisionInferenceManager(context: Context) {
                 }
             }
 
+            // Try 3b: When primary backend is NPU and visionEncoder on NPU failed, keep LLM token generation on NPU
+            // while stepping only the vision tower down to GPU/CPU.
+            if (!initialized && backend is Backend.NPU && useVisionEncoder) {
+                val visionFallbacks = buildList {
+                    if (DeviceUtils.supportsLiteRtLmGpu()) add(Backend.GPU())
+                    add(Backend.CPU(executionPolicy.cpuThreads))
+                }
+                for (visionFallback in visionFallbacks) {
+                    if (initialized) break
+                    try {
+                        val eng = Engine(
+                            EngineConfig(
+                                modelPath = modelPath,
+                                backend = backend,
+                                visionBackend = visionFallback,
+                                audioBackend = null,
+                                maxNumTokens = minOf(effectiveMaxTokens, 4096),
+                                cacheDir = runtimeCacheDir.absolutePath
+                            )
+                        )
+                        engine = eng
+                        runtimeContextCapacity.initialize(minOf(effectiveMaxTokens, 4096)) { eng.initialize() }
+                        initialized = true
+                        Log.i(TAG, "LiteRT-LM NPU LLM initialized with vision fallback=${visionFallback.name}")
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "LiteRT-LM NPU + vision fallback=${visionFallback.name} failed: ${t.message}")
+                        engine?.closeIfInitialized()
+                        engine = null
+                    }
+                }
+            }
+
             // Try 4: If effectiveMaxTokens > 2048 and still failed, retry with safe 2048 tokens
             if (!initialized && effectiveMaxTokens > 2048) {
                 finalAudioSupported = false
@@ -1162,10 +1243,18 @@ class VisionInferenceManager(context: Context) {
             liteRtConversation = createLiteRtConversation(initialConfig, prefillPreface = warmStart)
             runtime = RuntimeKind.LiteRtLm
             if (stopRequested || isBeingClosed) throw CancellationException("Model initialization cancelled")
-            InitCrashGuard.markInitSucceeded(context, modelId)
+            if (isNpuAttempt) {
+                InitCrashGuard.markNpuInitSucceeded(context, modelId)
+            } else {
+                InitCrashGuard.markInitSucceeded(context, modelId)
+            }
             Log.i(TAG, "LiteRT-LM vision engine ready on $backend (audio: $audioEncoderLoaded, vision: $visionEncoderLoaded, availableAudio: $modelSupportsAudioInput) warmupMs=$warmupMs: $modelPath")
         } catch (t: Throwable) {
-            InitCrashGuard.markInitFailed(context, modelId)
+            if (isNpuAttempt) {
+                InitCrashGuard.markNpuInitFailed(context, modelId)
+            } else {
+                InitCrashGuard.markInitFailed(context, modelId)
+            }
             try {
                 liteRtConversation?.close()
                 liteRtConversation = null
@@ -1187,9 +1276,38 @@ class VisionInferenceManager(context: Context) {
     private fun initializeMediaPipeVision(
         modelPath: String,
         supportsAudioInput: Boolean,
-        contextWindowTokens: Int? = null
-    ) {
+        contextWindowTokens: Int? = null,
+        preferredPref: String = "AUTO"
+    ): String {
         val targetTokens = (contextWindowTokens ?: MAX_RESPONSE_TOKENS).coerceIn(1024, 4096)
+        val tryGpuFirst = preferredPref.equals("NPU", ignoreCase = true) ||
+            preferredPref.equals("VULKAN", ignoreCase = true) ||
+            preferredPref.equals("GPU", ignoreCase = true)
+        if (tryGpuFirst) {
+            try {
+                val gpuBuilder = LlmInference.LlmInferenceOptions.builder()
+                    .setModelPath(modelPath)
+                    .setMaxTokens(targetTokens)
+                    .setMaxTopK(MEDIA_PIPE_MAX_TOP_K)
+                    .setMaxNumImages(1)
+                    .setPreferredBackend(LlmInference.Backend.GPU)
+                if (supportsAudioInput) {
+                    runCatching {
+                        gpuBuilder.setAudioModelOptions(
+                            AudioModelOptions.builder()
+                                .setMaxAudioSequenceLength(300)
+                                .build()
+                        )
+                    }
+                }
+                val gpuOptions = gpuBuilder.build()
+                mediaPipeInference = runtimeContextCapacity.initialize(targetTokens) { LlmInference.createFromOptions(context, gpuOptions) }
+                runtime = RuntimeKind.MediaPipeVision
+                return "MediaPipe GPU"
+            } catch (t: Throwable) {
+                Log.w(TAG, "MediaPipe Vision GPU init failed; falling back to CPU: ${t.message}")
+            }
+        }
         val optionsBuilder = LlmInference.LlmInferenceOptions.builder()
             .setModelPath(modelPath)
             .setMaxTokens(targetTokens)
@@ -1221,6 +1339,7 @@ class VisionInferenceManager(context: Context) {
             modelSupportsAudioInput = false
         }
         runtime = RuntimeKind.MediaPipeVision
+        return "MediaPipe CPU"
     }
 
 

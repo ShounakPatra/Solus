@@ -39,19 +39,23 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shounak.localmeshai.ai.tts.TinyVocaManager
+import com.shounak.localmeshai.models.ModelInfo
+import com.shounak.localmeshai.models.ModelStatus
 import com.shounak.localmeshai.rag.RagManager
 import com.shounak.localmeshai.rag.embedding.EmbeddingModels
 import com.shounak.localmeshai.utils.glassEffect
 import dev.chrisbanes.haze.HazeState
 
 /**
- * Compact Glass UI menu for specialized on-device AI models (Document Search & TinyVoca Neural TTS).
- * Collapsed by default to keep Model Manager compact and clutter-free, expanding on tap to display
- * the rich model cards with download, delete, and test controls.
+ * Compact Glass UI menu for specialized on-device AI models (Document Search, TinyVoca Neural TTS,
+ * and Offline Image Generation). Collapsed by default to keep Model Manager compact and clutter-free,
+ * expanding on tap to display the model cards with download, delete, and selection controls.
  */
 @Composable
 fun SpecializedModelsMenuCard(
     hazeState: HazeState,
+    imageGenerationModels: List<ModelInfo> = emptyList(),
+    renderImageModelItem: (@Composable (ModelInfo) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -60,6 +64,11 @@ fun SpecializedModelsMenuCard(
 
     val ttsManager = remember { TinyVocaManager.getInstance(context) }
     val isVocaDownloaded by ttsManager.isModelDownloaded.collectAsState()
+    val voiceRevision by com.shounak.localmeshai.ai.voice.VoiceModelCatalog.revision.collectAsState()
+    val isVoiceSttDownloaded = remember(voiceRevision) {
+        com.shounak.localmeshai.ai.voice.VoiceModelCatalog.isInstalled(context, com.shounak.localmeshai.ai.voice.VoiceModelCatalog.SILERO_VAD) &&
+            com.shounak.localmeshai.ai.voice.VoiceModelCatalog.isInstalled(context, com.shounak.localmeshai.ai.voice.VoiceModelCatalog.WHISPER_TINY_EN)
+    }
 
     val ragManager = remember { RagManager.getInstance(context) }
     val searchSpec = EmbeddingModels.POTION_BASE_2M
@@ -129,7 +138,7 @@ fun SpecializedModelsMenuCard(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "Offline document search & voice synthesis",
+                                text = "Document search, voice & image generation",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colors.onSurfaceVariant.copy(alpha = 0.85f),
                                 maxLines = 1,
@@ -165,7 +174,7 @@ fun SpecializedModelsMenuCard(
                         border = BorderStroke(0.7.dp, if (isSearchInstalled) Color(0xFF10B981).copy(alpha = 0.60f) else colors.outlineVariant.copy(alpha = 0.40f))
                     ) {
                         Text(
-                            text = if (isSearchInstalled) "Search: Ready" else "Search: 7 MiB",
+                            text = if (isSearchInstalled) "Search: Downloaded" else "Search: 7 MiB",
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
                             color = if (isSearchInstalled) Color(0xFF10B981) else colors.onSurfaceVariant,
                             fontWeight = FontWeight.SemiBold,
@@ -182,9 +191,46 @@ fun SpecializedModelsMenuCard(
                         border = BorderStroke(0.7.dp, if (isVocaDownloaded) Color(0xFF10B981).copy(alpha = 0.60f) else colors.outlineVariant.copy(alpha = 0.40f))
                     ) {
                         Text(
-                            text = if (isVocaDownloaded) "Voice: Ready" else "Voice: 21 MB",
+                            text = if (isVocaDownloaded) "Voice: Downloaded" else "Voice: 21 MB",
                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
                             color = if (isVocaDownloaded) Color(0xFF10B981) else colors.onSurfaceVariant,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.5.dp)
+                        )
+                    }
+
+                    if (imageGenerationModels.isNotEmpty()) {
+                        val hasDownloadedImageModel = imageGenerationModels.any { it.status == ModelStatus.Available }
+                        val defaultImageSizeLabel = imageGenerationModels.firstOrNull()?.size?.takeIf { it.isNotBlank() } ?: "~313 MB"
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (hasDownloadedImageModel) Color(0xFF10B981).copy(alpha = 0.15f) else colors.outlineVariant.copy(alpha = 0.30f),
+                            border = BorderStroke(0.7.dp, if (hasDownloadedImageModel) Color(0xFF10B981).copy(alpha = 0.60f) else colors.outlineVariant.copy(alpha = 0.40f))
+                        ) {
+                            Text(
+                                text = if (hasDownloadedImageModel) "Image: Downloaded" else "Image: $defaultImageSizeLabel",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                                color = if (hasDownloadedImageModel) Color(0xFF10B981) else colors.onSurfaceVariant,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.5.dp)
+                            )
+                        }
+                    }
+
+                    // Voice Mode (Silero VAD + Whisper) Pill
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isVoiceSttDownloaded) Color(0xFF10B981).copy(alpha = 0.15f) else colors.outlineVariant.copy(alpha = 0.30f),
+                        border = BorderStroke(0.7.dp, if (isVoiceSttDownloaded) Color(0xFF10B981).copy(alpha = 0.60f) else colors.outlineVariant.copy(alpha = 0.40f))
+                    ) {
+                        Text(
+                            text = if (isVoiceSttDownloaded) "STT: Downloaded" else "STT: ~45 MB",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
+                            color = if (isVoiceSttDownloaded) Color(0xFF10B981) else colors.onSurfaceVariant,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
                             softWrap = false,
@@ -194,7 +240,7 @@ fun SpecializedModelsMenuCard(
                 }
             }
 
-            // Expandable Content: Document Search & TinyVoca Cards
+            // Expandable Content: Document Search, TinyVoca, Voice STT & Image Generation Cards
             AnimatedVisibility(
                 visible = isExpanded,
                 enter = if (reduceMotion) fadeIn(androidx.compose.animation.core.snap()) else expandVertically() + fadeIn(),
@@ -214,6 +260,14 @@ fun SpecializedModelsMenuCard(
                     DocumentSearchModelCard(hazeState = hazeState)
 
                     TinyVocaModelCard(hazeState = hazeState)
+
+                    VoiceModelsCard(hazeState = hazeState)
+
+                    if (renderImageModelItem != null) {
+                        imageGenerationModels.forEach { imageModel ->
+                            renderImageModelItem(imageModel)
+                        }
+                    }
                 }
             }
         }

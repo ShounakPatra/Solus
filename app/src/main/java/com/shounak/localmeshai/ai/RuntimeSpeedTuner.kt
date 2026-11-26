@@ -48,16 +48,45 @@ internal object RuntimeSpeedTuner {
     }
 
     internal fun selectLiteRtBackend(receiptBackend: String?, gpuVetoed: Boolean, gpuProbeBlocked: Boolean): InferenceBackend =
-        if (receiptBackend == "GPU" && !gpuVetoed && !gpuProbeBlocked) InferenceBackend.LITERT_GPU else InferenceBackend.LITERT_CPU
+        selectLiteRtBackend(
+            receiptBackend = receiptBackend,
+            gpuVetoed = gpuVetoed,
+            gpuProbeBlocked = gpuProbeBlocked,
+            npuSupported = false,
+            npuBlocked = true
+        )
 
-    fun liteRtBackend(context: Context, id: String, path: String, tokens: Int?): InferenceBackend {
+    internal fun selectLiteRtBackend(
+        receiptBackend: String?,
+        gpuVetoed: Boolean,
+        gpuProbeBlocked: Boolean,
+        npuSupported: Boolean,
+        npuBlocked: Boolean
+    ): InferenceBackend = when {
+        receiptBackend == "NPU" && npuSupported && !npuBlocked -> InferenceBackend.LITERT_NPU
+        receiptBackend == "GPU" && !gpuVetoed && !gpuProbeBlocked -> InferenceBackend.LITERT_GPU
+        receiptBackend == null && npuSupported && !npuBlocked -> InferenceBackend.LITERT_NPU
+        else -> InferenceBackend.LITERT_CPU
+    }
+
+    fun liteRtBackend(
+        context: Context,
+        id: String,
+        path: String,
+        tokens: Int?,
+        npuSupportedOverride: Boolean? = null
+    ): InferenceBackend {
         val file = File(path)
         val receipt = key(id, file, liteRtContextTokens(tokens, null), RuntimeExecutionPolicy.resolve(context, id).cpuThreads)
         val prefs = context.getSharedPreferences("runtime_speed", Context.MODE_PRIVATE)
+        val npuSupported = npuSupportedOverride ?: NpuCapabilityDetector.detect(context, id).litertLm.supported
+        val npuBlocked = InitCrashGuard.isNpuBlocked(context, id)
         return selectLiteRtBackend(
             receiptBackend = prefs.getString("litert_$receipt", null),
             gpuVetoed = prefs.getBoolean(gpuVetoKey(id, file), false),
-            gpuProbeBlocked = InitCrashGuard.isModelBlocked(context, "$id:speed:gpu:$receipt")
+            gpuProbeBlocked = InitCrashGuard.isModelBlocked(context, "$id:speed:gpu:$receipt"),
+            npuSupported = npuSupported,
+            npuBlocked = npuBlocked
         )
     }
 
@@ -94,20 +123,40 @@ internal object RuntimeSpeedTuner {
             val receipt = key(model.id, file, tokens, best.threads)
             var gpuNote = ""
             if (format == ModelFormat.LiteRtLm) {
-                ensureActive()
-                progress("Validating and timing LiteRT GPU…")
-                val gpuId = "${model.id}:speed:gpu:$receipt"
-                if (!InitCrashGuard.isModelBlocked(context, gpuId)) {
+                val npuSnapshot = NpuCapabilityDetector.detect(context, model.id)
+                if (npuSnapshot.litertLm.supported && !InitCrashGuard.isNpuBlocked(context, model.id)) {
+                    ensureActive()
+                    progress("Validating and timing ${npuSnapshot.primaryBadgeLabel}…")
                     try {
-                        val admission = DeviceUtils.canInitializeLiteRtLm(context, model.id, model.name, model.size,
-                            isVision = false, fileName = file.name, backendLabel = "LiteRT-LM", modelFilePath = file.absolutePath)
-                        check(admission.first) { admission.second }
-                        val gpu = probeLiteRt(context, gpuId, file, best.threads, tokens, true)
-                        if (qualifiesGpu(best.medianMs, gpu.medianMs, best.answers, gpu.answers)) backend = "GPU"
-                        else gpuNote = "; CPU retained: GPU was slower or its greedy probe outputs differed"
-                    } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (failure: Exception) { gpuNote = "; CPU retained: GPU probe failed (${failure.message?.take(120)})" }
-                } else gpuNote = "; GPU probe previously crashed on this device"
+                        val npuSample = probeLiteRt(context, model.id, file, best.threads, tokens, backendOverride = InferenceBackend.LITERT_NPU)
+                        if (qualifiesGpu(best.medianMs, npuSample.medianMs, best.answers, npuSample.answers)) {
+                            backend = "NPU"
+                            gpuNote = " (${npuSnapshot.primaryBadgeLabel} ${npuSample.medianMs.toLong()} ms)"
+                        } else {
+                            gpuNote = "; ${npuSnapshot.primaryBadgeLabel} tested (${npuSample.medianMs.toLong()} ms)"
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        gpuNote = "; ${npuSnapshot.primaryBadgeLabel} unavailable (${failure.message?.take(80)})"
+                    }
+                }
+                if (backend != "NPU") {
+                    ensureActive()
+                    progress("Validating and timing LiteRT GPU…")
+                    val gpuId = "${model.id}:speed:gpu:$receipt"
+                    if (!InitCrashGuard.isModelBlocked(context, gpuId)) {
+                        try {
+                            val admission = DeviceUtils.canInitializeLiteRtLm(context, model.id, model.name, model.size,
+                                isVision = false, fileName = file.name, backendLabel = "LiteRT-LM", modelFilePath = file.absolutePath)
+                            check(admission.first) { admission.second }
+                            val gpu = probeLiteRt(context, gpuId, file, best.threads, tokens, true)
+                            if (qualifiesGpu(best.medianMs, gpu.medianMs, best.answers, gpu.answers)) backend = "GPU"
+                            else gpuNote += "; CPU retained: GPU was slower or its greedy probe outputs differed"
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (failure: Exception) { gpuNote += "; CPU retained: GPU probe failed (${failure.message?.take(120)})" }
+                    } else gpuNote += "; GPU probe previously crashed on this device"
+                }
             }
             ensureActive()
             val prefs = context.getSharedPreferences("runtime_speed", Context.MODE_PRIVATE)
@@ -121,13 +170,29 @@ internal object RuntimeSpeedTuner {
         }
     }
 
-    private suspend fun probeLiteRt(context: Context, guardId: String, file: File, threads: Int, tokens: Int, gpu: Boolean): Sample {
-        val backend = if (gpu) Backend.GPU() else Backend.CPU(threads)
-        val kind = if (gpu) InferenceBackend.LITERT_GPU else InferenceBackend.LITERT_CPU
+    private suspend fun probeLiteRt(
+        context: Context,
+        guardId: String,
+        file: File,
+        threads: Int,
+        tokens: Int,
+        gpu: Boolean = false,
+        backendOverride: InferenceBackend? = null
+    ): Sample {
+        val kind = backendOverride ?: if (gpu) InferenceBackend.LITERT_GPU else InferenceBackend.LITERT_CPU
+        val backend = when (kind) {
+            InferenceBackend.LITERT_NPU -> Backend.NPU(context.applicationInfo.nativeLibraryDir.orEmpty())
+            InferenceBackend.LITERT_GPU -> Backend.GPU()
+            InferenceBackend.LITERT_CPU, InferenceBackend.MEDIAPIPE -> Backend.CPU(threads)
+        }
         val cache = LiteRtRuntimeCache.prepare(context, guardId, kind, file.absolutePath)
         val times = mutableListOf<Double>()
         val answers = mutableListOf<String>()
-        InitCrashGuard.markInitStarted(context, guardId, if (gpu) InitCrashGuard.BACKEND_GPU else InitCrashGuard.BACKEND_CPU)
+        if (kind == InferenceBackend.LITERT_NPU) {
+            InitCrashGuard.markNpuInitStarted(context, guardId)
+        } else {
+            InitCrashGuard.markInitStarted(context, guardId, if (gpu) InitCrashGuard.BACKEND_GPU else InitCrashGuard.BACKEND_CPU)
+        }
         try {
             Engine(EngineConfig(modelPath = file.absolutePath, backend = backend, maxNumTokens = tokens, cacheDir = cache.absolutePath)).use { engine ->
                 engine.initialize()
@@ -152,10 +217,18 @@ internal object RuntimeSpeedTuner {
                     }
                 }
             }
-            InitCrashGuard.markInitSucceeded(context, guardId)
+            if (kind == InferenceBackend.LITERT_NPU) {
+                InitCrashGuard.markNpuInitSucceeded(context, guardId)
+            } else {
+                InitCrashGuard.markInitSucceeded(context, guardId)
+            }
             return Sample(threads, times.sorted()[times.size / 2], answers)
         } finally {
-            InitCrashGuard.markInitFailed(context, guardId)
+            if (kind == InferenceBackend.LITERT_NPU) {
+                InitCrashGuard.markNpuInitFailed(context, guardId)
+            } else {
+                InitCrashGuard.markInitFailed(context, guardId)
+            }
             LiteRtRuntimeCache.release(context, cache)
         }
     }

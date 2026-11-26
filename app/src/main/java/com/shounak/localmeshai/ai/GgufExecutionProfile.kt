@@ -81,6 +81,7 @@ data class GgufExecutionProfile(
             val (batch, ubatch) = DeviceUtils.recommendedBatchSize(context)
             val isGpu = backendPreference.equals("VULKAN", ignoreCase = true) ||
                 backendPreference.equals("GPU", ignoreCase = true) ||
+                backendPreference.equals("NPU", ignoreCase = true) ||
                 backendPreference.equals("AUTO", ignoreCase = true)
 
             return GgufExecutionProfile(

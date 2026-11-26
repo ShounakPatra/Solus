@@ -44,6 +44,14 @@ def check(root, verify_gradle=False):
     require('rustup@1.28.2' in recipe and 'sudo:' in recipe and 'prebuild:' in recipe,
             'F-Droid recipe must provision its own Rust and system prerequisites')
     require('ndkVersion = "28.2.13676358"' in app, 'App NDK does not match CI')
+    require('../solus-' not in app, 'App build.gradle.kts must not reference external Rust crates outside the repository')
+    rust_target = root / 'app/src/main/rust/target'
+    prebuilt_so = sorted(
+        p.relative_to(root).as_posix()
+        for p in (root / 'app/src').rglob('*.so')
+        if p.is_file() and not p.is_relative_to(rust_target)
+    )
+    require(not prebuilt_so, f'Unverified prebuilt .so files must not exist under app/src: {prebuilt_so}')
     if verify_gradle:
         with urllib.request.urlopen('https://gitlab.com/fdroid/gradle-transparency-log/-/raw/master/checksums.json', timeout=30) as response:
             catalog = json.load(response)

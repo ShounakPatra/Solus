@@ -13,6 +13,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.ui.layout.onSizeChanged
 import com.shounak.localmeshai.models.ModelCapabilityPolicy
 import com.shounak.localmeshai.utils.InitCrashGuard
@@ -69,6 +70,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.OutlinedButton
 import com.shounak.localmeshai.ai.RequestTerminalStatus
@@ -235,6 +237,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -506,6 +509,14 @@ fun ChatScreen(
     val appSettingsData by mainViewModel.appSettingsData.collectAsState()
     var fullscreenMessageIndex by remember { mutableStateOf<Int?>(null) }
     var fullscreenVisionMessageIndex by remember { mutableStateOf<Int?>(null) }
+    var fullscreenGeneratedImageMessage by remember { mutableStateOf<com.shounak.localmeshai.ui.viewmodels.ChatMessage?>(null) }
+    val imageGenerationState by chatViewModel.imageGenerationState.collectAsState()
+    val modelsSnapshot = mainViewModel.availableModels.toList()
+    val installedT2iModels by produceState(initialValue = emptyList<com.shounak.localmeshai.ai.image.InstalledOnnxT2iModel>(), keys = arrayOf(modelsSnapshot)) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            com.shounak.localmeshai.ai.image.OnnxT2iCatalog.findInstalledModels(modelsSnapshot)
+        }
+    }
     val modelLoadState by chatViewModel.modelLoadState.collectAsState()
     val chatSessionState by chatViewModel.sessionState.collectAsState()
     val visionSessionState by visionViewModel.sessionState.collectAsState()
@@ -573,6 +584,26 @@ fun ChatScreen(
     }
     val selectedModel = selectedModelPath?.let { path ->
         mainViewModel.availableModels.firstOrNull { it.id == path || it.localPath == path }
+    }
+    val selectedT2iModel by produceState<com.shounak.localmeshai.ai.image.InstalledOnnxT2iModel?>(
+        initialValue = null,
+        keys = arrayOf(selectedModel, selectedModelPath, installedT2iModels)
+    ) {
+        val model = selectedModel
+        if (model == null || !com.shounak.localmeshai.ai.image.OnnxT2iCatalog.isT2iEntry(model)) {
+            value = null
+            return@produceState
+        }
+        val cached = installedT2iModels.firstOrNull {
+            it.id == model.id || (model.localPath != null && it.onnxFile.absolutePath == model.localPath)
+        }
+        if (cached != null) {
+            value = cached
+        } else {
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.shounak.localmeshai.ai.image.OnnxT2iCatalog.resolveInstalled(model)
+            }
+        }
     }
     val selectedUnsafeOverride = selectedModel?.id?.let { modelId ->
         mainViewModel.unsafeInitOverrideIds.contains(modelId) || InitCrashGuard.hasSuccessfulRetry(context, modelId)
@@ -807,7 +838,9 @@ fun ChatScreen(
             if (isVisionTarget) {
                 mainViewModel.selectVisionModel(target)
                 visionViewModel.automaticModelSelection.clear()
-                if (!isVisionModelReady) {
+                // If the same model is already selected (e.g. after auto-unload or an error),
+                // selectedVisionModelPath will not change so LaunchedEffect will not re-fire; init once directly.
+                if (isAlreadySelected && !isVisionModelReady) {
                     val unsafeOverride = mainViewModel.unsafeInitOverrideIds.contains(model.id) || InitCrashGuard.hasSuccessfulRetry(context, model.id)
                     visionViewModel.initModel(
                         path = target,
@@ -824,7 +857,9 @@ fun ChatScreen(
             } else {
                 mainViewModel.selectTextModel(target)
                 chatViewModel.automaticModelSelection.clear()
-                if (!isModelReady) {
+                // When switching to a new model (!isAlreadySelected), LaunchedEffect(visibleTextModelPath, ...)
+                // fires once cleanly on the next frame; only init directly when re-tapping an unloaded selected model.
+                if (isAlreadySelected && !isModelReady) {
                     val unsafeOverride = mainViewModel.unsafeInitOverrideIds.contains(model.id) || InitCrashGuard.hasSuccessfulRetry(context, model.id)
                     chatViewModel.initModel(
                         path = target,
@@ -913,6 +948,76 @@ fun ChatScreen(
             startMicRecording()
         } else {
             chatViewModel.setDraftText(textState.ifBlank { "Microphone permission is required to record audio." })
+        }
+    }
+    val voiceAppSettings = remember { com.shounak.localmeshai.utils.AppSettings.getInstance(context) }
+    val latestSelectedModel by rememberUpdatedState(selectedModel)
+    val latestSelectedT2i by rememberUpdatedState(selectedT2iModel)
+    val latestEffectiveSupportsAttachments by rememberUpdatedState(effectiveSupportsAttachments)
+    val voiceConversationController = remember(context, chatViewModel, visionViewModel) {
+        lateinit var controllerRef: com.shounak.localmeshai.ai.voice.VoiceConversationController
+        controllerRef = com.shounak.localmeshai.ai.voice.VoiceConversationController(
+            appContext = context.applicationContext,
+            hasChatModelReadyOrSelected = {
+                latestSelectedModel != null && latestSelectedT2i == null
+            },
+            sendTranscriptToChat = { transcript ->
+                if (latestEffectiveSupportsAttachments) {
+                    chatViewModel.voiceStreamingObserver = null
+                    visionViewModel.voiceStreamingObserver = controllerRef
+                    val ok = visionViewModel.ask(bitmap = null, question = transcript)
+                    if (ok) visionViewModel.currentActiveRequestId else null
+                } else {
+                    visionViewModel.voiceStreamingObserver = null
+                    chatViewModel.voiceStreamingObserver = controllerRef
+                    val ok = chatViewModel.sendMessage(transcript)
+                    if (ok) chatViewModel.currentActiveRequestId else null
+                }
+            },
+            abortActiveChatTurn = {
+                if (latestEffectiveSupportsAttachments) {
+                    visionViewModel.stopAnalyzing()
+                } else {
+                    chatViewModel.stopGenerating()
+                }
+            },
+            ttsVoiceProvider = { voiceAppSettings.settings.value.ttsVoice },
+            ttsSpeedProvider = { voiceAppSettings.settings.value.ttsSpeed },
+            hfTokenProvider = { voiceAppSettings.settings.value.huggingFaceToken }
+        )
+        controllerRef
+    }
+    val voiceModeState by voiceConversationController.uiState.collectAsState()
+    DisposableEffect(voiceConversationController) {
+        onDispose {
+            if (chatViewModel.voiceStreamingObserver === voiceConversationController) {
+                chatViewModel.voiceStreamingObserver = null
+            }
+            if (visionViewModel.voiceStreamingObserver === voiceConversationController) {
+                visionViewModel.voiceStreamingObserver = null
+            }
+            voiceConversationController.destroy()
+        }
+    }
+    val voicePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            voiceConversationController.open()
+        } else {
+            Toast.makeText(context, "Microphone permission is required for Hands-Free Voice Mode.", Toast.LENGTH_SHORT).show()
+        }
+    }
+    fun openHandsFreeVoiceMode() {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+        val readiness = voiceConversationController.refreshReadiness()
+        if (!readiness.allReady) {
+            voiceConversationController.open()
+            return
+        }
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            voiceConversationController.open()
+        } else {
+            voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
@@ -1334,6 +1439,25 @@ fun ChatScreen(
                                             ragTopMatchPct = message.ragTopMatchPct,
                                             documentName = message.documentName,
                                             documentPath = message.documentPath,
+                                            imagePath = message.imagePath,
+                                            imageSeed = message.imageSeed,
+                                            imageGenerationTimeMs = message.imageGenerationTimeMs,
+                                            imageModelName = message.imageModelName,
+                                            canRegenerateImage = installedT2iModels.isNotEmpty() && !isGenerating && !imageGenerationState.isActive && !isVisionAnalyzing,
+                                            onRegenerateImage = installedT2iModels.firstOrNull()?.let { activeT2i ->
+                                                val fallbackPrompt = textMessages.take(index).lastOrNull { it.isUser }?.text
+                                                    ?.removePrefix("/imagine")?.trim().orEmpty()
+                                                val regenPrompt = message.text.takeIf { it.isNotBlank() } ?: fallbackPrompt
+                                                {
+                                                    chatViewModel.generateImage(
+                                                        prompt = regenPrompt,
+                                                        t2iModel = activeT2i,
+                                                        userDisplayPrompt = regenPrompt
+                                                    )
+                                                    scrollController.onUserMessageSent()
+                                                }
+                                            },
+                                            onImageFullscreenClick = { fullscreenGeneratedImageMessage = message },
                                             errorMessage = message.errorMessage,
                                             onRetry = if (!message.isUser && index == textMessages.lastIndex && (message.errorMessage != null || message.terminalStatus == RequestTerminalStatus.Failed || message.text.startsWith("⚠️ Error:"))) {
                                                 val userMsgId = message.userMessageId ?: textMessages.take(index).lastOrNull { it.isUser }?.id
@@ -1899,13 +2023,40 @@ fun ChatScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                         }
 
+                        val trimmedDraft = textState.trim()
+                        val isImagineCommand = trimmedDraft.equals("/imagine", ignoreCase = true) ||
+                            trimmedDraft.startsWith("/imagine ", ignoreCase = true)
+                        val effectiveImageGenSubmit = !effectiveSupportsAttachments && (
+                            selectedT2iModel != null ||
+                                (isImagineCommand && installedT2iModels.isNotEmpty())
+                            )
+                        val canSendImageGen = effectiveImageGenSubmit &&
+                            !isDeletingTextHistory &&
+                            !isGenerating &&
+                            !imageGenerationState.isActive &&
+                            (!isImagineCommand || trimmedDraft.removePrefix("/imagine").trim().isNotBlank()) &&
+                            trimmedDraft.isNotBlank()
+
+                        if (imageGenerationState.isActive) {
+                            com.shounak.localmeshai.ui.components.ImageGenerationProgressCard(
+                                state = imageGenerationState,
+                                hazeState = hazeState,
+                                onCancel = { chatViewModel.cancelImageGeneration() }
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+
                         val charCount = textState.length
-                        val canSendMessage = !isDeletingTextHistory && !isDeletingVisionHistory && selectedModelPath != null &&
-                            !isCurrentModelResponding &&
-                            !isDecodingAudioFile &&
-                            (hasVisionAttachment || textState.isNotBlank())
-                        val composerGenerating = if (effectiveSupportsAttachments) isVisionAnalyzing else (isGenerating || isInitializing)
-                        val composerCanThink = isCurrentModelReady && !isCurrentModelResponding
+                        val canSendMessage = if (effectiveImageGenSubmit) {
+                            canSendImageGen
+                        } else {
+                            !isDeletingTextHistory && !isDeletingVisionHistory && selectedModelPath != null &&
+                                !isCurrentModelResponding &&
+                                !isDecodingAudioFile &&
+                                (hasVisionAttachment || textState.isNotBlank())
+                        }
+                        val composerGenerating = if (effectiveSupportsAttachments) isVisionAnalyzing else (isGenerating || isInitializing || imageGenerationState.isActive)
+                        val composerCanThink = selectedT2iModel == null && isCurrentModelReady && !isCurrentModelResponding
                         val composerSupportsVision = effectiveSupportsAttachments && runtimeSnapshot?.capabilities?.supportsVision == true
                         val composerSupportsAudioInput = effectiveSupportsAttachments && selectedSupportsAudio
                         val composerVisionDisabledReason = when {
@@ -1957,6 +2108,7 @@ fun ChatScreen(
                                                     if (textState.isEmpty()) {
                                                         Text(
                                                             text = when {
+                                                                selectedT2iModel != null -> "Describe an image to generate offline…"
                                                                 selectedModelPath == null -> "Select a model to start chatting..."
                                                                 selectedSupportsAttachments -> "Ask about an image, file, or audio…"
                                                                 else -> "Ask something…"
@@ -2029,12 +2181,38 @@ fun ChatScreen(
                                 chatViewModel.setDraftText(textState.ifBlank {
                                     when {
                                         selectedModelPath == null -> "Choose an audio-capable multimodal model first."
-                                        selectedModel?.type != ModelType.Vision -> "${selectedModel?.name ?: "Selected model"} is a text-only model. Raw audio input needs a multimodal model with audio encoders, such as Gemma 4 or Gemma 3n."
-                                        else -> "${selectedModel.name} does not include audio encoder assets in this downloaded bundle."
+                                        selectedModel?.type != ModelType.Vision -> "${selectedModel?.cleanDisplayName ?: "Selected model"} is a text-only model. Raw audio input needs a multimodal model with audio encoders, such as Gemma 4 or Gemma 3n."
+                                        else -> "${selectedModel.cleanDisplayName} does not include audio encoder assets in this downloaded bundle."
                                     }
                                 })
                             },
+                            onOpenVoiceMode = { openHandsFreeVoiceMode() },
                             onSend = send@{
+                                if (effectiveImageGenSubmit) {
+                                    val rawPrompt = textState.trim()
+                                    val genPrompt = if (isImagineCommand) {
+                                        rawPrompt.replaceFirst(Regex("^/imagine\\s*", RegexOption.IGNORE_CASE), "").trim()
+                                    } else {
+                                        rawPrompt
+                                    }
+                                    val t2iModel = selectedT2iModel ?: installedT2iModels.firstOrNull()
+                                    if (genPrompt.isBlank() || t2iModel == null) {
+                                        Toast.makeText(context, "Enter an image description to generate.", Toast.LENGTH_SHORT).show()
+                                        return@send
+                                    }
+                                    attachmentMenuExpanded = false
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    val acceptedImg = chatViewModel.generateImage(
+                                        prompt = genPrompt,
+                                        t2iModel = t2iModel,
+                                        userDisplayPrompt = rawPrompt
+                                    )
+                                    if (acceptedImg) {
+                                        scrollController.onUserMessageSent()
+                                        chatViewModel.clearDraftText()
+                                    }
+                                    return@send
+                                }
                                 if (!effectiveSupportsAttachments && (selectedBitmap != null || selectedAudioUri != null || selectedAudioBytes?.isNotEmpty() == true)) {
                                     Toast.makeText(context, "Start a multimodal chat to send the image or audio. Your draft was kept.", Toast.LENGTH_LONG).show()
                                     return@send
@@ -2074,10 +2252,10 @@ fun ChatScreen(
                             },
                             onStop = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                if (effectiveSupportsAttachments) {
-                                    visionViewModel.stopAnalyzing()
-                                } else {
-                                    chatViewModel.stopGenerating()
+                                when {
+                                    imageGenerationState.isActive -> chatViewModel.cancelImageGeneration()
+                                    effectiveSupportsAttachments -> visionViewModel.stopAnalyzing()
+                                    else -> chatViewModel.stopGenerating()
                                 }
                             }
                         )
@@ -2127,7 +2305,32 @@ fun ChatScreen(
                 }
 
                 val activeBackendFromVm = if (effectiveSupportsAttachments) visionActiveBackend else chatActiveBackend
-                val effectiveBackend = activeBackendFromVm ?: selectedModel?.backend ?: "Local GPU/CPU"
+                val activeModelPath = if (effectiveSupportsAttachments) selectedVisionModelPath else selectedTextModelPath
+                val isActiveRuntimeReady = if (effectiveSupportsAttachments) {
+                    isVisionModelReady && !visionActiveBackend.isNullOrBlank()
+                } else {
+                    isModelReady && !chatActiveBackend.isNullOrBlank()
+                }
+                val chatAppSettings = remember { com.shounak.localmeshai.utils.AppSettings.getInstance(context) }
+                val npuSnapshot by produceState<com.shounak.localmeshai.ai.NpuCapabilitySnapshot?>(
+                    initialValue = null,
+                    key1 = selectedModel?.id
+                ) {
+                    value = withContext(Dispatchers.IO) {
+                        com.shounak.localmeshai.ai.NpuCapabilityDetector.detect(context, selectedModel?.id)
+                    }
+                }
+                val preferenceBackendLabel = when (appSettingsData.llamaBackendPreference.uppercase()) {
+                    "NPU" -> npuSnapshot?.primaryBadgeLabel ?: "NPU"
+                    "VULKAN", "GPU" -> "GPU"
+                    "CPU" -> "CPU"
+                    else -> "Auto"
+                }
+                val effectiveBackend = if (activeModelPath == null || !isActiveRuntimeReady || activeBackendFromVm.isNullOrBlank()) {
+                    preferenceBackendLabel
+                } else {
+                    activeBackendFromVm
+                }
 
                 val latestMessageMetrics = if (effectiveSupportsAttachments) {
                     visionMessages.lastOrNull { !it.isUser && it.metrics != null }?.metrics
@@ -2151,7 +2354,6 @@ fun ChatScreen(
                     else -> chatLastInferenceMs
                 }
 
-                val activeModelPath = if (effectiveSupportsAttachments) selectedVisionModelPath else selectedTextModelPath
                 val runtimeStatus = if (activeModelPath == null) "No model" else when (activeSessionState) {
                     is InferenceSessionState.Idle -> "Not loaded"
                     is InferenceSessionState.Preparing -> "Preparing…"
@@ -2234,6 +2436,13 @@ fun ChatScreen(
                                     lastInferenceMs = effectiveLastInferenceMs,
                                     runtimeStatus = runtimeStatus,
                                     activeBackend = effectiveBackend,
+                                    selectedBackendPreference = appSettingsData.llamaBackendPreference,
+                                    npuLabel = npuSnapshot?.primaryBadgeLabel ?: "NPU",
+                                    npuEnabled = npuSnapshot?.anyNpuSupported == true,
+                                    npuUnavailableReason = npuSnapshot?.summaryReason,
+                                    onSelectBackendPreference = { backendPref ->
+                                        chatAppSettings.updateSettings { it.copy(llamaBackendPreference = backendPref) }
+                                    },
                                     batteryTempC = batteryTempC,
                                     availableRamMb = availableRamMb,
                                     accentColor = modelAccentColor,
@@ -2288,6 +2497,31 @@ fun ChatScreen(
                     onClose = { fullscreenVisionMessageIndex = null },
                     hazeState = hazeState
                 )
+            }
+            fullscreenGeneratedImageMessage?.let { imgMsg ->
+                val imgPath = imgMsg.imagePath
+                if (!imgPath.isNullOrBlank()) {
+                    com.shounak.localmeshai.ui.components.GeneratedImageFullscreenDialog(
+                        imagePath = imgPath,
+                        promptText = imgMsg.text,
+                        seed = imgMsg.imageSeed,
+                        generationTimeMs = imgMsg.imageGenerationTimeMs,
+                        modelName = imgMsg.imageModelName,
+                        hazeState = hazeState,
+                        onSaveToGallery = {
+                            val res = com.shounak.localmeshai.ai.image.ImageGallerySaver.saveToGallery(context, imgPath)
+                            Toast.makeText(
+                                context,
+                                if (res.isSuccess) "Saved image to Pictures/Solus" else "Save failed: ${res.exceptionOrNull()?.message ?: "Unknown error"}",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        onOpenExternal = {
+                            AttachmentViewerUtils.openImageInExternalViewer(context, null, imgPath)
+                        },
+                        onClose = { fullscreenGeneratedImageMessage = null }
+                    )
+                }
             }
         }
     }
@@ -2349,6 +2583,32 @@ fun ChatScreen(
             onSettings = { mainViewModel.openSettings(false) },
             onGoToModels = onGoToModels,
             onOpenKnowledgeBase = { showKnowledgeBase = true }
+        )
+    }
+
+    if (voiceModeState.isOpen) {
+        BackHandler(enabled = true) {
+            voiceConversationController.close()
+        }
+        HandsFreeVoiceOverlay(
+            state = voiceModeState,
+            hazeState = hazeState,
+            activeModelName = selectedModel?.cleanDisplayName,
+            onDownloadVoiceAssets = { voiceConversationController.downloadMissingAssets() },
+            onOpenModelsTab = {
+                voiceConversationController.close()
+                onGoToModels?.invoke()
+            },
+            onToggleMute = { voiceConversationController.toggleMute() },
+            onInterrupt = { voiceConversationController.manualBargeInOrInterrupt() },
+            onRetry = {
+                if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    voiceConversationController.startIfReadyAfterPermissionOrDownload()
+                } else {
+                    voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            },
+            onClose = { voiceConversationController.close() }
         )
     }
 }
@@ -2597,6 +2857,7 @@ private fun MorphingChatComposer(
     onKnowledgeBaseSelect: () -> Unit,
     onMicRecord: () -> Unit,
     onMicUnavailable: () -> Unit,
+    onOpenVoiceMode: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit
 ) {
@@ -2898,18 +3159,65 @@ private fun MorphingChatComposer(
                         }
                     }
                 }
+
+                // Slot 4: Hands-Free Voice Mode launcher (next to Mic when closed; smoothly above Mic when opened)
+                Box(
+                    modifier = Modifier.graphicsLayer {
+                        alpha = if (isRecordingAudio) 0f else 1f
+                    }
+                ) {
+                    val voiceBarColor = MaterialTheme.colorScheme.primary
+                    LiquidGlassButton(
+                        onClick = onOpenVoiceMode,
+                        hazeState = hazeState,
+                        enabled = !isRecordingAudio,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .border(
+                                0.8.dp,
+                                voiceBarColor.copy(alpha = 0.44f),
+                                CircleShape
+                            ),
+                        shape = CircleShape,
+                        tintColor = voiceBarColor.copy(alpha = 0.20f),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Canvas(
+                            modifier = Modifier.size(18.dp)
+                        ) {
+                            val heights = floatArrayOf(0.42f, 0.78f, 1.0f, 0.78f, 0.42f)
+                            val strokeW = size.width / 8.2f
+                            val step = (size.width - strokeW) / (heights.size - 1)
+                            heights.forEachIndexed { idx, frac ->
+                                val barH = size.height * frac
+                                val x = strokeW * 0.5f + idx * step
+                                val yTop = (size.height - barH) * 0.5f
+                                drawLine(
+                                    color = voiceBarColor,
+                                    start = Offset(x, yTop),
+                                    end = Offset(x, yTop + barH),
+                                    strokeWidth = strokeW,
+                                    cap = StrokeCap.Round
+                                )
+                            }
+                        }
+                    }
+                }
             }
         ) { measurables, constraints ->
             val gapPx = 8.dp.roundToPx()
+            val btnGapPx = 6.dp.roundToPx()
             val rowGapPx = 4.dp.roundToPx()
             val totalWidth = constraints.maxWidth.coerceAtLeast(1)
 
             val attachPlaceable = measurables[1].measure(constraints.copy(minWidth = 0, minHeight = 0))
             val endPlaceable = measurables[3].measure(constraints.copy(minWidth = 0, minHeight = 0))
+            val voicePlaceable = measurables[4].measure(constraints.copy(minWidth = 0, minHeight = 0))
 
             val t = if (isRecordingAudio) 1f else expandProgressState.value.coerceIn(0f, 1f)
-            val collapsedInputWidth = (totalWidth - attachPlaceable.width - endPlaceable.width - gapPx * 2).coerceAtLeast(1)
-            val currentInputWidth = (collapsedInputWidth + (totalWidth - collapsedInputWidth) * t)
+            val collapsedInputWidth = (totalWidth - attachPlaceable.width - gapPx - endPlaceable.width - btnGapPx - voicePlaceable.width - gapPx).coerceAtLeast(1)
+            val expandedInputWidth = if (isRecordingAudio) totalWidth else (totalWidth - voicePlaceable.width - gapPx).coerceAtLeast(1)
+            val currentInputWidth = (collapsedInputWidth + (expandedInputWidth - collapsedInputWidth) * t)
                 .roundToInt().coerceIn(1, totalWidth)
 
             val inputPlaceable = measurables[0].measure(
@@ -2921,9 +3229,10 @@ private fun MorphingChatComposer(
                 constraints.copy(minWidth = middleMaxWidth, maxWidth = middleMaxWidth, minHeight = 0)
             )
 
-            val collapsedHeight = maxOf(inputPlaceable.height, attachPlaceable.height, endPlaceable.height)
+            val collapsedHeight = maxOf(inputPlaceable.height, attachPlaceable.height, endPlaceable.height, voicePlaceable.height)
+            val topExpandedHeight = if (isRecordingAudio) inputPlaceable.height else maxOf(inputPlaceable.height, voicePlaceable.height)
             val actionRowHeight = maxOf(attachPlaceable.height, middlePlaceable.height, endPlaceable.height)
-            val expandedHeight = inputPlaceable.height + rowGapPx + actionRowHeight
+            val expandedHeight = topExpandedHeight + rowGapPx + actionRowHeight
             val layoutHeight = (collapsedHeight + (expandedHeight - collapsedHeight) * t)
                 .roundToInt().coerceAtLeast(collapsedHeight)
 
@@ -2931,20 +3240,32 @@ private fun MorphingChatComposer(
                 val collapsedInputX = (attachPlaceable.width + gapPx).toFloat()
                 val inputX = (collapsedInputX + (0f - collapsedInputX) * t).roundToInt()
                 val collapsedInputY = (collapsedHeight - inputPlaceable.height) / 2f
-                val inputY = (collapsedInputY * (1f - t)).roundToInt()
+                val expandedInputY = ((topExpandedHeight - inputPlaceable.height) / 2f).coerceAtLeast(0f)
+                val inputY = (collapsedInputY + (expandedInputY - collapsedInputY) * t).roundToInt()
                 inputPlaceable.placeRelative(inputX, inputY)
 
-                val actionRowTop = inputPlaceable.height + rowGapPx
+                val actionRowTop = topExpandedHeight + rowGapPx
 
                 val collapsedAttachY = (collapsedHeight - attachPlaceable.height) / 2f
                 val expandedAttachY = actionRowTop + (actionRowHeight - attachPlaceable.height) / 2f
                 val attachY = (collapsedAttachY + (expandedAttachY - collapsedAttachY) * t).roundToInt()
                 attachPlaceable.placeRelative(0, attachY)
 
+                val collapsedEndX = (totalWidth - voicePlaceable.width - btnGapPx - endPlaceable.width).toFloat()
+                val expandedEndX = (totalWidth - endPlaceable.width).toFloat()
+                val endX = (collapsedEndX + (expandedEndX - collapsedEndX) * t).roundToInt()
                 val collapsedEndY = (collapsedHeight - endPlaceable.height) / 2f
                 val expandedEndY = actionRowTop + (actionRowHeight - endPlaceable.height) / 2f
                 val endY = (collapsedEndY + (expandedEndY - collapsedEndY) * t).roundToInt()
-                endPlaceable.placeRelative(totalWidth - endPlaceable.width, endY)
+                endPlaceable.placeRelative(endX, endY)
+
+                if (!isRecordingAudio) {
+                    val voiceX = totalWidth - voicePlaceable.width
+                    val collapsedVoiceY = (collapsedHeight - voicePlaceable.height) / 2f
+                    val expandedVoiceY = (topExpandedHeight - voicePlaceable.height).coerceAtLeast(0).toFloat()
+                    val voiceY = (collapsedVoiceY + (expandedVoiceY - collapsedVoiceY) * t).roundToInt()
+                    voicePlaceable.placeRelative(voiceX, voiceY)
+                }
 
                 if (t > 0.01f) {
                     val collapsedMiddleY = (collapsedHeight - middlePlaceable.height) / 2f
@@ -3621,7 +3942,7 @@ private fun ComposerModelPicker(
     var blockedModelForDetails by remember { mutableStateOf<ModelInfo?>(null) }
     var failedModelForDetails by remember { mutableStateOf<ModelInfo?>(null) }
     val selected = models.firstOrNull { it.id == selectedPath || it.localPath == selectedPath }
-    val selectedName = selected?.name ?: "Select model"
+    val selectedName = selected?.cleanDisplayName ?: "Select model"
     val configuration = LocalConfiguration.current
     val popupWidth = minOf(255.dp, (configuration.screenWidthDp.dp - 48.dp).coerceAtLeast(200.dp))
     val popupHeight = minOf(420.dp, configuration.screenHeightDp.dp / 2)
@@ -3806,7 +4127,7 @@ private fun ComposerModelPicker(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     Text(
-                                        model.name,
+                                        model.cleanDisplayName,
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                         color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
@@ -3825,9 +4146,10 @@ private fun ComposerModelPicker(
                                 }
                                 Text(
                                     when {
-                                        isSelected && isModelReady -> "Ready in memory · Tap to eject"
-                                        isSelected && isInitializing -> "Preparing model… · Tap to eject"
-                                        isSelected -> "Unloaded · Tap to initialize"
+                                        isSelected && isModelReady -> "Loaded · Tap to eject"
+                                        isSelected && isInitializing -> "Initialising / Loading… · Tap to eject"
+                                        isSelected -> "Downloaded · Tap to initialize"
+                                        com.shounak.localmeshai.ai.image.OnnxT2iCatalog.isT2iEntry(model) -> "Image generation"
                                         model.supportsVision && model.supportsAudio -> "Images and audio"
                                         model.supportsVision -> "Images"
                                         model.supportsAudio -> "Audio"
@@ -4534,7 +4856,8 @@ private fun String.isStreamingPlaceholderText(): Boolean {
     return trim() in setOf(
         "Generating…", "Generating...", "…", "Reading input…", "Reading input...",
         "Loading model…", "Loading model...", "Preparing input…", "Preparing input...",
-        "Validating backend…", "Validating backend...", "Processing prompt…", "Processing prompt..."
+        "Validating backend…", "Validating backend...", "Processing prompt…", "Processing prompt...",
+        "Unloading chat model…", "Generating 512×512 image…"
     )
 }
 
@@ -4604,6 +4927,13 @@ private fun ChatBubble(
     ragTopMatchPct: Int = 0,
     documentName: String? = null,
     documentPath: String? = null,
+    imagePath: String? = null,
+    imageSeed: Long? = null,
+    imageGenerationTimeMs: Long? = null,
+    imageModelName: String? = null,
+    canRegenerateImage: Boolean = false,
+    onRegenerateImage: (() -> Unit)? = null,
+    onImageFullscreenClick: (() -> Unit)? = null,
     errorMessage: String? = null,
     onRetry: (() -> Unit)? = null,
     onFullscreenClick: () -> Unit
@@ -4709,6 +5039,28 @@ private fun ChatBubble(
                     )
                 }
 
+                if (!isUser && !imagePath.isNullOrBlank()) {
+                    com.shounak.localmeshai.ui.components.GeneratedImageBubbleContent(
+                        imagePath = imagePath,
+                        promptText = text,
+                        seed = imageSeed,
+                        generationTimeMs = imageGenerationTimeMs,
+                        modelName = imageModelName,
+                        hazeState = hazeState,
+                        canRegenerate = canRegenerateImage && onRegenerateImage != null,
+                        onSaveToGallery = {
+                            val res = com.shounak.localmeshai.ai.image.ImageGallerySaver.saveToGallery(context, imagePath)
+                            Toast.makeText(
+                                context,
+                                if (res.isSuccess) "Saved image to Pictures/Solus" else "Save failed: ${res.exceptionOrNull()?.message ?: "Unknown error"}",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        onRegenerateNewSeed = { onRegenerateImage?.invoke() },
+                        onFullscreenClick = { onImageFullscreenClick?.invoke() }
+                    )
+                }
+
                 if (!isUser && progress != null && displayText.isStreamingPlaceholderText()) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -4738,6 +5090,8 @@ private fun ChatBubble(
                     StreamingDotsIndicator(
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                } else if (!isUser && !imagePath.isNullOrBlank()) {
+                    // Image bubble already renders prompt via fullscreen/alt and image + metadata pills.
                 } else {
                     if (!isUser && terminalStatus == RequestTerminalStatus.Stopped && displayText.isBlank()) {
                         Surface(
@@ -4916,36 +5270,56 @@ private fun ChatBubble(
                 if (!isUser) {
                     val ttsManager = remember { com.shounak.localmeshai.ai.tts.TinyVocaManager.getInstance(context) }
                     val isSpeaking by ttsManager.isSpeaking.collectAsState()
+                    val isInitializingTts by ttsManager.isInitializing.collectAsState()
+                    val initializingTargetId by ttsManager.initializingTargetId.collectAsState()
                     val isModelDownloaded by ttsManager.isModelDownloaded.collectAsState()
                     val speakingId by ttsManager.currentSpeakingId.collectAsState()
                     val isThisSpeaking = isSpeaking && speakingId == messageId
+                    val isThisLoadingTts = isInitializingTts && initializingTargetId == messageId
                     val appSettings = remember { com.shounak.localmeshai.utils.AppSettings.getInstance(context) }
                     val currentSettings by appSettings.settings.collectAsState()
 
-                    MessageToolButton(
-                        icon = if (isThisSpeaking) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
-                        contentDescription = when {
-                            isThisSpeaking -> "Stop reading"
-                            !isModelDownloaded -> "Download TinyVoca in Voice settings to enable read aloud"
-                            else -> "Read aloud"
-                        },
-                        hazeState = hazeState,
-                        enabled = isModelDownloaded || isThisSpeaking,
-                        tintColor = if (isThisSpeaking) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                        onClick = {
-                            if (isThisSpeaking) {
-                                ttsManager.stop()
-                            } else if (isModelDownloaded) {
-                                val clean = com.shounak.localmeshai.ai.tts.TinyVocaManager.cleanTextForSpeech(text)
-                                ttsManager.speak(
-                                    text = clean,
-                                    id = messageId,
-                                    voice = currentSettings.ttsVoice,
-                                    speed = currentSettings.ttsSpeed
-                                )
-                            }
+                    if (isThisLoadingTts) {
+                        LiquidGlassButton(
+                            onClick = { ttsManager.stop() },
+                            hazeState = hazeState,
+                            modifier = Modifier.size(34.dp),
+                            shape = RoundedCornerShape(17.dp),
+                            tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         }
-                    )
+                    } else {
+                        MessageToolButton(
+                            icon = if (isThisSpeaking) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = when {
+                                isThisSpeaking -> "Stop reading"
+                                !isModelDownloaded -> "Download TinyVoca in Voice settings to enable read aloud"
+                                else -> "Read aloud"
+                            },
+                            hazeState = hazeState,
+                            enabled = isModelDownloaded || isThisSpeaking,
+                            tintColor = if (isThisSpeaking) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                            onClick = {
+                                if (isThisSpeaking) {
+                                    ttsManager.stop()
+                                } else if (isModelDownloaded) {
+                                    val clean = com.shounak.localmeshai.ai.tts.TinyVocaManager.cleanTextForSpeech(text)
+                                    ttsManager.speak(
+                                        text = clean,
+                                        id = messageId,
+                                        voice = currentSettings.ttsVoice,
+                                        speed = currentSettings.ttsSpeed
+                                    )
+                                }
+                            }
+                        )
+                    }
                     MessageToolButton(
                         icon = Icons.Default.Fullscreen,
                         contentDescription = "Fullscreen message",

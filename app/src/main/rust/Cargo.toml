@@ -3,6 +3,9 @@ name = "solus-candle"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = ["solus-rag-rs", "solus-ai-rs"]
+
 [lib]
 name = "solus_candle"
 crate-type = ["cdylib"]

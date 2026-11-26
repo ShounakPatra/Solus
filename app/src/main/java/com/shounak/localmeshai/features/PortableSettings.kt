@@ -35,7 +35,7 @@ internal object PortableSettings {
         // New settings retain current values; unknown keys are not imported (including secrets).
         val json = encode(current).apply { present.forEach { put(it, input.get(it)) } }
         val backend = json.getString("backend")
-        if ("backend" in present) require(backend in setOf("AUTO", "CPU", "VULKAN"))
+        if ("backend" in present) require(backend in setOf("AUTO", "NPU", "CPU", "VULKAN"))
         val unload = json.getInt("autoUnloadMinutes")
         val topK = json.getInt("ragTopK")
         val similarity = json.getDouble("ragMinSimilarity").toFloat()

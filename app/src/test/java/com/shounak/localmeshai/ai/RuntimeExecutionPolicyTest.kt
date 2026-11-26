@@ -112,4 +112,50 @@ class RuntimeExecutionPolicyTest {
         assertEquals(2, RuntimeExecutionPolicy.resolve(8, 8.0, true, frequencies, 6).cpuThreads)
         assertEquals(2, RuntimeExecutionPolicy.resolve(8, 3.0, false, frequencies, 6).cpuThreads)
     }
+
+    @Test
+    fun recoveryLadderDisablesGpuThenStepsDownContextWindow() {
+        val start = ModelLoadIdentity(
+            modelPath = "/models/test.gguf",
+            runtimeKind = "LlamaCpp",
+            backendPreference = "AUTO",
+            threads = 4,
+            prefillThreads = 4,
+            contextWindow = 4096,
+            batchSize = 256,
+            ubatchSize = 128,
+            gpuLayers = 99
+        )
+
+        val step1 = RuntimeExecutionPolicy.nextRecoveryIdentity(start, OutOfMemoryError("KV cache alloc failed"))
+        org.junit.Assert.assertNotNull(step1)
+        assertEquals("CPU", step1!!.backendPreference)
+        assertEquals(0, step1.gpuLayers)
+        assertEquals(4096, step1.contextWindow)
+
+        val step2 = RuntimeExecutionPolicy.nextRecoveryIdentity(step1, RuntimeException("Out of memory allocating context"))
+        org.junit.Assert.assertNotNull(step2)
+        assertEquals(2048, step2!!.contextWindow)
+        assertEquals(2, step2.threads)
+
+        val step3 = RuntimeExecutionPolicy.nextRecoveryIdentity(step2, RuntimeException("Out of memory"))
+        assertEquals(1024, step3!!.contextWindow)
+
+        val step4 = RuntimeExecutionPolicy.nextRecoveryIdentity(step3, RuntimeException("Out of memory"))
+        assertEquals(512, step4!!.contextWindow)
+
+        val exhausted = RuntimeExecutionPolicy.nextRecoveryIdentity(step4, RuntimeException("Out of memory"))
+        org.junit.Assert.assertNull(exhausted)
+    }
+
+    @Test
+    fun nonRecoverableErrorsDoNotTriggerOomStepDown() {
+        val identity = ModelLoadIdentity(modelPath = "/models/test.gguf", backendPreference = "CPU", gpuLayers = 0)
+        org.junit.Assert.assertNull(
+            RuntimeExecutionPolicy.nextRecoveryIdentity(identity, IllegalArgumentException("Model file not found"))
+        )
+        org.junit.Assert.assertNull(
+            RuntimeExecutionPolicy.nextRecoveryIdentity(identity, IllegalStateException("SHA-256 checksum mismatch"))
+        )
+    }
 }

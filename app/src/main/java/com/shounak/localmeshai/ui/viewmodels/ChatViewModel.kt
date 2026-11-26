@@ -100,7 +100,11 @@ data class ChatMessage(
     val responseFormatVersion: Int = 0,
     val toolUses: List<com.shounak.localmeshai.ai.tools.ToolUse> = emptyList(),
     val ragPassages: List<com.shounak.localmeshai.features.RagPassage> = emptyList(),
-    val ragDocumentId: String? = null
+    val ragDocumentId: String? = null,
+    val imagePath: String? = null,
+    val imageSeed: Long? = null,
+    val imageGenerationTimeMs: Long? = null,
+    val imageModelName: String? = null
 )
 
 @Immutable
@@ -264,6 +268,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var initGeneration: Int = 0
     private var initJob: Job? = null
     private var generationJob: Job? = null
+    private var imageGenJob: Job? = null
+    @Volatile private var activeImageRequestId: String? = null
+    @Volatile private var activeImageSessionId: String? = null
+    @Volatile private var activeImageAssistantIdx: Int = -1
+    private val cancelledImageRequestIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val _imageGenerationState = MutableStateFlow<com.shounak.localmeshai.models.state.ImageGenerationState>(
+        com.shounak.localmeshai.models.state.ImageGenerationState.Idle
+    )
+    val imageGenerationState = _imageGenerationState.asStateFlow()
     private val _isDeletingHistory = MutableStateFlow(false)
     val isDeletingHistory = _isDeletingHistory.asStateFlow()
     private var autoUnloadJob: Job? = null
@@ -272,6 +285,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var lastRuntimeThinkingMode: Boolean? = null
     private var coordinatorToken: RegistrationToken? = null
     private var lastShutdownResult: com.shounak.localmeshai.ai.ShutdownResult? = null
+    @Volatile var voiceStreamingObserver: com.shounak.localmeshai.ai.voice.VoiceStreamingObserver? = null
+    val currentActiveRequestId: String? get() = activeRequestId
 
     fun retryMessage(sessionId: String, userMessageId: String) {
         if (_isDeletingHistory.value) return
@@ -470,7 +485,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     is ModelLoadState.Ready -> {
                         publishRuntimeCapabilities()
                         _isInitializing.value = false
-                        _isModelReady.value = inferenceManager.isReady
+                        val isT2iReady = currentLoadedIdentity?.runtimeKind == "ONNX T2I" &&
+                            com.shounak.localmeshai.ai.image.OnnxImageGenerator.getInstance(getApplication()).isSessionLoaded.value
+                        _isModelReady.value = inferenceManager.isReady || isT2iReady
                         _sessionState.value = InferenceSessionState.Ready(
                             modelId = currentModelId,
                             backendDisplayName = _activeBackend.value ?: "",
@@ -881,6 +898,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         bundle: ModelBundle? = null,
         deferLoad: Boolean = false
     ) {
+        if (com.shounak.localmeshai.ai.image.OnnxT2iCatalog.isSingleGraphT2iPath(path, bundle)) {
+            initT2iModel(
+                path = path,
+                modelId = modelId,
+                modelName = modelName,
+                modelSize = modelSize,
+                bundle = bundle,
+                forceReload = forceReload
+            )
+            return
+        }
         defaultProfileContext = contextWindowTokens
         val configuredProfileContext = com.shounak.localmeshai.features.WorkspacePreferences.get(getApplication()).profile(modelId.ifBlank { bundle?.id ?: File(path).nameWithoutExtension }).contextTokens ?: contextWindowTokens
 
@@ -964,13 +992,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         initJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-                modelLoadController.loadOrAttach(
+                modelLoadController.loadOrAttachWithRecovery(
                     identity = identity,
                     scope = viewModelScope,
                     cancellationAction = {
                         inferenceManager.cancelGeneration()
+                    },
+                    onBeforeRecoveryRetry = { _, _, _ ->
+                        com.shounak.localmeshai.ai.tts.TinyVocaManager.releaseIfInitialized("model_load_oom_recovery")
+                        AppCacheCleaner.clearAppCache(getApplication())
                     }
-                ) { operationId, operationControlId, updateProgress ->
+                ) { effectiveIdentity, operationId, operationControlId, updateProgress ->
                     val shutdownOk = runCatching {
                         kotlinx.coroutines.withTimeout(10_000L) {
                             releaseJob?.join()
@@ -985,6 +1017,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             if (myGen != initGeneration) {
                                 throw CancellationException("Superseded by newer model configuration")
                             }
+                            com.shounak.localmeshai.ai.image.OnnxImageGenerator.getInstance(getApplication()).unload()
                             AppCacheCleaner.clearAppCache(getApplication())
                             inferenceManager.initialize(
                                 modelPath = path,
@@ -993,7 +1026,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 modelSize = modelSize,
                                 initialThinkingPreference = _thinkingMode.value,
                                 allowUnsafeOverride = allowUnsafeOverride,
-                                contextWindowTokens = configuredProfileContext,
+                                contextWindowTokens = effectiveIdentity.contextWindow,
+                                backendPreferenceOverride = effectiveIdentity.backendPreference,
+                                threadCountOverride = effectiveIdentity.threads,
                                 operationControlId = operationControlId,
                                 onModelProgress = updateProgress,
                                 bundle = bundle
@@ -1003,8 +1038,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 throw IllegalStateException("Model initialization cancelled or manager unavailable")
                             }
                             currentModelPath = path
-                            lastLoadedBackendPreference = currentBackendPref
-                            currentLoadedIdentity = identity
+                            lastLoadedBackendPreference = effectiveIdentity.backendPreference
+                            currentLoadedIdentity = effectiveIdentity
                             publishRuntimeCapabilities()
 
                             resetRuntimeConversationBeforeNextSend = false
@@ -1015,7 +1050,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             }
                             ModelActualConfiguration(
                                 backend = inferenceManager.activeBackendDisplayName,
-                                contextLength = inferenceManager.runtimeCapabilities?.initializedContextTokens ?: 2048
+                                threads = effectiveIdentity.threads,
+                                prefillThreads = effectiveIdentity.prefillThreads,
+                                contextWindow = inferenceManager.runtimeCapabilities?.initializedContextTokens ?: effectiveIdentity.contextWindow,
+                                batchSize = effectiveIdentity.batchSize,
+                                ubatchSize = effectiveIdentity.ubatchSize,
+                                gpuLayers = effectiveIdentity.gpuLayers,
+                                contextLength = inferenceManager.runtimeCapabilities?.initializedContextTokens ?: effectiveIdentity.contextWindow
                             )
                         }
                     }
@@ -1087,11 +1128,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val expectedGeneration = initGeneration
         onProgress?.invoke(RequestProgress.LoadingModel)
         return try {
-            modelLoadController.loadOrAttach(
+            modelLoadController.loadOrAttachWithRecovery(
                 identity = identity,
                 scope = viewModelScope,
-                cancellationAction = { inferenceManager.cancelGeneration() }
-            ) { operationId, operationControlId, updateProgress ->
+                cancellationAction = { inferenceManager.cancelGeneration() },
+                onBeforeRecoveryRetry = { _, _, _ ->
+                    com.shounak.localmeshai.ai.tts.TinyVocaManager.releaseIfInitialized("model_load_oom_recovery")
+                    AppCacheCleaner.clearAppCache(getApplication())
+                }
+            ) { effectiveIdentity, operationId, operationControlId, updateProgress ->
                 releaseJob?.join()
                 updateProgress(ModelLoadStage.WaitingForRuntime, null, null)
                 ModelRuntimeCoordinator.withRuntime(ModelRuntimeOwner.Chat) {
@@ -1104,7 +1149,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             modelSize = currentModelSize,
                             initialThinkingPreference = _thinkingMode.value,
                             allowUnsafeOverride = currentAllowUnsafeOverride,
-                            contextWindowTokens = currentContextWindowTokens,
+                            contextWindowTokens = effectiveIdentity.contextWindow,
+                            backendPreferenceOverride = effectiveIdentity.backendPreference,
+                            threadCountOverride = effectiveIdentity.threads,
                             operationControlId = operationControlId,
                             onModelProgress = updateProgress,
                             onProgress = onProgress,
@@ -1119,7 +1166,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             throw IllegalStateException("Manager unavailable after on-demand load")
                         }
                         publishRuntimeCapabilities()
-                        lastLoadedBackendPreference = currentBackendPref
+                        lastLoadedBackendPreference = effectiveIdentity.backendPreference
                         resetRuntimeConversationBeforeNextSend = false
                         lastRuntimeThinkingMode = null
                         withContext(Dispatchers.Main.immediate) {
@@ -1128,7 +1175,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         ModelActualConfiguration(
                             backend = inferenceManager.activeBackendDisplayName,
-                            contextLength = inferenceManager.runtimeCapabilities?.initializedContextTokens ?: 2048
+                            threads = effectiveIdentity.threads,
+                            prefillThreads = effectiveIdentity.prefillThreads,
+                            contextWindow = inferenceManager.runtimeCapabilities?.initializedContextTokens ?: effectiveIdentity.contextWindow,
+                            batchSize = effectiveIdentity.batchSize,
+                            ubatchSize = effectiveIdentity.ubatchSize,
+                            gpuLayers = effectiveIdentity.gpuLayers,
+                            contextLength = inferenceManager.runtimeCapabilities?.initializedContextTokens ?: effectiveIdentity.contextWindow
                         )
                     }
                 }
@@ -1145,6 +1198,408 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _error.value = msg
             false
         }
+    }
+
+    private fun initT2iModel(
+        path: String,
+        modelId: String,
+        modelName: String,
+        modelSize: String,
+        bundle: ModelBundle?,
+        forceReload: Boolean
+    ) {
+        val resolvedT2i = com.shounak.localmeshai.ai.image.OnnxT2iCatalog.resolveInstalledFromPath(
+            path = path,
+            id = modelId,
+            name = modelName,
+            bundle = bundle
+        )
+        val file = File(path)
+        val identity = ModelLoadIdentity.fromFile(
+            file = file,
+            runtimeKind = "ONNX T2I",
+            backendPreference = appSettings.settings.value.llamaBackendPreference,
+            threads = 4,
+            contextWindow = resolvedT2i?.graphSpec?.sequenceLength ?: 256
+        )
+        val generator = com.shounak.localmeshai.ai.image.OnnxImageGenerator.getInstance(getApplication())
+        if (!forceReload) {
+            if (_isModelReady.value && currentLoadedIdentity == identity && generator.isSessionLoaded.value) {
+                return
+            }
+            val activeLoadState = modelLoadController.loadState.value
+            if (activeLoadState is ModelLoadState.Loading &&
+                (modelLoadController.currentIdentity == identity || currentRequestedIdentity == identity) &&
+                initJob?.isActive == true &&
+                !_isStopping.value
+            ) {
+                return
+            }
+        }
+
+        currentModelPath = path
+        currentBundle = bundle
+        pendingClearSelection = false
+        currentModelId = modelId
+        currentModelName = modelName
+        currentModelSize = modelSize
+        currentContextWindowTokens = resolvedT2i?.graphSpec?.sequenceLength ?: 256
+        currentAllowUnsafeOverride = false
+        currentRequestedIdentity = identity
+
+        if (_isGenerating.value) stopGenerating()
+        currentModelEpoch++
+        activeRequestId = null
+        val myGen = ++initGeneration
+        initJob?.cancel()
+        generationJob?.cancel()
+        inferenceManager.cancelGeneration()
+        _isInitializing.value = true
+        _isGenerating.value = false
+        _isStopping.value = false
+        _runtimeCapabilities.value = null
+        _isModelReady.value = false
+        _error.value = null
+
+        initJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (resolvedT2i == null) {
+                    throw IllegalStateException("Single-graph ONNX image model files (onnx + vocab.json/tokenizer.json) are incomplete.")
+                }
+                val app = getApplication<Application>()
+                val eligibility = com.shounak.localmeshai.models.state.T2iRamGate.evaluate(
+                    totalRamGiB = DeviceUtils.getTotalRamGB(app),
+                    availableRamMb = DeviceUtils.getAvailableRamMb(app)
+                )
+                if (!eligibility.isSupported) {
+                    throw IllegalStateException(eligibility.warningMessage ?: "Local image generation requires at least 8 GB RAM.")
+                }
+
+                modelLoadController.loadOrAttachWithRecovery(
+                    identity = identity,
+                    scope = viewModelScope,
+                    cancellationAction = { generator.cancelActive() }
+                ) { effectiveIdentity, _, _, updateProgress ->
+                    val shutdownOk = runCatching {
+                        kotlinx.coroutines.withTimeout(10_000L) {
+                            releaseJob?.join()
+                        }
+                    }.isSuccess
+                    if (!shutdownOk) {
+                        throw IllegalStateException("Previous model runtime shutdown timed out or failed")
+                    }
+                    updateProgress(ModelLoadStage.WaitingForRuntime, null, null)
+                    // Close any previously loaded LLM directly under ioMutex rather than calling releaseModel(),
+                    // which bumps initGeneration and cancels initJob.
+                    if (inferenceManager.isReady || ModelRuntimeCoordinator.getActiveToken(ModelRuntimeOwner.Chat) != null) {
+                        ioMutex.withLock {
+                            inferenceManager.close()
+                            AppCacheCleaner.clearAppCache(getApplication())
+                        }
+                        ModelRuntimeCoordinator.clear(ModelRuntimeOwner.Chat)
+                    }
+                    if (myGen != initGeneration) throw CancellationException("Superseded by newer model configuration")
+                    currentModelPath = path
+                    currentBundle = bundle
+                    currentModelId = modelId
+                    currentModelName = modelName
+                    currentModelSize = modelSize
+                    updateProgress(ModelLoadStage.ContextPreparation("ONNX"), null, null)
+                    val ep = generator.prepareModel(resolvedT2i)
+                    if (myGen != initGeneration) throw CancellationException("Superseded by newer model configuration")
+                    currentLoadedIdentity = effectiveIdentity
+                    lastLoadedBackendPreference = effectiveIdentity.backendPreference
+                    withContext(Dispatchers.Main.immediate) {
+                        _activeBackend.value = ep
+                        _isModelReady.value = true
+                    }
+                    ModelActualConfiguration(
+                        backend = ep,
+                        threads = 4,
+                        prefillThreads = 4,
+                        contextWindow = resolvedT2i.graphSpec.sequenceLength,
+                        batchSize = 1,
+                        ubatchSize = 1,
+                        gpuLayers = 0,
+                        contextLength = resolvedT2i.graphSpec.sequenceLength
+                    )
+                }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                if (myGen != initGeneration) return@launch
+                withContext(Dispatchers.Main.immediate) {
+                    _error.value = t.message ?: "Could not load offline image model."
+                    _activeBackend.value = null
+                    _isModelReady.value = false
+                    currentLoadedIdentity = null
+                }
+            } finally {
+                if (myGen == initGeneration) {
+                    _isInitializing.value = modelLoadController.isInitializing
+                    initJob = null
+                }
+            }
+        }
+    }
+
+    fun cancelImageGeneration() {
+        val reqId = activeImageRequestId
+        val sessId = activeImageSessionId
+        val idx = activeImageAssistantIdx
+        if (reqId != null) {
+            cancelledImageRequestIds.add(reqId)
+        }
+        com.shounak.localmeshai.ai.image.OnnxImageGenerator.getInstance(getApplication()).cancelActive()
+        imageGenJob?.cancel()
+        imageGenJob = null
+        activeImageRequestId = null
+        if (sessId != null && _currentSessionId.value == sessId && idx in messages.indices && messages[idx].terminalStatus == null) {
+            messages[idx] = messages[idx].copy(
+                text = "",
+                progress = null,
+                terminalStatus = RequestTerminalStatus.Stopped
+            )
+            saveCurrentSession()
+        }
+        if (_imageGenerationState.value.isActive) {
+            _imageGenerationState.value = com.shounak.localmeshai.models.state.ImageGenerationState.Cancelled
+        }
+        _isInitializing.value = false
+        _isGenerating.value = false
+        _isStopping.value = false
+    }
+
+    fun generateImage(
+        prompt: String,
+        t2iModel: com.shounak.localmeshai.ai.image.InstalledOnnxT2iModel,
+        seed: Long? = null,
+        userDisplayPrompt: String = prompt
+    ): Boolean {
+        val cleanPrompt = prompt.trim()
+        if (cleanPrompt.isBlank()) return false
+        if (_isDeletingHistory.value || _isGenerating.value || generationJob?.isActive == true || imageGenJob?.isActive == true) {
+            return false
+        }
+
+        val app = getApplication<Application>()
+        val eligibility = com.shounak.localmeshai.models.state.T2iRamGate.evaluate(
+            totalRamGiB = DeviceUtils.getTotalRamGB(app),
+            availableRamMb = DeviceUtils.getAvailableRamMb(app)
+        )
+        if (!eligibility.isSupported) {
+            val warning = eligibility.warningMessage ?: "Local image generation requires at least 8 GB device RAM."
+            _imageGenerationState.value = com.shounak.localmeshai.models.state.ImageGenerationState.Failed(warning)
+            _error.value = warning
+            return false
+        }
+
+        autoUnloadJob?.cancel()
+        ensureCurrentSession(userDisplayPrompt.trim().ifBlank { cleanPrompt }, null)
+
+        val userMsgId = UUID.randomUUID().toString()
+        val requestId = UUID.randomUUID().toString()
+        messages.add(
+            ChatMessage(
+                text = userDisplayPrompt.trim().ifBlank { cleanPrompt },
+                isUser = true,
+                id = userMsgId
+            )
+        )
+
+        val effectiveSeed = seed ?: com.shounak.localmeshai.ai.image.OnnxImageGenerator.nextRandomSeed()
+        val targetW = t2iModel.graphSpec.imageWidth
+        val targetH = t2iModel.graphSpec.imageHeight
+        val assistantIndex = messages.size
+        val assistantMsgId = UUID.randomUUID().toString()
+        val generator = com.shounak.localmeshai.ai.image.OnnxImageGenerator.getInstance(app)
+        val needsChatUnload = eligibility.requiresChatUnload && (
+            inferenceManager.isReady ||
+                ModelRuntimeCoordinator.getActiveToken(ModelRuntimeOwner.Chat) != null
+            )
+
+        messages.add(
+            ChatMessage(
+                text = if (needsChatUnload) "Unloading chat model…" else if (!generator.isSessionLoaded.value) "Loading ${t2iModel.name}…" else "Preparing ${t2iModel.name}…",
+                isUser = false,
+                id = assistantMsgId,
+                userMessageId = userMsgId,
+                progress = if (needsChatUnload || !generator.isSessionLoaded.value) RequestProgress.LoadingModel else RequestProgress.PreparingInput,
+                requestId = requestId,
+                attemptId = 1,
+                imageModelName = t2iModel.name
+            )
+        )
+        saveCurrentSession()
+
+        val targetSessionId = _currentSessionId.value
+        activeImageRequestId = requestId
+        activeImageSessionId = targetSessionId
+        activeImageAssistantIdx = assistantIndex
+        _isGenerating.value = true
+        _isInitializing.value = needsChatUnload || !generator.isSessionLoaded.value
+        _imageGenerationState.value = if (needsChatUnload) {
+            com.shounak.localmeshai.models.state.ImageGenerationState.UnloadingChatModel
+        } else {
+            com.shounak.localmeshai.models.state.ImageGenerationState.LoadingEngine(t2iModel.name)
+        }
+
+        imageGenJob = viewModelScope.launch {
+            var tickerJob: Job? = null
+            try {
+                if (needsChatUnload) {
+                    _imageGenerationState.value = com.shounak.localmeshai.models.state.ImageGenerationState.UnloadingChatModel
+                    releaseJob?.join()
+                    ioMutex.withLock {
+                        inferenceManager.close()
+                        AppCacheCleaner.clearAppCache(app)
+                    }
+                    ModelRuntimeCoordinator.clear(ModelRuntimeOwner.Chat)
+                }
+                if (requestId in cancelledImageRequestIds) throw CancellationException("Cancelled")
+
+                _imageGenerationState.value = com.shounak.localmeshai.models.state.ImageGenerationState.LoadingEngine(t2iModel.name)
+                if (!generator.isSessionLoaded.value) {
+                    _isInitializing.value = true
+                }
+                if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size && requestId !in cancelledImageRequestIds) {
+                    messages[assistantIndex] = messages[assistantIndex].copy(
+                        text = "Loading ${t2iModel.name}…",
+                        progress = RequestProgress.LoadingModel
+                    )
+                }
+
+                val genStartedAt = System.currentTimeMillis()
+                val result = generator.generate(
+                    model = t2iModel,
+                    prompt = cleanPrompt,
+                    seed = effectiveSeed,
+                    releaseAfterGeneration = false,
+                    onStageChanged = { stage ->
+                        viewModelScope.launch(Dispatchers.Main.immediate) {
+                            if (requestId in cancelledImageRequestIds) return@launch
+                            if (stage.startsWith("Generating")) {
+                                _isInitializing.value = false
+                                _isModelReady.value = true
+                                _imageGenerationState.value = com.shounak.localmeshai.models.state.ImageGenerationState.Generating(
+                                    prompt = cleanPrompt,
+                                    seed = effectiveSeed,
+                                    width = targetW,
+                                    height = targetH,
+                                    elapsedMs = System.currentTimeMillis() - genStartedAt,
+                                    modelName = t2iModel.name
+                                )
+                                tickerJob?.cancel()
+                                tickerJob = viewModelScope.launch {
+                                    while (true) {
+                                        kotlinx.coroutines.delay(250L)
+                                        val cur = _imageGenerationState.value
+                                        if (cur is com.shounak.localmeshai.models.state.ImageGenerationState.Generating && requestId !in cancelledImageRequestIds) {
+                                            _imageGenerationState.value = cur.copy(
+                                                elapsedMs = System.currentTimeMillis() - genStartedAt
+                                            )
+                                        } else {
+                                            break
+                                        }
+                                    }
+                                }
+                                if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
+                                    messages[assistantIndex] = messages[assistantIndex].copy(
+                                        text = "Generating ${targetW}×${targetH} image…",
+                                        progress = RequestProgress.Generating
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    savePng = { pngBytes, usedSeed ->
+                        withContext(Dispatchers.IO) {
+                            val sessId = targetSessionId
+                            if (!_temporaryChat.value && !sessId.isNullOrBlank()) {
+                                val attachmentId = UUID.randomUUID().toString()
+                                val savedFile = attachmentStoreForChat.storeAttachmentFromStream(
+                                    context = app,
+                                    chatKind = com.shounak.localmeshai.data.ChatKind.Text,
+                                    sessionId = sessId,
+                                    attachmentId = attachmentId,
+                                    sourceUri = null,
+                                    fallbackStream = java.io.ByteArrayInputStream(pngBytes),
+                                    targetFileName = "generated_${usedSeed}.png"
+                                )
+                                savedFile.absolutePath
+                            } else {
+                                val dir = app.cacheDir.resolve("image_previews").apply { mkdirs() }
+                                val outFile = java.io.File(dir, "generated_${usedSeed}_${System.currentTimeMillis()}.png")
+                                outFile.writeBytes(pngBytes)
+                                outFile.absolutePath
+                            }
+                        }
+                    }
+                )
+
+                tickerJob?.cancel()
+                if (requestId in cancelledImageRequestIds) throw CancellationException("Cancelled")
+                withContext(Dispatchers.Main.immediate) {
+                    if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
+                        messages[assistantIndex] = messages[assistantIndex].copy(
+                            text = cleanPrompt,
+                            progress = null,
+                            terminalStatus = RequestTerminalStatus.Completed,
+                            imagePath = result.imagePath,
+                            imageSeed = result.seed,
+                            imageGenerationTimeMs = result.elapsedMs,
+                            imageModelName = result.modelName
+                        )
+                        saveCurrentSession()
+                    }
+                    _activeBackend.value = result.executionProvider
+                    _isModelReady.value = currentModelPath == t2iModel.onnxFile.absolutePath || currentModelId == t2iModel.id
+                    _imageGenerationState.value = com.shounak.localmeshai.models.state.ImageGenerationState.Completed(
+                        imagePath = result.imagePath,
+                        seed = result.seed,
+                        elapsedMs = result.elapsedMs,
+                        modelName = result.modelName
+                    )
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                tickerJob?.cancel()
+                withContext(Dispatchers.Main.immediate) {
+                    if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
+                        messages[assistantIndex] = messages[assistantIndex].copy(
+                            text = "",
+                            progress = null,
+                            terminalStatus = RequestTerminalStatus.Stopped
+                        )
+                        saveCurrentSession()
+                    }
+                    _imageGenerationState.value = com.shounak.localmeshai.models.state.ImageGenerationState.Cancelled
+                }
+            } catch (t: Throwable) {
+                tickerJob?.cancel()
+                if (requestId in cancelledImageRequestIds) return@launch
+                val msg = t.message ?: "Offline image generation failed."
+                withContext(Dispatchers.Main.immediate) {
+                    if (_currentSessionId.value == targetSessionId && assistantIndex < messages.size) {
+                        messages[assistantIndex] = messages[assistantIndex].copy(
+                            text = "",
+                            progress = null,
+                            terminalStatus = RequestTerminalStatus.Failed,
+                            errorMessage = msg
+                        )
+                        saveCurrentSession()
+                    }
+                    _imageGenerationState.value = com.shounak.localmeshai.models.state.ImageGenerationState.Failed(msg)
+                }
+            } finally {
+                tickerJob?.cancel()
+                if (activeImageRequestId == requestId) {
+                    activeImageRequestId = null
+                    imageGenJob = null
+                    _isGenerating.value = false
+                    _isInitializing.value = false
+                }
+            }
+        }
+        return true
     }
 
     fun sendMessage(
@@ -1284,6 +1739,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 liveUpdates.receiveAsFlow().collect { snap ->
                     if (activeRequestId == requestId && currentModelEpoch == reqModelEpoch && _currentSessionId.value == targetSessionId && assistantIndex < messages.size && messages[assistantIndex].terminalStatus == null) {
                         if (snap.answerText.isNotBlank() || snap.reasoningText.isNotBlank()) timing.recordFirstVisibleText()
+                        if (snap.answerText.isNotBlank()) {
+                            voiceStreamingObserver?.onStreamingAnswerSnapshot(requestId, snap.answerText)
+                        }
                         val displayText = snap.answerText.ifBlank {
                             if (messages[assistantIndex].progress == RequestProgress.RecoveringOnCpu) "GPU failed; retrying on CPU…" else "Generating…"
                         }
@@ -1621,6 +2079,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 responseFormatVersion = 1
                             )
                             saveCurrentSession()
+                            voiceStreamingObserver?.onLlmTurnFinished(
+                                requestId = requestId,
+                                status = execResult.status,
+                                finalAnswerText = finalResponse,
+                                errorMessage = errorMessageToDisplay
+                            )
 
                             if (execResult.status == RequestTerminalStatus.Completed && !isErrorResponse && finalResponse.isNotBlank()) {
                                 if (!_temporaryChat.value && _isPersistentMemoryActive.value && appSettings.settings.value.autoExtractMemories) {
@@ -1666,12 +2130,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                             responseFormatVersion = 1
                         )
                         saveCurrentSession()
+                        voiceStreamingObserver?.onLlmTurnFinished(
+                            requestId = requestId,
+                            status = RequestTerminalStatus.Stopped,
+                            finalAnswerText = finalAnswer,
+                            errorMessage = null
+                        )
                     }
                 }
             } catch (t: Throwable) {
                 if (_isStopping.value) {
                     Log.i("ChatViewModel", "Inference error ignored because stop was requested", t)
                     resetRuntimeConversationBeforeNextSend = true
+                    voiceStreamingObserver?.onLlmTurnFinished(
+                        requestId = requestId,
+                        status = RequestTerminalStatus.Stopped,
+                        finalAnswerText = "",
+                        errorMessage = null
+                    )
                 } else {
                     Log.e("ChatViewModel", "Inference error", t)
                     resetRuntimeConversationBeforeNextSend = true
@@ -1715,6 +2191,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                 responseFormatVersion = 1
                             )
                             saveCurrentSession()
+                            voiceStreamingObserver?.onLlmTurnFinished(
+                                requestId = requestId,
+                                status = RequestTerminalStatus.Failed,
+                                finalAnswerText = partialAnswer,
+                                errorMessage = t.message ?: "Model inference failure"
+                            )
                         }
                     }
                 }
@@ -1744,6 +2226,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopGenerating() {
+        if (imageGenJob?.isActive == true || _imageGenerationState.value.isActive) {
+            cancelImageGeneration()
+            return
+        }
         val wasGenerating = _isGenerating.value
         val wasInitializing = _isInitializing.value
         if (!wasGenerating && !wasInitializing) return
@@ -2310,6 +2796,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             val closeResult = ioMutex.withLock {
                 val res = inferenceManager.close()
+                com.shounak.localmeshai.ai.image.OnnxImageGenerator.getInstance(getApplication()).unload()
                 AppCacheCleaner.clearAppCache(getApplication())
                 res
             }

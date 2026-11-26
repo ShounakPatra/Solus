@@ -25,12 +25,19 @@ object InitCrashGuard {
         if (state(context).markSucceeded(modelId)) _recoveredModels.tryEmit(modelId)
     }
     @Synchronized fun isModelBlocked(context: Context, modelId: String) = state(context).isBlocked(modelId)
+    @Synchronized fun isNpuBlocked(context: Context, modelId: String) = state(context).isNpuBlocked(modelId)
+    @Synchronized fun markNpuInitStarted(context: Context, modelId: String) = state(context).markNpuStarted(modelId)
+    @Synchronized fun markNpuInitFailed(context: Context, modelId: String) = state(context).markNpuFailed(modelId)
+    @Synchronized fun markNpuInitSucceeded(context: Context, modelId: String) = state(context).markNpuSucceeded(modelId)
+    @Synchronized fun clearNpuBlock(context: Context, modelId: String) = state(context).clearNpuBlock(modelId)
     /** True when [modelId] is blocked and its recorded crash was (or, for pre-backend markers, may have been) a GPU attempt. */
     @Synchronized fun blockedCrashMayHaveUsedGpu(context: Context, modelId: String) = state(context).blockedCrashMayHaveUsedGpu(modelId)
+    const val BACKEND_NPU = "NPU"
     const val BACKEND_GPU = "GPU"
     const val BACKEND_CPU = "CPU"
     @Synchronized fun checkAndRecoverCrash(context: Context): String? {
-        val id = state(context).recoverCrash() ?: return null
+        val npuCrashId = state(context).recoverNpuCrash()
+        val id = state(context).recoverCrash() ?: return npuCrashId
         val displayId = id.replace(Regex("[^a-zA-Z0-9._-]"), "_").take(128)
         prefs(context).edit().putString(KEY_LAST_CRASH_MESSAGE,
             "The model $displayId crashed during native initialization. It is blocked on this device. You can explicitly choose Try Anyway to retry; successful initialization clears the block.").commit()
@@ -49,7 +56,39 @@ object InitCrashGuard {
 
 /** The same persisted state machine is used by native initialization and host regression tests. */
 internal class InitCrashState(private val prefs: SharedPreferences, private val authorized: MutableSet<String> = mutableSetOf()) {
-    private companion object { const val IN_PROGRESS_BACKEND = "init_in_progress_backend" }
+    private companion object {
+        const val IN_PROGRESS_BACKEND = "init_in_progress_backend"
+        const val NPU_IN_PROGRESS_ID = "npu_init_in_progress_model_id"
+        const val BLOCKED_NPU_IDS = "blocked_npu_model_ids"
+    }
+    private fun blockedNpu() = prefs.getStringSet(BLOCKED_NPU_IDS, emptySet()).orEmpty().toMutableSet()
+    fun isNpuBlocked(id: String) = id.isNotBlank() && id in blockedNpu()
+    fun markNpuStarted(id: String) {
+        require(id.isNotBlank())
+        check(prefs.edit().putString(NPU_IN_PROGRESS_ID, id).commit()) { "Could not record NPU initialization" }
+    }
+    fun markNpuFailed(id: String) {
+        if (prefs.getString(NPU_IN_PROGRESS_ID, null) == id) {
+            val next = blockedNpu().apply { add(id) }
+            prefs.edit().remove(NPU_IN_PROGRESS_ID).putStringSet(BLOCKED_NPU_IDS, next).commit()
+        }
+    }
+    fun markNpuSucceeded(id: String) {
+        val next = blockedNpu().apply { remove(id) }
+        prefs.edit().remove(NPU_IN_PROGRESS_ID).putStringSet(BLOCKED_NPU_IDS, next).commit()
+    }
+    fun clearNpuBlock(id: String) {
+        val next = blockedNpu().apply { remove(id) }
+        prefs.edit().remove(NPU_IN_PROGRESS_ID).putStringSet(BLOCKED_NPU_IDS, next).commit()
+    }
+    fun recoverNpuCrash(): String? {
+        val id = prefs.getString(NPU_IN_PROGRESS_ID, null) ?: return null
+        val next = blockedNpu().apply { add(id) }
+        check(prefs.edit().remove(NPU_IN_PROGRESS_ID).putStringSet(BLOCKED_NPU_IDS, next).commit()) {
+            "Could not record NPU initialization crash"
+        }
+        return id
+    }
     private fun blocked() = prefs.getStringSet("blocked_model_ids", emptySet()).orEmpty().toMutableSet()
     private fun verified() = prefs.getStringSet("successful_retry_model_ids", emptySet()).orEmpty().toMutableSet()
     /** Blocked ids whose crash marker proved a CPU-only attempt; absent ids (including legacy blocks) are treated as possible GPU crashes. */

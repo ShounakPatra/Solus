@@ -30,8 +30,6 @@ release.apk
 app-release*.apk
 app/release/
 *.so
-!app/src/main/jniLibs/arm64-v8a/libai_rs.so
-!app/src/main/jniLibs/arm64-v8a/librag_rs.so
 
 # Temporary UI inspection screenshots / exports
 /*.png

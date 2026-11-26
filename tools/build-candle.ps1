@@ -28,18 +28,23 @@ if (!(Test-Path $taskLinker)) { throw "Android NDK compiler is missing: $taskLin
 $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = $taskLinker
 $env:CC_aarch64_linux_android = $taskLinker
 $env:AR_aarch64_linux_android = Join-Path $taskToolchain 'llvm-ar.exe'
+$existingTargetRustflags = $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS
+$env:CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS = "$existingTargetRustflags -C link-arg=-Wl,-z,max-page-size=16384".Trim()
 $env:CARGO_BUILD_JOBS = '4'
 $taskManifest = Join-Path $taskRoot 'app/src/main/rust/Cargo.toml'
 if ($Test) {
-    & $taskCargo.Source test --locked --lib --manifest-path $taskManifest
+    & $taskCargo.Source test --workspace --locked --lib --manifest-path $taskManifest
 } elseif ($Check) {
-    & $taskCargo.Source check --locked --manifest-path $taskManifest --target aarch64-linux-android
+    & $taskCargo.Source check --workspace --locked --manifest-path $taskManifest --target aarch64-linux-android
 } else {
-    & $taskCargo.Source build --locked --manifest-path $taskManifest --target aarch64-linux-android --release
+    & $taskCargo.Source build --workspace --locked --manifest-path $taskManifest --target aarch64-linux-android --release
 }
-if ($LASTEXITCODE -ne 0) { throw "Candle compilation failed ($LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) { throw "Rust workspace compilation failed ($LASTEXITCODE)" }
 if (!$Check -and !$Test) {
     $taskAbiDirectory = Join-Path $OutputDirectory 'arm64-v8a'
     New-Item -ItemType Directory -Path $taskAbiDirectory -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $taskRoot 'app/src/main/rust/target/aarch64-linux-android/release/libsolus_candle.so') -Destination $taskAbiDirectory -Force
+    $releaseDir = Join-Path $taskRoot 'app/src/main/rust/target/aarch64-linux-android/release'
+    foreach ($lib in @('libsolus_candle.so', 'librag_rs.so', 'libai_rs.so')) {
+        Copy-Item -LiteralPath (Join-Path $releaseDir $lib) -Destination $taskAbiDirectory -Force
+    }
 }

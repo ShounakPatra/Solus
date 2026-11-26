@@ -1130,7 +1130,7 @@ private fun VisionModelPicker(
         GlassDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, hazeState = hazeState) {
             models.forEach { model ->
                 DropdownMenuItem(
-                    text = { Text(model.name) },
+                    text = { Text(model.cleanDisplayName) },
                     onClick = {
                         expanded = false
                         model.localPath?.let(onSelect)
@@ -2739,36 +2739,56 @@ fun VisionChatBubble(
                 if (!isUser) {
                     val ttsManager = remember { com.shounak.localmeshai.ai.tts.TinyVocaManager.getInstance(context) }
                     val isSpeaking by ttsManager.isSpeaking.collectAsState()
+                    val isInitializingTts by ttsManager.isInitializing.collectAsState()
+                    val initializingTargetId by ttsManager.initializingTargetId.collectAsState()
                     val isModelDownloaded by ttsManager.isModelDownloaded.collectAsState()
                     val speakingId by ttsManager.currentSpeakingId.collectAsState()
                     val isThisSpeaking = isSpeaking && speakingId == messageId
+                    val isThisLoadingTts = isInitializingTts && initializingTargetId == messageId
                     val appSettings = remember { com.shounak.localmeshai.utils.AppSettings.getInstance(context) }
                     val currentSettings by appSettings.settings.collectAsState()
 
-                    MessageToolButton(
-                        icon = if (isThisSpeaking) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
-                        contentDescription = when {
-                            isThisSpeaking -> "Stop reading"
-                            !isModelDownloaded -> "Download TinyVoca in Voice settings to enable read aloud"
-                            else -> "Read aloud"
-                        },
-                        hazeState = hazeState,
-                        enabled = isModelDownloaded || isThisSpeaking,
-                        tintColor = if (isThisSpeaking) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                        onClick = {
-                            if (isThisSpeaking) {
-                                ttsManager.stop()
-                            } else if (isModelDownloaded) {
-                                val clean = com.shounak.localmeshai.ai.tts.TinyVocaManager.cleanTextForSpeech(text)
-                                ttsManager.speak(
-                                    text = clean,
-                                    id = messageId,
-                                    voice = currentSettings.ttsVoice,
-                                    speed = currentSettings.ttsSpeed
-                                )
-                            }
+                    if (isThisLoadingTts) {
+                        LiquidGlassButton(
+                            onClick = { ttsManager.stop() },
+                            hazeState = hazeState,
+                            modifier = Modifier.size(34.dp),
+                            shape = RoundedCornerShape(17.dp),
+                            tintColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         }
-                    )
+                    } else {
+                        MessageToolButton(
+                            icon = if (isThisSpeaking) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = when {
+                                isThisSpeaking -> "Stop reading"
+                                !isModelDownloaded -> "Download TinyVoca in Voice settings to enable read aloud"
+                                else -> "Read aloud"
+                            },
+                            hazeState = hazeState,
+                            enabled = isModelDownloaded || isThisSpeaking,
+                            tintColor = if (isThisSpeaking) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                            onClick = {
+                                if (isThisSpeaking) {
+                                    ttsManager.stop()
+                                } else if (isModelDownloaded) {
+                                    val clean = com.shounak.localmeshai.ai.tts.TinyVocaManager.cleanTextForSpeech(text)
+                                    ttsManager.speak(
+                                        text = clean,
+                                        id = messageId,
+                                        voice = currentSettings.ttsVoice,
+                                        speed = currentSettings.ttsSpeed
+                                    )
+                                }
+                            }
+                        )
+                    }
                     MessageToolButton(
                         icon = Icons.Default.Fullscreen,
                         contentDescription = "Fullscreen message",

@@ -77,7 +77,7 @@ class AppSettings internal constructor(
             huggingFaceToken = tokenStore.read(),
             autoCheckUpdates = prefs.getBoolean(KEY_AUTO_CHECK_UPDATES, true),
             llamaBackendPreference = prefs.getString(KEY_LLAMA_BACKEND_PREF, "AUTO")?.let {
-                if (it.uppercase() in listOf("AUTO", "CPU", "VULKAN")) it.uppercase() else "AUTO"
+                if (it.uppercase() in listOf("AUTO", "NPU", "CPU", "VULKAN")) it.uppercase() else "AUTO"
             } ?: "AUTO",
             enableToolCalling = prefs.getBoolean(KEY_ENABLE_TOOL_CALLING, false),
             warmupAfterLoading = prefs.getBoolean("warmup_after_loading", true),

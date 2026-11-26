@@ -66,7 +66,7 @@ data class CustomModelDefinition(
 
             return CustomModelDefinition(
                 id = obj.getString("id"),
-                name = obj.getString("name"),
+                name = ModelInfo.stripRecommendedTag(obj.getString("name")),
                 url = obj.optString("url", ""),
                 type = ModelType.valueOf(obj.getString("type")),
                 fileName = obj.getString("fileName"),

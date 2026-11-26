@@ -13,7 +13,7 @@ enum class ModelStatus(val label: String) {
     NotDownloaded("Not downloaded"),
     Downloading("Downloading"),
     Paused("Paused"),
-    Available("Available"),
+    Available("Downloaded"),
     Failed("Failed"),
     Blocked("Blocked"),
     NeedsConversion("Future build"),
@@ -193,6 +193,29 @@ data class ModelInfo(
                 else -> String.format(java.util.Locale.US, "%ds", seconds)
             }
         }
+
+    val cleanDisplayName: String
+        get() = stripRecommendedTag(name)
+
+    companion object {
+        private val RECOMMENDED_TAG_REGEX = Regex("""(?i)\s*(?:⭐\s*)?(?:highly\s+)?recommended\b\s*""")
+        private val MULTI_SPACE_REGEX = Regex("""\s{2,}""")
+
+        /**
+         * Strips `"⭐"`, `"Recommended"`, and `"Highly Recommended"` suffixes/tags from any catalog
+         * or user-imported model name so selectors and overlays always stay clean.
+         */
+        fun stripRecommendedTag(rawName: String): String {
+            val cleaned = rawName
+                .replace("⭐", " ")
+                .replace(RECOMMENDED_TAG_REGEX, " ")
+                .replace(MULTI_SPACE_REGEX, " ")
+                .trim()
+                .trim('-', '·', '•')
+                .trim()
+            return cleaned.ifBlank { rawName.trim() }
+        }
+    }
 }
 
 private fun Int.withThousandsSeparator(): String {

@@ -194,6 +194,31 @@ class ModelLoadController internal constructor(
             operationControlId: Long,
             updateProgress: (stage: ModelLoadStage, completedUnits: Long?, totalUnits: Long?) -> Unit
         ) -> ModelActualConfiguration
+    ): ModelActualConfiguration = loadOrAttachWithRecovery(
+        identity = identity,
+        scope = scope,
+        cancellationAction = cancellationAction,
+        maxRecoveryAttempts = 0
+    ) { _, operationId, operationControlId, updateProgress ->
+        loader(operationId, operationControlId, updateProgress)
+    }
+
+    /**
+     * Starts loading a model (or attaches to an identical in-flight operation) with automatic
+     * OOM / backend-init step-down recovery (disabling GPU offload and stepping down context window).
+     */
+    suspend fun loadOrAttachWithRecovery(
+        identity: ModelLoadIdentity,
+        scope: CoroutineScope,
+        cancellationAction: (() -> Unit)? = null,
+        maxRecoveryAttempts: Int = RuntimeExecutionPolicy.MAX_RECOVERY_ATTEMPTS,
+        onBeforeRecoveryRetry: (suspend (failedIdentity: ModelLoadIdentity, nextIdentity: ModelLoadIdentity, failure: Throwable) -> Unit)? = null,
+        loader: suspend (
+            effectiveIdentity: ModelLoadIdentity,
+            operationId: String,
+            operationControlId: Long,
+            updateProgress: (stage: ModelLoadStage, completedUnits: Long?, totalUnits: Long?) -> Unit
+        ) -> ModelActualConfiguration
     ): ModelActualConfiguration {
         val (deferredToAwait, jobToStart) = mutex.withLock {
             if (isShutdownStalled) {
@@ -447,8 +472,41 @@ class ModelLoadController internal constructor(
                 }
 
                 try {
-                    val resultConfig = loader(operationId, nativeToken) { stage, comp, tot ->
-                        onProgressUpdate(stage, comp, tot)
+                    var attemptIdentity = identity
+                    var recoveryAttempt = 0
+                    var resultConfig: ModelActualConfiguration
+                    while (true) {
+                        try {
+                            resultConfig = loader(attemptIdentity, operationId, nativeToken) { stage, comp, tot ->
+                                onProgressUpdate(stage, comp, tot)
+                            }
+                            break
+                        } catch (attemptFailure: Throwable) {
+                            if (attemptFailure is CancellationException || timedOut ||
+                                _loadState.value is ModelLoadState.Stopping ||
+                                recoveryAttempt >= maxRecoveryAttempts
+                            ) {
+                                throw attemptFailure
+                            }
+                            val nextIdentity = RuntimeExecutionPolicy.nextRecoveryIdentity(attemptIdentity, attemptFailure)
+                                ?: throw attemptFailure
+                            recoveryAttempt++
+                            safeLogW("Recoverable model load failure (${attemptFailure.message}); stepping down to backend=${nextIdentity.backendPreference}, gpuLayers=${nextIdentity.gpuLayers}, ctx=${nextIdentity.contextWindow} (attempt $recoveryAttempt/$maxRecoveryAttempts)")
+                            mutex.withLock {
+                                if (currentOperationId == operationId && currentEpoch == myEpoch) {
+                                    currentIdentity = nextIdentity
+                                }
+                            }
+                            onProgressUpdate(
+                                ModelLoadStage.ContextPreparation(
+                                    "${nextIdentity.backendPreference} recovery (ctx=${nextIdentity.contextWindow})"
+                                ),
+                                null,
+                                null
+                            )
+                            runCatching { onBeforeRecoveryRetry?.invoke(attemptIdentity, nextIdentity, attemptFailure) }
+                            attemptIdentity = nextIdentity
+                        }
                     }
                     watchdogJob.cancel()
                     pollingJob.cancel()

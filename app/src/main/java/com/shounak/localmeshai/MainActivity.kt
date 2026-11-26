@@ -264,9 +264,35 @@ fun MainNavigation(mainViewModel: MainViewModel) {
     }
 
     if (showOnboarding) {
+        val starterRec = remember(context) {
+            com.shounak.localmeshai.models.StarterModelRecommender.recommendForDevice(
+                context = context,
+                catalog = mainViewModel.availableModels.toList()
+            )
+        }
+        val liveStarterModel = starterRec?.let { rec ->
+            mainViewModel.availableModels.firstOrNull { it.id == rec.model.id } ?: rec.model
+        }
         com.shounak.localmeshai.ui.components.OnboardingOverlay(
             isVisible = showOnboarding,
             hazeState = hazeState,
+            starterRecommendation = starterRec,
+            starterModelState = liveStarterModel,
+            onStartStarterDownload = { id ->
+                mainViewModel.startDownload(id)
+            },
+            onPauseStarterDownload = { id ->
+                mainViewModel.pauseDownload(id)
+            },
+            onResumeStarterDownload = { id ->
+                mainViewModel.resumeDownload(id)
+            },
+            onUseStarterModel = { model ->
+                mainViewModel.selectTextModel(model.localPath ?: model.id)
+                prefs.edit().putBoolean("onboarding_completed", true).apply()
+                showOnboarding = false
+                selectedIndex = 0
+            },
             onGoToModels = {
                 prefs.edit().putBoolean("onboarding_completed", true).apply()
                 showOnboarding = false
@@ -330,24 +356,27 @@ fun MainNavigation(mainViewModel: MainViewModel) {
 
     LiquidGlassBackdrop(hazeState = hazeState) {
         Scaffold(
-            containerColor = MaterialTheme.colorScheme.background,
+            containerColor = androidx.compose.ui.graphics.Color.Transparent,
             contentWindowInsets = WindowInsets(0, 0, 0, 0)
         ) { innerPadding ->
-            // Animate only the destination over an opaque background. The outgoing
-            // page and its blur capture are disposed immediately, avoiding colour bleed.
+            var previousSelectedIndex by remember { mutableIntStateOf(selectedIndex) }
+            // Animate only when actually switching tabs; start settled at 0f on initial launch
+            // so the screen never shifts left and exposes a grey strip along the right edge.
             key(selectedIndex) {
+                val shouldSlide = !reduceMotion && selectedIndex != previousSelectedIndex
                 val pageSlide = remember(reduceMotion) {
-                    Animatable(if (reduceMotion) 0f else if (selectedIndex == 1) 0.08f else -0.08f)
+                    Animatable(if (!shouldSlide) 0f else if (selectedIndex == 1) 0.08f else -0.08f)
                 }
-                LaunchedEffect(reduceMotion) {
-                    if (reduceMotion) pageSlide.snapTo(0f)
+                LaunchedEffect(selectedIndex, reduceMotion) {
+                    previousSelectedIndex = selectedIndex
+                    if (!shouldSlide) pageSlide.snapTo(0f)
                     else pageSlide.animateTo(0f, tween(160, easing = FastOutSlowInEasing))
                 }
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(innerPadding)
-                        .background(MaterialTheme.colorScheme.background)
+                        .background(androidx.compose.ui.graphics.Color.Transparent)
                         .clipToBounds()
                         .pointerInput(selectedIndex, isKeyboardOpen, tabSwipeThresholdPx) {
                             if (isKeyboardOpen) return@pointerInput
@@ -380,7 +409,7 @@ fun MainNavigation(mainViewModel: MainViewModel) {
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer { translationX = pageSlide.value * size.width }
-                            .background(MaterialTheme.colorScheme.background)
+                            .background(androidx.compose.ui.graphics.Color.Transparent)
                     ) {
                         when (page) {
                             0 -> pageState.SaveableStateProvider("chat") {

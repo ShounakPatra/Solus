@@ -156,6 +156,7 @@ class WorkspaceBackup internal constructor(
                     id = remap("message", message.id), userMessageId = message.userMessageId?.let { remap("message", it) },
                     ragDocumentId = message.ragDocumentId?.let { remapRag(it, owned) },
                     ragPassages = message.ragPassages.map { it.copy(documentId = remapRag(it.documentId, owned)) },
+                    imagePath = attachment(message.imagePath, ChatKind.Text, id),
                     documentPath = attachment(message.documentPath, ChatKind.Text, id), progress = null, isThinkingActive = false
                 ) })
             }

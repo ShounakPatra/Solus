@@ -14,6 +14,7 @@ import java.util.Locale
 
 enum class InferenceBackend {
     MEDIAPIPE,
+    LITERT_NPU,
     LITERT_GPU,
     LITERT_CPU
 }

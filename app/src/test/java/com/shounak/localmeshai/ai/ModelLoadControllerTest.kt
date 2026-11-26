@@ -532,5 +532,54 @@ class ModelLoadControllerTest {
         loadJob.await()
         Unit
     }
+
+    @Test
+    fun testLoadOrAttachWithRecoveryStepsDownGpuAndContextOnOom() = runBlocking {
+        val controller = ModelLoadController()
+        val initial = ModelLoadIdentity(
+            modelPath = "/path/to/large.gguf",
+            runtimeKind = "LlamaCpp",
+            backendPreference = "VULKAN",
+            threads = 4,
+            prefillThreads = 4,
+            contextWindow = 4096,
+            batchSize = 256,
+            ubatchSize = 128,
+            gpuLayers = 99
+        )
+        val seenAttempts = mutableListOf<ModelLoadIdentity>()
+        val cleanupCount = AtomicInteger(0)
+
+        val result = controller.loadOrAttachWithRecovery(
+            identity = initial,
+            scope = this,
+            onBeforeRecoveryRetry = { _, _, _ -> cleanupCount.incrementAndGet() }
+        ) { effective, _, _, _ ->
+            seenAttempts.add(effective)
+            if (effective.gpuLayers > 0) {
+                throw RuntimeException("Vulkan GPU allocation failed")
+            }
+            if (effective.contextWindow > 2048) {
+                throw OutOfMemoryError("Failed to allocate 4096 KV cache")
+            }
+            ModelActualConfiguration(
+                runtimeKind = "LlamaCpp",
+                backend = "GGUF CPU",
+                threads = effective.threads,
+                contextWindow = effective.contextWindow,
+                gpuLayers = effective.gpuLayers
+            )
+        }
+
+        assertEquals(3, seenAttempts.size)
+        assertEquals(99, seenAttempts[0].gpuLayers)
+        assertEquals(0, seenAttempts[1].gpuLayers)
+        assertEquals(4096, seenAttempts[1].contextWindow)
+        assertEquals(0, seenAttempts[2].gpuLayers)
+        assertEquals(2048, seenAttempts[2].contextWindow)
+        assertEquals(2, cleanupCount.get())
+        assertEquals(2048, result.contextWindow)
+        assertTrue(controller.isReady)
+    }
 }
 

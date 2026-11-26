@@ -400,14 +400,20 @@ fun ModelManagerScreen(
         ModelSourceFilter.Imported -> visibleAvailableModels.filter { it.isCustom }
     }
     val filteredModels = filteredSourceModels.filter { it.matches(searchQuery, selectedTier) }
+    val specializedImageModels = filteredModels.filter {
+        com.shounak.localmeshai.ai.image.OnnxT2iCatalog.isT2iEntry(it)
+    }
+    val generalCatalogModels = filteredModels.filterNot {
+        com.shounak.localmeshai.ai.image.OnnxT2iCatalog.isT2iEntry(it)
+    }
 
     // Active downloads and local files are pinned to the top so progress/status
     // does not jump around between catalog sections.
-    val downloadedModels = orderDownloadedModels(filteredModels.filter { it.isPinnedDownloadCard() }, modelUsedAt)
+    val downloadedModels = orderDownloadedModels(generalCatalogModels.filter { it.isPinnedDownloadCard() }, modelUsedAt)
     val downloadedIds = downloadedModels.map { it.id }.toSet()
 
-    val textModels = filteredModels.filter { it.id !in downloadedIds && it.type == ModelType.Text }
-    val visionModels = filteredModels.filter { it.id !in downloadedIds && it.type == ModelType.Vision }
+    val textModels = generalCatalogModels.filter { it.id !in downloadedIds && it.type == ModelType.Text }
+    val visionModels = generalCatalogModels.filter { it.id !in downloadedIds && it.type == ModelType.Vision }
 
     val matchingModels = if (!isSearching) {
         emptyList()
@@ -651,7 +657,53 @@ fun ModelManagerScreen(
 
         if (!isSearching) {
             item(key = "specialized_models_menu") {
-                com.shounak.localmeshai.ui.components.SpecializedModelsMenuCard(hazeState = hazeState)
+                com.shounak.localmeshai.ui.components.SpecializedModelsMenuCard(
+                    hazeState = hazeState,
+                    imageGenerationModels = specializedImageModels,
+                    renderImageModelItem = { model ->
+                        val isSelected = if (model.isMultimodal) {
+                            selectedVisionModel != null && (selectedVisionModel == model.localPath || selectedVisionModel == model.id)
+                        } else {
+                            selectedTextModel != null && (selectedTextModel == model.localPath || selectedTextModel == model.id)
+                        }
+                        ModelItem(
+                            model = model,
+                            isSelected = isSelected,
+                            isRemoving = mainViewModel.removingModelIds.contains(model.id),
+                            isCancelling = mainViewModel.cancellingModelIds.contains(model.id),
+                            isUnloading = unloadingModelIds.contains(model.id),
+                            onUnload = { mainViewModel.unloadModel(model.id) },
+                            onOpenPage = model.modelPageUrl?.let { url -> { openUrl(context, url) } },
+                            onAction = {
+                                if (model.status == ModelStatus.Available && (model.localPath != null || model.isStorageImport)) {
+                                    val targetPath = model.localPath ?: model.id
+                                    if (model.isMultimodal) {
+                                        mainViewModel.selectVisionModel(targetPath)
+                                    } else {
+                                        mainViewModel.selectTextModel(targetPath)
+                                    }
+                                } else if (model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) {
+                                    mainViewModel.resumeDownload(model.id)
+                                } else if (model.status != ModelStatus.Downloading) {
+                                    mainViewModel.startDownload(model.id)
+                                }
+                            },
+                            onPause = { mainViewModel.pauseDownload(model.id) },
+                            onCancel = { mainViewModel.cancelDownload(model.id) },
+                            onDelete = { mainViewModel.deleteModel(model.id) },
+                            onUnsafeTry = {
+                                mainViewModel.tryModelAnyway(model.id)
+                                onGoToChat?.invoke()
+                            },
+                            onRelinkBundle = { importResult -> mainViewModel.relinkModelBundle(model.id, importResult) },
+                            isHfTokenBlank = appSettingsData.huggingFaceToken.isBlank(),
+                            onOpenSettings = { mainViewModel.openSettings(false) },
+                            onOpenSettingsWithTarget = { target -> mainViewModel.openSettings(targetSubMenu = target) },
+                            enableDynamicThemes = enableDynamicThemes,
+                            hazeState = hazeState
+                        )
+                    }
+                )
             }
 
             item(key = "privacy_card") {
@@ -762,9 +814,10 @@ fun ModelManagerScreen(
                 key = { _, model -> model.id },
                 contentType = { _, _ -> "model_card" }
             ) { _, model ->
-                val isSelected = when (model.type) {
-                    ModelType.Text -> selectedTextModel != null && (selectedTextModel == model.localPath || selectedTextModel == model.id)
-                    ModelType.Vision -> selectedVisionModel != null && (selectedVisionModel == model.localPath || selectedVisionModel == model.id)
+                val isSelected = if (model.isMultimodal) {
+                    selectedVisionModel != null && (selectedVisionModel == model.localPath || selectedVisionModel == model.id)
+                } else {
+                    selectedTextModel != null && (selectedTextModel == model.localPath || selectedTextModel == model.id)
                 }
                 ModelItem(
                     model = model,
@@ -785,9 +838,10 @@ fun ModelManagerScreen(
                             mainViewModel.startDownload(model.id)
                         } else if (model.localPath != null || model.isStorageImport) {
                             val targetPath = model.localPath ?: model.id
-                            when (model.type) {
-                                ModelType.Text -> mainViewModel.selectTextModel(targetPath)
-                                ModelType.Vision -> mainViewModel.selectVisionModel(targetPath)
+                            if (model.isMultimodal) {
+                                mainViewModel.selectVisionModel(targetPath)
+                            } else {
+                                mainViewModel.selectTextModel(targetPath)
                             }
                         }
                     },
@@ -818,9 +872,10 @@ fun ModelManagerScreen(
                 key = { _, model -> model.id },
                 contentType = { _, _ -> "model_card" }
             ) { _, model ->
-                val isSelected = (model.localPath != null) && when (model.type) {
-                    ModelType.Text -> selectedTextModel != null && (selectedTextModel == model.localPath || selectedTextModel == model.id)
-                    ModelType.Vision -> selectedVisionModel != null && (selectedVisionModel == model.localPath || selectedVisionModel == model.id)
+                val isSelected = (model.localPath != null) && if (model.isMultimodal) {
+                    selectedVisionModel != null && (selectedVisionModel == model.localPath || selectedVisionModel == model.id)
+                } else {
+                    selectedTextModel != null && (selectedTextModel == model.localPath || selectedTextModel == model.id)
                 }
 
                 ModelItem(
@@ -840,9 +895,10 @@ fun ModelManagerScreen(
                     },
                     onAction = {
                         if (model.status == ModelStatus.Available && model.localPath != null) {
-                            when (model.type) {
-                                ModelType.Text -> mainViewModel.selectTextModel(model.localPath)
-                                ModelType.Vision -> mainViewModel.selectVisionModel(model.localPath)
+                            if (model.isMultimodal) {
+                                mainViewModel.selectVisionModel(model.localPath)
+                            } else {
+                                mainViewModel.selectTextModel(model.localPath)
                             }
                         } else if (model.status == ModelStatus.Paused || model.status == ModelStatus.Failed) {
                             mainViewModel.resumeDownload(model.id)
@@ -1802,30 +1858,16 @@ fun ModelItem(
                     )
                 }
                 val cleanModelName = remember(model.name) {
-                    model.name.replace("⭐", "").replace("Recommended", "").trim()
+                    model.cleanDisplayName
                 }
                 Spacer(modifier = Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            cleanModelName,
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false)
-                        )
-                        if (model.isRecommended) {
-                            Icon(
-                                imageVector = Icons.Default.Star,
-                                contentDescription = "Recommended",
-                                tint = Color(0xFFFFB300),
-                                modifier = Modifier.size(17.dp)
-                            )
-                        }
-                    }
+                    Text(
+                        cleanModelName,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
                     Text(
                         "${model.taskLabel}  •  ${model.displaySize}  •  ${model.displayBackend}",
                         style = MaterialTheme.typography.bodySmall,
@@ -1848,6 +1890,12 @@ fun ModelItem(
                     label = if (isSelected) "Selected" else if (model.hasMissingFiles) "Missing files" else model.status.label,
                     accentColor = statusColor
                 )
+                if (model.isRecommended) {
+                    GlassLabelChip(
+                        label = "⭐ Recommended",
+                        accentColor = Color(0xFFFFB300)
+                    )
+                }
                 GlassLabelChip(
                     label = model.contextLengthLabel,
                     accentColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -2259,7 +2307,7 @@ fun ModelItem(
                                                 color = colors.onSurface
                                             )
                                             Text(
-                                                text = "${model.name} • ${model.displayBackend}",
+                                                text = "${model.cleanDisplayName} • ${model.displayBackend}",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = colors.onSurfaceVariant
                                             )
@@ -2352,16 +2400,47 @@ fun ModelItem(
                                                 modifier = Modifier.fillMaxWidth()
                                             ) {
                                                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                    Text(
-                                                        if (isGguf) {
-                                                            if (r.qualifiesVulkan) "✅ Vulkan Qualified" else "ℹ️ CPU Preferred"
-                                                        } else {
-                                                            "⚡ Benchmark Completed"
-                                                        },
-                                                        style = MaterialTheme.typography.titleMedium,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = if (isGguf && r.qualifiesVulkan) colors.primary else if (!isGguf) colors.primary else colors.tertiary
-                                                    )
+                                                    val benchNpu = remember(model.id) {
+                                                        com.shounak.localmeshai.ai.NpuCapabilityDetector.detect(context, model.id)
+                                                    }
+                                                    val benchFmt = model.bundle?.format ?: com.shounak.localmeshai.models.ModelFormat.fromFileName(model.fileName)
+                                                    val activeBadge = com.shounak.localmeshai.ai.RuntimeExecutionPolicy.selectAcceleratedBackend(
+                                                        preferredBackend = "AUTO",
+                                                        npuCapable = benchNpu.capabilityForFormat(benchFmt).supported,
+                                                        npuBlocked = com.shounak.localmeshai.utils.InitCrashGuard.isNpuBlocked(context, model.id),
+                                                        gpuQualified = isGguf && r.qualifiesVulkan,
+                                                        gpuBlocked = false,
+                                                        vendor = benchNpu.vendor
+                                                    ).displayLabel
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Text(
+                                                            if (isGguf) {
+                                                                if (r.qualifiesVulkan) "✅ Vulkan Qualified" else "ℹ️ CPU Preferred"
+                                                            } else {
+                                                                "⚡ Benchmark Completed"
+                                                            },
+                                                            style = MaterialTheme.typography.titleMedium,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (isGguf && r.qualifiesVulkan) colors.primary else if (!isGguf) colors.primary else colors.tertiary
+                                                        )
+                                                        Surface(
+                                                            shape = RoundedCornerShape(8.dp),
+                                                            color = colors.primary.copy(alpha = 0.14f),
+                                                            border = BorderStroke(0.7.dp, colors.primary.copy(alpha = 0.45f))
+                                                        ) {
+                                                            Text(
+                                                                text = activeBadge,
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                fontWeight = FontWeight.SemiBold,
+                                                                color = colors.primary,
+                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                                            )
+                                                        }
+                                                    }
                                                     Text(r.summary, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
                                                     HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.35f))
                                                     if (r.taskLatencyMedianMs != null) {

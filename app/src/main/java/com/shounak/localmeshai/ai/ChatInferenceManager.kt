@@ -203,6 +203,8 @@ class ChatInferenceManager(context: Context) {
          */
         expectedFileSizeBytes: Long = 0L,
         contextWindowTokens: Int? = null,
+        backendPreferenceOverride: String? = null,
+        threadCountOverride: Int? = null,
         operationControlId: Long = 0L,
         onModelProgress: ((stage: ModelLoadStage, completed: Long?, total: Long?) -> Unit)? = null,
         onProgress: ((RequestProgress) -> Unit)? = null,
@@ -224,7 +226,7 @@ class ChatInferenceManager(context: Context) {
         val shutdownResult = close()
         requestsSinceLoad = 0
         warmupMs = 0
-        runtimeThreads = RuntimeExecutionPolicy.resolve(context, effectiveId).cpuThreads
+        runtimeThreads = threadCountOverride?.takeIf { it > 0 } ?: RuntimeExecutionPolicy.resolve(context, effectiveId).cpuThreads
         if (shutdownResult is ShutdownResult.Failed) {
             throw IllegalStateException("Cannot initialize model: previous engine failed to shut down cleanly (${shutdownResult.error.message})", shutdownResult.error)
         }
@@ -268,7 +270,8 @@ class ChatInferenceManager(context: Context) {
         isBeingClosed = false
 
         val appSettings = AppSettings.getInstance(context)
-        val pref = appSettings.settings.value.llamaBackendPreference.uppercase()
+        val pref = (backendPreferenceOverride?.takeIf { it.isNotBlank() }
+            ?: appSettings.settings.value.llamaBackendPreference).uppercase()
 
         val detectedFormat = bundle?.format ?: file?.let { NonGgufBundleInspector.detectFormat(it) }
         val isGguf = detectedFormat == ModelFormat.GGUF
@@ -282,8 +285,8 @@ class ChatInferenceManager(context: Context) {
                 backendPreference = pref
             )
             val dynamicContext = profile.contextTokens
-            val dynamicThreads = profile.decodeThreads
-            val prefillThreads = profile.prefillThreads
+            val dynamicThreads = threadCountOverride?.takeIf { it > 0 } ?: profile.decodeThreads
+            val prefillThreads = threadCountOverride?.takeIf { it > 0 } ?: profile.prefillThreads
             val nBatch = profile.batchTokens
             val nUbatch = profile.microBatchTokens
 
@@ -313,7 +316,7 @@ class ChatInferenceManager(context: Context) {
                 )
             }
             val requestedBackend = when (pref) {
-                "VULKAN", "GPU" -> LlamaBackend.VULKAN
+                "VULKAN", "GPU", "NPU" -> LlamaBackend.VULKAN
                 "CPU" -> LlamaBackend.CPU
                 else -> null // Auto mode
             }
@@ -516,16 +519,24 @@ class ChatInferenceManager(context: Context) {
         val resolvedModelPath = effectiveFile.absolutePath
 
         if (shouldUseLiteRtLmConversation) {
+            val npuSnapshot = NpuCapabilityDetector.detect(context, effectiveId)
+            val canTryLiteRtNpu = (detectedFormat == ModelFormat.LiteRtLm || detectedFormat == ModelFormat.MediaPipeTask) &&
+                npuSnapshot.litertLm.supported &&
+                !InitCrashGuard.isNpuBlocked(context, effectiveId)
             var blockedAutoLoad = false
             val inferenceBackend = when {
                 pref == "CPU" -> InferenceBackend.LITERT_CPU
+                pref == "NPU" -> when {
+                    canTryLiteRtNpu -> InferenceBackend.LITERT_NPU
+                    DeviceUtils.supportsLiteRtLmGpu() -> InferenceBackend.LITERT_GPU
+                    else -> InferenceBackend.LITERT_CPU
+                }
                 pref == "VULKAN" || pref == "GPU" -> InferenceBackend.LITERT_GPU
-                detectedFormat == ModelFormat.MediaPipeTask -> InferenceBackend.LITERT_CPU
                 InitCrashGuard.isModelBlocked(context, effectiveId) -> {
                     blockedAutoLoad = true
                     InferenceBackend.LITERT_CPU
                 }
-                else -> RuntimeSpeedTuner.liteRtBackend(context, effectiveId, effectiveFile.absolutePath, configuredContextWindow)
+                else -> RuntimeSpeedTuner.liteRtBackend(context, effectiveId, effectiveFile.absolutePath, configuredContextWindow, canTryLiteRtNpu)
             }
             val canRetryOnCpu = DeviceUtils.canUseGemma4LiteRtCpuFallback(
                 context = context,
@@ -541,7 +552,7 @@ class ChatInferenceManager(context: Context) {
             if (blockedAutoLoad && InitCrashGuard.blockedCrashMayHaveUsedGpu(context, effectiveId)) {
                 RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, effectiveFile.absolutePath)
             }
-            if (!allowUnsafeOverride && inferenceBackend != InferenceBackend.LITERT_CPU) {
+            if (!allowUnsafeOverride && inferenceBackend == InferenceBackend.LITERT_GPU) {
                 val (allowed, reason) = DeviceUtils.canInitializeLiteRtLm(
                     context = context,
                     modelId = effectiveId,
@@ -564,7 +575,57 @@ class ChatInferenceManager(context: Context) {
                 }
             } catch (failure: Exception) {
                 if (failure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null) throw failure
-                if (pref == "AUTO" && inferenceBackend == InferenceBackend.LITERT_GPU) {
+                if (loadedBackend == InferenceBackend.LITERT_NPU && (pref == "AUTO" || pref == "NPU")) {
+                    Log.w(TAG, "LiteRT-LM NPU init failed for $effectiveId; falling back to GPU -> CPU", failure)
+                    liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
+                    liteRtCacheDir = null
+                    val nextBackend = if (DeviceUtils.supportsLiteRtLmGpu() && !InitCrashGuard.blockedCrashMayHaveUsedGpu(context, effectiveId)) {
+                        InferenceBackend.LITERT_GPU
+                    } else {
+                        InferenceBackend.LITERT_CPU
+                    }
+                    loadedBackend = nextBackend
+                    onModelProgress?.invoke(ModelLoadStage.ContextPreparation(if (nextBackend == InferenceBackend.LITERT_GPU) "Vulkan GPU" else "CPU"), null, null)
+                    warmupMs = 0
+                    try {
+                        initLiteRtLm(resolvedModelPath, effectiveId, loadedBackend, configuredContextWindow) {
+                            onModelProgress?.invoke(ModelLoadStage.WarmingUp, null, null)
+                        }
+                    } catch (gpuOrCpuFailure: Exception) {
+                        if (gpuOrCpuFailure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null) throw gpuOrCpuFailure
+                        if (loadedBackend == InferenceBackend.LITERT_GPU) {
+                            RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, resolvedModelPath)
+                            liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
+                            liteRtCacheDir = null
+                            loadedBackend = InferenceBackend.LITERT_CPU
+                            onModelProgress?.invoke(ModelLoadStage.ContextPreparation("CPU"), null, null)
+                            warmupMs = 0
+                            try {
+                                initLiteRtLm(resolvedModelPath, effectiveId, loadedBackend, configuredContextWindow) {
+                                    onModelProgress?.invoke(ModelLoadStage.WarmingUp, null, null)
+                                }
+                            } catch (cpuFailure: Exception) {
+                                if (cpuFailure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
+                                    detectedFormat != ModelFormat.MediaPipeTask) throw cpuFailure
+                                liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
+                                liteRtCacheDir = null
+                                val mpLabel = initMediaPipe(resolvedModelPath, configuredContextWindow, pref)
+                                activeBackendDisplayName = mpLabel
+                                InitCrashGuard.markInitSucceeded(context, effectiveId)
+                                fellBackToMediaPipe = true
+                            }
+                        } else if (detectedFormat == ModelFormat.MediaPipeTask) {
+                            liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
+                            liteRtCacheDir = null
+                            val mpLabel = initMediaPipe(resolvedModelPath, configuredContextWindow, pref)
+                            activeBackendDisplayName = mpLabel
+                            InitCrashGuard.markInitSucceeded(context, effectiveId)
+                            fellBackToMediaPipe = true
+                        } else {
+                            throw gpuOrCpuFailure
+                        }
+                    }
+                } else if (pref == "AUTO" && inferenceBackend == InferenceBackend.LITERT_GPU) {
                     RuntimeSpeedTuner.recordGpuFailure(context, effectiveId, resolvedModelPath)
                     liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
                     liteRtCacheDir = null
@@ -579,20 +640,20 @@ class ChatInferenceManager(context: Context) {
                     } catch (cpuFailure: Exception) {
                         if (cpuFailure is CancellationException || stopRequested || isBeingClosed || liteRtEngine != null ||
                             detectedFormat != ModelFormat.MediaPipeTask) throw cpuFailure
-                        Log.w(TAG, "LiteRT-LM CPU conversation unavailable for .task bundle; falling back to MediaPipe CPU", cpuFailure)
+                        Log.w(TAG, "LiteRT-LM CPU conversation unavailable for .task bundle; falling back to MediaPipe", cpuFailure)
                         liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
                         liteRtCacheDir = null
-                        initMediaPipe(resolvedModelPath, configuredContextWindow)
-                        activeBackendDisplayName = "MediaPipe CPU"
+                        val mpLabel = initMediaPipe(resolvedModelPath, configuredContextWindow, pref)
+                        activeBackendDisplayName = mpLabel
                         InitCrashGuard.markInitSucceeded(context, effectiveId)
                         fellBackToMediaPipe = true
                     }
                 } else if (pref == "AUTO" && detectedFormat == ModelFormat.MediaPipeTask) {
-                    Log.w(TAG, "LiteRT-LM conversation unavailable for .task bundle; falling back to MediaPipe CPU", failure)
+                    Log.w(TAG, "LiteRT-LM conversation unavailable for .task bundle; falling back to MediaPipe", failure)
                     liteRtCacheDir?.let { LiteRtRuntimeCache.release(context, it) }
                     liteRtCacheDir = null
-                    initMediaPipe(resolvedModelPath, configuredContextWindow)
-                    activeBackendDisplayName = "MediaPipe CPU"
+                    val mpLabel = initMediaPipe(resolvedModelPath, configuredContextWindow, pref)
+                    activeBackendDisplayName = mpLabel
                     InitCrashGuard.markInitSucceeded(context, effectiveId)
                     fellBackToMediaPipe = true
                 } else {
@@ -600,11 +661,15 @@ class ChatInferenceManager(context: Context) {
                 }
             }
             if (!fellBackToMediaPipe) {
-                activeBackendDisplayName = if (loadedBackend == InferenceBackend.LITERT_GPU) "LiteRT-LM GPU" else "LiteRT-LM CPU"
+                activeBackendDisplayName = when (loadedBackend) {
+                    InferenceBackend.LITERT_NPU -> npuSnapshot.primaryBadgeLabel
+                    InferenceBackend.LITERT_GPU -> "LiteRT-LM GPU"
+                    else -> "LiteRT-LM CPU"
+                }
             }
         } else {
-            initMediaPipe(resolvedModelPath, configuredContextWindow)
-            activeBackendDisplayName = "MediaPipe CPU"
+            val mpLabel = initMediaPipe(resolvedModelPath, configuredContextWindow, pref)
+            activeBackendDisplayName = mpLabel
         }
         activeModelLease = modelLease ?: ModelArtifactStorage.leaseArtifact(effectiveFile)
         } catch (t: Throwable) {
@@ -633,18 +698,28 @@ class ChatInferenceManager(context: Context) {
         onWarmupStart: () -> Unit = {}
     ) {
         val engineStart = TtftLog.now()
-        // Mark that we're about to attempt a potentially fatal native init
-        InitCrashGuard.markInitStarted(context, modelId,
-            if (inferenceBackend == InferenceBackend.LITERT_GPU) InitCrashGuard.BACKEND_GPU else InitCrashGuard.BACKEND_CPU)
+        val isNpuAttempt = inferenceBackend == InferenceBackend.LITERT_NPU
+        // Wrap NPU attempts in dedicated NPU crash-guard so a native driver crash blacklists ONLY
+        // NPU for this model/device on next launch and lets GPU/CPU fallback run automatically.
+        if (isNpuAttempt) {
+            InitCrashGuard.markNpuInitStarted(context, modelId)
+        } else {
+            InitCrashGuard.markInitStarted(
+                context,
+                modelId,
+                if (inferenceBackend == InferenceBackend.LITERT_GPU) InitCrashGuard.BACKEND_GPU else InitCrashGuard.BACKEND_CPU
+            )
+        }
 
         // This call may invoke native abort() and kill the entire process.
         // If that happens, InitCrashGuard.checkAndRecoverCrash() on next
-        // app launch will detect it and blocklist this model.
-        val effectiveMaxTokens = (contextWindowTokens ?: 4096).coerceIn(2048, 8192)
+        // app launch will detect it and blocklist this model (or NPU).
+        val effectiveMaxTokens = (contextWindowTokens ?: 4096).coerceIn(RuntimeExecutionPolicy.MIN_RECOVERY_CONTEXT_TOKENS, 8192)
         var engine: Engine? = null
         try {
             val executionPolicy = RuntimeExecutionPolicy.resolve(context, modelId)
             val backend = when (inferenceBackend) {
+                InferenceBackend.LITERT_NPU -> Backend.NPU(context.applicationInfo.nativeLibraryDir.orEmpty())
                 InferenceBackend.LITERT_GPU -> Backend.GPU()
                 InferenceBackend.LITERT_CPU,
                 InferenceBackend.MEDIAPIPE -> Backend.CPU(executionPolicy.cpuThreads)
@@ -695,10 +770,18 @@ class ChatInferenceManager(context: Context) {
             liteRtMessageCount = 0
             runtime = RuntimeKind.LiteRtLm
             if (stopRequested || isBeingClosed) throw CancellationException("Model initialization cancelled")
-            InitCrashGuard.markInitSucceeded(context, modelId)
+            if (isNpuAttempt) {
+                InitCrashGuard.markNpuInitSucceeded(context, modelId)
+            } else {
+                InitCrashGuard.markInitSucceeded(context, modelId)
+            }
             Log.i(TAG, "LiteRT-LM engine ready on $backend warmupMs=$warmupMs: $modelPath")
         } catch (t: Throwable) {
-            InitCrashGuard.markInitFailed(context, modelId)
+            if (isNpuAttempt) {
+                InitCrashGuard.markNpuInitFailed(context, modelId)
+            } else {
+                InitCrashGuard.markInitFailed(context, modelId)
+            }
             try {
                 liteRtConversation?.close()
                 liteRtConversation = null
@@ -717,9 +800,32 @@ class ChatInferenceManager(context: Context) {
         }
     }
 
-    private fun initMediaPipe(modelPath: String, contextWindowTokens: Int? = null) {
+    private fun initMediaPipe(
+        modelPath: String,
+        contextWindowTokens: Int? = null,
+        preferredPref: String = "AUTO"
+    ): String {
         runtimeThreads = -1 // The MediaPipe API does not expose the CPU worker count.
-        val effectiveTokens = (contextWindowTokens ?: 4096).coerceIn(1024, 4096)
+        val effectiveTokens = (contextWindowTokens ?: 4096).coerceIn(RuntimeExecutionPolicy.MIN_RECOVERY_CONTEXT_TOKENS, 4096)
+        val tryGpuFirst = preferredPref.equals("NPU", ignoreCase = true) ||
+            preferredPref.equals("VULKAN", ignoreCase = true) ||
+            preferredPref.equals("GPU", ignoreCase = true)
+        if (tryGpuFirst) {
+            try {
+                val gpuOptions = LlmInference.LlmInferenceOptions.builder()
+                    .setModelPath(modelPath)
+                    .setMaxTokens(effectiveTokens)
+                    .setMaxTopK(MEDIA_PIPE_MAX_TOP_K)
+                    .setPreferredBackend(LlmInference.Backend.GPU)
+                    .build()
+                mediaPipeInference = runtimeContextCapacity.initialize(effectiveTokens) { LlmInference.createFromOptions(context, gpuOptions) }
+                runtime = RuntimeKind.MediaPipe
+                Log.i(TAG, "MediaPipe LLM inference ready on GPU backend: $modelPath")
+                return "MediaPipe GPU"
+            } catch (t: Throwable) {
+                Log.w(TAG, "MediaPipe GPU init failed; falling back to CPU: ${t.message}")
+            }
+        }
         val options = LlmInference.LlmInferenceOptions.builder()
             .setModelPath(modelPath)
             .setMaxTokens(effectiveTokens)
@@ -730,6 +836,7 @@ class ChatInferenceManager(context: Context) {
         mediaPipeInference = runtimeContextCapacity.initialize(effectiveTokens) { LlmInference.createFromOptions(context, options) }
         runtime = RuntimeKind.MediaPipe
         Log.i(TAG, "MediaPipe LLM inference ready on CPU-safe backend: $modelPath")
+        return "MediaPipe CPU"
     }
 
     suspend fun generateResponseStreaming(

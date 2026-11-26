@@ -45,6 +45,10 @@ object SessionCodec {
                 if (msg.responseFormatVersion > 0) mObj.put("responseFormatVersion", msg.responseFormatVersion)
                 if (!msg.documentName.isNullOrBlank()) mObj.put("documentName", msg.documentName)
                 if (!msg.documentPath.isNullOrBlank()) mObj.put("documentPath", msg.documentPath)
+                if (!msg.imagePath.isNullOrBlank()) mObj.put("imagePath", msg.imagePath)
+                if (msg.imageSeed != null) mObj.put("imageSeed", msg.imageSeed)
+                if (msg.imageGenerationTimeMs != null) mObj.put("imageGenerationTimeMs", msg.imageGenerationTimeMs)
+                if (!msg.imageModelName.isNullOrBlank()) mObj.put("imageModelName", msg.imageModelName)
                 if (!msg.ragDocumentId.isNullOrBlank()) mObj.put("ragDocumentId", msg.ragDocumentId)
 
                 if (msg.ragSources.isNotEmpty()) {
@@ -108,8 +112,8 @@ object SessionCodec {
                 val message = messages.getJSONObject(j)
                 require(message.get("text") is String && message.get("isUser") is Boolean) { "Invalid message text or role" }
                 validateStrings(message, listOf("id", "userMessageId", "requestId", "reasoningText", "documentName", "documentPath", "ragDocumentId",
-                    "imagePath", "audioPath", "audioName", "terminalStatus", "errorMessage", "emptyReason"))
-                validateIntegers(message, listOf("attemptId", "responseFormatVersion", "ragChunkCount", "ragTopMatchPct", "audioDurationMs"))
+                    "imagePath", "imageModelName", "audioPath", "audioName", "terminalStatus", "errorMessage", "emptyReason"))
+                validateIntegers(message, listOf("attemptId", "responseFormatVersion", "ragChunkCount", "ragTopMatchPct", "audioDurationMs", "imageSeed", "imageGenerationTimeMs"))
                 if (!legacy) require(message.get("id") is String && message.getString("id").isNotBlank()) { "Invalid message ID" }
                 if (message.has("ragSources")) {
                     val sources = message.getJSONArray("ragSources")
@@ -185,6 +189,10 @@ object SessionCodec {
                 val reasoningText = mObj.optString("reasoningText").takeIf { it.isNotBlank() }
                 val docName = mObj.optString("documentName").takeIf { it.isNotBlank() }
                 val docPath = mObj.optString("documentPath").takeIf { it.isNotBlank() }
+                val imagePath = mObj.optString("imagePath").takeIf { it.isNotBlank() }
+                val imageSeed = if (mObj.has("imageSeed") && !mObj.isNull("imageSeed")) mObj.optLong("imageSeed") else null
+                val imageGenerationTimeMs = if (mObj.has("imageGenerationTimeMs") && !mObj.isNull("imageGenerationTimeMs")) mObj.optLong("imageGenerationTimeMs") else null
+                val imageModelName = mObj.optString("imageModelName").takeIf { it.isNotBlank() }
 
                 val responseFormatVersion = mObj.optInt("responseFormatVersion", 0)
                 val statusStr = mObj.optString("terminalStatus").takeIf { it.isNotBlank() }
@@ -244,6 +252,10 @@ object SessionCodec {
                         ragTopMatchPct = ragTopMatchPct,
                         documentName = docName,
                         documentPath = docPath,
+                        imagePath = imagePath,
+                        imageSeed = imageSeed,
+                        imageGenerationTimeMs = imageGenerationTimeMs,
+                        imageModelName = imageModelName,
                         ragDocumentId = mObj.optString("ragDocumentId").takeIf { it.isNotBlank() },
                         terminalStatus = terminalStatus,
                         errorMessage = errorMsg,

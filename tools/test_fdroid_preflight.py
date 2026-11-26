@@ -50,3 +50,11 @@ class FDroidPreflightTest(unittest.TestCase):
             with self.subTest(field=field):
                 path.write_text(original + '\n' + field + '\n')
                 self.assertFalse(check(self.root)['source_checks_passed'])
+
+    def test_prebuilt_so_in_app_src_is_rejected(self):
+        so_file = self.root / 'app/src/main/jniLibs/arm64-v8a/librag_rs.so'
+        so_file.parent.mkdir(parents=True, exist_ok=True)
+        so_file.write_bytes(b'\x7fELF')
+        result = check(self.root)
+        self.assertFalse(result['source_checks_passed'])
+        self.assertTrue(any('Unverified prebuilt .so' in err for err in result['errors']))

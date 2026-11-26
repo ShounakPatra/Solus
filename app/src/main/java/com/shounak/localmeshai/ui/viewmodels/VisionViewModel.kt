@@ -278,6 +278,8 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
     val tokensPerSecond = _tokensPerSecond.asStateFlow()
 
     private var currentModelPath: String? = null
+    @Volatile var voiceStreamingObserver: com.shounak.localmeshai.ai.voice.VoiceStreamingObserver? = null
+    val currentActiveRequestId: String? get() = activeRequestId
     /** The model this chat is set to use, loaded or not. */
     val selectedModelPath: String? get() = currentModelPath
     private var currentBundle: ModelBundle? = null
@@ -1594,6 +1596,9 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                         if (activeRequestId == requestId && myGen == analysisGeneration && currentModelEpoch == reqModelEpoch && _currentSessionId.value == activeSessionId && assistantIndex < messages.size && messages[assistantIndex].terminalStatus == null) {
                             if (snap.answerText.isNotBlank() || snap.reasoningText.isNotBlank()) timing.recordFirstVisibleText()
                             _answer.value = snap.answerText
+                            if (snap.answerText.isNotBlank()) {
+                                voiceStreamingObserver?.onStreamingAnswerSnapshot(requestId, snap.answerText)
+                            }
                             val displayText = snap.answerText.ifBlank {
                                 if (messages[assistantIndex].progress == RequestProgress.RecoveringOnCpu) "GPU failed; retrying on CPU…" else "Generating…"
                             }
@@ -1816,6 +1821,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             )
                             _lastInferenceTime.value = execResult.metrics?.decodeDurationMs ?: 0L
                             _tokensPerSecond.value = execResult.metrics?.decodeThroughputTokPerSec?.toFloat() ?: 0f
+                            voiceStreamingObserver?.onLlmTurnFinished(
+                                requestId = requestId,
+                                status = execResult.status,
+                                finalAnswerText = textToDisplay,
+                                errorMessage = errorMessageToDisplay
+                            )
                         }
                         if (execResult.status == RequestTerminalStatus.Completed && textToDisplay.isNotBlank()) {
                             if (!_temporaryChat.value && _isPersistentMemoryActive.value && appSettings.settings.value.autoExtractMemories) {
@@ -1883,6 +1894,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             documentName = fileName,
                             documentId = targetDocId
                         )
+                        voiceStreamingObserver?.onLlmTurnFinished(
+                            requestId = requestId,
+                            status = RequestTerminalStatus.Stopped,
+                            finalAnswerText = finalAnswer,
+                            errorMessage = null
+                        )
                     }
                 } catch (exception: Exception) {
                     _error.value = exception.message ?: "Image question failed."
@@ -1931,6 +1948,12 @@ class VisionViewModel(application: Application) : AndroidViewModel(application) 
                             audioDurationMs = resolvedAudioDurationMs,
                             documentName = fileName,
                             documentId = targetDocId
+                        )
+                        voiceStreamingObserver?.onLlmTurnFinished(
+                            requestId = requestId,
+                            status = RequestTerminalStatus.Failed,
+                            finalAnswerText = partialAnswer,
+                            errorMessage = errorMsg
                         )
                     }
                 } finally {

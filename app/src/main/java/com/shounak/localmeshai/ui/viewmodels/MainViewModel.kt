@@ -763,9 +763,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 val sizeMb = effectiveBundle.totalSizeBytes / (1024 * 1024)
                                 sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GiB", sizeMb / 1024f) else "$sizeMb MiB"
 
+                                val importedDisplayName = ModelInfo.stripRecommendedTag(effectiveBundle.displayName)
                                 val definition = CustomModelDefinition(
                                     id = effectiveBundle.id,
-                                    name = effectiveBundle.displayName,
+                                    name = importedDisplayName,
                                     url = "",
                                     type = effectiveType,
                                     fileName = primaryArtifact.displayName,
@@ -973,8 +974,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 startupRecoveryDeferred.complete(Unit)
             }
-            refreshCrashReports()
             checkPendingCrashReport()
+            refreshCrashReports()
         }
 
         viewModelScope.launch {
@@ -1203,7 +1204,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         val caps = bundle.capabilities
                         model.copy(status = ModelStatus.Available, progress = 1f, errorMessage = null,
                             localPath = model.localPath ?: target?.absolutePath, bundle = bundle, backend = bundle.backend,
-                            type = if (caps.isMediaModel) ModelType.Vision else ModelType.Text,
+                            type = if (caps.supportsVision || caps.supportsAudio) ModelType.Vision else ModelType.Text,
                             supportsVisionInput = caps.supportsVision, supportsAudioInput = caps.supportsAudio,
                             contextWindowTokens = bundle.contextLength.takeIf { it > 0 }, loadRestriction = bundle.loadRestriction
                         ).also { if (!revision.contains(":opaque:")) runCatching { cache.recordBundle(revision, bundle) } }
@@ -1824,7 +1825,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val effectiveType = if (effectiveBundle?.capabilities?.isMediaModel == true || def.bundle?.capabilities?.isMediaModel == true) ModelType.Vision else def.type
                 val rawModel = ModelInfo(
                     id = def.id,
-                    name = def.name,
+                    name = ModelInfo.stripRecommendedTag(def.name),
                     size = sizeStr,
                     status = initialStatus,
                     progress = initialProgress,
@@ -1904,9 +1905,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val sizeMb = bundle.totalSizeBytes / (1024 * 1024)
         val sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GiB", sizeMb / 1024f) else "$sizeMb MiB"
 
+        val importedDisplayName = ModelInfo.stripRecommendedTag(bundle.displayName)
         val definition = CustomModelDefinition(
             id = bundle.id,
-            name = bundle.displayName,
+            name = importedDisplayName,
             url = "",
             type = effectiveType,
             fileName = primaryArtifact.displayName,
@@ -1924,7 +1926,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val modelInfo = ModelInfo(
             id = bundle.id,
-            name = bundle.displayName,
+            name = importedDisplayName,
             size = sizeStr,
             status = ModelStatus.Available,
             progress = 1f,
@@ -2011,7 +2013,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
             updateModel(existingModelId) { model ->
                 val rawModel = model.copy(
-                    name = bundleWithExistingId.displayName,
+                    name = ModelInfo.stripRecommendedTag(bundleWithExistingId.displayName),
                     size = sizeStr,
                     status = ModelStatus.Available,
                     progress = 1f,
@@ -2243,9 +2245,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val sizeMb = totalBytes / (1024 * 1024)
             val sizeStr = if (sizeMb > 1024) String.format(java.util.Locale.US, "%.1f GiB", sizeMb / 1024f) else "$sizeMb MiB"
 
+            val cleanVariantName = ModelInfo.stripRecommendedTag(variant.name)
             val definition = CustomModelDefinition(
                 id = modelId,
-                name = variant.name,
+                name = cleanVariantName,
                 url = firstArtifact.downloadUrl,
                 type = effectiveType,
                 fileName = firstArtifact.fileName,
@@ -2263,7 +2266,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 val modelInfo = ModelInfo(
                     id = modelId,
-                    name = variant.name,
+                    name = cleanVariantName,
                     size = sizeStr,
                     status = ModelStatus.NotDownloaded,
                     progress = 0f,
@@ -2419,9 +2422,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val isNewModel = existingModel == null
-            val displayName = name.trim().ifBlank {
-                fileName.substringBeforeLast('.').replace('-', ' ').replace('_', ' ')
-            }
+            val displayName = ModelInfo.stripRecommendedTag(
+                name.trim().ifBlank {
+                    fileName.substringBeforeLast('.').replace('-', ' ').replace('_', ' ')
+                }
+            )
 
             if (packageType == ModelPackage.SingleFile) {
                 val preflightSpec = portableSpec ?: com.shounak.localmeshai.models.ModelDownloadSpec(id,

@@ -95,4 +95,54 @@ class TinyVocaManagerTest {
         assertTrue(kotlin.math.abs(ratio125 - 1.25) < 0.1)
         assertTrue(kotlin.math.abs(ratio150 - 1.5) < 0.1)
     }
+
+    @Test
+    fun testLazyInitializationDoesNotLoadOnConstructionAndUnloadsOnTrim() = kotlinx.coroutines.runBlocking {
+        val tempFile = java.io.File.createTempFile("tiny_voca_test", ".onnx").apply {
+            writeBytes(ByteArray(1_100_000))
+            deleteOnExit()
+        }
+        var initCalls = 0
+        var unloadCalls = 0
+        var speakCalls = 0
+        val manager = TinyVocaManager(
+            appContext = android.app.Application(),
+            modelFileOverride = tempFile,
+            idleTimeoutMs = 0L,
+            customInitializer = {
+                initCalls++
+                true
+            },
+            customUnloader = {
+                unloadCalls++
+            },
+            customSpeaker = { _, _, _, _ ->
+                speakCalls++
+                true
+            }
+        )
+
+        // Construction must NOT initialize ONNX/TTS in RAM
+        assertEquals(0, initCalls)
+        assertFalse(manager.isModelResidentInRam.value)
+        assertTrue(manager.isModelDownloaded.value)
+
+        // Explicit speak triggers on-demand init once
+        val spoke = manager.speakOnDemand("Hello offline world", id = "msg-1")
+        assertTrue(spoke)
+        assertEquals(1, initCalls)
+        assertEquals(1, speakCalls)
+        assertTrue(manager.isModelResidentInRam.value)
+
+        // Second speak reuses resident session without re-initializing
+        val spokeAgain = manager.speakOnDemand("Second sentence", id = "msg-2")
+        assertTrue(spokeAgain)
+        assertEquals(1, initCalls)
+        assertEquals(2, speakCalls)
+
+        // Memory trim / unload releases session cleanly
+        manager.unloadFromMemory("test_trim")
+        assertFalse(manager.isModelResidentInRam.value)
+        assertEquals(1, unloadCalls)
+    }
 }

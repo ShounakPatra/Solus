@@ -437,7 +437,12 @@ open class ModelDownloader(
         } else if (format.isPortable) {
             val files = stagedItems.associate { it.relativeTargetName to it.stagedFile }
             val primary = stagedItems.first()
-            if (format != ModelFormat.TensorFlowLite && files["config.json"]?.isFile != true && files["model_index.json"]?.isFile != true) {
+            val hasSingleGraphT2i = format == ModelFormat.Onnx &&
+                OnnxBundleValidation.inspectSingleGraphT2i(primary.stagedFile) != null &&
+                (files["vocab.json"]?.isFile == true || files["tokenizer.json"]?.isFile == true)
+            if (format != ModelFormat.TensorFlowLite && !hasSingleGraphT2i &&
+                files["config.json"]?.isFile != true && files["model_index.json"]?.isFile != true
+            ) {
                 throw MissingModelFilesException("config.json was not found at the model source. The downloaded weights are kept; retry to fetch the configuration or import a complete bundle.")
             }
             capabilities = PortableModelBundle.inspect(primary.stagedFile, format, files, primary.relativeTargetName)

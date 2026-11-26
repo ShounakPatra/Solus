@@ -5,7 +5,7 @@ object ModelCatalog {
         // ── ⭐ Recommended / Featured Local Models ────────────────────
         ModelInfo(
             id = "gemma4_e2b_litertlm",
-            name = "Gemma 4 E2B IT ⭐ Recommended",
+            name = "Gemma 4 E2B IT",
             size = "2.14 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Vision,
@@ -22,7 +22,7 @@ object ModelCatalog {
         ),
         ModelInfo(
             id = "llama32_1b_gguf",
-            name = "Llama 3.2 1B Instruct (GGUF Q4_K_M) ⭐ Recommended",
+            name = "Llama 3.2 1B Instruct (GGUF Q4_K_M)",
             size = "808 MB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
@@ -39,7 +39,7 @@ object ModelCatalog {
         ),
         ModelInfo(
             id = "llama32_3b_gguf",
-            name = "Llama 3.2 3B Instruct (GGUF Q4_K_M) ⭐ Recommended",
+            name = "Llama 3.2 3B Instruct (GGUF Q4_K_M)",
             size = "2.0 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
@@ -55,7 +55,7 @@ object ModelCatalog {
         ),
         ModelInfo(
             id = "deepseek_r1_qwen15b_q8",
-            name = "DeepSeek R1 Distill Qwen 1.5B ⭐ Highly Recommended",
+            name = "DeepSeek R1 Distill Qwen 1.5B",
             size = "1.86 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
@@ -69,7 +69,7 @@ object ModelCatalog {
         ),
         ModelInfo(
             id = "gemma3n_e2b_vision",
-            name = "Gemma 3n E2B 2B Vision ⭐ Recommended",
+            name = "Gemma 3n E2B 2B Vision",
             size = "2.92 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Vision,
@@ -87,7 +87,7 @@ object ModelCatalog {
         ),
         ModelInfo(
             id = "qwen25_15b_gguf",
-            name = "Qwen 2.5 1.5B (GGUF Q4_K_M) ⭐ Recommended",
+            name = "Qwen 2.5 1.5B (GGUF Q4_K_M)",
             size = "1.12 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
@@ -103,7 +103,7 @@ object ModelCatalog {
         ),
         ModelInfo(
             id = "qwen3_06b_litertlm",
-            name = "Qwen 3 0.6B ⭐ Recommended",
+            name = "Qwen 3 0.6B",
             size = "586 MB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
@@ -120,7 +120,7 @@ object ModelCatalog {
         ),
         ModelInfo(
             id = "gemma3_1b_recommended",
-            name = "Gemma 3 1B IT ⭐ Recommended",
+            name = "Gemma 3 1B IT",
             size = "555 MB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
@@ -182,7 +182,7 @@ object ModelCatalog {
         ),
         ModelInfo(
             id = "qwen25_coder_3b_litertlm",
-            name = "Qwen 2.5 Coder 3B ⌨️ ⭐ Recommended",
+            name = "Qwen 2.5 Coder 3B ⌨️",
             size = "2.91 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
@@ -213,7 +213,7 @@ object ModelCatalog {
         ),
         ModelInfo(
             id = "qwen3_17b_litertlm",
-            name = "Qwen 3 1.7B ⭐ Recommended",
+            name = "Qwen 3 1.7B",
             size = "2.1 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
@@ -556,7 +556,7 @@ object ModelCatalog {
         ),
         ModelInfo(
             id = "gemma3_270m_q8",
-            name = "Gemma 3 270M ⭐ Recommended",
+            name = "Gemma 3 270M",
             size = "304 MB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Text,
@@ -587,7 +587,7 @@ object ModelCatalog {
         // ── Vision / Image Q&A models ────────────────────────────────
         ModelInfo(
             id = "fastvlm_05b_litertlm",
-            name = "FastVLM 0.5B ⭐ Recommended",
+            name = "FastVLM 0.5B",
             size = "1.08 GB",
             status = ModelStatus.NotDownloaded,
             type = ModelType.Vision,
@@ -633,7 +633,8 @@ object ModelCatalog {
             supportsVisionInput = true,
             supportsAudioInput = true,
             contextWindowTokens = 32768
-        )
+        ),
+        com.shounak.localmeshai.ai.image.OnnxT2iCatalog.createCatalogModelInfo()
     )
 
     private fun hf(repo: String, file: String, revision: String = "main"): String {

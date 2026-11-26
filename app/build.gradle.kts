@@ -13,17 +13,19 @@ plugins {
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val nativeSourceDigest = MessageDigest.getInstance("SHA-256").apply {
     update("toolchain:ndk-28.2.13676358;cmake-3.22.1;platform:android-30;abi:arm64-v8a;c++17".toByteArray())
-    fileTree("src/main/rust") { include("src/**/*.rs", "Cargo.toml", "Cargo.lock", "vendor/**/*.rs", "vendor/**/Cargo.toml") }
-        .files.sortedBy { it.relativeTo(projectDir).invariantSeparatorsPath }.forEach { source ->
-            update(source.relativeTo(projectDir).invariantSeparatorsPath.toByteArray())
-            update(source.readBytes())
-        }
-    fileTree("../solus-core-logic/rust/solus-rag-rs") { include("src/**/*.rs", "Cargo.toml", "Cargo.lock") }
-        .files.sortedBy { it.relativeTo(projectDir).invariantSeparatorsPath }.forEach { source ->
-            update(source.relativeTo(projectDir).invariantSeparatorsPath.toByteArray())
-            update(source.readBytes())
-        }
-    fileTree("../solus-ai-logic/rust/solus-ai-rs") { include("src/**/*.rs", "Cargo.toml", "Cargo.lock") }
+    fileTree("src/main/rust") {
+        include(
+            "src/**/*.rs",
+            "solus-rag-rs/src/**/*.rs",
+            "solus-ai-rs/src/**/*.rs",
+            "Cargo.toml",
+            "solus-rag-rs/Cargo.toml",
+            "solus-ai-rs/Cargo.toml",
+            "Cargo.lock",
+            "vendor/**/*.rs",
+            "vendor/**/Cargo.toml"
+        )
+    }
         .files.sortedBy { it.relativeTo(projectDir).invariantSeparatorsPath }.forEach { source ->
             update(source.relativeTo(projectDir).invariantSeparatorsPath.toByteArray())
             update(source.readBytes())
@@ -51,6 +53,22 @@ val keystoreProperties = Properties().apply {
         keystorePropertiesFile.inputStream().use(::load)
     }
 }
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.isFile) f.inputStream().use(::load)
+}
+fun resolveLocalOrEnv(propKey: String, envKey: String): String {
+    return (localProps.getProperty(propKey)?.trim()?.takeIf { it.isNotEmpty() }
+        ?: System.getenv(envKey)?.trim()?.takeIf { it.isNotEmpty() }).orEmpty()
+}
+val qnnSdkDir = resolveLocalOrEnv("qnn.sdk.dir", "QNN_SDK_ROOT")
+val hexagonSdkDir = resolveLocalOrEnv("hexagon.sdk.dir", "HEXAGON_SDK_ROOT")
+val hexagonToolsDir = resolveLocalOrEnv("hexagon.tools.dir", "HEXAGON_TOOLS_ROOT")
+val neuropilotSdkDir = resolveLocalOrEnv("neuropilot.sdk.dir", "NEUROPILOT_SDK_ROOT")
+val kleidiAiSrcDir = resolveLocalOrEnv("kleidiai.src.dir", "KLEIDIAI_SRC_DIR")
+val hasQnnSdk = qnnSdkDir.isNotEmpty() && file(qnnSdkDir).isDirectory
+val hasHexagonSdk = hexagonSdkDir.isNotEmpty() && file(hexagonSdkDir).isDirectory
+val hasNeuropilotSdk = neuropilotSdkDir.isNotEmpty() && file(neuropilotSdkDir).isDirectory
 
 android {
     namespace = "com.shounak.localmeshai"
@@ -76,6 +94,42 @@ android {
         externalNativeBuild {
             cmake {
                 arguments("-DANDROID_PLATFORM=android-30", "-DANDROID_LD=lld")
+                if (kleidiAiSrcDir.isNotEmpty() && file(kleidiAiSrcDir).isDirectory) {
+                    arguments("-DSOLUS_KLEIDIAI_SOURCE_DIR=$kleidiAiSrcDir")
+                }
+            }
+        }
+    }
+
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("foss") {
+            dimension = "distribution"
+            isDefault = true
+            buildConfigField("boolean", "NPU_FLAVOR_ENABLED", "false")
+            buildConfigField("boolean", "QNN_SDK_CONFIGURED", "false")
+            buildConfigField("boolean", "NEUROPILOT_SDK_CONFIGURED", "false")
+            externalNativeBuild {
+                cmake {
+                    arguments("-DSOLUS_ENABLE_QNN_NPU=OFF")
+                }
+            }
+        }
+        create("npu") {
+            dimension = "distribution"
+            buildConfigField("boolean", "NPU_FLAVOR_ENABLED", "true")
+            buildConfigField("boolean", "QNN_SDK_CONFIGURED", "${hasQnnSdk || hasHexagonSdk}")
+            buildConfigField("boolean", "NEUROPILOT_SDK_CONFIGURED", "$hasNeuropilotSdk")
+            externalNativeBuild {
+                cmake {
+                    arguments("-DSOLUS_ENABLE_QNN_NPU=ON")
+                    if (hasHexagonSdk) {
+                        arguments("-DHEXAGON_SDK_ROOT=$hexagonSdkDir")
+                    }
+                    if (hexagonToolsDir.isNotEmpty() && file(hexagonToolsDir).isDirectory) {
+                        arguments("-DHEXAGON_TOOLS_ROOT=$hexagonToolsDir")
+                    }
+                }
             }
         }
     }
@@ -298,10 +352,11 @@ androidComponents {
         }
     }
     onVariants(selector().withBuildType("debug")) { variant ->
-        val verifyTask = tasks.register<VerifyDexIntegrityTask>("verifyDebugApkDexIntegrity") {
+        val variantTaskSuffix = variant.name.replaceFirstChar { it.uppercaseChar() }
+        val verifyTask = tasks.register<VerifyDexIntegrityTask>("verify${variantTaskSuffix}ApkDexIntegrity") {
             apkFolder.set(variant.artifacts.get(SingleArtifact.APK))
         }
-        tasks.matching { it.name == "assembleDebug" }.configureEach {
+        tasks.matching { it.name == "assemble$variantTaskSuffix" }.configureEach {
             dependsOn(verifyTask)
         }
     }
@@ -320,9 +375,23 @@ kotlin {
 // Keep Rust compilation out of Kotlin-only checks; every packaged APK includes the JNI runtime.
 val candleJniDirectory = layout.buildDirectory.dir("generated/candleJni")
 android.sourceSets.getByName("main").jniLibs.srcDir(candleJniDirectory.get().asFile)
+if (hasQnnSdk) {
+    listOf("lib/aarch64-android", "jniLibs/arm64-v8a", "arm64-v8a").map { file(qnnSdkDir).resolve(it) }
+        .firstOrNull { it.isDirectory }
+        ?.let { android.sourceSets.getByName("npu").jniLibs.srcDir(it) }
+}
+if (hasNeuropilotSdk) {
+    listOf("lib/arm64-v8a", "jniLibs/arm64-v8a", "arm64-v8a").map { file(neuropilotSdkDir).resolve(it) }
+        .firstOrNull { it.isDirectory }
+        ?.let { android.sourceSets.getByName("npu").jniLibs.srcDir(it) }
+}
 val buildCandleAndroid = tasks.register<Exec>("buildCandleAndroid") {
     workingDir(rootDir)
     inputs.dir("src/main/rust/src")
+    inputs.dir("src/main/rust/solus-rag-rs/src")
+    inputs.file("src/main/rust/solus-rag-rs/Cargo.toml")
+    inputs.dir("src/main/rust/solus-ai-rs/src")
+    inputs.file("src/main/rust/solus-ai-rs/Cargo.toml")
     inputs.dir("src/main/rust/vendor")
     inputs.file("src/main/rust/Cargo.toml")
     inputs.file("src/main/rust/Cargo.lock")

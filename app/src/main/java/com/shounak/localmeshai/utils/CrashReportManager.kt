@@ -59,7 +59,7 @@ object CrashReportManager {
     /**
      * Captures system & app logcat lines around the crash while redacting any sensitive tokens.
      */
-    fun captureCrashDebugLogs(maxLines: Int = 350): String {
+    fun captureCrashDebugLogs(maxLines: Int = 350, waitTimeoutMs: Long = 2_000L): String {
         return try {
             val pid = android.os.Process.myPid()
             val process = Runtime.getRuntime().exec(
@@ -67,10 +67,12 @@ object CrashReportManager {
             )
             val lines = mutableListOf<String>()
             try {
-                BufferedReader(InputStreamReader(process.inputStream)).useLines { seq ->
-                    seq.forEach { lines.add(it) }
+                val finished = process.waitFor(waitTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+                if (process.inputStream.available() > 0 || finished) {
+                    BufferedReader(InputStreamReader(process.inputStream)).useLines { seq ->
+                        seq.take(maxLines).forEach { lines.add(it) }
+                    }
                 }
-                val finished = process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
                 if (!finished) {
                     process.destroyForcibly()
                 }
@@ -188,15 +190,29 @@ object CrashReportManager {
         val title = "${throwable.javaClass.simpleName}: ${throwable.message ?: "Uncaught Exception"}"
         @Suppress("DEPRECATION")
         val threadId = thread.id
+        // Persist crash marker synchronously BEFORE slow logcat capture so rapid process teardown never loses it.
         val report = buildCompleteCrashReportString(
             context = context,
             title = title,
             stackTrace = stackTrace,
             extraContext = "Crashed Thread: ${thread.name} (id: $threadId)",
             isNative = false,
-            includeLogcat = true
+            includeLogcat = false
         )
-        saveReport(context, report, isNative = false)
+        val savedFile = saveReport(context, report, isNative = false)
+        if (savedFile != null) {
+            runCatching {
+                val enriched = buildCompleteCrashReportString(
+                    context = context,
+                    title = title,
+                    stackTrace = stackTrace,
+                    extraContext = "Crashed Thread: ${thread.name} (id: $threadId)",
+                    isNative = false,
+                    includeLogcat = true
+                )
+                savedFile.writeText(enriched)
+            }
+        }
     }
 
     /**
@@ -239,6 +255,8 @@ object CrashReportManager {
     private const val PREFS_NAME = "solus_crash_reports"
     private const val KEY_HAS_UNPROMPTED_CRASH = "has_unprompted_crash"
     private const val KEY_PENDING_CRASH_FILE = "pending_crash_file"
+    private const val KEY_LAST_SAVED_REPORT_TS = "last_saved_report_ts"
+    private const val KEY_LAST_CHECKED_EXIT_TS = "last_checked_exit_ts"
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -247,17 +265,18 @@ object CrashReportManager {
         return File(context.filesDir, "crash_reports").apply { mkdirs() }
     }
 
-    private fun saveReport(context: Context, content: String, isNative: Boolean): File? {
+    private fun saveReport(context: Context, content: String, isNative: Boolean, timestampMs: Long = System.currentTimeMillis()): File? {
         return try {
             val dir = getReportsDir(context)
             val prefix = if (isNative) "native_crash_" else "jvm_crash_"
-            val file = File(dir, "$prefix${System.currentTimeMillis()}.txt")
+            val file = File(dir, "$prefix$timestampMs.txt")
             file.writeText(content)
 
             // Flag for user prompt on next app launch
             prefs(context).edit()
                 .putBoolean(KEY_HAS_UNPROMPTED_CRASH, true)
                 .putString(KEY_PENDING_CRASH_FILE, file.absolutePath)
+                .putLong(KEY_LAST_SAVED_REPORT_TS, timestampMs)
                 .commit()
 
             val files = dir.listFiles()?.filter { it.isFile && it.name.endsWith(".txt") }
@@ -273,11 +292,83 @@ object CrashReportManager {
         }
     }
 
+    /**
+     * Checks Android 11+ [android.app.ActivityManager.getHistoricalProcessExitReasons] so native
+     * C++/Rust/ONNX crashes (SIGSEGV/SIGABRT) that bypass Thread.UncaughtExceptionHandler are also
+     * captured and surfaced in the Crash Detected prompt on reopen.
+     */
+    fun checkAndRecordHistoricalProcessExit(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        runCatching {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager ?: return
+            val exits = am.getHistoricalProcessExitReasons(context.packageName, 0, 8)
+            if (exits.isEmpty()) return
+            val sp = prefs(context)
+            val lastCheckedExitTs = sp.getLong(KEY_LAST_CHECKED_EXIT_TS, 0L)
+            val newestOverallTs = exits.maxOf { it.timestamp }
+
+            val candidate = exits.firstOrNull { info ->
+                info.timestamp > lastCheckedExitTs && (
+                    info.reason == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE ||
+                        info.reason == android.app.ApplicationExitInfo.REASON_CRASH ||
+                        info.reason == android.app.ApplicationExitInfo.REASON_ANR
+                    )
+            }
+
+            if (newestOverallTs > lastCheckedExitTs) {
+                sp.edit().putLong(KEY_LAST_CHECKED_EXIT_TS, newestOverallTs).commit()
+            }
+
+            if (candidate != null) {
+                val lastSavedTs = sp.getLong(KEY_LAST_SAVED_REPORT_TS, 0L)
+                val alreadyCovered = kotlin.math.abs(candidate.timestamp - lastSavedTs) <= 15_000L
+                if (!alreadyCovered && !hasPendingCrashPrompt(context)) {
+                    val isNative = candidate.reason == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE
+                    val reasonLabel = when (candidate.reason) {
+                        android.app.ApplicationExitInfo.REASON_CRASH_NATIVE -> "Native Crash (SIGSEGV/SIGABRT)"
+                        android.app.ApplicationExitInfo.REASON_CRASH -> "Uncaught Process Crash"
+                        android.app.ApplicationExitInfo.REASON_ANR -> "App Not Responding (ANR)"
+                        else -> "Unexpected Exit (${candidate.reason})"
+                    }
+                    val traceSnippet = runCatching {
+                        candidate.traceInputStream?.bufferedReader()?.use { reader ->
+                            reader.readText().take(32_000)
+                        }
+                    }.getOrNull().orEmpty()
+                    val details = buildString {
+                        appendLine("Exit Reason: $reasonLabel (code=${candidate.reason}, status=${candidate.status})")
+                        if (!candidate.description.isNullOrBlank()) {
+                            appendLine("Description: ${candidate.description}")
+                        }
+                        appendLine("Process: ${candidate.processName} (importance=${candidate.importance})")
+                        if (traceSnippet.isNotBlank()) {
+                            appendLine()
+                            appendLine("Native / Process Trace:")
+                            appendLine(traceSnippet)
+                        }
+                    }
+                    val report = buildCompleteCrashReportString(
+                        context = context,
+                        title = "Unexpected App Crash: $reasonLabel",
+                        stackTrace = details,
+                        extraContext = "Recovered on reopen from Android ApplicationExitInfo (pid=${candidate.pid})",
+                        isNative = isNative,
+                        includeLogcat = true
+                    )
+                    saveReport(context, report, isNative = isNative, timestampMs = candidate.timestamp)
+                }
+            }
+        }.onFailure {
+            Log.w(TAG, "Could not inspect historical process exit reasons: ${it.message}")
+        }
+    }
+
     fun hasPendingCrashPrompt(context: Context): Boolean {
         return prefs(context).getBoolean(KEY_HAS_UNPROMPTED_CRASH, false)
     }
 
     fun getPendingCrashReportForPrompt(context: Context): CrashReport? {
+        checkAndRecordHistoricalProcessExit(context)
         if (!hasPendingCrashPrompt(context)) return null
         val filePath = prefs(context).getString(KEY_PENDING_CRASH_FILE, null)
         if (filePath != null) {
@@ -294,7 +385,7 @@ object CrashReportManager {
         prefs(context).edit()
             .remove(KEY_HAS_UNPROMPTED_CRASH)
             .remove(KEY_PENDING_CRASH_FILE)
-            .apply()
+            .commit()
     }
 
     private fun parseReportFile(file: File): CrashReport? {

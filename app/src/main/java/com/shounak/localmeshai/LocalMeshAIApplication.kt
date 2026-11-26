@@ -10,6 +10,7 @@ class LocalMeshAIApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        com.shounak.localmeshai.utils.CrashReportManager.install(this)
         com.shounak.localmeshai.utils.AbandonedModelFiles.initialize()
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO).launch {
             runCatching { com.shounak.localmeshai.ai.tools.ToolReminders.reschedule(applicationContext) }
@@ -32,7 +33,13 @@ class LocalMeshAIApplication : Application() {
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW || level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
+            com.shounak.localmeshai.ai.tts.TinyVocaManager.releaseIfInitialized("onTrimMemory($level)")
             CacheCleanupCoordinator.getInstance(this).requestCleanup(CleanupReason.BackgroundClose)
+        }
+        // Keep the active T2I ONNX session loaded across app switches/UI_HIDDEN so it only auto-unloads
+        // on the user-configured autoUnloadMinutes timer, releasing early only under critical kernel pressure.
+        if (level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL || level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE) {
+            com.shounak.localmeshai.ai.image.OnnxImageGenerator.releaseIfInitialized()
         }
     }
 }

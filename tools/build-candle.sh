@@ -17,7 +17,10 @@ task_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
 export PATH="$task_cargo_home/bin:$PATH"
 export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.90.0}"
 export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$task_root=/solus --remap-path-prefix=$task_cargo_home=/cargo"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="${CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS:-} -C link-arg=-Wl,-z,max-page-size=16384"
 export CFLAGS_aarch64_linux_android="${CFLAGS_aarch64_linux_android:-} -ffile-prefix-map=$task_root=/solus -ffile-prefix-map=$task_cargo_home=/cargo"
-cargo build --locked --manifest-path "$task_root/app/src/main/rust/Cargo.toml" --target aarch64-linux-android --release
+cargo build --workspace --locked --manifest-path "$task_root/app/src/main/rust/Cargo.toml" --target aarch64-linux-android --release
 mkdir -p -- "$task_output/arm64-v8a"
-cp -- "$task_root/app/src/main/rust/target/aarch64-linux-android/release/libsolus_candle.so" "$task_output/arm64-v8a/"
+for lib in libsolus_candle.so librag_rs.so libai_rs.so; do
+  cp -- "$task_root/app/src/main/rust/target/aarch64-linux-android/release/$lib" "$task_output/arm64-v8a/"
+done
