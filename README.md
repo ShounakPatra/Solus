@@ -44,14 +44,16 @@
 ## App preview
 
 <p align="center">
-  <img src="docs/screenshots/Screenshot_2026-11-23-01-19-16-42_d804bf37f052c7c9c36b5bf4d4e85d30.jpg" width="260" alt="Solus v7.0.0 chat with Gemma 4 E2B IT" />
+  <img src="docs/screenshots/Screenshot_20261127-005851.jpg" width="210" alt="Solus chat home with Live Aurora background, telemetry capsule, and Hands-Free Voice launcher" />
   &nbsp;
-  <img src="docs/screenshots/Screenshot_2026-11-23-02-31-07-40_d804bf37f052c7c9c36b5bf4d4e85d30.jpg" width="260" alt="Solus v7.0.0 Model Manager with TinyVoca Neural TTS and hardware telemetry" />
+  <img src="docs/screenshots/Screenshot_20261127-005036.jpg" width="210" alt="Solus offline image generation in chat using MiniT2I B/16 Flow" />
   &nbsp;
-  <img src="docs/screenshots/Screenshot_2026-11-23-01-57-57-35_d804bf37f052c7c9c36b5bf4d4e85d30.jpg" width="260" alt="Solus v7.0.0 Settings with TinyVoca voice and Personas" />
+  <img src="docs/screenshots/Screenshot_20261127-004937.jpg" width="210" alt="Solus Hands-Free Offline Voice Mode with Silero VAD, Whisper STT, and TinyVoca TTS" />
+  &nbsp;
+  <img src="docs/screenshots/Screenshot_20261127-005020.jpg" width="210" alt="Solus Settings with TinyVoca voice, Personas, Memory, and Agent tools" />
 </p>
 
-<p align="center"><sub>Chat with Gemma 4, manage models and TinyVoca TTS, and search 74+ settings in the Liquid Glass workspace.</sub></p>
+<p align="center"><sub>Liquid Glass workspace with Live Aurora &amp; hardware telemetry, offline MiniT2I image generation, Hands-Free Voice Mode (Silero VAD + Whisper + TinyVoca), and searchable on-device settings.</sub></p>
 
 ## Get started
 
