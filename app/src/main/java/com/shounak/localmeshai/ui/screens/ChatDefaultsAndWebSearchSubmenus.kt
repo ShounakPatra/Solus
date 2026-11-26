@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -19,10 +21,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -36,6 +42,7 @@ import com.shounak.localmeshai.utils.AppSettings
 import com.shounak.localmeshai.utils.AppSettingsData
 import dev.chrisbanes.haze.HazeState
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 
 @Composable
@@ -877,10 +884,13 @@ fun WebSearchSubmenu(
     hazeState: HazeState
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
     val scope = rememberCoroutineScope()
     val colors = MaterialTheme.colorScheme
     var braveInput by remember { mutableStateOf(settingsData.braveApiKey) }
     var tavilyInput by remember { mutableStateOf(settingsData.tavilyApiKey) }
+    var isBraveFocused by remember { mutableStateOf(false) }
+    var isTavilyFocused by remember { mutableStateOf(false) }
     var isTestingSearch by remember { mutableStateOf(false) }
     var testResultDialog by remember { mutableStateOf<SearchResult?>(null) }
 
@@ -1031,10 +1041,15 @@ fun WebSearchSubmenu(
         ApiKeyEntryBlock(
             label = "Brave API key",
             value = braveInput,
+            savedValue = settingsData.braveApiKey,
             hazeState = hazeState,
+            onFocusChange = { isBraveFocused = it },
             onValueChange = { braveInput = it },
             onSave = {
-                appSettings.updateSettings { it.copy(braveApiKey = braveInput.trim()) }
+                focusManager.clearFocus()
+                val trimmed = braveInput.trim()
+                braveInput = trimmed
+                appSettings.updateSettings { it.copy(braveApiKey = trimmed) }
                 Toast.makeText(context, "Brave API key saved", Toast.LENGTH_SHORT).show()
             }
         )
@@ -1042,10 +1057,15 @@ fun WebSearchSubmenu(
         ApiKeyEntryBlock(
             label = "Tavily API key",
             value = tavilyInput,
+            savedValue = settingsData.tavilyApiKey,
             hazeState = hazeState,
+            onFocusChange = { isTavilyFocused = it },
             onValueChange = { tavilyInput = it },
             onSave = {
-                appSettings.updateSettings { it.copy(tavilyApiKey = tavilyInput.trim()) }
+                focusManager.clearFocus()
+                val trimmed = tavilyInput.trim()
+                tavilyInput = trimmed
+                appSettings.updateSettings { it.copy(tavilyApiKey = trimmed) }
                 Toast.makeText(context, "Tavily API key saved", Toast.LENGTH_SHORT).show()
             }
         )
@@ -1058,21 +1078,35 @@ fun WebSearchSubmenu(
 
         Spacer(modifier = Modifier.height(8.dp))
 
+        val isEditingAnyKey = isBraveFocused || isTavilyFocused
+        val hasUnsavedKeyEdits = braveInput.trim() != settingsData.braveApiKey ||
+            tavilyInput.trim() != settingsData.tavilyApiKey
+        val selectedProviderMissingKey = (settingsData.webSearchProvider == "Brave" && settingsData.braveApiKey.isBlank()) ||
+            (settingsData.webSearchProvider == "Tavily" && settingsData.tavilyApiKey.isBlank())
+        val canTestSearch = !isTestingSearch && !isEditingAnyKey && !hasUnsavedKeyEdits && !selectedProviderMissingKey
+
         // Bottom Test Search Button with Liquid Glass UI
         LiquidGlassButton(
             onClick = {
-                if (isTestingSearch) return@LiquidGlassButton
+                if (!canTestSearch) return@LiquidGlassButton
+                focusManager.clearFocus()
                 isTestingSearch = true
                 scope.launch {
                     try {
-                        val result = DuckDuckGoSearchEngine.searchWithProvider(
-                            query = "Solus Android AI on-device",
-                            provider = settingsData.webSearchProvider,
-                            braveApiKey = settingsData.braveApiKey,
-                            tavilyApiKey = settingsData.tavilyApiKey,
-                            maxResults = 3
-                        )
-                        testResultDialog = result
+                        val result = withTimeoutOrNull(12_000L) {
+                            DuckDuckGoSearchEngine.searchWithProvider(
+                                query = "Solus Android AI on-device",
+                                provider = settingsData.webSearchProvider,
+                                braveApiKey = settingsData.braveApiKey,
+                                tavilyApiKey = settingsData.tavilyApiKey,
+                                maxResults = 3
+                            )
+                        }
+                        if (result == null) {
+                            Toast.makeText(context, "Search test timed out.", Toast.LENGTH_LONG).show()
+                        } else {
+                            testResultDialog = result
+                        }
                     } catch (e: Exception) {
                         Toast.makeText(context, "Search failed: ${e.message}", Toast.LENGTH_LONG).show()
                     } finally {
@@ -1080,9 +1114,10 @@ fun WebSearchSubmenu(
                     }
                 }
             },
+            enabled = canTestSearch,
             hazeState = hazeState,
             shape = CircleShape,
-            tintColor = colors.primary.copy(alpha = 0.35f),
+            tintColor = if (canTestSearch) colors.primary.copy(alpha = 0.35f) else colors.surfaceContainerHighest.copy(alpha = 0.25f),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp)
@@ -1094,6 +1129,12 @@ fun WebSearchSubmenu(
                     strokeWidth = 2.dp
                 )
             } else {
+                val buttonLabel = when {
+                    hasUnsavedKeyEdits -> "Save key before testing"
+                    selectedProviderMissingKey -> "Save ${settingsData.webSearchProvider} key first"
+                    else -> "Test search"
+                }
+                val labelColor = if (canTestSearch) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.65f)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1102,13 +1143,13 @@ fun WebSearchSubmenu(
                         imageVector = Icons.Default.Search,
                         contentDescription = null,
                         modifier = Modifier.size(20.dp),
-                        tint = colors.primary
+                        tint = labelColor
                     )
                     Text(
-                        text = "Test search",
+                        text = buttonLabel,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
-                        color = colors.primary
+                        color = labelColor
                     )
                 }
             }
@@ -1220,11 +1261,15 @@ fun WebSearchSubmenu(
 private fun ApiKeyEntryBlock(
     label: String,
     value: String,
+    savedValue: String,
     hazeState: HazeState,
+    onFocusChange: (Boolean) -> Unit,
     onValueChange: (String) -> Unit,
     onSave: () -> Unit
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val colors = MaterialTheme.colorScheme
 
     Card(
@@ -1269,10 +1314,19 @@ private fun ApiKeyEntryBlock(
                 TextField(
                     value = value,
                     onValueChange = onValueChange,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .onFocusChanged { onFocusChange(it.isFocused) },
                     placeholder = {
                         Text("Paste key here", color = colors.onSurfaceVariant.copy(alpha = 0.6f))
                     },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            focusManager.clearFocus()
+                            keyboardController?.hide()
+                        }
+                    ),
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = Color.Transparent,
                         unfocusedContainerColor = Color.Transparent,
@@ -1303,20 +1357,27 @@ private fun ApiKeyEntryBlock(
                 }
             }
 
-            val hasKey = value.isNotBlank()
+            val trimmed = value.trim()
+            val hasUnsaved = trimmed.isNotEmpty() && trimmed != savedValue
+            val isSaved = trimmed.isNotEmpty() && trimmed == savedValue
+            val canSave = trimmed.isNotEmpty() && hasUnsaved
             LiquidGlassButton(
                 onClick = onSave,
-                enabled = hasKey,
+                enabled = canSave,
                 hazeState = hazeState,
                 shape = RoundedCornerShape(12.dp),
-                tintColor = if (hasKey) colors.primary.copy(alpha = 0.30f) else colors.surfaceContainerHighest.copy(alpha = 0.20f),
+                tintColor = if (canSave) colors.primary.copy(alpha = 0.30f) else colors.surfaceContainerHighest.copy(alpha = 0.20f),
                 modifier = Modifier.fillMaxWidth(0.42f).height(40.dp)
             ) {
                 Text(
-                    text = "Save key",
+                    text = if (isSaved) "Saved" else "Save key",
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
-                    color = if (hasKey) colors.primary else colors.onSurfaceVariant.copy(alpha = 0.50f)
+                    color = when {
+                        canSave -> colors.primary
+                        isSaved -> Color(0xFF10B981)
+                        else -> colors.onSurfaceVariant.copy(alpha = 0.50f)
+                    }
                 )
             }
         }

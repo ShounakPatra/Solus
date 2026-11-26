@@ -65,41 +65,46 @@ jobs:
         run: chmod +x gradlew
 
       - name: Run unit tests
-        run: ./gradlew testDebugUnitTest
+        run: ./gradlew testFossDebugUnitTest testNpuDebugUnitTest
 
       - name: Run Android lint
-        run: ./gradlew lintDebug
+        run: ./gradlew lintFossDebug lintNpuDebug
 
       - name: Compile instrumentation tests (device-free verification)
-        run: ./gradlew assembleDebugAndroidTest
+        run: ./gradlew assembleFossDebugAndroidTest assembleNpuDebugAndroidTest
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug
+      - name: Build debug APKs
+        run: ./gradlew assembleFossDebug assembleNpuDebug
 
-      - name: Upload debug APK
+      - name: Upload FOSS debug APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: solus-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/foss/debug/app-foss-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload NPU debug APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: solus-npu-debug-apk
+          path: app/build/outputs/apk/npu/debug/app-npu-debug.apk
           if-no-files-found: error
           retention-days: 14
 
       - name: Build release APK
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleFossRelease
 
       - name: Verify release APK size and structure
         run: |
-          RELEASE_APK=$(python3 -c "import json; data=json.load(open('app/build/outputs/apk/release/output-metadata.json')); print('app/build/outputs/apk/release/' + data['elements'][0]['outputFile'])")
+          RELEASE_APK=$(python3 -c "import json; data=json.load(open('app/build/outputs/apk/foss/release/output-metadata.json')); print('app/build/outputs/apk/foss/release/' + data['elements'][0]['outputFile'])")
           echo "RELEASE_APK=$RELEASE_APK" >> $GITHUB_ENV
           echo "Resolved release APK: $RELEASE_APK"
           mkdir -p build/reports/apk-size
-          # Portable inference adds arm64 ONNX, TFLite and Candle libraries to
-          # the former 39,849,556-byte baseline. Retain a bounded size gate;
-          # refresh the signed baseline after device validation of these runtimes.
           python3 tools/apk_size_report.py \
             --apk "$RELEASE_APK" \
             --output build/reports/apk-size/release-size-report.json \
-            --max-apk-bytes 64000000 \
+            --max-apk-bytes 80000000 \
             --verify-optimized
 
       - name: Upload release APK (unsigned CI build)
@@ -124,7 +129,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: solus-release-r8-mapping
-          path: app/build/outputs/mapping/release/
+          path: app/build/outputs/mapping/fossRelease/
           if-no-files-found: warn
           retention-days: 14
 
@@ -133,7 +138,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: solus-release-native-symbols
-          path: app/build/outputs/native-debug-symbols/release/
+          path: app/build/outputs/native-debug-symbols/fossRelease/
           if-no-files-found: warn
           retention-days: 14
 

@@ -277,6 +277,7 @@ fun SettingsDialog(
                 .background(colors.background)
                 .statusBarsPadding()
                 .navigationBarsPadding()
+                .imePadding()
         ) {
             Column(
                 modifier = Modifier
@@ -1307,9 +1308,8 @@ fun SettingsDialog(
                                                     style = MaterialTheme.typography.titleSmall,
                                                     fontWeight = FontWeight.Bold,
                                                     color = colors.onSurface,
-                                                    modifier = Modifier.weight(1f, fill = false),
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
+                                                    modifier = Modifier.weight(1f),
+                                                    maxLines = 2
                                                 )
                                                 Spacer(modifier = Modifier.width(8.dp))
                                                 val docSuffix = if (ragDocCount == 1) "doc" else "docs"
