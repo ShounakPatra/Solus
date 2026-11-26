@@ -103,20 +103,9 @@ android {
 
     flavorDimensions += "distribution"
     productFlavors {
-        create("foss") {
-            dimension = "distribution"
-            isDefault = true
-            buildConfigField("boolean", "NPU_FLAVOR_ENABLED", "false")
-            buildConfigField("boolean", "QNN_SDK_CONFIGURED", "false")
-            buildConfigField("boolean", "NEUROPILOT_SDK_CONFIGURED", "false")
-            externalNativeBuild {
-                cmake {
-                    arguments("-DSOLUS_ENABLE_QNN_NPU=OFF")
-                }
-            }
-        }
         create("npu") {
             dimension = "distribution"
+            isDefault = true
             buildConfigField("boolean", "NPU_FLAVOR_ENABLED", "true")
             buildConfigField("boolean", "QNN_SDK_CONFIGURED", "${hasQnnSdk || hasHexagonSdk}")
             buildConfigField("boolean", "NEUROPILOT_SDK_CONFIGURED", "$hasNeuropilotSdk")

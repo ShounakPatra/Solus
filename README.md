@@ -11,7 +11,7 @@
 **v7.0.0 · Android 11+ · ARM64-v8a**
 
 <p>
-  <a href="https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk" title="Download Solus v7.0.0 from GitHub">
+  <a href="https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-npu-release.apk" title="Download Solus v7.0.0 from GitHub">
     <img src="https://raw.githubusercontent.com/ShounakPatra/Solus/main/docs/assets/download-solus-apk.svg?v=7.0.0" alt="Download the signed Solus APK from GitHub" width="300" height="60" />
   </a>
   &nbsp;
@@ -22,7 +22,7 @@
 
 <img src="docs/assets/google-play-coming-soon.svg" alt="Coming soon on Google Play" width="180" height="53" />
 
-<sub>Get v7.0.0 from <a href="https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk">GitHub Releases</a> or install via the <a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC">Solus F-Droid repository</a> (<code>https://shounakpatra.github.io/Solus/fdroid/repo</code>). Both distribute the same maintainer-signed APK; an <a href="https://gitlab.com/fdroid/rfp/-/work_items/4686">official F-Droid RFP</a> is also pending.</sub>
+<sub>Get v7.0.0 from <a href="https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-npu-release.apk">GitHub Releases</a> or install via the <a href="https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC">Solus F-Droid repository</a> (<code>https://shounakpatra.github.io/Solus/fdroid/repo</code>). An <a href="https://gitlab.com/fdroid/rfp/-/work_items/4686">official F-Droid RFP</a> is also pending.</sub>
 
 [![Android CI](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml/badge.svg)](https://github.com/ShounakPatra/Solus/actions/workflows/android-ci.yml)
 ![Version 7.0.0](https://img.shields.io/badge/version-7.0.0-0EA5E9)
@@ -57,7 +57,7 @@
 
 ## Get started
 
-1. **Install** via the [Solus F-Droid repository](https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC) ([repo URL](https://shounakpatra.github.io/Solus/fdroid/repo/)) or download the [v7.0.0 signed APK](https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk). It requires **Android 11+** and an **ARM64-v8a** device. Verify it with the [matching SHA-256 checksum](https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-release.apk.sha256).
+1. **Install** via the [Solus F-Droid repository](https://fdroid.link/#https://shounakpatra.github.io/Solus/fdroid/repo?fingerprint=F025EBCC623B3B0DD55F0B1CF65BA228CDB758272F00234CAD114E4C4F0695CC) ([repo URL](https://shounakpatra.github.io/Solus/fdroid/repo/)) or download the [v7.0.0 signed APK](https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-npu-release.apk). It requires **Android 11+** and an **ARM64-v8a** device. Verify it with the [matching SHA-256 checksum](https://github.com/ShounakPatra/Solus/releases/download/v7.0.0/app-npu-release.apk.sha256).
 2. **Choose a model** in **Models**, or use **Add model** to import one from your phone, Hugging Face or a direct URL.
 3. **Start a chat** after the model finishes loading. A small model is a good place to start if your phone has limited RAM.
 4. **Add context** with a PDF or DOCX. Image and audio inputs require a compatible model and export.
@@ -230,7 +230,7 @@ Keep `local.properties`, `keystore.properties`, signing keys, model weights and 
 ./gradlew assembleRelease
 ```
 
-APK locations are `app/build/outputs/apk/debug/` and `app/build/outputs/apk/release/`. Inspect generated output metadata for the actual filename.
+APK locations are `app/build/outputs/apk/npu/debug/` (`app-npu-debug.apk`) and `app/build/outputs/apk/npu/release/` (`app-npu-release.apk`). Inspect generated output metadata for the actual filename.
 
 ### Validation and production releases
 
